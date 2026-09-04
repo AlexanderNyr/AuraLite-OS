@@ -742,6 +742,24 @@ int64_t vfs_read(int fd, void *buf, uint64_t count) {
     return vfs_wrap_err(n, EIO);
 }
 
+/* RESIDUE2 T1: sleepable per-vnode append lock (see vfs.h).  The held flag
+ * is a __sync_lock_test_and_set ticket; waiters sleep on the vnode's wait
+ * queue and are woken in a batch on unlock.  No recursion: a task holds it
+ * only across one vnode write. */
+static void vn_append_lock(struct vnode *vn) {
+    if (!vn) return;
+    for (;;) {
+        if (__sync_lock_test_and_set(&vn->wr_held, 1) == 0) return;
+        wq_wait(&vn->wr_wq, NULL);
+    }
+}
+
+static void vn_append_unlock(struct vnode *vn) {
+    if (!vn) return;
+    __sync_lock_release(&vn->wr_held);
+    wq_wake_all(&vn->wr_wq);
+}
+
 int64_t vfs_write(int fd, const void *buf, uint64_t count) {
     struct ofd *o = fd_to_ofd(fd);
     if (!o) return -EBADF;
@@ -753,11 +771,18 @@ int64_t vfs_write(int fd, const void *buf, uint64_t count) {
         struct pipe_ring *p = (struct pipe_ring *)o->vn->fs_data;
         if (p && p->used == PIPE_BUF_SIZE && p->readers > 0) return -EAGAIN;
     }
-    /* O_APPEND: reposition to EOF before each write.  The single-threaded
-     * VFS makes the seek-to-EOF + write atomic here; once SMP/preemptive FS
-     * access lands this needs a per-vnode write lock (TODO.md). */
-    if (o->append) o->pos = o->vn->size;
+    /* O_APPEND (RESIDUE2 T1): the seek-to-EOF + write pair is now one
+     * atomic step per VNODE under the sleepable per-vnode append lock —
+     * two CPUs appending through different OFDs of one file can no longer
+     * interleave their "read size, write there" pair. */
+    int held = 0;
+    if (o->append) {
+        vn_append_lock(o->vn);
+        held = 1;
+        o->pos = o->vn->size;
+    }
     int64_t n = o->vn->ops->write(o->vn, o->pos, buf, count);
+    if (held) vn_append_unlock(o->vn);
     if (n > 0) {
         o->pos += (uint64_t)n;
         vfs_stamp_modified(o->vn);

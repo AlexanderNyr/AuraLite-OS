@@ -300,6 +300,9 @@ void _exit(int code) {
 pid_t getpid(void) {
     return (pid_t)syscall(SYS_GETPID, 0, 0, 0, 0, 0, 0);
 }
+pid_t getppid(void) {
+    return (pid_t)syscall_ret(syscall(SYS_GETPPID, 0, 0, 0, 0, 0, 0));
+}
 
 void listdir(const char *path) {
     syscall(80, (uint64_t)path, 0, 0, 0, 0, 0); // 80 = SYS_LISTDIR
@@ -645,6 +648,22 @@ pid_t waitpid(pid_t pid, int *status, int options) {
     return (pid_t)syscall_ret(syscall(SYS_WAIT4, (uint64_t)pid,
                                       (uint64_t)status, (uint64_t)options,
                                       0, 0, 0));
+}
+
+/* RESIDUE2 T1: wait4 with the rusage out-param (kernel fills ru_utime from
+ * the child's tick counter; the user/system split it does not account for
+ * stays zero), and waitid (P_ALL/P_PID/P_PGID; WNOWAIT peeks). */
+pid_t wait4(pid_t pid, int *status, int options, struct rusage *rusage) {
+    return (pid_t)syscall_ret(syscall(SYS_WAIT4, (uint64_t)pid,
+                                      (uint64_t)status, (uint64_t)options,
+                                      (uint64_t)rusage, 0, 0));
+}
+
+int waitid(idtype_t idtype, id_t id, siginfo_t *infop, int options) {
+    int64_t r = syscall(SYS_WAITID, (uint64_t)idtype, (uint64_t)id,
+                        (uint64_t)infop, (uint64_t)options, 0, 0);
+    if (r < 0) { errno = (int)-r; return -1; }
+    return 0;
 }
 
 pid_t setsid(void) {

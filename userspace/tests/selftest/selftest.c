@@ -7,6 +7,7 @@
 #include "termios.h"
 #include "sys/ioctl.h"
 #include "sys/wait.h"
+#include "sys/resource.h" /* RESIDUE2 T1: wait4 rusage */
 #include "stdio.h"
 #include "string.h"
 #include "errno.h"
@@ -25,6 +26,12 @@ static int fails = 0;
 
 static volatile int g_sigusr1_count = 0;
 static volatile int g_last_signo = 0;
+volatile int t1_got_usr1 = 0;   /* RESIDUE2 T1: EINTR-on-wait evidence */
+static void t1_usr1_handler(int signo) {
+    (void)signo;
+    t1_got_usr1 = 1;
+}
+
 static void sigusr1_handler(int signo) {
     g_sigusr1_count++;
     g_last_signo = signo;
@@ -833,6 +840,143 @@ int main(void) {
         printf("H2: see test_memory_reaping.sh for the integration test\n");
         check("H2: get_free_frames syscall works (non-zero count)", frames > 0);
         printf("H2: done\n");
+    }
+
+    /* ---- RESIDUE2 T1: parent/child table + precise wait semantics ---- */
+    {
+        printf("T1: fork/waitpid/waitid semantics\n");
+
+        /* WCONTINUED: stop the child, report the stop, continue it,
+         * report the continue, collect the exit. */
+        {
+            pid_t c = fork();
+            if (c == 0) {
+                /* DFL dispositions in the CHILD only: a true stop needs
+                 * the default action for SIGTSTP. */
+                signal(SIGTSTP, SIG_DFL);
+                signal(SIGCONT, SIG_DFL);
+                raise(SIGTSTP);            /* true stop (DFL) */
+                exit(5);                    /* resumed: run to exit */
+            }
+            int st = 0;
+            pid_t w = waitpid(c, &st, WUNTRACED);
+            check("T1: WUNTRACED reports the stop",
+                  w == c && WIFSTOPPED(st) && WSTOPSIG(st) == SIGTSTP);
+            kill(c, SIGCONT);
+            w = waitpid(c, &st, WCONTINUED);
+            check("T1: WCONTINUED reports the resume",
+                  w == c && WIFCONTINUED(st));
+            w = waitpid(c, &st, 0);
+            check("T1: continued child exits with its code",
+                  w == c && WIFEXITED(st) && WEXITSTATUS(st) == 5);
+            errno = 0;
+            w = waitpid(c, &st, 0);
+            check("T1: ECHILD after collecting", w < 0 && errno == ECHILD);
+        }
+
+        /* EINTR: a caught signal interrupts the blocking wait; the
+         * signal stays pending, and the next wait collects the child. */
+        {
+            t1_got_usr1 = 0;
+            signal(SIGUSR1, t1_usr1_handler);
+            pid_t c = fork();
+            if (c == 0) {
+                usleep(200000);            /* let the parent block first */
+                kill(getppid(), SIGUSR1);
+                usleep(200000);
+                exit(6);
+            }
+            int st = 0;
+            pid_t w = waitpid(c, &st, 0);
+            check("T1: caught signal interrupts wait with EINTR",
+                  w == -1 && errno == EINTR && t1_got_usr1);
+            w = waitpid(c, &st, 0);
+            check("T1: wait after EINTR collects the child",
+                  w == c && WIFEXITED(st) && WEXITSTATUS(st) == 6);
+        }
+
+        /* waitid: peek with WNOWAIT, then collect through waitpid. */
+        {
+            pid_t c = fork();
+            if (c == 0) exit(9);
+            siginfo_t si;
+            memset(&si, 0, sizeof(si));
+            int r = waitid((idtype_t)1 /* P_PID */, (id_t)c, &si,
+                           WEXITED | WNOWAIT);
+            check("T1: waitid P_PID peek reports the child",
+                  r == 0 && si.si_pid == c && si.si_signo == SIGCHLD &&
+                  si.si_code == 1 /* CLD_EXITED */ && si.si_status == 9);
+            int st = 0;
+            pid_t w = waitpid(c, &st, 0);
+            check("T1: WNOWAIT left the child collectable",
+                  w == c && WEXITSTATUS(st) == 9);
+            errno = 0;
+            r = waitid((idtype_t)1, (id_t)c, &si, WEXITED);
+            check("T1: waitid ECHILD after collect", r == -1 && errno == ECHILD);
+        }
+
+        /* wait4 rusage: a child that burns ~a tick reports user time. */
+        {
+            pid_t c = fork();
+            if (c == 0) {
+                volatile unsigned s = 0;
+                for (unsigned i = 0; i < 4000000u; i++) s += i;
+                exit(s == 0);
+            }
+            int st = 0;
+            struct rusage ru;
+            memset(&ru, 0, sizeof(ru));
+            pid_t w = wait4(c, &st, 0, &ru);
+            uint64_t us = (uint64_t)ru.ru_utime.tv_sec * 1000000ULL +
+                          (uint64_t)ru.ru_utime.tv_usec;
+            check("T1: wait4 rusage reports child user time",
+                  w == c && WIFEXITED(st) && WEXITSTATUS(st) == 0 && us > 0);
+        }
+
+        /* "#!" binfmt_script: execve of a script runs its interpreter. */
+        {
+            int fd = open("/tmp/t1script.sh", O_WRONLY | O_CREAT | O_TRUNC, 0755);
+            if (fd >= 0) {
+                const char *body = "#!/bin/sh\nexit 7\n";
+                (void)!write(fd, body, strlen(body));
+                close(fd);
+                chmod("/tmp/t1script.sh", 0755);
+                pid_t c = fork();
+                if (c == 0) {
+                    char *av[2] = { (char *)"/tmp/t1script.sh", NULL };
+                    execve("/tmp/t1script.sh", av, NULL);
+                    exit(33);              /* only on exec failure */
+                }
+                int st = 0;
+                pid_t w = waitpid(c, &st, 0);
+                check("T1: '#!' script execs its interpreter (exit 7)",
+                      w == c && WIFEXITED(st) && WEXITSTATUS(st) == 7);
+            } else {
+                check("T1: '#!' script execs its interpreter (no /tmp)", 0);
+            }
+        }
+
+        /* POSIX fork: the child's pending-signal set is empty even when
+         * the parent holds a raised, blocked signal. */
+        {
+            sigset_t block;
+            sigemptyset(&block);
+            sigaddset(&block, SIGUSR1);
+            sigprocmask(SIG_BLOCK, &block, NULL);
+            raise(SIGUSR1);                /* now pending + blocked in us */
+            pid_t c = fork();
+            if (c == 0) {
+                sigset_t pend;
+                sigemptyset(&pend);
+                sigpending(&pend);
+                exit(sigismember(&pend, SIGUSR1) ? 4 : 0);
+            }
+            int st = 0;
+            pid_t w = waitpid(c, &st, 0);
+            check("T1: fork clears the child's pending set",
+                  w == c && WIFEXITED(st) && WEXITSTATUS(st) == 0);
+            sigprocmask(SIG_UNBLOCK, &block, NULL);
+        }
     }
 
     if (fails == 0) {

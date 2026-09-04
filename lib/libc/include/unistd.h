@@ -17,6 +17,8 @@
 #define SYS_FORK   57
 #define SYS_EXECVE 59
 #define SYS_WAIT4  61
+#define SYS_WAITID 247  /* Linux x86-64 number (RESIDUE2 T1) */
+#define SYS_GETPPID 110 /* Linux x86-64 number (RESIDUE2 T1) */
 #define SYS_SPAWN  81   /* non-standard: spawn in new address space */
 #define SYS_DNS    82   /* non-standard: resolve a hostname */
 #define SYS_NET_CONNECT 83
@@ -212,6 +214,7 @@ int     close(int fd);
 int     isatty(int fd);
 void    _exit(int code);
 pid_t   getpid(void);
+pid_t   getppid(void);   /* RESIDUE2 T1 */
 pid_t   fork(void);
 int     execve(const char *path, char *const argv[], char *const envp[]);
 int     execv(const char *path, char *const argv[]);

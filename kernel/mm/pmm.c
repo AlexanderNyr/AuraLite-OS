@@ -247,6 +247,25 @@ void pmm_free_contiguous(paddr_t phys, uint64_t count) {
     }
 }
 
+paddr_t pmm_alloc_2m(void) {
+    /* 1024 frames; one of the two 512-frame halves is 2 MiB-aligned.
+       Release the misaligned head and the unused tail around the kept
+       half.  (RESIDUE2 T1: large-page backing for kernel mappings.) */
+    paddr_t base = pmm_alloc_contiguous(1024);
+    if (!base) return 0;
+    uint64_t idx = base >> PMM_PAGE_SHIFT;
+    uint64_t aligned = (idx + 511) & ~511ULL;
+    if (aligned != idx) {
+        pmm_free_contiguous(base, aligned - idx);
+    }
+    uint64_t tail_start = aligned + 512;
+    uint64_t tail_end   = idx + 1024;
+    if (tail_end > tail_start) {
+        pmm_free_contiguous(tail_start << PMM_PAGE_SHIFT, tail_end - tail_start);
+    }
+    return aligned << PMM_PAGE_SHIFT;
+}
+
 void pmm_free_frame(paddr_t phys) {
     uint64_t idx = phys >> PMM_PAGE_SHIFT;
     if (idx == 0 || idx >= pmm.nframes) {

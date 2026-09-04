@@ -31,6 +31,7 @@
 #include "kernel/fs/fat32.h"
 #include "kernel/fs/blkdev.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
 #include "kernel/lib/klog.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
@@ -198,7 +199,7 @@ static uint32_t fat_get(uint32_t cl) {
 static void vinfo_hints_invalidate(void);
 
 static int fat_set_all(uint32_t cl, uint32_t val) {
-    if (cl < 2 || cl >= fs.cluster_count + 2) return -1;
+    if (cl < 2 || cl >= fs.cluster_count + 2) return -EINVAL;
     fat_cache_invalidate();   /* the cached sector may be the one we write */
     /* Any chain may have just been extended or freed, so every cursor into
      * one is suspect.  Cheap: there are at most FAT_MAX_OPEN_VNODES. */
@@ -208,10 +209,10 @@ static int fat_set_all(uint32_t cl, uint32_t val) {
     /* Write to every FAT mirror. */
     for (uint8_t f = 0; f < fs.num_fats; f++) {
         uint32_t lba = fs.fat_lba + (uint32_t)f * fs.fat_sectors + off / 512u;
-        if (read_sect_abs(lba, scratch) != 0) return -1;
+        if (read_sect_abs(lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
         uint32_t prev = rd32(scratch + soff);
         wr32(scratch + soff, (prev & 0xF0000000u) | (val & 0x0FFFFFFFu));
-        if (write_sect_abs(lba, scratch) != 0) return -1;
+        if (write_sect_abs(lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     }
     return 0;
 }
@@ -225,7 +226,7 @@ static int zero_cluster(uint32_t cl) {
 /* ---- FSInfo ---- */
 static int fsinfo_load(void) {
     if (fs.fsinfo_sect == 0) return 0;
-    if (read_sect_abs(fs.base_lba + fs.fsinfo_sect, scratch) != 0) return -1;
+    if (read_sect_abs(fs.base_lba + fs.fsinfo_sect, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     /* Lead, mid, trail signatures. */
     if (rd32(scratch + 0)   != 0x41615252u ||
         rd32(scratch + 484) != 0x61417272u ||
@@ -243,7 +244,7 @@ static int fsinfo_load(void) {
 
 static int fsinfo_save(void) {
     if (fs.fsinfo_sect == 0) return 0;
-    if (read_sect_abs(fs.base_lba + fs.fsinfo_sect, scratch) != 0) return -1;
+    if (read_sect_abs(fs.base_lba + fs.fsinfo_sect, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     wr32(scratch + 488, fs.fsi_free_count);
     wr32(scratch + 492, fs.fsi_next_free);
     return write_sect_abs(fs.base_lba + fs.fsinfo_sect, scratch);
@@ -361,7 +362,7 @@ static int dir_read_entry(uint32_t dir_cluster, uint32_t off, uint8_t out[32]) {
     uint32_t cl_idx  = off / fs.bytes_per_clus;
     uint32_t in_off  = off % fs.bytes_per_clus;
     uint32_t cl = chain_at(dir_cluster, cl_idx);
-    if (!cl) return -1;
+    if (!cl) return -ENOSPC;
     uint32_t sect_in_clus = in_off / 512u;
     uint32_t soff = in_off % 512u;
     if (read_sect_abs(cluster_to_lba(cl) + sect_in_clus, scratch) != 0) return -1;
@@ -377,14 +378,14 @@ static int dir_write_entry(uint32_t dir_cluster, uint32_t off, const uint8_t in[
     uint32_t cl = chain_at(dir_cluster, cl_idx);
     if (!cl) {
         /* Extend the chain. */
-        if (ensure_chain(dir_cluster, cl_idx + 1) == 0) return -1;
+        if (ensure_chain(dir_cluster, cl_idx + 1) == 0) return -ENOSPC;
         cl = chain_at(dir_cluster, cl_idx);
-        if (!cl) return -1;
+        if (!cl) return -ENOSPC;
     }
     uint32_t sect_in_clus = in_off / 512u;
     uint32_t soff = in_off % 512u;
     uint32_t lba  = cluster_to_lba(cl) + sect_in_clus;
-    if (read_sect_abs(lba, scratch) != 0) return -1;
+    if (read_sect_abs(lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     memcpy(scratch + soff, in, 32);
     return write_sect_abs(lba, scratch);
 }
@@ -410,7 +411,7 @@ static uint8_t lfn_checksum(const uint8_t name83[11]) {
  * Falls back to a "~N" alias if the name is too long or has illegal chars. */
 static int to_name83(const char *name, uint8_t out[11], int alias_idx) {
     memset(out, ' ', 11);
-    if (!name || !*name) return -1;
+    if (!name || !*name) return -EINVAL;
 
     /* Split at last dot. */
     int dot = -1;
@@ -686,7 +687,7 @@ static int path_resolve(const char *path, uint32_t *out_parent,
                         char *out_basename, int basename_sz) {
     *found = 0;
     memset(out_iter, 0, sizeof(*out_iter));
-    if (!path) return -1;
+    if (!path) return -EINVAL;      /* RESIDUE2 T1: native errno */
 
     uint32_t dir = fs.root_cluster;
     char comp[FAT_MAX_NAME];
@@ -719,7 +720,7 @@ static int path_resolve(const char *path, uint32_t *out_parent,
                 strncpy(out_basename, comp, basename_sz - 1), out_basename[basename_sz-1]=0;
             struct fat_dir_iter it;
             int rc = dir_find(dir, comp, &it);
-            if (rc < 0) return -1;
+            if (rc < 0) return rc;             /* native (block I/O -> -EIO) */
             if (rc == 0) { *found = 0; return 0; }
             *out_iter = it;
             *found = 1;
@@ -728,11 +729,12 @@ static int path_resolve(const char *path, uint32_t *out_parent,
         /* Intermediate component must be a directory. */
         struct fat_dir_iter it;
         int rc = dir_find(dir, comp, &it);
-        if (rc <= 0) return -1;
-        if (!(it.attr & FAT_ATTR_DIR)) return -1;
+        if (rc < 0) return rc;                 /* native */
+        if (rc == 0) return -ENOENT;           /* missing intermediate */
+        if (!(it.attr & FAT_ATTR_DIR)) return -ENOTDIR;
         dir = it.first_cluster ? it.first_cluster : fs.root_cluster;
     }
-    return -1;
+    return -ENOENT;   /* RESIDUE2 T1: the path ran out — not found */
 }
 
 /* ---- Vnode pool ---- */
@@ -804,7 +806,7 @@ static int find_free_run(uint32_t dir_cluster, int count, uint32_t *out_off) {
 
     while (scanned < bytes) {
         uint8_t e[32];
-        if (dir_read_entry(dir_cluster, off, e) != 0) return -1;
+        if (dir_read_entry(dir_cluster, off, e) != 0) return -EIO;
         if (e[0] == 0x00 || e[0] == 0xE5) {
             if (run == 0) run_start = off;
             run++;
@@ -817,7 +819,7 @@ static int find_free_run(uint32_t dir_cluster, int count, uint32_t *out_off) {
     }
     /* Need to grow the dir chain by one cluster. */
     uint32_t old_clusters = bytes / fs.bytes_per_clus;
-    if (ensure_chain(dir_cluster, old_clusters + 1) == 0) return -1;
+    if (ensure_chain(dir_cluster, old_clusters + 1) == 0) return -ENOSPC;
     /* The new cluster is all-zero (zero_cluster was called) → all 32-byte
      * slots are free.  Use the start of the new cluster. */
     *out_off = old_clusters * fs.bytes_per_clus;
@@ -871,7 +873,7 @@ static uint64_t fat_date_to_epoch(uint16_t date) {
 
 static int read_entry_times(uint32_t dir_cluster, uint32_t off, uint64_t *ctime, uint64_t *mtime, uint64_t *atime) {
     uint8_t e[32];
-    if (dir_read_entry(dir_cluster, off, e) != 0) return -1;
+    if (dir_read_entry(dir_cluster, off, e) != 0) return -EIO;
     if (ctime) *ctime = fat_datetime_to_epoch(rd16(e + 16), rd16(e + 14));
     if (mtime) *mtime = fat_datetime_to_epoch(rd16(e + 24), rd16(e + 22));
     if (atime) *atime = fat_date_to_epoch(rd16(e + 18));
@@ -907,7 +909,7 @@ static void build_sfn_entry(uint8_t e[32], const uint8_t name83[11], uint8_t att
 static int update_sfn_entry(uint32_t dir_cluster, uint32_t off,
                             uint32_t first_cluster, uint32_t size) {
     uint8_t e[32];
-    if (dir_read_entry(dir_cluster, off, e) != 0) return -1;
+    if (dir_read_entry(dir_cluster, off, e) != 0) return -EIO;
     wr16(e + 20, (uint16_t)(first_cluster >> 16));
     wr16(e + 26, (uint16_t)(first_cluster & 0xFFFF));
     wr32(e + 28, size);
@@ -937,7 +939,7 @@ static int dir_create_entry(uint32_t dir_cluster, const char *name, uint8_t attr
     uint8_t n83[11];
     int alias = 0;
     while (1) {
-        if (to_name83(name, n83, alias) != 0) return -1;
+        if (to_name83(name, n83, alias) != 0) return -EINVAL;
         if (!sfn_taken(dir_cluster, n83)) break;
         alias++;
         if (alias > 9) return -1;
@@ -954,7 +956,7 @@ static int dir_create_entry(uint32_t dir_cluster, const char *name, uint8_t attr
     int total = lfn_count + 1;
 
     uint32_t off;
-    if (find_free_run(dir_cluster, total, &off) != 0) return -1;
+    if (find_free_run(dir_cluster, total, &off) != 0) return -ENOSPC;
 
     if (lfn_count > 0) {
         uint8_t entries[20 * 32];
@@ -978,12 +980,12 @@ static int dir_mark_deleted(uint32_t dir_cluster, uint32_t sfn_off, int lfn_span
     for (int i = 0; i < lfn_span; i++) {
         uint32_t off = sfn_off - (uint32_t)(lfn_span - i) * 32;
         uint8_t e[32];
-        if (dir_read_entry(dir_cluster, off, e) != 0) return -1;
+        if (dir_read_entry(dir_cluster, off, e) != 0) return -EIO;
         e[0] = 0xE5;
-        if (dir_write_entry(dir_cluster, off, e) != 0) return -1;
+        if (dir_write_entry(dir_cluster, off, e) != 0) return -EIO;
     }
     uint8_t e[32];
-    if (dir_read_entry(dir_cluster, sfn_off, e) != 0) return -1;
+    if (dir_read_entry(dir_cluster, sfn_off, e) != 0) return -EIO;
     e[0] = 0xE5;
     return dir_write_entry(dir_cluster, sfn_off, e);
 }
@@ -1035,7 +1037,7 @@ static int format_default(void) {
     memcpy(scratch + 71, "AURALITE   ", 11);
     memcpy(scratch + 82, "FAT32   ", 8);
     scratch[510] = 0x55; scratch[511] = 0xAA;
-    if (write_sect_abs(fs.base_lba, scratch) != 0) return -1;
+    if (write_sect_abs(fs.base_lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     /* Backup BPB. */
     write_sect_abs(fs.base_lba + 6, scratch);
 
@@ -1072,12 +1074,12 @@ static int format_default(void) {
 /* Parse the BPB at LBA 64 (or format on absence/mismatch). */
 static int parse_or_format(void) {
     fs.base_lba = FAT_DEFAULT_BASE_LBA;
-    if (read_sect_abs(fs.base_lba, scratch) != 0) return -1;
+    if (read_sect_abs(fs.base_lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     int looks_fat = (scratch[510]==0x55 && scratch[511]==0xAA &&
                      memcmp(scratch + 82, "FAT32", 5) == 0);
     if (!looks_fat) {
         if (format_default() != 0) return -1;
-        if (read_sect_abs(fs.base_lba, scratch) != 0) return -1;
+        if (read_sect_abs(fs.base_lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     }
     fs.bytes_per_sect = rd16(scratch + 11);
     fs.sect_per_clus  = scratch[13];
@@ -1134,7 +1136,7 @@ static int64_t fat32_read_impl(struct vnode *vn, uint64_t pos, void *buf, uint64
     while (done < count) {
         uint32_t off = (uint32_t)((pos + done) % fs.bytes_per_clus);
         if (!cl) break;
-        if (read_cluster(cl, cluster_buf) != 0) return -1;
+        if (read_cluster(cl, cluster_buf) != 0) return -EIO;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
         memcpy(out + done, cluster_buf + off, (size_t)chunk);
@@ -1170,7 +1172,7 @@ static int64_t fat32_write_impl(struct vnode *vn, uint64_t pos, const void *buf,
     if (end < pos) return -1;
     uint32_t clusters = (uint32_t)((end + fs.bytes_per_clus - 1) / fs.bytes_per_clus);
     uint32_t head = ensure_chain(v->first_cluster, clusters);
-    if (!head) return -1;
+    if (!head) return -ENOSPC;
     v->first_cluster = head;
 
     const uint8_t *in = (const uint8_t *)buf;
@@ -1191,11 +1193,11 @@ static int64_t fat32_write_impl(struct vnode *vn, uint64_t pos, const void *buf,
     while (done < count) {
         if (!cl) break;
         uint32_t off = (uint32_t)((pos + done) % fs.bytes_per_clus);
-        if (read_cluster(cl, cluster_buf) != 0) return -1;
+        if (read_cluster(cl, cluster_buf) != 0) return -EIO;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
         memcpy(cluster_buf + off, in + done, (size_t)chunk);
-        if (write_cluster(cl, cluster_buf) != 0) return -1;
+        if (write_cluster(cl, cluster_buf) != 0) return -EIO;
         done += chunk;
         /* Step to the next cluster only when this one is exhausted. */
         if ((pos + done) % fs.bytes_per_clus == 0) {
@@ -1258,17 +1260,17 @@ static struct vnode *fat32_create_impl(void *fs_data, const char *path) {
 
 static int fat32_mkdir_op_impl(void *fs_data, const char *path) {
     (void)fs_data;
-    if (!fs.mounted) return -1;
+    if (!fs.mounted) return -ENODEV;
     uint32_t parent;
     struct fat_dir_iter it;
     int found;
     char base[FAT_MAX_NAME] = {0};
-    if (path_resolve(path, &parent, &it, &found, base, sizeof(base)) != 0) return -1;
-    if (found) return -1;
-    if (!base[0]) return -1;
+    if (path_resolve(path, &parent, &it, &found, base, sizeof(base)) != 0) return -ENOENT;
+    if (found) return -EEXIST;      /* RESIDUE2 T1: native errno */
+    if (!base[0]) return -EINVAL;
     /* Allocate the new directory's first cluster. */
     uint32_t cl = alloc_cluster(0);
-    if (!cl) return -1;
+    if (!cl) return -ENOSPC;
     /* Populate "." and ".." entries. */
     memset(cluster_buf, 0, fs.bytes_per_clus);
     uint8_t dot[32], dotdot[32];
@@ -1291,7 +1293,7 @@ static int fat32_mkdir_op_impl(void *fs_data, const char *path) {
 
 static int fat32_unlink_op_impl(void *fs_data, const char *path) {
     (void)fs_data;
-    if (!fs.mounted) return -1;
+    if (!fs.mounted) return -ENODEV;
     uint32_t parent;
     struct fat_dir_iter it;
     int found;
@@ -1319,7 +1321,7 @@ static int dir_is_empty(uint32_t cl) {
 
 static int fat32_rmdir_op_impl(void *fs_data, const char *path) {
     (void)fs_data;
-    if (!fs.mounted) return -1;
+    if (!fs.mounted) return -ENODEV;
     uint32_t parent;
     struct fat_dir_iter it;
     int found;
@@ -1336,7 +1338,7 @@ static int fat32_rmdir_op_impl(void *fs_data, const char *path) {
 
 static int fat32_rename_op_impl(void *fs_data, const char *from, const char *to) {
     (void)fs_data;
-    if (!fs.mounted) return -1;
+    if (!fs.mounted) return -ENODEV;
     uint32_t pf, pt;
     struct fat_dir_iter itf, itt;
     int ff, ft;
@@ -1366,10 +1368,10 @@ static int fat32_truncate_op_impl(struct vnode *vn, uint64_t new_size) {
     } else {
         if (v->first_cluster == 0) {
             v->first_cluster = ensure_chain(0, need);
-            if (!v->first_cluster) return -1;
+            if (!v->first_cluster) return -ENOSPC;
         } else {
             uint32_t head = ensure_chain(v->first_cluster, need);
-            if (!head) return -1;
+            if (!head) return -ENOSPC;
             v->first_cluster = head;
             truncate_chain(v->first_cluster, need);
         }

@@ -234,13 +234,13 @@ static int read_super(void) {
     /* SB lives at byte 1024 from FS base. */
     /* Read sectors 2 and 3 (= bytes 1024..2047). */
     uint8_t tmp[1024];
-    if (read_blocks(2, 2, tmp) != 0) return -1;
+    if (read_blocks(2, 2, tmp) != 0) return -EIO;
     memcpy(&es.sb, tmp, sizeof(es.sb) > 1024 ? 1024 : sizeof(es.sb));
     return 0;
 }
 static int write_super(void) {
     uint8_t tmp[1024];
-    if (read_blocks(2, 2, tmp) != 0) return -1;
+    if (read_blocks(2, 2, tmp) != 0) return -EIO;
     /* Only refresh the first 1024 bytes of the struct we modify. */
     uint32_t want = sizeof(es.sb) < 1024 ? sizeof(es.sb) : 1024;
     memcpy(tmp, &es.sb, want);
@@ -258,7 +258,7 @@ static int read_gdt(void) {
     if (!es.gdt) return -1;
     uint32_t start = gdt_start_block();
     uint32_t spb = es.block_size / 512;
-    if (read_blocks(start * spb, blocks * spb, es.gdt) != 0) return -1;
+    if (read_blocks(start * spb, blocks * spb, es.gdt) != 0) return -EIO;
     return 0;
 }
 static int write_gdt(void) {
@@ -272,14 +272,14 @@ static int write_gdt(void) {
 /* ---- Inode I/O ---- */
 
 static int read_inode(uint32_t ino, struct ext2_inode *out) {
-    if (ino == 0 || ino > es.inodes_count) return -1;
+    if (ino == 0 || ino > es.inodes_count) return -EINVAL;
     uint32_t group   = (ino - 1) / es.inodes_per_group;
     uint32_t index   = (ino - 1) % es.inodes_per_group;
     uint32_t off     = index * es.inode_size;
     uint32_t blk_off = off / es.block_size;
     uint32_t in_off  = off % es.block_size;
     uint32_t blk     = es.gdt[group].bg_inode_table + blk_off;
-    if (read_block(blk, block_buf) != 0) return -1;
+    if (read_block(blk, block_buf) != 0) return -EIO;
     /* Copy at most sizeof(struct ext2_inode); pad with zero. */
     memset(out, 0, sizeof(*out));
     uint32_t copy = es.inode_size < sizeof(*out) ? es.inode_size : sizeof(*out);
@@ -288,14 +288,14 @@ static int read_inode(uint32_t ino, struct ext2_inode *out) {
 }
 
 static int write_inode(uint32_t ino, const struct ext2_inode *in) {
-    if (ino == 0 || ino > es.inodes_count) return -1;
+    if (ino == 0 || ino > es.inodes_count) return -EINVAL;
     uint32_t group   = (ino - 1) / es.inodes_per_group;
     uint32_t index   = (ino - 1) % es.inodes_per_group;
     uint32_t off     = index * es.inode_size;
     uint32_t blk_off = off / es.block_size;
     uint32_t in_off  = off % es.block_size;
     uint32_t blk     = es.gdt[group].bg_inode_table + blk_off;
-    if (read_block(blk, block_buf) != 0) return -1;
+    if (read_block(blk, block_buf) != 0) return -EIO;
     uint32_t copy = es.inode_size < sizeof(*in) ? es.inode_size : sizeof(*in);
     memcpy(block_buf + in_off, in, copy);
     return write_block(blk, block_buf);
@@ -604,7 +604,7 @@ static int64_t inode_read(struct ext2_inode *inode, uint64_t pos, void *buf, uin
             /* sparse hole — fill with zero */
             memset(out + done, 0, (size_t)chunk);
         } else {
-            if (read_block(bno, block_buf) != 0) return -1;
+            if (read_block(bno, block_buf) != 0) return -EIO;
             memcpy(out + done, block_buf + off, (size_t)chunk);
         }
         done += chunk;
@@ -620,12 +620,12 @@ static int64_t inode_write(uint32_t ino, struct ext2_inode *inode,
         uint32_t fblock = (uint32_t)((pos + done) / es.block_size);
         uint32_t off    = (uint32_t)((pos + done) % es.block_size);
         uint32_t bno    = bmap(inode, fblock, 1);
-        if (!bno) return -1;
-        if (read_block(bno, block_buf) != 0) return -1;
+        if (!bno) return -ENOSPC;
+        if (read_block(bno, block_buf) != 0) return -EIO;
         uint64_t chunk = es.block_size - off;
         if (chunk > count - done) chunk = count - done;
         memcpy(block_buf + off, in + done, (size_t)chunk);
-        if (write_block(bno, block_buf) != 0) return -1;
+        if (write_block(bno, block_buf) != 0) return -EIO;
         done += chunk;
     }
     if (pos + count > inode->i_size) inode->i_size = (uint32_t)(pos + count);
@@ -641,14 +641,14 @@ static int64_t inode_write(uint32_t ino, struct ext2_inode *inode,
 typedef int (*dir_iter_cb)(const char *name, uint32_t ino, uint8_t type, void *user);
 
 static int dir_iterate(struct ext2_inode *dir, dir_iter_cb cb, void *user) {
-    if ((dir->i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -1;
+    if ((dir->i_mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return -ENOTDIR;
     uint64_t pos = 0;
     while (pos < dir->i_size) {
         uint32_t fblock = (uint32_t)(pos / es.block_size);
         uint32_t off    = (uint32_t)(pos % es.block_size);
         uint32_t bno    = bmap(dir, fblock, 0);
         if (!bno) { pos += es.block_size - off; continue; }
-        if (read_block(bno, block_buf) != 0) return -1;
+        if (read_block(bno, block_buf) != 0) return -EIO;
         while (off < es.block_size) {
             struct ext2_dir_entry *de = (struct ext2_dir_entry *)(block_buf + off);
             if (de->rec_len < 8 || de->rec_len > es.block_size - off) break;
@@ -700,7 +700,7 @@ static int dir_insert(uint32_t dir_ino, struct ext2_inode *dir,
         uint32_t fblock = (uint32_t)(pos / es.block_size);
         uint32_t bno    = bmap(dir, fblock, 0);
         if (!bno) { pos += es.block_size; continue; }
-        if (read_block(bno, block_buf) != 0) return -1;
+        if (read_block(bno, block_buf) != 0) return -EIO;
 
         uint32_t off = 0;
         while (off < es.block_size) {
@@ -716,7 +716,7 @@ static int dir_insert(uint32_t dir_ino, struct ext2_inode *dir,
                 de->name_len = (uint8_t)name_len;
                 de->file_type = file_type;
                 memcpy(de->name, name, name_len);
-                if (write_block(bno, block_buf) != 0) return -1;
+                if (write_block(bno, block_buf) != 0) return -EIO;
                 return 0;
             }
             /* Split this entry — leave it occupying its true size, place new
@@ -731,7 +731,7 @@ static int dir_insert(uint32_t dir_ino, struct ext2_inode *dir,
                 nu->name_len = (uint8_t)name_len;
                 nu->file_type = file_type;
                 memcpy(nu->name, name, name_len);
-                if (write_block(bno, block_buf) != 0) return -1;
+                if (write_block(bno, block_buf) != 0) return -EIO;
                 return 0;
             }
             off += de->rec_len;
@@ -742,7 +742,7 @@ static int dir_insert(uint32_t dir_ino, struct ext2_inode *dir,
     /* No room — allocate a new block at end of dir. */
     uint32_t new_fblock = (uint32_t)(dir->i_size / es.block_size);
     uint32_t bno = bmap(dir, new_fblock, 1);
-    if (!bno) return -1;
+    if (!bno) return -ENOSPC;
     memset(block_buf, 0, es.block_size);
     struct ext2_dir_entry *de = (struct ext2_dir_entry *)block_buf;
     de->inode = ino;
@@ -750,7 +750,7 @@ static int dir_insert(uint32_t dir_ino, struct ext2_inode *dir,
     de->name_len = (uint8_t)name_len;
     de->file_type = file_type;
     memcpy(de->name, name, name_len);
-    if (write_block(bno, block_buf) != 0) return -1;
+    if (write_block(bno, block_buf) != 0) return -EIO;
     dir->i_size += es.block_size;
     write_inode(dir_ino, dir);
     return 0;
@@ -765,7 +765,7 @@ static int dir_remove(uint32_t dir_ino, struct ext2_inode *dir, const char *name
         uint32_t fblock = (uint32_t)(pos / es.block_size);
         uint32_t bno    = bmap(dir, fblock, 0);
         if (!bno) { pos += es.block_size; continue; }
-        if (read_block(bno, block_buf) != 0) return -1;
+        if (read_block(bno, block_buf) != 0) return -EIO;
 
         uint32_t off = 0;
         struct ext2_dir_entry *prev = NULL;
@@ -908,7 +908,7 @@ static struct vnode *ext2_create(void *fs_data, const char *path) {
     struct ext2_inode pin;
     if (read_inode(parent, &pin) != 0) return NULL;
     uint32_t new_ino = alloc_inode(0);
-    if (!new_ino) return NULL;
+    if (!new_ino) return NULL;   /* vnode* op: errno surfaces as EIO via the VFS wrap */
     struct ext2_inode ni;
     memset(&ni, 0, sizeof(ni));
     ni.i_mode = EXT2_S_IFREG | 0644;
@@ -994,7 +994,7 @@ static int ext2_mkdir_op(void *fs_data, const char *path) {
     if (read_inode(parent, &pin) != 0) return -1;
 
     uint32_t new_ino = alloc_inode(1);
-    if (!new_ino) return -1;
+    if (!new_ino) return -ENOSPC;
     struct ext2_inode ni;
     memset(&ni, 0, sizeof(ni));
     ni.i_mode = EXT2_S_IFDIR | 0755;
@@ -1004,7 +1004,7 @@ static int ext2_mkdir_op(void *fs_data, const char *path) {
 
     /* Allocate the first directory block and write "." and ".." entries. */
     uint32_t b = alloc_data_block();
-    if (!b) { free_inode(new_ino, 1); return -1; }
+    if (!b) { free_inode(new_ino, 1); return -ENOSPC; }
     ni.i_block[0] = b;
     ni.i_blocks = es.block_size / 512;
     ni.i_size = es.block_size;
@@ -1135,10 +1135,10 @@ static int ext2_rename_op(void *fs_data, const char *from, const char *to) {
     uint32_t pf, pt;
     char bf[256], bt[256];
     uint32_t ino_from = path_to_ino(from, &pf, bf, sizeof(bf));
-    if (!ino_from) return -1;
+    if (!ino_from) return -ENOENT;
     uint32_t ino_to   = path_to_ino(to,   &pt, bt, sizeof(bt));
-    if (ino_to) return -1;       /* destination exists — refuse */
-    if (!bt[0]) return -1;
+    if (ino_to) return -EEXIST;   /* destination exists — refuse (RESIDUE2 T1) */
+    if (!bt[0]) return -EINVAL;
     /* Determine the file_type from the source inode. */
     struct ext2_inode src;
     if (read_inode(ino_from, &src) != 0) return -1;

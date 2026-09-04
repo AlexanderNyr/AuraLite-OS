@@ -163,6 +163,7 @@ ALL_CASES=(
     test_smp_tss
     test_smp_init_order
     test_fpu_smp
+    test_smp_procstress
     test_siginfo
     test_auxv
     test_fdshare
@@ -263,7 +264,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 GROUP_NAMES="core posix fs usb net gui selfhost-script selfhost-closure selfhost-img fsfull"
 group_re() {
     case "$1" in
-        core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
+        core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|shell_all|sysmon_data|userspace_apps)$' ;;
         fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs)$' ;;
         # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI

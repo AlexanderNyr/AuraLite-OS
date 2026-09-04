@@ -80,6 +80,9 @@ typedef struct {
     union {
         void *si_addr;
         struct { int si_pid; uint32_t si_uid; };
+        /* RESIDUE2 T1: waitid fills si_status (CLD_* si_code); layout
+         * MUST match kernel/proc/signal.h. */
+        struct { int si_pid_w; uint32_t si_uid_w; int si_status; };
     };
 } siginfo_t;
 

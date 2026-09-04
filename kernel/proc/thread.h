@@ -233,6 +233,18 @@ typedef struct tcb {
      * with a long double member carries natural 16-byte alignment in BOTH
      * compilers, so the layout is identical everywhere.  FXSAVE of a
      * misaligned operand is #GP; this is not cosmetic. */
+    /* RESIDUE2 T1: appended at the struct TAIL, before the FPU image, so
+     * context_switch's fxsave [tcb + TCB_FPU] can never clobber them.
+     * child_head/sibling are the parent/child process table: every live
+     * child links into parent->child_head via ->sibling under
+     * children_lock (thread.c); waitpid matches through this list instead
+     * of the whole registry.  continued_notified is the WCONTINUED
+     * report-once flag (set when a stopped child is resumed by SIGCONT;
+     * status word 0xFFFF). */
+    struct tcb *child_head;
+    struct tcb *sibling;
+    int         continued_notified;
+
     uint8_t  fpu_valid;
     union fpu_image {
         uint8_t     bytes[512];
@@ -254,7 +266,6 @@ void thread_free_kernel_stack(tcb_t *tcb);
 int64_t do_wait4_pid(int64_t pid, int64_t *exit_code);
 
 /* Find a zombie matching parent_pid + match_pid.  Internal helper for wait4. */
-tcb_t *thread_find_zombie(uint64_t parent_pid, int64_t match_pid);
 
 /*
  * Diagnostics: number of zombies queued / reaped since boot.  Used in
@@ -300,6 +311,33 @@ void thread_exit_with_signal(int signo) __attribute__((noreturn));
  * Returns the reaped PID, 0 (WNOHANG, none ready), or -ECHILD / -EINVAL.
  */
 int64_t do_waitpid(int64_t pid, int *status, int options);
+
+/* RESIDUE2 T1: do_waitpid with the wait4 extensions.
+ *  - @cpu_ticks_out (optional) receives the reaped child's cpu_ticks so
+ *    SYS_WAIT4 can fill a rusage without racing the reaper.
+ *  - options additionally accept WCONTINUED (report a SIGCONT-resumed
+ *    child once, status 0xFFFF).
+ *  - a blocking wait interrupted by a CAUGHT, unblocked pending signal
+ *    returns -EINTR (POSIX: "interrupted by a signal handler"). */
+int64_t do_waitpid_ex(int64_t pid, int *status, int options,
+                      uint64_t *cpu_ticks_out);
+
+/* RESIDUE2 T1: waitid (the kernel side of SYS_WAITID).
+ *  idtype: WAITID_P_ALL / WAITID_P_PID / WAITID_P_PGID (libc <sys/wait.h>).
+ *  options: WEXITED | WSTOPPED | WCONTINUED | WNOHANG | WNOWAIT.
+ *  @info (kernel-struct siginfo_t from proc/signal.h, may be NULL) is
+ *  filled si_signo=SIGCHLD, si_code=CLD_*, si_pid/si_uid/si_status.
+ *  WNOWAIT peeks: the child stays waitable.  Returns the child's pid,
+ *  0 for WNOHANG-none-ready, or a negative errno. */
+#define WAITID_P_ALL  0
+#define WAITID_P_PID  1
+#define WAITID_P_PGID 2
+int64_t do_waitid(int idtype, int64_t id, siginfo_t *info, int options);
+
+/* RESIDUE2 T1: parent/child process table maintenance.  All take
+ * children_lock themselves; safe from any cpu. */
+void proc_children_link(tcb_t *parent, tcb_t *child);
+void proc_children_unlink(tcb_t *parent, tcb_t *child);
 
 /* Free THREAD_DEAD TCBs/stacks that have already switched off their own stack.
  * Safe to call from normal kernel-thread context; it never frees current. */

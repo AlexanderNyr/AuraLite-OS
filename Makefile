@@ -923,6 +923,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
                 $(USER_BUILD)/https6.elf \
                 $(USER_BUILD)/rustes.elf \
                 $(USER_BUILD)/usertest.elf \
+                $(USER_BUILD)/smpstress.elf \
                 $(USER_BUILD)/mmapshare.elf \
                 $(USER_BUILD)/mmapfile.elf \
                 $(USER_BUILD)/membench.elf
@@ -1448,6 +1449,11 @@ $(USER_BUILD)/argv_echo.o: userspace/tests/argv_echo/argv_echo.c $(USER_CFLAGS_I
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/execve_child.o: userspace/tests/execve_child/execve_child.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# RESIDUE2 T1: the SMP-sweep stress gate (O_APPEND / fork-wait / sig_pending).
+$(USER_BUILD)/smpstress.o: userspace/tests/smpstress/smpstress.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2129,7 +2135,7 @@ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
-                usertest mmapshare mmapfile membench
+                usertest mmapshare mmapfile membench smpstress
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
 # Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they

@@ -9,6 +9,7 @@
  */
 
 #include "kernel/fs/blkdev.h"
+#include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
 
 struct blkdev_slot {
     const char           *name;
@@ -62,10 +63,16 @@ int blkdev_read(int dev, uint64_t lba, uint32_t count, void *buf)
 {
     const struct blkdev_slot *s = get(dev);
     if (!s || !buf || count == 0)
-        return -1;
+        return -EINVAL;
     int rc = s->ops->read(s->ctx, lba, count, buf);
     if (rc == 0)
         stat_sectors_read += count;
+    /* RESIDUE2 T1: normalise a transport's generic failure to -EIO at the
+     * block boundary; a typed negative (-Exxx) from the transport passes
+     * through untouched.  This is what makes block I/O natively -EIO for
+     * every FS driver on top. */
+    if (rc < 0 && rc > -4096)
+        rc = -EIO;
     return rc;
 }
 
@@ -73,10 +80,12 @@ int blkdev_write(int dev, uint64_t lba, uint32_t count, const void *buf)
 {
     const struct blkdev_slot *s = get(dev);
     if (!s || !buf || count == 0)
-        return -1;
+        return -EINVAL;
     int rc = s->ops->write(s->ctx, lba, count, buf);
     if (rc == 0)
         stat_sectors_written += count;
+    if (rc < 0 && rc > -4096)
+        rc = -EIO;   /* RESIDUE2 T1: same normalisation as the read path */
     return rc;
 }
 

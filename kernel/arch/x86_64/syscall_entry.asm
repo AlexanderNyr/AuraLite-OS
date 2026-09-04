@@ -138,7 +138,15 @@ syscall_entry:
     ; thread may have been preempted mid-syscall and resumed HERE after
     ; another CPU ran its own syscalls).  IMPORTANT: preserve user
     ; callee-saved registers such as R12.
+    ; RESIDUE2 T1 (stub-alignment box): after the 64-byte teardown above RSP
+    ; is 16-byte aligned; the bare `push r12` flipped it to 8 mod 16, so BOTH
+    ; C calls below entered their callees with a misaligned stack.  Every
+    ; frame below then inherits the skew and build_handler_frame()'s
+    ; `aligned(16)` signal frame lands 8-off -> `fxsave` #GPs on the first
+    ; cross-process signal delivery.  Pad the window so the SysV pre-call
+    ; alignment (RSP % 16 == 0) holds at both calls.
     push r12
+    sub  rsp, 8
     mov  r12, rax
     call syscall_restore_user_frame
 
@@ -148,6 +156,7 @@ syscall_entry:
     mov  rdi, r12
     call syscall_check_signals
 
+    add  rsp, 8
     mov  rax, r12
     pop  r12
 

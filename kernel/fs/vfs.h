@@ -168,6 +168,15 @@ struct vnode {
     uint64_t mtime;         /* modification time (Unix epoch, 0 if unknown) */
     uint64_t ctime;         /* status/change or creation time, fs-dependent */
     uint64_t atime;         /* access time */
+    /* RESIDUE2 T1 (SMP sweep): per-vnode append-serialisation lock.  An
+     * O_APPEND write must read vn->size, write at EOF and expose the new
+     * size as ONE atomic step, or two CPUs appending through different
+     * OFDs overwrite each other's bytes (the VFS was single-threaded when
+     * the seek-to-EOF + write pair was written — the TODO named this
+     * lock).  Sleepable (a wait_queue, not a spinlock) because FS writes
+     * block on disk I/O.  Zeroed vnode == unlocked, initialised queue. */
+    volatile int wr_held;
+    struct wait_queue wr_wq;
 };
 
 /* An open file handle.  File tables live in tcb_t, so fd numbers are

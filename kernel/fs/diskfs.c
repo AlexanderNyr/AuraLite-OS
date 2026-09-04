@@ -15,6 +15,7 @@
 #include "kernel/fs/blkdev.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
 
 #define DISKFS_MAGIC 0x41554653u /* AUFS */
 #define DISKFS_VERSION 2
@@ -131,7 +132,7 @@ static int format_diskfs(void) {
     sb.version = DISKFS_VERSION;
     sb.max_files = DISKFS_MAX_FILES;
     sb.file_sectors = DISKFS_FILE_SECTORS;
-    if (write_sector(DISKFS_SUPER_LBA, &sb) != 0) return -1;
+    if (write_sector(DISKFS_SUPER_LBA, &sb) != 0) return -EIO;
     memset(entries, 0, sizeof(entries));
     sync_table();
     return 0;
@@ -148,7 +149,7 @@ int diskfs_init(void) {
     memset(&sb, 0, sizeof(sb));
     if (read_sector(DISKFS_SUPER_LBA, &sb) != 0) {
         kprintf("[diskfs] could not read superblock\n");
-        return -1;
+        return -EIO;
     }
     if (sb.magic != DISKFS_MAGIC || sb.version != DISKFS_VERSION) {
         if (format_diskfs() != 0) {
@@ -215,7 +216,7 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
 
     uint8_t tmp[DISKFS_MAX_FILE_SIZE];
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -1;
+        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -EIO;
     }
     memcpy(buf, tmp + pos, (size_t)count);
     e->atime = vfs_now();
@@ -227,8 +228,8 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
 static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
                             const void *buf, uint64_t count) {
     struct diskfs_entry *e = entry_from_vnode(vn);
-    if (!e) return -1;
-    if (pos + count > DISKFS_MAX_FILE_SIZE || pos + count < pos) return -1;
+    if (!e) return -EBADF;
+    if (pos + count > DISKFS_MAX_FILE_SIZE || pos + count < pos) return -EFBIG;
 
     uint8_t tmp[DISKFS_MAX_FILE_SIZE];
     memset(tmp, 0, sizeof(tmp));
@@ -241,7 +242,7 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     e->mtime = e->ctime = vfs_now();
 
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -1;
+        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -EIO;
     }
     sync_table();
     rebuild_vnodes();

@@ -91,6 +91,10 @@ typedef struct {
     union {
         void *si_addr;            /* offset 16: faulting address (SEGV/BUS/FPE/ILL) */
         struct { int si_pid; uint32_t si_uid; };  /* offset 16: SI_USER sender */
+        /* RESIDUE2 T1: waitid() reports the child's exit status/term-sig
+         * through the same union (si_code = CLD_*); the struct grows by
+         * one int on BOTH sides of the kernel/libc pair, in lockstep. */
+        struct { int si_pid_w; uint32_t si_uid_w; int si_status; };
     };
 } siginfo_t;
 
@@ -161,6 +165,11 @@ int  signal_kill(int64_t pid, int signo);
 /* Send @signo to every process in process group @pgid.  Returns 0 if at least
  * one process was found, -ESRCH otherwise.  Safe from IRQ context. */
 int  signal_send_group(int64_t pgid, int signo);
+
+/* RESIDUE2 T1: 1 iff @t has a pending, unblocked signal whose disposition
+ * is a caught handler — the condition that must turn a blocking wait into
+ * -EINTR (waitpid/waitid/nanosleep). */
+int  signal_caught_pending(struct tcb *t);
 
 /* Process-group / session syscalls. */
 int64_t do_setsid(void);

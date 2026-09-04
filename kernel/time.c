@@ -121,8 +121,18 @@ int kernel_nanosleep(const struct kernel_timespec *req, struct kernel_timespec *
     uint64_t freq = timer_get_frequency();
     if (freq == 0) freq = 100;
 
+    /* RESIDUE2 T1: a sub-tick request must still sleep — POSIX requires
+     * nanosleep to suspend for AT LEAST the requested interval.  The old
+     * truncating math (`nsec * freq / 1e9`) turned every sleep below one
+     * tick (10 ms at 100 Hz) into 0 ticks and an instant return, which
+     * silently no-op'd usleep(2ms) and let the SMP stress child burn its
+     * whole wait loop before the signalling parent fired a single kill.
+     * Round UP to whole ticks; any non-zero request sleeps at least one. */
     uint64_t total_ticks = (uint64_t)req->tv_sec * freq +
-                           (uint64_t)req->tv_nsec * freq / 1000000000ULL;
+                           ((uint64_t)req->tv_nsec * freq + 999999999ULL) /
+                               1000000000ULL;
+    if (total_ticks == 0 && (req->tv_sec != 0 || req->tv_nsec != 0))
+        total_ticks = 1;
 
     if (total_ticks == 0) return 0;
 

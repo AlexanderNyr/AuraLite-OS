@@ -116,6 +116,36 @@ static volatile uint64_t zombies_reaped = 0;
  * must not race -- a plain cli section no longer excludes the remote party. */
 static spinlock_t zombie_lock = SPINLOCK_UNLOCKED;
 
+/* RESIDUE2 T1: guards the parent/child process table (tcb_t::child_head /
+ * tcb_t::sibling) and the n_children counters.  Deliberately separate from
+ * zombie_lock: do_waitpid matches through the CHILDREN list without ever
+ * taking zombie_lock, and the reaper takes children_lock only AFTER it has
+ * released zombie_lock — no path holds both, so no lock order exists. */
+static spinlock_t children_lock = SPINLOCK_UNLOCKED;
+
+void proc_children_link(tcb_t *parent, tcb_t *child) {
+    if (!parent || !child) return;
+    uint64_t flags = spinlock_acquire_irqsave(&children_lock);
+    child->sibling      = parent->child_head;
+    child->parent       = parent;
+    parent->child_head  = child;
+    parent->n_children++;
+    spinlock_release_irqrestore(&children_lock, flags);
+}
+
+void proc_children_unlink(tcb_t *parent, tcb_t *child) {
+    if (!parent || !child) return;
+    uint64_t flags = spinlock_acquire_irqsave(&children_lock);
+    tcb_t **pp = &parent->child_head;
+    while (*pp && *pp != child) pp = &(*pp)->sibling;
+    if (*pp) {
+        *pp = child->sibling;
+        child->sibling = NULL;
+        if (parent->n_children > 0) parent->n_children--;
+    }
+    spinlock_release_irqrestore(&children_lock, flags);
+}
+
 /* OPT_PLAN.md O7: waiters in do_waitpid() block here instead of
  * yield-polling; thread_exit's zombie_enqueue wakes them.  A child
  * STOPPING (WUNTRACED) has no waker hook yet — the deadline net in
@@ -318,42 +348,13 @@ tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name) {
 
 /* ---- Zombie / wait4 helpers ---- */
 
-tcb_t *thread_find_zombie(uint64_t parent_pid, int64_t match_pid) {
-    /* Takes zombie_lock itself: with SMP, racing thread_exit()/reapers run
-     * on OTHER CPUs where a local cli buys nothing. */
-    uint64_t flags = spinlock_acquire_irqsave(&zombie_lock);
-    tcb_t *found = NULL;
-    for (tcb_t *z = zombie_head; z; z = z->next) {
-        if (z->state != THREAD_DEAD || z->waited) continue;
-        uint64_t z_parent_id = z->parent ? z->parent->id : 0;
-        if (z_parent_id != parent_pid) continue;
-        if (match_pid >= 0 && z->id != (uint64_t)match_pid) continue;
-        found = z;
-        break;
-    }
-    spinlock_release_irqrestore(&zombie_lock, flags);
-    return found;
-}
-
-/* WNOHANG / WUNTRACED option bits (match libc sys/wait.h). */
-#define WAIT_WNOHANG  1
-#define WAIT_WUNTRACED 2
-
-/* Does zombie @z match the wait selector @pid for parent @parent_id?
- *   pid > 0  : z->id == pid
- *   pid == 0 : z->pgid == parent's pgid
- *   pid == -1: any child
- *   pid < -1 : z->pgid == |pid|
- */
-static int wait_zombie_matches(tcb_t *z, int64_t pid, uint64_t parent_id,
-                               int64_t parent_pgid) {
-    uint64_t zp = z->parent ? z->parent->id : 0;
-    if (zp != parent_id) return 0;
-    if (pid > 0)        return z->id == (uint64_t)pid;
-    if (pid == 0)       return z->pgid == parent_pgid;
-    if (pid == -1)      return 1;
-    return z->pgid == -pid;   /* pid < -1: group |pid| */
-}
+/* WNOHANG / WUNTRACED / WCONTINUED / WNOWAIT option bits (libc sys/wait.h). */
+#define WAIT_WNOHANG    1
+#define WAIT_WUNTRACED  2
+#define WAIT_WEXITED    4
+#define WAIT_WCONTINUED 8
+#define WAIT_WNOWAIT    0x01000000
+#define WAITPID_OPT_MASK (WAIT_WNOHANG | WAIT_WUNTRACED | WAIT_WCONTINUED)
 
 /* Build a POSIX wait-status word from a reaped zombie. */
 static int wait_status_of(tcb_t *z) {
@@ -361,77 +362,95 @@ static int wait_status_of(tcb_t *z) {
     return (z->exit_code & 0xff) << 8;                       /* WIFEXITED */
 }
 
-/* P6a: waitpid child selector */
-static int wait_child_matches(tcb_t *parent, tcb_t *child, int64_t pid) {
+/* P6a: waitpid child selector (RESIDUE2 T1: now scanned over the caller's
+ * children list, so the parent identity is a given; the selector reduces
+ * to the pid/pgid forms).
+ *   pid > 0  : c->id == pid
+ *   pid == 0 : c->pgid == caller's pgid
+ *   pid == -1: any child
+ *   pid < -1 : c->pgid == |pid|
+ */
+static int wait_child_matches(tcb_t *parent, tcb_t *child, int64_t pid,
+                              int64_t parent_pgid) {
     if (!parent || !child) return 0;
     if (child->parent != parent) return 0;
     if (pid > 0)  return child->id == (uint64_t)pid;
     if (pid == -1) return 1;
-    if (pid == 0)  return child->pgid == parent->pgid;
+    if (pid == 0)  return child->pgid == parent_pgid;
     /* pid < -1 */
     return child->pgid == -pid;
 }
 
-int64_t do_waitpid(int64_t pid, int *status, int options) {
+int64_t do_waitpid_ex(int64_t pid, int *status, int options,
+                      uint64_t *cpu_ticks_out) {
     tcb_t *self = sched_current();
     if (!self) return -EINVAL;
-    if (options & ~(WAIT_WNOHANG | WAIT_WUNTRACED)) return -EINVAL;
-    uint64_t parent_id = self->id;
+    if (options & ~WAITPID_OPT_MASK) return -EINVAL;
     int64_t parent_pgid = self->pgid;
 
     for (;;) {
-        /* Find a matching, not-yet-collected zombie (zombie_lock: a child's
-         * thread_exit() may be running on another CPU right now). */
-        uint64_t zf = spinlock_acquire_irqsave(&zombie_lock);
+        /* RESIDUE2 T1: match through the parent's CHILDREN list (the
+         * parent/child process table), not the global registry.  The
+         * list holds every live child plus every not-yet-collected
+         * zombie, so one structure answers all three questions —
+         * reapable exit, WCONTINUED/WUNTRACED report, ECHILD. */
+        uint64_t cf = spinlock_acquire_irqsave(&children_lock);
         tcb_t *match = NULL;
-        for (tcb_t *z = zombie_head; z; z = z->next) {
-            if (z->state != THREAD_DEAD || z->waited) continue;
-            if (wait_zombie_matches(z, pid, parent_id, parent_pgid)) { match = z; break; }
-        }
-        if (match) {
-            int st = wait_status_of(match);
-            uint64_t reaped = match->id;
-            match->waited = 1;                 /* reaper releases it later */
-            if (self->n_children > 0) self->n_children--;
-            spinlock_release_irqrestore(&zombie_lock, zf);
-            if (status) *status = st;
-            return (int64_t)reaped;
-        }
-        spinlock_release_irqrestore(&zombie_lock, zf);
-
-        /* WUNTRACED (FIX_R6): report a matching child that has STOPPED and
-         * whose stop has not been reported yet — once per stop
-         * (stop_notified is reset when it stops again).  Status encoding:
-         * 0x7f | (stopsig << 8), matching libc's WIFSTOPPED/WSTOPSIG. */
-        if (options & WAIT_WUNTRACED) {
-            uint64_t sf = spinlock_acquire_irqsave(&thread_registry_lock);
-            for (int i = 0; i < all_threads_count; i++) {
-                tcb_t *c = all_threads[i];
-                if (!wait_child_matches(self, c, pid)) continue;
-                if (c->state != THREAD_STOPPED || c->stop_notified ||
-                    !c->stop_signal) continue;
-                c->stop_notified = 1;
-                int st = 0x7f | (c->stop_signal << 8);
-                uint64_t who = c->id;
-                spinlock_release_irqrestore(&thread_registry_lock, sf);
-                if (status) *status = st;
-                return (int64_t)who;
+        int st = 0;
+        int kind = 0;   /* 1 = exit, 2 = continued, 3 = stopped */
+        for (tcb_t *c = self->child_head; c; c = c->sibling) {
+            if (!wait_child_matches(self, c, pid, parent_pgid)) continue;
+            if (c->state == THREAD_DEAD && !c->waited) {
+                st = wait_status_of(c);
+                if (cpu_ticks_out) *cpu_ticks_out = c->cpu_ticks;
+                kind = 1;
+                match = c;
+                break;
             }
-            spinlock_release_irqrestore(&thread_registry_lock, sf);
+            if ((options & WAIT_WCONTINUED) && c->continued_notified) {
+                kind = 2;
+                match = c;
+                break;
+            }
+            if ((options & WAIT_WUNTRACED) && c->state == THREAD_STOPPED &&
+                !c->stop_notified && c->stop_signal) {
+                kind = 3;
+                match = c;
+                break;
+            }
+        }
+        int64_t who = 0;
+        if (match) {
+            who = (int64_t)match->id;
+            if (kind == 1) {
+                match->waited = 1;         /* reaper releases it later */
+                if (self->n_children > 0) self->n_children--;
+            } else if (kind == 2) {
+                match->continued_notified = 0;
+                st = 0xFFFF;               /* glibc WIFCONTINUED */
+            } else {
+                match->stop_notified = 1;
+                st = 0x7f | (match->stop_signal << 8);
+            }
+        }
+        spinlock_release_irqrestore(&children_lock, cf);
+        if (who > 0) {
+            if (status) *status = st;
+            return who;
         }
 
-        /* No matching zombie: scan all TCBs to see if a matching child exists.
-         * Skip already-waited zombies — they do not count as children. */
-        uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);
+        /* No matching event: is there a matching child AT ALL (ECHILD)?
+         * The children list answers in O(children) instead of scanning
+         * every thread in the registry. */
         int have_matching_child = 0;
-        for (int i = 0; i < all_threads_count; i++) {
-            tcb_t *c = all_threads[i];
-            if (!wait_child_matches(self, c, pid)) continue;
-            if (c->state == THREAD_DEAD && c->waited) continue; /* already reaped/collected */
+        cf = spinlock_acquire_irqsave(&children_lock);
+        for (tcb_t *c = self->child_head; c; c = c->sibling) {
+            if (!wait_child_matches(self, c, pid, parent_pgid)) continue;
+            if (c->state == THREAD_DEAD && c->waited) continue; /* collected */
             have_matching_child = 1;
             break;
         }
-        spinlock_release_irqrestore(&thread_registry_lock, rf);
+        spinlock_release_irqrestore(&children_lock, cf);
 
         if (!have_matching_child) return -ECHILD;
         if (options & WAIT_WNOHANG) return 0;   /* matching child exists, none ready */
@@ -440,6 +459,104 @@ int64_t do_waitpid(int64_t pid, int *status, int options) {
          * exiting between the scan above and the sleep) and WUNTRACED
          * stop events, which have no waker hook yet. */
         wq_wait_deadline(&child_exit_wq, NULL, timer_get_ticks() + 5);
+        /* POSIX: a blocking wait interrupted by a signal whose handler is
+         * installed (and which is not blocked) fails with -EINTR; the
+         * signal stays pending for normal delivery. */
+        if (signal_caught_pending(self)) return -EINTR;
+    }
+}
+
+int64_t do_waitpid(int64_t pid, int *status, int options) {
+    return do_waitpid_ex(pid, status, options, NULL);
+}
+
+/* RESIDUE2 T1: waitid.  Same event sources as do_waitpid_ex, plus WNOWAIT
+ * (peek without collecting) and per-event info output.  Returns the child
+ * pid, 0 (WNOHANG, none ready), or a negative errno. */
+int64_t do_waitid(int idtype, int64_t id, siginfo_t *info, int options) {
+    tcb_t *self = sched_current();
+    if (!self) return -EINVAL;
+    if (idtype < WAITID_P_ALL || idtype > WAITID_P_PGID) return -EINVAL;
+    const int want = options & (WAIT_WEXITED | WAIT_WUNTRACED | WAIT_WCONTINUED);
+    if (want == 0) return -EINVAL;              /* POSIX: one event required */
+    if (options & ~(WAIT_WEXITED | WAIT_WUNTRACED | WAIT_WCONTINUED |
+                    WAIT_WNOHANG | WAIT_WNOWAIT)) return -EINVAL;
+    if (idtype == WAITID_P_ALL && want != WAIT_WEXITED) {
+        /* P_ALL + stopped/continued is legal POSIX but our selector is
+         * pid/pgid-shaped; be honest instead of silently mis-matching. */
+        return -EINVAL;
+    }
+
+    for (;;) {
+        uint64_t cf = spinlock_acquire_irqsave(&children_lock);
+        tcb_t *match = NULL;
+        int kind = 0;   /* 1 = exit, 2 = stopped, 3 = continued */
+        for (tcb_t *c = self->child_head; c; c = c->sibling) {
+            /* Selector: P_PID -> exact id; P_PGID -> pgid; P_ALL -> any. */
+            if (idtype == WAITID_P_PID   && c->id   != (uint64_t)id) continue;
+            if (idtype == WAITID_P_PGID  && c->pgid != id) continue;
+            if ((want & WAIT_WEXITED) && c->state == THREAD_DEAD && !c->waited) {
+                kind = 1; match = c; break;
+            }
+            if ((want & WAIT_WUNTRACED) && c->state == THREAD_STOPPED &&
+                !c->stop_notified && c->stop_signal) {
+                kind = 2; match = c; break;
+            }
+            if ((want & WAIT_WCONTINUED) && c->continued_notified) {
+                kind = 3; match = c; break;
+            }
+        }
+        int64_t who = 0;
+        if (match) {
+            who = (int64_t)match->id;
+            if (info) {
+                memset(info, 0, sizeof(*info));
+                info->si_signo = SIGCHLD;
+                info->si_pid   = (int)match->id;
+                info->si_uid   = match->uid;
+                if (kind == 1) {
+                    info->si_code  = match->term_signal ? 2 /* CLD_KILLED */
+                                                        : 1 /* CLD_EXITED */;
+                    info->si_status = match->term_signal
+                                        ? (128 + match->term_signal)
+                                        : (match->exit_code & 0xff);
+                } else if (kind == 2) {
+                    info->si_code   = 5;   /* CLD_STOPPED */
+                    info->si_status = match->stop_signal;
+                } else {
+                    info->si_code   = 6;   /* CLD_CONTINUED */
+                    info->si_status = SIGCONT;
+                }
+            }
+            if (!(options & WAIT_WNOWAIT)) {
+                if (kind == 1) {
+                    match->waited = 1;
+                    if (self->n_children > 0) self->n_children--;
+                } else if (kind == 2) {
+                    match->stop_notified = 1;
+                } else {
+                    match->continued_notified = 0;
+                }
+            }
+        }
+        spinlock_release_irqrestore(&children_lock, cf);
+        if (who > 0) return who;
+
+        /* ECHILD: no matching, still-waitable child on our list. */
+        int have = 0;
+        cf = spinlock_acquire_irqsave(&children_lock);
+        for (tcb_t *c = self->child_head; c; c = c->sibling) {
+            if (idtype == WAITID_P_PID  && c->id   != (uint64_t)id) continue;
+            if (idtype == WAITID_P_PGID && c->pgid != id) continue;
+            if (c->state == THREAD_DEAD && c->waited) continue;
+            have = 1;
+            break;
+        }
+        spinlock_release_irqrestore(&children_lock, cf);
+        if (!have) return -ECHILD;
+        if (options & WAIT_WNOHANG) return 0;
+        wq_wait_deadline(&child_exit_wq, NULL, timer_get_ticks() + 5);
+        if (signal_caught_pending(self)) return -EINTR;
     }
 }
 
@@ -537,13 +654,21 @@ void thread_reap_zombies(void) {
                  * re-allocated at once; other CPUs may still hold this dead
                  * space's VA->frame translations in their TLBs (no PCID
                  * tagging), where they would alias whatever the frames are
-                 * reused for.  Shoot down every remote TLB (handler reloads
-                 * CR3 = full flush) before returning them to circulation. */
+                 * reused for.  RESIDUE2 T1: use the precise O5 shootdown —
+                 * the per-CPU CR3 filters it to exactly the CPUs that ran
+                 * (or still run) this address space — instead of a raw
+                 * broadcast IPI to every remote CPU. */
                 if (smp_get_cpu_count() > 1) {
-                    lapic_send_ipi_all_excluding_self(IPI_TLB_SHOOTDOWN_VECTOR);
+                    tlb_shootdown_range(z->pml4_phys, 0, 0);
                 }
             }
             z->pml4_phys = 0;
+        }
+        /* RESIDUE2 T1: leave the parent/child process table before the TCB
+         * is zeroed — after adoption the parent may be init, whose list
+         * would otherwise keep a pointer to freed memory. */
+        if (z->parent) {
+            proc_children_unlink(z->parent, z);
         }
         kprintf("[thread] reaped '%s' (tid %llu, %llu frames)\n",
                 z->name, (unsigned long long)z->id,
@@ -604,49 +729,54 @@ void thread_exit_with_code(int code) {
      */
     tcb_t *init_task = thread_get_by_pid(1);
     if (init_task && init_task != self) {
-        /* Registry lock: with APs scheduling real threads, another CPU may
-         * be inside thread_register_tcb/thread_reap_zombies right now; the
-         * cli above only fences THIS cpu. */
-        uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);
+        /* RESIDUE2 T1: walk THIS thread's children list (the parent/child
+         * process table) instead of the whole registry — O(children), and
+         * children_lock keeps the sibling links stable against racing
+         * forks/reapers on other CPUs. */
+        uint64_t cf = spinlock_acquire_irqsave(&children_lock);
         int adopted = 0;
-        for (int i = 0; i < all_threads_count; i++) {
-            tcb_t *c = all_threads[i];
-            if (c->parent == self) {
-                /* Skip already-waited zombies: they are already collected,
-                 * pending thread_reap_zombies(), do not adopt or count. */
-                if (c->state == THREAD_DEAD && c->waited) {
-                    c->parent = NULL;  /* avoid dangling pointer to freed TCB */
-                    continue;
-                }
+        tcb_t *c = self->child_head;
+        while (c) {
+            tcb_t *next = c->sibling;
+            if (c->state == THREAD_DEAD && c->waited) {
+                /* Already collected, pending reap: keep it off the table
+                 * so no dangling parent pointer survives; the reaper will
+                 * not need to unlink it. */
+                c->parent = NULL;
+                c->sibling = NULL;
+            } else {
                 c->parent = init_task;
+                c->sibling = init_task->child_head;
+                init_task->child_head = c;
                 adopted++;
                 /* Adopted zombies stay un-waited so init can collect them. */
             }
+            c = next;
         }
+        self->child_head = NULL;
         if (adopted) {
             init_task->n_children += adopted;
-            self->n_children -= adopted;
-            if (self->n_children < 0) self->n_children = 0;
         }
-        /* Any remaining n_children should be already-waited zombies that we
-         * deliberately did not adopt; clear the counter to maintain invariant. */
         self->n_children = 0;
-        spinlock_release_irqrestore(&thread_registry_lock, rf);
+        spinlock_release_irqrestore(&children_lock, cf);
     } else {
         /* Fallback (no init yet, e.g. early boot): mark orphaned zombies
          * waited so they don't leak; live orphans get parent=NULL to avoid
          * use-after-free. */
-        uint64_t rf = spinlock_acquire_irqsave(&thread_registry_lock);
-        for (int i = 0; i < all_threads_count; i++) {
-            tcb_t *c = all_threads[i];
-            if (c->parent == self) {
-                c->parent = NULL;
-                if (c->state == THREAD_DEAD && !c->waited) {
-                    c->waited = 1;
-                }
+        uint64_t cf = spinlock_acquire_irqsave(&children_lock);
+        tcb_t *c = self->child_head;
+        while (c) {
+            tcb_t *next = c->sibling;
+            c->parent = NULL;
+            c->sibling = NULL;
+            if (c->state == THREAD_DEAD && !c->waited) {
+                c->waited = 1;
             }
+            c = next;
         }
-        spinlock_release_irqrestore(&thread_registry_lock, rf);
+        self->child_head = NULL;
+        self->n_children = 0;
+        spinlock_release_irqrestore(&children_lock, cf);
     }
 
     /* If we have NO parent or it's a kernel thread (parent NULL), mark

@@ -203,6 +203,43 @@ void paging_init(void) {
     /* SMEP/SMAP/OSFXSR/CR0-parity for the BSP (idempotent writes). */
     paging_cpu_features_init();
 
+    /* RESIDUE2 T1: the large-page audit.  The boot loaders map the
+     * kernel image and the HHDM with 1 GiB / 2 MiB pages; the kernel-side
+     * 2 MiB path (paging_map_2m, the kheap bulk) adds leaves later.  This
+     * walk states the ACTUAL granularity of the kernel half, measured:
+     * how much rides 2 MiB+ leaves, how much stayed 4 KiB, and what the
+     * walk cost.  One greppable line; the format is an interface. */
+    {
+        uint64_t t0 = read_tsc();
+        uint64_t p2m = 0, p4k = 0, p1g = 0;
+        for (int i4 = 256; i4 < 512; i4++) {
+            uint64_t e4 = pml4[i4];
+            if (!(e4 & PAGE_FLAG_PRESENT)) continue;
+            if (e4 & PAGE_FLAG_PS) { p1g++; continue; }
+            uint64_t *p3 = phys_to_ptr(e4 & PAGE_ADDR_MASK);
+            for (int i3 = 0; i3 < 512; i3++) {
+                uint64_t e3 = p3[i3];
+                if (!(e3 & PAGE_FLAG_PRESENT)) continue;
+                if (e3 & PAGE_FLAG_PS) { p1g++; continue; }
+                uint64_t *p2 = phys_to_ptr(e3 & PAGE_ADDR_MASK);
+                for (int i2 = 0; i2 < 512; i2++) {
+                    uint64_t e2 = p2[i2];
+                    if (!(e2 & PAGE_FLAG_PRESENT)) continue;
+                    if (e2 & PAGE_FLAG_PS) p2m++;
+                    else {
+                        p4k++;
+                    }
+                }
+            }
+        }
+        uint64_t t1 = read_tsc();
+        kprintf(VMM_TAG "large-page audit: kernel half = %llu x 1GiB + "
+                "%llu x 2MiB + %llu x 4KiB leaves (%llu cycles)\n",
+                (unsigned long long)p1g, (unsigned long long)p2m,
+                (unsigned long long)p4k,
+                (unsigned long long)(t1 - t0));
+    }
+
     kprintf(VMM_TAG "PML4 at phys 0x%016llx, HHDM 0x%016llx, NXE enabled\n",
             (unsigned long long)(cr3 & PAGE_ADDR_MASK),
             (unsigned long long)hhdm);
@@ -339,6 +376,67 @@ void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
     }
     spinlock_release_irqrestore(&vm_lock, vf);
 }
+
+int paging_map_2m(uint64_t virt, uint64_t phys, uint64_t flags) {
+    const uint64_t P2M = 0x200000ULL;
+    if ((virt & (P2M - 1)) || (phys & (P2M - 1))) return -1;
+    if (PML4_INDEX(virt) < 256) return -1;   /* kernel-half mappings only */
+
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
+
+    uint64_t *p4 = vmm_current_tables();
+    uint64_t e4 = p4[PML4_INDEX(virt)];
+    if (!(e4 & PAGE_FLAG_PRESENT)) {
+        /* No PML4 entry: the caller has no business 2 MiB-mapping into a
+         * completely unmapped region — the 4 KiB path creates tables on
+         * demand and is the right fallback. */
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return -1;
+    }
+    if (e4 & PAGE_FLAG_PS) {
+        /* A 1 GiB leaf at the PML4 level (the boot loaders' HHDM map):
+         * splitting PML4 entries is not supported (split_huge_page only
+         * handles PDPT/PD) — the caller falls back to 4 KiB pages, which
+         * walk_pte(create) splits transparently. */
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return -1;
+    }
+    uint64_t *p3 = phys_to_ptr(e4 & PAGE_ADDR_MASK);
+    uint64_t e3 = p3[PDPT_INDEX(virt)];
+    if (!(e3 & PAGE_FLAG_PRESENT)) {
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return -1;
+    }
+    if (e3 & PAGE_FLAG_PS) {
+        if (!split_huge_page(&p3[PDPT_INDEX(virt)], e3, 1)) {
+            spinlock_release_irqrestore(&vm_lock, vf);
+            return -1;
+        }
+        e3 = p3[PDPT_INDEX(virt)];
+    }
+    uint64_t *p2 = phys_to_ptr(e3 & PAGE_ADDR_MASK);
+    uint64_t *pde = &p2[PD_INDEX(virt)];
+    uint64_t cur = *pde;
+    if (cur & PAGE_FLAG_PRESENT) {
+        /* Idempotent re-map of the identical translation is fine; a
+         * different mapping (or a populated PT) means the caller must
+         * fall back to 4 KiB pages. */
+        if ((cur & PAGE_FLAG_PS) &&
+            (cur & PAGE_ADDR_MASK) == phys) {
+            *pde = phys | (flags & ~PAGE_ADDR_MASK) | PAGE_FLAG_PS;
+            spinlock_release_irqrestore(&vm_lock, vf);
+            return 0;
+        }
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return -1;
+    }
+    /* Empty PDE: install the large leaf.  PS=1 makes the address bits a
+     * 2 MiB frame; NX/PCD/PWT/W carry over from @flags untouched. */
+    *pde = phys | (flags & ~PAGE_ADDR_MASK) | PAGE_FLAG_PS;
+    spinlock_release_irqrestore(&vm_lock, vf);
+    return 0;
+}
+
 
 void paging_unmap(uint64_t virt) {
     uint64_t vf = spinlock_acquire_irqsave(&vm_lock);

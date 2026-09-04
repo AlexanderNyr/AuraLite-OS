@@ -197,6 +197,8 @@ typedef struct {
 #define SYS_KBD_LAYOUT     601   /* non-standard: select keyboard layout (FIXES_PLAN R8) */
 #define SYS_F2FS_FSCK      602   /* non-standard: internal f2fs structural fsck (F4) */
 #define SYS_BTRFS_SELFTEST 603   /* non-standard: btrfs CoW/CRC self-test (F4b) */
+#define SYS_WAITID         247   /* Linux x86-64 number (RESIDUE2 T1) */
+#define SYS_GETPPID        110   /* Linux x86-64 number (RESIDUE2 T1) */
 
 /* fcntl command numbers and the open-flag / FD_CLOEXEC values come from
  * kernel/fs/vfs.h (Linux/asm-generic ABI). */
@@ -1036,6 +1038,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         tcb_t *cur = sched_current();
         return cur ? cur->id : 0;
     }
+    case SYS_GETPPID: {
+        /* RESIDUE2 T1: POSIX getppid (the parent/child table made this a
+         * field read; NULL parent = orphan/init-child reports 1's id once
+         * adopted, 0 before init exists). */
+        tcb_t *cur = sched_current();
+        if (!cur || !cur->parent) return 0;
+        return cur->parent->id ? cur->parent->id : 1;
+    }
     case SYS_FORK:
         return do_fork();
     case SYS_EXECVE: {
@@ -1054,16 +1064,57 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         int64_t pid = (int64_t)a1;
         void *user_status = (void *)(uintptr_t)a2;
         int options = (int)a3;
+        void *user_rusage = (void *)(uintptr_t)a4;
         if (a2 == 0 && a1 >= 0x1000 && a1 < 0x0000800000000000ULL) {
             /* Legacy wait(status) form: a1 is the status pointer. */
             pid = -1;
             user_status = (void *)(uintptr_t)a1;
         }
         int status = 0;
-        int64_t ret = do_waitpid(pid, user_status ? &status : 0, options);
+        uint64_t child_ticks = 0;
+        int64_t ret = do_waitpid_ex(pid, user_status ? &status : 0, options,
+                                    user_rusage ? &child_ticks : NULL);
         /* ret: pid (>0), 0 (WNOHANG, none ready), or negative errno. */
         if (ret > 0 && user_status) {
             if (copy_to_user(user_status, &status, sizeof(status)) != 0) {
+                return (uint64_t)-EFAULT;
+            }
+        }
+        if (ret > 0 && user_rusage) {
+            /* RESIDUE2 T1: wait4's rusage.  The kernel accounts one total
+             * tick counter per process (tcb_t::cpu_ticks, PIT 100 Hz);
+             * report it as user time and document the granularity — there
+             * is no user/system split to report honestly.  Everything
+             * else zeroes (struct rusage layout: 2 timevals + 14 longs,
+             * 144 bytes, matching lib/libc sys/resource.h). */
+            uint8_t ru[144];
+            memset(ru, 0, sizeof(ru));
+            uint32_t hz = timer_get_frequency();
+            if (hz == 0) hz = 100;
+            uint64_t us = child_ticks * (1000000ULL / hz);
+            uint64_t sec = us / 1000000ULL;
+            uint64_t usec = us % 1000000ULL;
+            memcpy(ru + 0, &sec, 8);
+            memcpy(ru + 8, &usec, 8);
+            if (copy_to_user(user_rusage, ru, sizeof(ru)) != 0) {
+                return (uint64_t)-EFAULT;
+            }
+        }
+        return (uint64_t)ret;
+    }
+    case SYS_WAITID: {
+        /* RESIDUE2 T1: waitid(idtype, id, infop, options).
+         * a1 = idtype (P_ALL/P_PID/P_PGID), a2 = id, a3 = siginfo_t *,
+         * a4 = options.  The kernel siginfo_t (proc/signal.h) and the
+         * libc one share the layout the M5 work pinned. */
+        int idtype = (int)a1;
+        int64_t id = (int64_t)a2;
+        void *user_info = (void *)(uintptr_t)a3;
+        int options = (int)a4;
+        siginfo_t info;
+        int64_t ret = do_waitid(idtype, id, user_info ? &info : NULL, options);
+        if (ret > 0 && user_info) {
+            if (copy_to_user(user_info, &info, sizeof(info)) != 0) {
                 return (uint64_t)-EFAULT;
             }
         }

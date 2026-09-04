@@ -83,14 +83,17 @@ void signal_send(tcb_t *target, int signo) {
 
     /* POSIX 2.4.3.1 discard pairs: a stop signal discards a pending SIGCONT,
      * and SIGCONT discards every pending stop signal. */
+    /* RESIDUE2 T1 (SMP sweep): sig_pending is touched from any CPU
+     * (kill()/signal_send run on the SENDER's cpu), so every mutation is
+     * an atomic RMW — a plain &= / |= is lost-update-prone. */
     if (signo == SIGCONT) {
-        target->sig_pending &= ~(sig_bit(SIGSTOP) | sig_bit(SIGTSTP) |
-                                 sig_bit(SIGTTIN) | sig_bit(SIGTTOU));
+        __sync_and_and_fetch(&target->sig_pending,
+                             ~(sig_bit(SIGSTOP) | sig_bit(SIGTSTP) |
+                               sig_bit(SIGTTIN) | sig_bit(SIGTTOU)));
     } else if (default_action(signo) == DFL_STOP) {
-        target->sig_pending &= ~sig_bit(SIGCONT);
+        __sync_and_and_fetch(&target->sig_pending, ~sig_bit(SIGCONT));
     }
-    target->sig_pending |= sig_bit(signo);
-
+    __sync_or_and_fetch(&target->sig_pending, sig_bit(signo));
     /* Q16 (pselect/ppoll): a signal that is NOT blocked by the target's
      * mask must interrupt a thread blocked in an interruptible wait
      * (select/pselect/ppoll/nanosleep/futex).  Without this, a thread
@@ -122,6 +125,11 @@ void signal_send(tcb_t *target, int signo) {
     if ((signo == SIGCONT || signo == SIGKILL) &&
         target->state == THREAD_STOPPED) {
         target->stop_signal = 0;
+        if (signo == SIGCONT) {
+            /* RESIDUE2 T1: the child resumed from a real stop — a parent
+             * waiting with WCONTINUED must see it reported once. */
+            target->continued_notified = 1;
+        }
         target->state = THREAD_READY;
         /* Same claim/enqueue protocol as the wait-queue wakers (SMP: the
          * stopped thread may still be finishing its final context save on
@@ -130,6 +138,19 @@ void signal_send(tcb_t *target, int signo) {
             sched_add_thread(target);
         }
     }
+}
+
+int signal_caught_pending(tcb_t *t) {
+    if (!t) return 0;
+    uint32_t raw = __sync_fetch_and_or(&t->sig_pending, 0);
+    uint32_t pend = (raw & ~t->sig_mask) | (raw & SIG_UNCATCHABLE);
+    if (!pend) return 0;
+    for (int sgn = 1; sgn < NSIG; sgn++) {
+        if (!(pend & sig_bit(sgn))) continue;
+        struct sigaction *sa = &t->sig_actions[sgn];
+        if (sa->sa_handler != SIG_DFL && sa->sa_handler != SIG_IGN) return 1;
+    }
+    return 0;
 }
 
 int signal_send_group(int64_t pgid, int signo) {
@@ -437,23 +458,13 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs,
     memset(&f, 0, sizeof(f));
     /* M1/M5: snapshot the interrupted thread's LIVE FPU/SSE state into the
      * frame so sigreturn can restore it.  fxsave needs a 16-byte aligned
-     * 512-byte operand; the IRQ/syscall entry stubs do not 16-align the stack
-     * before calling C, so a compiler-aligned local (like f.fxsave_area) can
-     * land on a misaligned address and #GP.  Align a scratch at runtime, fxsave
-     * into it, then copy into the frame.  (CR4.OSFXSR is enabled in boot.asm.) */
-    {
-        uint8_t  fpu_raw[512 + 16];
-        uintptr_t base = (uintptr_t)fpu_raw;
-        /* The IRQ/syscall entry stubs do not 16-align the stack before calling
-         * C, so a compiler-aligned local can land misaligned and fxsave #GPs.
-         * Mark the buffer address opaque so the alignment rounding below is
-         * computed at RUNTIME (the optimizer otherwise folds it away, having
-         * "proven" the local is already aligned). */
-        __asm__ volatile("" : "+r"(base) :: "memory");
-        uint8_t *fpu = (uint8_t *)((base + 15) & ~(uintptr_t)15);
-        __asm__ volatile("fxsave %0" : "=m"(*(uint8_t(*)[512])fpu) :: "memory");
-        memcpy(f.fxsave_area, fpu, 512);
-    }
+     * 512-byte operand.  RESIDUE2 T1: the IRQ/syscall entry stubs now
+     * 16-align the stack before every C call (isr_common_stub realigns;
+     * syscall_entry was already correct), so the compiler-aligned local
+     * is trustworthy and the M5 runtime-aligned scratch workaround is
+     * deleted.  (CR4.OSFXSR is enabled in boot.asm.) */
+    __asm__ volatile("fxsave %0"
+                     : "=m"(*(uint8_t(*)[512])f.fxsave_area) :: "memory");
     f.r15 = regs->r15; f.r14 = regs->r14; f.r13 = regs->r13; f.r12 = regs->r12;
     f.r11 = regs->r11; f.r10 = regs->r10; f.r9 = regs->r9;  f.r8  = regs->r8;
     f.rdi = regs->rdi; f.rsi = regs->rsi; f.rbp = regs->rbp; f.rdx = regs->rdx;
@@ -508,7 +519,7 @@ static int build_handler_frame(tcb_t *t, int signo, struct registers *regs,
     }
 
     /* Clear the pending bit for the signal we are about to deliver. */
-    t->sig_pending &= ~sig_bit(signo);
+    __sync_and_and_fetch(&t->sig_pending, ~sig_bit(signo));
 
     /* Rewrite the outgoing frame to enter the handler (SysV: rdi = signo). */
     regs->rip = (uint64_t)(uintptr_t)sa->sa_handler;
@@ -572,7 +583,7 @@ int signal_deliver_iret(struct registers *regs) {
     void (*h)(int) = sa->sa_handler;
 
     if (signo == SIGKILL || signo == SIGSTOP || h == SIG_DFL) {
-        t->sig_pending &= ~sig_bit(signo);
+        __sync_and_and_fetch(&t->sig_pending, ~sig_bit(signo));
         switch (default_action(signo)) {
         case DFL_IGN:  return 0;                 /* default-ignore: drop */
         case DFL_STOP:                           /* job control: true stop */
@@ -585,7 +596,7 @@ int signal_deliver_iret(struct registers *regs) {
         }
     }
     if (h == SIG_IGN) {
-        t->sig_pending &= ~sig_bit(signo);       /* explicitly ignored */
+        __sync_and_and_fetch(&t->sig_pending, ~sig_bit(signo)); /* ignored */
         return 0;
     }
     /* Caught: build the handler frame.  M5: for SA_SIGINFO, supply an SI_USER
@@ -614,7 +625,7 @@ int signal_raise_fault(struct registers *regs, int signo,
         terminate_by_signal(signo);              /* no return */
         return 0;
     }
-    t->sig_pending |= sig_bit(signo);
+    __sync_or_and_fetch(&t->sig_pending, sig_bit(signo));
     /* M5: build the siginfo for an SA_SIGINFO handler.  si_addr is the
      * faulting address (CR2 for #PF, the faulting RIP otherwise); si_code
      * classifies the cause (SEGV_MAPERR/ACCERR/ILL_ILLOPC/...). */

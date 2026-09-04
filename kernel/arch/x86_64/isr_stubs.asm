@@ -69,9 +69,21 @@ isr_common_stub:
     push r14
     push r15
 
-    mov rdi, rsp          ; System V AMD64: arg0 = pointer to registers
+    ; RESIDUE2 T1: maintain the 16-byte C-ABI stack alignment.  The CPU
+    ; frame plus the 17 pushes leave RSP at an arbitrary 8-mod-16 phase
+    ; (it depends on the interrupted RSP and on whether an error code was
+    ; pushed), so a compiler-aligned stack local in isr_handler's callees
+    ; could land misaligned and any aligned SSE op (fxsave) would #GP.
+    ; Remember the frame pointer in rbx (the app's rbx is already saved on
+    ; the stack), align down, call, restore.  The M5 runtime-aligned
+    ; scratch in signal.c was the workaround for exactly this and is gone
+    ; in the same commit.
+    mov rbx, rsp
+    and rsp, -16
+    mov rdi, rbx          ; System V AMD64: arg0 = pointer to registers
     cld                   ; ABI requires the direction flag clear
     call isr_handler
+    mov rsp, rbx
 
     pop r15
     pop r14

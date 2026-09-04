@@ -85,3 +85,8 @@ from a wider grep that included "blocked" — superseded).  A marker
 count that drifts from the baseline fails CI until the ledger and
 baseline move in the same commit: new debt REGISTERS or the build
 is red.
+
+RESIDUE2 T1: +2 marker lines in RESIDUE2_PLAN.md (the T0 Result cites
+`check_residue2_claims.py` / `test_residue2_claims.sh` — the rig's own
+receipts); baseline moved 18 → 20 in the same commit. No new debt rows:
+the plan's own ledger references are unchanged.

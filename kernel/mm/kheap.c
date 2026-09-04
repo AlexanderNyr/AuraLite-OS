@@ -22,7 +22,9 @@
 #define PAGE_SIZE 4096ULL
 #define HEAP_TAG  "[heap] "
 /* Expand in chunks of at least 64 KiB to amortise the mapping cost. */
-#define EXPAND_MIN  (64ULL * 1024ULL)
+/* RESIDUE2 T1: one expansion commits at least one 2 MiB page, so the
+ * bulk of the kernel heap rides large pages (see kheap_expand). */
+#define EXPAND_MIN  (2ULL * 1024ULL * 1024ULL)
 #define MIB         (1024ULL * 1024ULL)
 
 static heap_t kheap;
@@ -42,13 +44,23 @@ static sizeclass_cache_t kclass;
 static spinlock_t kheap_lock = SPINLOCK_UNLOCKED;
 
 /*
- * Commit more memory into the heap: map aligned pages over [brk, brk+want),
- * then register that span as a single free block.
+ * Commit more memory into the heap over [brk, brk+want), then register that
+ * span as a single free block.
+ *
+ * RESIDUE2 T1: the mapping is large-page-first.  EXPAND_MIN is now one
+ * 2 MiB page, and the span is committed as: 4 KiB pages up to the next
+ * 2 MiB boundary (the head), whole 2 MiB pages (the bulk, backed by
+ * pmm_alloc_2m() + paging_map_2m()), then 4 KiB pages (the tail).  Every
+ * 2 MiB leaf removes 511 TLB entries' worth of pressure for the hottest
+ * allocator in the kernel; any 2 MiB step that cannot get contiguous
+ * aligned frames (or hits an existing finer mapping) degrades to the
+ * 4 KiB loop, which remains the fallback in the truest sense.
  * Returns 0 on success, non-zero if the region limit would be exceeded.
  */
+#define KHEAP_P2M  0x200000ULL
 static int kheap_expand(heap_t *h, uint64_t want) {
     if (want < EXPAND_MIN) {
-        want = EXPAND_MIN;
+        want = EXPAND_MIN;                    /* one 2 MiB page */
     }
     want = (want + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);   /* page-align */
 
@@ -58,6 +70,44 @@ static int kheap_expand(heap_t *h, uint64_t want) {
 
     uint64_t old_brk = h->brk;
     uint64_t mapped  = 0;
+
+    /* Head: 4 KiB pages up to the next 2 MiB boundary. */
+    uint64_t va_abs = h->base + old_brk;
+    uint64_t head = (KHEAP_P2M - (va_abs & (KHEAP_P2M - 1))) & (KHEAP_P2M - 1);
+    if (head > want) head = want;
+    while (mapped < head) {
+        uint64_t phys = pmm_alloc_frame();
+        if (phys == 0) {
+            if (mapped == 0) return 1;
+            goto committed;
+        }
+        paging_map(va_abs + mapped, phys,
+                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
+        mapped += PAGE_SIZE;
+    }
+
+    /* Bulk: whole 2 MiB pages. */
+    while (want - mapped >= KHEAP_P2M) {
+        uint64_t phys = pmm_alloc_2m();
+        if (phys != 0 &&
+            paging_map_2m(va_abs + mapped, phys,
+                          PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
+                          PAGE_FLAG_NO_EXEC) == 0) {
+            mapped += KHEAP_P2M;
+            continue;
+        }
+        if (phys != 0) {
+            /* The mapping fell back (misalignment/OOM/finer leaf there):
+             * give the contiguous run back and let the 4 KiB loop take
+             * this 2 MiB window. */
+            for (uint64_t i = 0; i < KHEAP_P2M; i += PAGE_SIZE) {
+                pmm_free_frame(phys + i);
+            }
+        }
+        break;
+    }
+
+    /* Tail: 4 KiB pages. */
     while (mapped < want) {
         uint64_t phys = pmm_alloc_frame();
         if (phys == 0) {
@@ -67,11 +117,12 @@ static int kheap_expand(heap_t *h, uint64_t want) {
             }
             break;
         }
-        uint64_t virt = h->base + old_brk + mapped;
-        paging_map(virt, phys,
+        paging_map(va_abs + mapped, phys,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
         mapped += PAGE_SIZE;
     }
+
+committed:
 
     /* Expose the freshly-mapped span as one free block. The footer is a
      * 16-byte {magic, size} boundary tag at the end of the span. */

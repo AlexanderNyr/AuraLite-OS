@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+/* The precise shootdown (OPT_PLAN O5) is the paging subsystem's SMP arm:
+ * paging.c drives it and portable reapers (proc/thread.c) reach it through
+ * this header rather than a second direct arch include. */
+#include "kernel/arch/x86_64/tlb_shootdown.h"
+
 /*
  * 4-level paging (PML4 -> PDPT -> PD -> PT) virtual memory manager for x86_64.
  *
@@ -81,6 +86,15 @@ void paging_init(void);
  * needed, allocating frames from the PMM and zeroing them.
  */
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
+
+/* RESIDUE2 T1: map ONE 2 MiB page (a PDE with PS=1) for selected kernel
+ * mappings — the large-page counterpart of paging_map().  Both addresses
+ * must be 2 MiB aligned; a present leaf at this level is overwritten only
+ * when it is the identical translation (idempotent re-map), otherwise the
+ * caller must fall back to the 4 KiB loop (returns -1 — also for
+ * misalignment or OOM for the intermediate table).  Kernel-half mappings
+ * only: user space stays 4 KiB-granular by design. */
+int paging_map_2m(uint64_t virt, uint64_t phys, uint64_t flags);
 
 /* Unmap a single page (clear its PTE) and invalidate the TLB entry. */
 void paging_unmap(uint64_t virt);

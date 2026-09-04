@@ -123,29 +123,32 @@ static int copy_user_strvec(uint64_t user_vec, char **out, uint64_t *budget) {
     int n = 0;
     if (user_vec == 0) { out[0] = NULL; return 0; }
     for (;;) {
-        if (n >= EXEC_MAX_ARGS) return -1;
+        /* RESIDUE2 T1: native errno classes — E2BIG for the vector
+         * limits, EFAULT for a bad user pointer, ENOMEM for the kernel
+         * copy (was a single generic -1). */
+        if (n >= EXEC_MAX_ARGS) return -E2BIG;
         uint64_t uptr = 0;
         if (copy_from_user(&uptr, (const void *)(user_vec + (uint64_t)n * 8),
                            sizeof(uptr)) != 0)
-            return -1;
+            return -EFAULT;
         if (uptr == 0) break;   /* end of vector */
 
         /* Bounded strlen + copy from user space. */
         char *kstr = kmalloc(EXEC_MAX_ARG_LEN);
-        if (!kstr) return -1;
+        if (!kstr) return -ENOMEM;
         uint64_t len = 0;
         for (; len < EXEC_MAX_ARG_LEN; len++) {
             char c;
             if (copy_from_user(&c, (const void *)(uptr + len), 1) != 0) {
                 kfree(kstr);
-                return -1;
+                return -EFAULT;
             }
             kstr[len] = c;
             if (c == '\0') break;
         }
-        if (len >= EXEC_MAX_ARG_LEN) { kfree(kstr); return -1; }
+        if (len >= EXEC_MAX_ARG_LEN) { kfree(kstr); return -E2BIG; }
         *budget += len + 1;
-        if (*budget > EXEC_MAX_STRTOT) { kfree(kstr); return -1; }
+        if (*budget > EXEC_MAX_STRTOT) { kfree(kstr); return -E2BIG; }
         out[n++] = kstr;
     }
     out[n] = NULL;
@@ -160,11 +163,11 @@ static int exec_args_capture(struct exec_args *ea,
     uint64_t budget = 0;
 
     int argc = copy_user_strvec(user_argv, ea->argv, &budget);
-    if (argc < 0) { exec_args_free(ea); return -1; }
+    if (argc < 0) { exec_args_free(ea); return argc; }
     ea->argc = argc;
 
     int envc = copy_user_strvec(user_envp, ea->envp, &budget);
-    if (envc < 0) { exec_args_free(ea); return -1; }
+    if (envc < 0) { exec_args_free(ea); return envc; }
     ea->envc = envc;
     return 0;
 }
@@ -453,7 +456,7 @@ int64_t do_fork(void) {
     uint64_t child_pml4 = paging_clone_user_space();
     if (child_pml4 == 0) {
         kprintf("[proc] fork: address space clone failed\n");
-        return -1;
+        return -ENOMEM;   /* RESIDUE2 T1: native errno */
     }
     kprintf("[proc] fork: cloned to PML4 phys 0x%llx\n",
             (unsigned long long)child_pml4);
@@ -473,7 +476,7 @@ int64_t do_fork(void) {
     if (child == NULL) {
         (void)paging_free_address_space(child_pml4);
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-        return -1;
+        return -EAGAIN;   /* POSIX fork: resource shortage is EAGAIN */
     }
     child->pml4_phys = child_pml4;
     child->parent    = parent;
@@ -522,7 +525,7 @@ int64_t do_fork(void) {
                 child->state = THREAD_DEAD;
                 child->waited = 1;
                 if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-                return -1;
+                return -ENOMEM;   /* RESIDUE2 T1: VMA-list clone OOM */
             }
             vma = vma->next;
         }
@@ -558,7 +561,9 @@ int64_t do_fork(void) {
             if (parent->cwd[i] == '\0') break;
         }
 
-        parent->n_children++;
+        /* RESIDUE2 T1: link the child into the parent/child process
+         * table (children_lock; also maintains n_children). */
+        proc_children_link(parent, child);
     }
 
     /* All fields are set: publish — the child may now run on any cpu. */
@@ -574,6 +579,11 @@ int64_t do_fork(void) {
 
 /* ---- execve() ---- */
 
+/* RESIDUE2 T1: the execve tail (image teardown + load), split out so the
+ * "#!" script path can re-enter with a rebuilt argv without a second user
+ * capture.  Takes ownership of @ea (frees it on every return path). */
+static int64_t execve_image(const char *path, struct exec_args *ea, int depth);
+
 int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     kprintf("[proc] execve('%s')\n", path);
 
@@ -581,12 +591,16 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
      *     we replace it.  On failure leave the current image intact. */
     struct exec_args *ea = kmalloc(sizeof(struct exec_args));
     if (!ea) return -ENOMEM;
-    if (exec_args_capture(ea, user_argv, user_envp) != 0) {
-        kprintf("[proc] execve: bad argv/envp\n");
+    int64_t cap = exec_args_capture(ea, user_argv, user_envp);
+    if (cap != 0) {
+        kprintf("[proc] execve: bad argv/envp (%lld)\n", (long long)cap);
         kfree(ea);
-        return -EFAULT;
+        return cap;   /* -EFAULT / -E2BIG / -ENOMEM, native now */
     }
+    return execve_image(path, ea, 0);
+}
 
+static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
     /* 0) Close any FD marked FD_CLOEXEC.  Per POSIX, execve drops those. */
     vfs_close_on_exec();
 
@@ -614,9 +628,10 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     /* 1) Open the file from the VFS and read it into kernel memory. */
     int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) {
-        kprintf("[proc] execve: '%s' not found\n", path);
+        /* RESIDUE2 T1: vfs_open already returns a native -Exxx. */
+        kprintf("[proc] execve: '%s' open failed (%d)\n", path, fd);
         exec_args_free(ea); kfree(ea);
-        return -1;
+        return fd;
     }
 
     struct vnode *vn = vfs_get_vnode(fd);
@@ -632,7 +647,7 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
             kprintf("[proc] execve: '%s' is a directory\n", path);
             vfs_close(fd);
             exec_args_free(ea); kfree(ea);
-            return -1;
+            return -EACCES;   /* POSIX: executing a directory is EACCES */
         }
     }
 
@@ -641,7 +656,7 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     if (!buf) {
         vfs_close(fd);
         exec_args_free(ea); kfree(ea);
-        return -1;
+        return -ENOMEM;
     }
     int64_t total = 0;
     int64_t n;
@@ -650,6 +665,88 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     }
     vfs_close(fd);
     kprintf("[proc] execve: read %lld bytes\n", (long long)total);
+
+    /* RESIDUE2 T1: "#!" binfmt_script.  A file starting with "#!" re-execs
+     * its interpreter with argv = [interp, (optional-arg), this-path,
+     * caller's argv[1..]] — the caller's argv[0] is replaced by the script
+     * path, exactly as the Linux kernel's binfmt_script builds it.  Depth
+     * is capped (a script execing a script is legal; a loop is not). */
+    if (total >= 2 && buf[0] == '#' && buf[1] == '!') {
+        if (depth >= 4) {
+            kfree(buf);
+            exec_args_free(ea); kfree(ea);
+            kprintf("[proc] execve: '#!' nesting too deep\n");
+            return -ELOOP;
+        }
+        char interp[128]; char iarg[128];
+        size_t li = 0, la = 0;
+        size_t pos = 2;
+        int in_arg = 0;
+        interp[0] = '\0'; iarg[0] = '\0';
+        while (pos < (size_t)total && buf[pos] != '\n' && li + 1 < sizeof(interp)) {
+            char c = (char)buf[pos++];
+            if (c == ' ' || c == '\t') {
+                if (li > 0) in_arg = 1;      /* interpreter token ended */
+                continue;
+            }
+            if (!in_arg) interp[li++] = c;
+            else if (la + 1 < sizeof(iarg)) iarg[la++] = c;
+            else break;
+        }
+        interp[li] = '\0';
+        iarg[la]  = '\0';
+        if (li == 0) {
+            kfree(buf);
+            exec_args_free(ea); kfree(ea);
+            return -ENOEXEC;   /* bare "#!" with no interpreter */
+        }
+        /* Rebuild the argv vector for the interpreter. */
+        struct exec_args *ea2 = kmalloc(sizeof(struct exec_args));
+        if (!ea2) {
+            kfree(buf);
+            exec_args_free(ea); kfree(ea);
+            return -ENOMEM;
+        }
+        int k = 0;
+        ea2->argv[k] = kmalloc(li + 1);
+        if (!ea2->argv[k]) goto script_oom;
+        memcpy(ea2->argv[k], interp, li + 1);
+        k++;
+        if (la) {
+            ea2->argv[k] = kmalloc(la + 1);
+            if (!ea2->argv[k]) goto script_oom;
+            memcpy(ea2->argv[k], iarg, la + 1);
+            k++;
+        }
+        size_t plen = strlen(path) + 1;
+        ea2->argv[k] = kmalloc(plen);
+        if (!ea2->argv[k]) goto script_oom;
+        memcpy(ea2->argv[k], path, plen);
+        k++;
+        for (int i = 1; i < ea->argc && k < EXEC_MAX_ARGS; i++, k++) {
+            size_t slen = strlen(ea->argv[i]) + 1;
+            ea2->argv[k] = kmalloc(slen);
+            if (!ea2->argv[k]) goto script_oom;
+            memcpy(ea2->argv[k], ea->argv[i], slen);
+        }
+        ea2->argv[k] = NULL;
+        ea2->argc = k;
+        for (int i = 0; i < ea->envc && i < EXEC_MAX_ARGS; i++) {
+            ea2->envp[i] = ea->envp[i];   /* environment hands over as-is */
+            ea->envp[i] = NULL;
+        }
+        ea2->envp[ea->envc] = NULL;
+        ea2->envc = ea->envc;
+        kfree(buf);
+        exec_args_free(ea); kfree(ea);
+        kprintf("[proc] execve: '#!' -> %s\n", interp);
+        return execve_image(interp, ea2, depth + 1);
+
+    script_oom:
+        kfree(buf);
+        exec_args_free(ea); kfree(ea);
+        return -ENOMEM;
+    }
 
     /* 2) Create a fresh address space.  Q14: execve detaches SysV shm
      * segments (POSIX/Linux semantics) — the address space is about to be
@@ -665,7 +762,7 @@ int64_t do_execve(const char *path, uint64_t user_argv, uint64_t user_envp) {
     if (new_pml4 == 0) {
         kfree(buf);
         exec_args_free(ea); kfree(ea);
-        return -1;
+        return -ENOMEM;
     }
 
     /* 3) Switch to it and retire the old user address space. */
@@ -837,7 +934,7 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     /* Create a new address space. */
     uint64_t new_pml4 = paging_new_address_space();
     if (new_pml4 == 0) {
-        return -1;
+        return -ENOMEM;
     }
     /* If we are spawning from a thread that has a VMA list, 
      * the child starts with a fresh one, but we don't need to 
@@ -868,7 +965,7 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     char *path_copy = kmalloc(strlen(path) + 1);
     if (!path_copy) {
         (void)paging_free_address_space(new_pml4);
-        return -1;
+        return -ENOMEM;
     }
     strcpy(path_copy, path);
 
@@ -879,14 +976,15 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
         if (!ea) {
             kfree(path_copy);
             (void)paging_free_address_space(new_pml4);
-            return -1;
+            return -ENOMEM;
         }
-        if (exec_args_capture(ea, user_argv, 0) != 0) {
-            kprintf("[proc] spawn: bad argv\n");
+        int64_t cap = exec_args_capture(ea, user_argv, 0);
+        if (cap != 0) {
+            kprintf("[proc] spawn: bad argv (%lld)\n", (long long)cap);
             kfree(ea);
             kfree(path_copy);
             (void)paging_free_address_space(new_pml4);
-            return -EFAULT;
+            return cap;   /* -EFAULT / -E2BIG / -ENOMEM, native */
         }
     }
 
@@ -895,7 +993,7 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
         if (ea) { exec_args_free(ea); kfree(ea); }
         kfree(path_copy);
         (void)paging_free_address_space(new_pml4);
-        return -1;
+        return -ENOMEM;
     }
     pl->path = path_copy;
     pl->args = ea;
@@ -908,7 +1006,7 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
         kfree(pl);
         kfree(path_copy);
         (void)paging_free_address_space(new_pml4);
-        return -1;
+        return -EAGAIN;
     }
     child->pml4_phys = new_pml4;
     child->vma_list = NULL;
@@ -947,7 +1045,8 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
             child->cwd[1] = '\0';
         }
 
-        child->parent->n_children++;
+        /* RESIDUE2 T1: link into the parent/child process table. */
+        proc_children_link(child->parent, child);
     } else {
         /* No parent (e.g. the very first process): root the cwd at "/". */
         child->cwd[0] = '/';

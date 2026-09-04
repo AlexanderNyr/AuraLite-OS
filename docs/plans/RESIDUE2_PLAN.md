@@ -1,11 +1,11 @@
 # AuraLite OS — RESIDUE2 Plan (close the remainder: every TODO box and every open ledger row, scheduled and machine-checked)
 
-## Status: PLANNED — T0–T9 specified; nothing landed yet
+## Status: IN PROGRESS — T0–T1 landed; T2–T9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
-| T0 — the rig: the coverage checker | ⬜ planned | `patches/RESIDUE2_T0_rig.patch` |
-| T1 — kernel core (memory, reaping, processes, SMP-safety) | ⬜ planned | `patches/RESIDUE2_T1_kernel.patch` |
+| T0 — the rig: the coverage checker | ✅ done (366c850) | `patches/RESIDUE2_T0_rig.patch` |
+| T1 — kernel core (memory, reaping, processes, SMP-safety) | ✅ done | `patches/RESIDUE2_T1_kernel.patch` |
 | T2 — interrupts and discovery (MADT overrides, AP wake) | ⬜ planned | `patches/RESIDUE2_T2_irq.patch` |
 | T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs CRC) | ⬜ planned | `patches/RESIDUE2_T3_storage.patch` |
 | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ⬜ planned | `patches/RESIDUE2_T4_posix.patch` |
@@ -62,7 +62,7 @@ with the checkbox — the count only goes down through a landed patch.
 
 ### T0 — the rig: the coverage checker
 
-**Status:** not started
+**Status: ✅ COMPLETE**
 
 **Objective:** make it impossible for this plan and TODO.md to drift,
 the way GL2's L0 made the GL2 plan undodgeable.
@@ -74,8 +74,8 @@ tree and must fail there — a checker that never fails checks nothing.
 
 Tasks:
 
-- [ ] The checker + wrapper + Makefile wiring, selftest green.
-- [ ] The plan's phase table and Status header agree with reality from
+- [x] The checker + wrapper + Makefile wiring, selftest green.
+- [x] The plan's phase table and Status header agree with reality from
       day one (PLANNED ⇔ zero ✅ rows).
 
 **Definition of done:** `make test-unit` runs the wrapper; a stripped
@@ -84,13 +84,15 @@ tag from any TODO box turns the build red.
 **Test gate:** the checker green on this tree, selftest catches a
 planted miss.
 
-**Result:** —
+**Result:** DONE (commit 366c850). `tools/check_residue2_claims.py`
+verifies 21 live claims; `tests/unit/test_residue2_claims.sh` runs in
+`make test-unit` and its planted-violation selftest fails as required.
 
 ---
 
 ### T1 — kernel core: memory, reaping, processes, SMP-safety
 
-**Status:** not started
+**Status: ✅ COMPLETE**
 
 **Objective:** close the seven kernel-side boxes that need no new
 hardware and no new ports — the deepest, least glamorous cluster, and
@@ -121,7 +123,25 @@ stress gates run in CI.
 **Test gate:** `make test-unit` EXIT 0; the SMP stress case green under
 `-smp 4`; no new QEMU regressions.
 
-**Result:** —
+**Result:** DONE. All seven boxes carry receipts in the tree: the
+large-page audit prints measured cycles at boot (2051 × 2 MiB kernel-half
+leaves, 328532 cycles); zombie reaping calls `paging_free_address_space`
+with the precise O5 `tlb_shootdown_range(cr3, 0, 0)` wired in the same
+phase; the parent/child process table backs precise `waitpid`/`wait4`
+(rusage) semantics; `waitid` and POSIX wait-completeness landed with the
+libc headers; the disk FS drivers and `process.c` return native errno;
+`isr_common_stub` aligns RSP and the syscall entry pads its C calls —
+the M5 runtime-aligned fxsave scratch is deleted; the SMP sweep shipped
+atomic `sig_pending` RMWs, the per-vnode O_APPEND lock, atomic OFD
+refcounts and per-CPU SYSCALL state. Gates: `make test-unit` EXIT 0
+(ratchets hold, 69/69); `tests/integration/cases/test_smp_procstress.sh`
+green under `-smp 4` (O_APPEND 6×200 intact, 100 precise fork/wait
+cycles, 8×10 counted signal deliveries); `test_signals` and
+`test_selftest` green. Two latent kernel bugs fell out of the stress
+gate and are fixed here: `kernel_nanosleep` truncated sub-tick sleeps
+to zero ticks (usleep < 10 ms returned instantly), and the syscall
+entry's signal-check calls ran on a misaligned stack (`fxsave` #GP in
+`build_handler_frame` on the first cross-process delivery).
 
 ---
 

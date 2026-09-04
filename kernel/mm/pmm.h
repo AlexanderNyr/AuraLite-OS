@@ -38,6 +38,16 @@ paddr_t pmm_alloc_frame(void);
  */
 paddr_t pmm_alloc_contiguous(uint64_t count);
 
+/*
+ * Allocate one 2 MiB-aligned, physically-contiguous 2 MiB region (512
+ * frames) — the backing for a single x86-64 large page.  Implemented as
+ * "over-allocate two units, keep whichever half is aligned, free the
+ * rest", so the call terminates and never fragments on retry.
+ *
+ * @returns the 2 MiB-aligned physical base, or 0 if no 4 MiB run exists.
+ */
+paddr_t pmm_alloc_2m(void);
+
 /* Release a run obtained from pmm_alloc_contiguous().
  *
  * Callers previously had to loop over pmm_free_frame() themselves, and the
