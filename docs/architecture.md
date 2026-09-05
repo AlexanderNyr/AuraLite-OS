@@ -66,7 +66,7 @@ kmain (kernel/kernel.c)
    ├── virtual_drivers_init() PCI catalog of known QEMU/VBox/VMware devices
    ├── audio_init()          PC speaker + AC97 backends
    ├── vfs_init() + initrd   USTAR initrd at /, then devfs, procfs, tmpfs, usbfs
-   ├── net_init()            NIC via netdev (e1000, else virtio-net)
+   ├── net_init()            NIC via netdev (e1000, else virtio-net, else rtl8139)
    │                         + DHCP + ARP + ICMP + DNS + IPv6 + TCP self-tests
    ├── ahci_init()           AHCI controller/port detection + DMA read/write test
    ├── diskfs_init()         tiny persistent AHCI filesystem at /disk
@@ -250,14 +250,19 @@ isr_handler (isr.c)
    ├── vector < 32  : exception
    │     if from USER mode (CS & 3 == 3): POSIX signal / kill the thread
    │     else: lock-free [diag] dump, then blue STOP screen, halt
-   └── vector 32-47 : IRQ -> pic_eoi() BEFORE handler, then dispatch
+   └── vector 32-47 : IRQ -> EOI BEFORE handler, then dispatch
+                   (pic_eoi() while the 8259 is the attached controller,
+                    lapic_eoi() once the BSP runs on I/O APIC IRQs — M2)
 ```
 
 Kernel-mode stops are documented in [`bsod.md`](bsod.md). User-mode faults
 never become a STOP: they stay POSIX signals.
 
-The PIC EOI is sent **before** the handler so the timer can deliver the next
+The EOI is sent **before** the handler so the timer can deliver the next
 tick after a context switch inside the handler (preemptive scheduling).
+Since MATURITY M2 the BSP runs on I/O APIC IRQs: the 8259 is masked/decoupled
+and `pic_eoi()` would poke a disconnected PIC, so the early EOI goes to the
+Local APIC instead (`irq.c` chooses per attach state).
 
 The 256 vector stubs and their addresses are macro-generated; `isr_table[]`
 (an address array in `.rodata`) is consumed by `idt_init()` to fill every gate.

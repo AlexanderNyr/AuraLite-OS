@@ -1,6 +1,6 @@
 # AuraLite OS — TLS Implementation Documentation
 
-**Last updated:** 2026-08-10 (REALINTERNET_PLAN X9 / INTERNET_PLAN N9)
+**Last updated:** 2026-09-05 (REALINTERNET2_PLAN Y5–Y7: ML-KEM-768 + X25519MLKEM768 hybrid ClientHello, SHA3/SHAKE, live-web protocol)
 
 This document describes the TLS stack implemented in AuraLite OS, its
 capabilities, limitations, and security properties.  It exists because an
@@ -19,8 +19,8 @@ is more valuable than a padlock icon.
 | Full chain validation in handshake | ✅ when a trust store is set (REALINTERNET_PLAN X2) | RFC 5280 |
 | TLS 1.2 and earlier | ❌ Refused | Decision D3 |
 | Cipher suite | TLS_CHACHA20_POLY1305_SHA256 only | RFC 8446, D4 |
-| Key exchange | X25519 | RFC 7748 |
-| Certificate signatures | Ed25519, RSA PKCS#1v1.5-SHA256, **ECDSA P-256** | RFC 8032, RFC 8017, RFC 6979 |
+| Key exchange | X25519, **X25519MLKEM768 hybrid** (group `0x11EC`, offered first; falls back to X25519) | RFC 7748; hybrid per draft-ietf-tls-hybrid-design (REALINTERNET2 Y6) |
+| Certificate signatures | Ed25519, RSA PKCS#1v1.5-SHA256, **RSA-PSS-SHA256** (`0x0804`), **ECDSA P-256** | RFC 8032, RFC 8017, RFC 6979, RFC 8446 §4.2.3 |
 | ECDSA P-256 | ✅ Verify only (REALINTERNET_PLAN X1) | secp256r1, DER ECDSA-Sig-Value |
 | Client certificates | ❌ | D6 |
 | Session resumption | ❌ | D6 |
@@ -41,8 +41,12 @@ is more valuable than a padlock icon.
 | Poly1305 | RFC 8439 §2.5 | RFC 8439 §2.5.2 |
 | AEAD_CHACHA20_POLY1305 | RFC 8439 §2.8 | RFC 8439 §2.8.2 |
 | X25519 | RFC 7748 | RFC 7748 §5.2 + §6.1 (1000 iterations) + Wycheproof low-order |
+| SHA3-256 / SHA3-512 | FIPS 202 | NIST SHA3 vectors (Y5) |
+| SHAKE128 / SHAKE256 | FIPS 202 | NIST SHAKE vectors (Y5) |
+| ML-KEM-768 (decap only) | FIPS 203 | FIPS 203 KATs + ACVP vectors (Y5) |
 | Ed25519 (verify only) | RFC 8032 | RFC 8032 §7.1 TEST 1–3 + SHA(abc) |
 | RSA PKCS#1v1.5 (verify only) | RFC 8017 | Self-signed certificate chain |
+| RSA-PSS-SHA256 (verify only) | RFC 8017 §9.1.2 | EMSA-PSS-VERIFY vectors (0x0804) |
 | Constant-time comparison | — | Unit test asserts behavior |
 | CSPRNG (kernel) | ChaCha20 DRBG | RFC 8439 block vectors + statistical |
 
@@ -95,13 +99,17 @@ Until the pool is seeded, `getentropy()` returns `-ENOSYS` and
 ## 2. What this protects against
 
 - **Passive eavesdropping** on a network path between the client and a
-  compliant TLS 1.3 server.  The handshake uses X25519 ephemeral keys
-  (forward secrecy), and the record layer uses AEAD_CHACHA20_POLY1305.
+  compliant TLS 1.3 server.  The handshake uses X25519 ephemeral keys —
+  or the X25519MLKEM768 hybrid when the server accepts it, which also
+  resists harvest-now-decrypt-later by a quantum adversary (Y6) — and the
+  record layer uses AEAD_CHACHA20_POLY1305.  Both give forward secrecy.
 
 - **Server impersonation** by an attacker who does not possess a valid
-  certificate chain rooted in the shipped trust store.  Ed25519 and RSA
-  PKCS#1v1.5 signatures are verified; ECDSA chains are refused (not
-  silently skipped).
+  certificate chain rooted in the shipped trust store.  Ed25519, RSA
+  PKCS#1v1.5-SHA256, RSA-PSS-SHA256 and ECDSA P-256 chain signatures are
+  verified (REALINTERNET X1); chains signed with any other algorithm
+  (e.g. ECDSA P-384) are refused with a named `certval` error, not
+  silently skipped.
 
 - **Tampered records** — the AEAD tag is verified before any plaintext
   is released; a tampered record causes the connection to abort.
@@ -172,15 +180,14 @@ runs on public certificate data; see §3.1–§3.3).
 
 ### 3.7 User stack size
 
-**Resolved.** The user stack is now **1 MiB** (`USER_STACK_SIZE =
-0x100000`, set in `kernel/proc/{user.c,process.c,guard.c}`). The earlier
-claim that Ed25519 CertificateVerify overflowed a *64 KiB* stack is stale:
-that was true only for the old 64 KiB default, and the Ed25519 scalar
-multiplication uses only ~3 KiB of stack per verification anyway. A full
-TLS 1.3 handshake with Ed25519, RSA, or ECDSA P-256 CertificateVerify runs
-well within the 1 MiB stack; no TLS path approaches it (measured in X9 —
-even `gbrowser` + `libatls` + `libahttp` + `libauragui` fit the 1 MiB
-`SPAWN_MAX_IMAGE` with 36% used).
+**Resolved.** The user stack is now **4 MiB** (`USER_STACK_SIZE =
+0x400000`, `kernel/proc/guard.c`), with a randomised top and an unmapped
+guard page below it. The earlier claim that Ed25519 CertificateVerify
+overflowed a *64 KiB* stack is stale twice over: that was true only for the
+old 64 KiB default, and the Ed25519 scalar multiplication uses only ~3 KiB
+of stack per verification anyway. A full TLS 1.3 handshake with Ed25519,
+RSA, or ECDSA P-256 CertificateVerify runs well within the 4 MiB stack;
+no TLS path approaches it.
 
 ### 3.8 No hostname verification against a CA policy
 
@@ -200,21 +207,31 @@ actually verify against a pinned root).
   `AHTTP_MAX_REQ_BODY` (64 KiB), `Content-Length`-framed.
 - Redirects: **followed** (X6) with RFC 3986 dot-segment resolution, 301/302
   → GET, 307/308 → resend body, max 5 hops, `data:`/`javascript:` refused.
-- **Real-world ClientHello interop:** a TLS 1.3 fetch against a modern
-  Cloudflare-hosted site (e.g. example.com) currently ends with the server
-  closing the connection (`ATLS_ERR_PEER_EOF`), because such servers
-  negotiate the hybrid post-quantum group `X25519MLKEM768` while this
-  client offers only X25519 + ChaCha20.  Handshakes against a local
-  openssl s_server (the deterministic gate) pass.  Making the ClientHello
-  interoperable with the modern PQ-hybrid public web is a dedicated
-  follow-up (REALINTERNET_PLAN X2 result notes).
+- **Real-world ClientHello interop:** **landed** (REALINTERNET2 Y6). The
+  ClientHello offers the hybrid post-quantum group `X25519MLKEM768`
+  (`0x11EC`) first and plain X25519 as fallback, so PQ-preferring servers
+  (Cloudflare et al.) negotiate the hybrid and the handshake completes.
+  What remains at the *certificate* layer: chain signature links outside
+  Ed25519 / RSA-PKCS#1v1.5-SHA256 / RSA-PSS-SHA256 / ECDSA P-256 — e.g. a
+  chain containing an ECDSA P-384 link (Let's Encrypt's ISRG Root X2 path)
+  fails `ATLS_CERTVAL_ERR_UNSUPPORTED` (−26) rather than a mystery
+  `ATLS_ERR_PEER_EOF`. `docs/live_web.md` is the paste-back
+  protocol for turning any such live failure into a receipt; handshakes
+  against a local openssl s_server (the deterministic gate) pass.
 
 ### 3.10 Known limitations inherited from the TCP stack
 
-- `TCP_MAX_CONNS` is 8 (may be insufficient for heavy usage).
-- No IP fragment reassembly.
-- No IPv6.
-- No DNS caching.
+All four original entries in this list have since landed:
+
+- `TCP_MAX_CONNS` is 16 (raised from 8 in REALINTERNET X5), with a sliding
+  send window, SACK, congestion control and TIME_WAIT (MATURITY M6,
+  REALINTERNET2 Y1).
+- IP fragment reassembly exists (REALINTERNET X4) and is required by X.509
+  chains that span several records.
+- IPv6 exists: SLAAC, `AF_INET6` sockets, AAAA family choice, dual-stack and
+  TCP-over-IPv6 (REALINTERNET X7, REALINTERNET2 Y3); HTTPS-over-IPv6 was
+  measured in Y4 (RES-26 closed).
+- DNS caching exists (`kernel/net/dns.c`, TTL-bounded; `test_dns_cache`).
 
 ---
 
@@ -340,19 +357,23 @@ Read this before you trust this stack with anything.
 The remaining phases from `INTERNET_PLAN.md`:
 
 - **N8 (IPv6):** delivered as the first landing by `REALINTERNET_PLAN` X7
-  (link-local + NDP + ICMPv6 echo + `ping6`); SLAAC, an AF_INET6 socket
-  family, AAAA-record family choice and dual-stack are recorded follow-ups.
+  (link-local + NDP + ICMPv6 echo + `ping6`); the recorded follow-ups —
+  SLAAC, the AF_INET6 socket family, AAAA-record family choice, dual-stack
+  and TCP-over-IPv6 — all landed in `REALINTERNET2_PLAN` Y3 (RES-26 closed
+  with the Y4 HTTPS-over-IPv6 measurement).
 - **X9 (fit & docs):** complete — measured `gbrowser + libatls + libahttp +
-  libauragui` at 380,904 bytes (36% of the 1 MiB `SPAWN_MAX_IMAGE`); the 1 MiB
-  user stack has ample headroom; docs updated (see `docs/trust_store.md`,
-  `docs/status.md`, `WEBVIEW_PLAN.md` D6).
+  libauragui` at 380,904 bytes against `SPAWN_MAX_IMAGE` (since raised to
+  16 MiB); the 4 MiB user stack has ample headroom; docs updated (see
+  `docs/trust_store.md`, `docs/status.md`, `docs/plans/WEBVIEW_PLAN.md` D6).
 - **Known gaps that would strengthen the stack:**
   - OCSP stapling / CRL checking (recorded exclusion — `docs/trust_store.md` §5)
   - HTTP/2 support
-  - Real-world ClientHello interop with PQ-hybrid groups (X25519MLKEM768)
+  - ECDSA P-384 (and other non-P-256 curve) chain-signature links in
+    `certval` — the live boundary named in §3.9
 
 ---
 
-*This document is part of INTERNET_PLAN.md phase N9.  Every limitation
+*This document is part of INTERNET_PLAN.md phase N9, maintained through
+REALINTERNET_PLAN X9 and REALINTERNET2_PLAN Y5–Y7.  Every limitation
 listed here is a known gap, not a future feature.  If something is not
 listed, it is either implemented or an oversight — file an issue.*

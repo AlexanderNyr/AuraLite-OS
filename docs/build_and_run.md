@@ -12,16 +12,24 @@ sudo apt install clang lld nasm qemu-system-x86 mtools git make gcc python3
 
 # Rust is REQUIRED, not optional: `make deps-check` lists rustc in
 # REQUIRED_TOOLS and the build stops without it (lib/rsbr is a no_std Rust
-# static library linked into the `rustes` userspace program).
+# static library linked into the `rustes` userspace program).  The kernel
+# ports each need their own bare-metal target.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup target add x86_64-unknown-none
+rustup target add x86_64-unknown-none riscv64gc-unknown-none-elf aarch64-unknown-none
 
-# Optional: `make iso-bios` builds the BIOS-only ISO with xorriso.  The
-# default `make iso` (which chains to iso-dual) does not need it.
-sudo apt install xorriso
+# Optional: `llvm-objcopy` (from the `llvm` package) packages the aarch64
+# ELF kernel into the raw Image protocol (`make kernela64-img` /
+# `run-a64-img` — the path that carries `-initrd`).  The target soft-skips
+# without it.
+sudo apt install llvm
 
 # Optional, but needed for the complete integration suite:
 sudo apt install e2fsprogs vncdotool python3-pil ovmf socat dosfstools
+
+# Optional: the fsfull shard's external-interop lanes — exFAT needs
+# exfatprogs (mkfs.exfat/fsck.exfat), NTFS needs ntfs-3g
+# (mkntfs/ntfscp/ntfsls).  Those cases soft-skip without them.
+sudo apt install exfatprogs ntfs-3g
 
 # Optional: the Win32 personality's examples and its end-to-end gate.
 sudo apt install mingw-w64
@@ -38,13 +46,15 @@ Tool purposes:
 | `clang` | Kernel and userspace C compilation. |
 | `ld.lld` | Static ELF linking with custom linker scripts. |
 | `nasm` | x86_64 assembly files. |
-| `xorriso` | Optional: `make iso-bios` only. The default hybrid image is assembled directly with `mformat`/`mcopy`. |
+| `xorriso` | **Not used by any current target.** No Makefile rule or tool script invokes it; CI may still install it harmlessly. |
 | `qemu-system-x86_64` | Local booting and integration testing. |
-| `mtools` (`mformat`, `mcopy`) | **Required.** Builds the FAT32 EFI System Partition inside the hybrid image. |
+| `mtools` (`mformat`, `mcopy`) | **Required** (`make deps-check` enforces it): the legacy `mkisoimage_bios.sh`/`mkisoimage_dual.sh` paths (`make iso-bios`), the DOOM case's `fatpart`, and any script-built image. The **default** `make iso` no longer uses mtools — since SH7d the dual image is assembled by the in-tree C tool `tools/selfhost/mkiso.c`, which writes the FAT ESP directly. |
 | `lld-link` | **Required.** Links `BOOTX64.EFI` as PE32+ (`make efi`). Ships with the `lld` package. |
-| `rustc` + `x86_64-unknown-none` | **Required.** Builds `lib/rsbr` for the `rustes` userspace program. |
+| `rustc` + bare-metal targets | **Required.** `x86_64-unknown-none` builds `lib/rsbr` for the `rustes` userspace program; `riscv64gc-unknown-none-elf` and `aarch64-unknown-none` build the rsbr twin for the rv64/a64 kernels. |
+| `llvm-objcopy` | Optional: `make kernela64-img` (raw aarch64 Image; soft-skips without it). |
 | `git`, `make`, `gcc` | Source checkout and host helper builds. |
-| `e2fsprogs` | Optional: `mkfs.ext2`/`debugfs` for ext2 integration tests. |
+| `e2fsprogs` | Optional: `mkfs.ext2`/`debugfs` for ext2 tests; `mkfs.ext4`/`fsck.ext4` for the fsfull ext4 lane. |
+| `exfatprogs`, `ntfs-3g` | Optional: the fsfull shard's external-interop lanes (`mkfs.exfat`/`fsck.exfat`; `mkntfs`/`ntfscp`/`ntfsls`). |
 | `vncdotool` + Pillow | Optional: GUI/VNC screenshot assertions. |
 | `mingw-w64` | Optional: builds `w32/examples/` and enables `test_w32_integration`. Not in `REQUIRED_TOOLS` — `make iso` skips the examples without it. |
 
@@ -360,16 +370,12 @@ sudo apt install lld
 sudo apt install nasm
 ```
 
-### `xorriso: command not found`
-
-```bash
-sudo apt install xorriso
-```
-
 ### `mformat: command not found` or `mcopy: command not found`
 
-Install mtools. These are required for every `make iso`: they build the FAT32
-EFI System Partition inside the hybrid image.
+Install mtools. `make deps-check` refuses to proceed without it, and the
+legacy script paths (`make iso-bios`) and the DOOM case's `fatpart` still
+call it — though the default `make iso` has been mtools-free since SH7d (the
+in-tree `tools/selfhost/mkiso.c` writes the ESP).
 
 ```bash
 sudo apt install mtools
@@ -378,11 +384,11 @@ sudo apt install mtools
 ### `[deps] missing required tool: rustc`
 
 Rust is a required dependency, not an optional one. Install it and add the
-bare-metal target:
+bare-metal targets:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup target add x86_64-unknown-none
+rustup target add x86_64-unknown-none riscv64gc-unknown-none-elf aarch64-unknown-none
 ```
 
 ### `lld-link: command not found`

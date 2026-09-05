@@ -1,7 +1,7 @@
 # Win32 personality — limitations and behaviour notes
 
 **Status:** complete. Phases W32-0 – W32-8 of
-[`WIN32_PLAN.md`](../WIN32_PLAN.md) are implemented. A mingw-w64-built
+[`WIN32_PLAN.md`](plans/WIN32_PLAN.md) are implemented. A mingw-w64-built
 `.exe` runs unmodified.
 
 This document exists mostly to record what the personality *does not* do.

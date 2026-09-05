@@ -9,6 +9,6 @@ test **reports** a failure in a form a script can check, and a demo simply
 looks wrong to whoever is watching. If you find yourself adding assertions,
 the program belongs in `../tests`.
 
-`glcube` and `glgears` link against libgl and are the visual counterparts to
-`../tests/gltest`, which checks the same code without anyone having to look
-at it.
+`glcube`, `glgears`, `glshade` and `glrunner` link against libgl and are the
+visual counterparts to `../tests/gltest`, which checks the same code without
+anyone having to look at it.

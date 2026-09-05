@@ -15,9 +15,13 @@ Boot log prefix:
 
 | Device family | Common IDs | Platforms | AuraLite status |
 |---|---|---|---|
-| Intel e1000 82540EM/82545EM/82543GC | `8086:100e`, `8086:100f`, `8086:1004` | QEMU, VirtualBox, VMware | Active network driver. |
+| Intel e1000 82540EM/82545EM/82543GC | `8086:100e`, `8086:100f`, `8086:1004` | QEMU, VirtualBox, VMware | Active network driver (IRQ-driven; first in `net_init`'s probe order). |
+| Realtek RTL8139 | `10ec:8139` | QEMU (`-nic rtl8139`) | Active network driver (`drivers/rtl8139/`; third in probe order, `test_rtl8139`). |
+| virtio-net | `1af4:1000` (transitional), `1af4:1041` (modern) | QEMU, VirtualBox | Active network driver (`drivers/virtio_net/`; second in probe order, `test_virtio_net`). |
 | AHCI SATA | class `01/06`, e.g. `8086:2922` | QEMU, VirtualBox, VMware | Active DMA sector read/write. |
+| virtio-blk | `1af4:1001` (transitional), `1af4:1042` (modern) | QEMU, VirtualBox | Active storage lane: shared virtio transport (MMIO + PCI, RES-21/R7) with an ext2 mount gate (`test_vblk_ext2`). |
 | UHCI USB 1.1 | class `0c/03/00`, e.g. `8086:7020` | QEMU, VirtualBox, VMware | Active control/bulk backend; USB MSC works through UHCI. |
+| xHCI USB 3.x | class `0c/03/30`, `1b36:000d`, `1033:0194` | QEMU (`-device qemu-xhci`) | Active since the USB U-series: real command/event/transfer rings — control with short-packet/stall recovery, bulk, interrupt, nested hubs. MSC bulk works through xHCI (`test_xhci_bulk`, `test_usb_xhci_hub`). |
 | Bootloader-provided framebuffer | firmware-provided | all | Active boot framebuffer; no native SVGA acceleration. |
 | PS/2 keyboard/mouse | legacy controller | all | Active input path. |
 
@@ -25,17 +29,17 @@ Boot log prefix:
 
 | Device family | Common IDs | Status |
 |---|---|---|
-| OHCI USB | class `0c/03/10` | Controller/port detection; transfer backend WIP. |
-| EHCI USB 2.0 | class `0c/03/20` | Controller/port detection; transfer backend WIP. |
-| xHCI USB 3.x | class `0c/03/30`, `1b36:000d`, `1033:0194` | Controller/ring scaffolding; transfer backend WIP. |
+| OHCI USB | class `0c/03/10` | Controller/port detection; the transfer engine is not wired to the MSC class driver (RES-38, handed off). |
+| EHCI USB 2.0 | class `0c/03/20` | Same as OHCI: detection real, MSC transfer path not wired (RES-38). |
+| virtio-gpu / VirGL | `1af4:1010`, `1af4:1050` | Real data path for the GL2 software raster lane and the `SYS_GPU_CALL` virgl lane (`lib/libgl/src/glvirgl.c`, `test_virgl_gpu`); experimental acceleration, framebuffer remains the safe default. |
 
 ## Known/probed but no functional data path yet
 
 | Category | Devices recognised |
 |---|---|
-| Alternative NICs | Realtek RTL8139 `10ec:8139` (driven — `drivers/rtl8139/`), virtio-net `1af4:1000/1041` (driven). Recognised without a data path: Intel e1000e `8086:10d3`, AMD PCnet `1022:2000`, VMware VMXNET3 `15ad:07b0`, Realtek RTL8169/8168 `10ec:8169/8168`. |
-| Alternative storage | PIIX IDE `8086:7010/7111`, virtio-blk `1af4:1001/1042`, virtio-scsi `1af4:1004/1048`, VMware PVSCSI `15ad:07c0`, LSI SCSI/SAS, BusLogic. |
-| GPUs | VMware SVGA II, VirtualBox VMSVGA/VBoxVGA, QXL, virtio-gpu. These currently rely on the bootloader-provided framebuffer only (virtio-gpu/VirGL are experimental acceleration paths; see `TODO.md`). |
+| Alternative NICs | Intel e1000e `8086:10d3`, AMD PCnet `1022:2000`, VMware VMXNET3 `15ad:07b0`, Realtek RTL8169/8168 `10ec:8169/8168`. |
+| Alternative storage | PIIX IDE `8086:7010/7111`, virtio-scsi `1af4:1004/1048`, VMware PVSCSI `15ad:07c0`, LSI SCSI/SAS, BusLogic. |
+| GPUs | VMware SVGA II, VirtualBox VMSVGA/VBoxVGA, QXL. These currently rely on the bootloader-provided framebuffer only (virtio-gpu/VirGL moved to the partial table above). |
 | Audio | AC'97, Intel HDA, Ensoniq ES1371. |
 | Guest tools / paravirt | VirtualBox Guest Device, VMware VMCI, virtio-balloon, virtio-rng, virtio-console. |
 
@@ -45,7 +49,7 @@ For best current functionality, configure VMs with:
 
 - NIC: Intel PRO/1000 MT Desktop or legacy VMware `e1000`.
 - Storage: SATA/AHCI disk.
-- USB storage tests: UHCI-compatible USB storage.
+- USB storage tests: UHCI-compatible USB storage, or QEMU's `qemu-xhci` (real transfer rings; MSC bulk).
 - Display: any mode that gives the bootloader a linear framebuffer; VBoxSVGA/VMSVGA/VMware SVGA
   are fine for framebuffer boot, but no accelerated native driver exists yet.
 

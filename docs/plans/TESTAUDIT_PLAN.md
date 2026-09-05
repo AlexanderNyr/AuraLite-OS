@@ -13,7 +13,7 @@
 | A6 | M4: file-backed `MAP_SHARED` + writeback | ✅ **done** | `patches/AUDIT_A6_vma.patch` |
 | A7 | `FIXES_PLAN.md` said PLANNED while fully done | ✅ **done** | `patches/AUDIT_A7_fixes_plan.patch` |
 
-Findings this plan acts on are recorded in [`MATURITY_AUDIT.md`](MATURITY_AUDIT.md).
+Findings this plan acts on are recorded in [`MATURITY_AUDIT.md`](../../MATURITY_AUDIT.md).
 
 ---
 

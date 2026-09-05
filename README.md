@@ -39,13 +39,16 @@ additional post-phase extensions.
 - AHCI SATA sector read/write on QEMU-style AHCI disks.
 - e1000 networking (INTx IRQ-backed RX/TX) with ARP, IPv4, ICMP, DHCP/fallback
   addressing, UDP and DNS (with a TCP fallback for >512-byte answers), BSD
-  socket ABI (`bind`/`listen`/`accept`), per-connection TCP up to 8 streams
-  with a basic retransmission path, and TLS 1.3 + an HTTPS client
-  (`libahttp`, trust store at `/etc/ssl/roots.pem`).
-- IPv6: link-local + NDP/Router Discovery + ICMPv6 echo (X7), and since
-  RESIDUE R9: SLAAC, an NS→NA responder, off-link routing — `ping6` answers
-  end-to-end in CI.  Still deferred: AF_INET6 sockets, TCP-over-IPv6,
-  dual-stack (ledger RES-26).
+  socket ABI (`bind`/`listen`/`accept`), per-connection TCP up to 16 streams
+  with congestion control (RFC 6928 IW, dup-ACK/fast retransmit, SACK, Nagle,
+  delayed ACK, TIME_WAIT, keepalive), and TLS 1.3 + an HTTPS client
+  (`libahttp`, trust store at `/etc/ssl/roots.pem`) whose ClientHello offers
+  the post-quantum hybrid group `X25519MLKEM768` (ML-KEM-768, FIPS 203).
+- IPv6: link-local + NDP/Router Discovery + ICMPv6 echo (X7); SLAAC, an NS→NA
+  responder and off-link routing (RESIDUE R9); AF_INET6 sockets,
+  TCP-over-IPv6, AAAA family choice and dual-stack pick (RINET2 Y3);
+  HTTPS-over-IPv6 (Y4, ledger RES-26 closed).  `ping6` answers end-to-end
+  in CI.
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
   kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
@@ -95,12 +98,24 @@ sudo apt install clang lld nasm qemu-system-x86 mtools git make gcc python3
 # Rust is REQUIRED, not optional: rustc is in the Makefile's REQUIRED_TOOLS
 # and `make deps-check` stops the build without it.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# `make iso` also builds the Rust tenant programs for the riscv64 and
+# aarch64 kernels, so all three bare-metal targets are required:
 rustup target add x86_64-unknown-none
+rustup target add riscv64gc-unknown-none-elf
+rustup target add aarch64-unknown-none
 
 # Optional but needed for the full integration suite:
 sudo apt install e2fsprogs vncdotool python3-pil ovmf socat dosfstools
-# Optional: `make iso-bios` only; the default `make iso` does not use xorriso.
-sudo apt install xorriso
+# fsfull shard (exFAT/NTFS external interop) and the Win32 examples:
+sudo apt install exfatprogs ntfs-3g mingw-w64
+# `llvm` (llvm-objcopy) is needed only for the aarch64 Image boot protocol
+# (`make kernela64-img` / `make run-a64-img`).
+sudo apt install llvm
+# mtools is no longer used by the default `make iso`: the hybrid image's
+# FAT32 ESP is written by the C tool `tools/selfhost/mkiso.c` (SELFHOST SH7d).
+# It is still required by `make deps-check`, `make iso-bios` and the DOOM
+# FAT partition; xorriso is not used by any current make target.
+sudo apt install mtools
 ```
 
 ```bash
@@ -572,9 +587,11 @@ make test-integration-fast  # QEMU smoke/integration subset
 make test-integration       # full QEMU integration suite
 ```
 
-The full suite currently boots QEMU for 14 black-box cases, including AHCI,
-FAT32 persistence, ext2 cross-OS round-trips, USB MSC, networking, SMP, graphics
-and GUI/VNC checks.
+The full suite currently registers 162 black-box QEMU cases (10 thematic CI
+shards), including AHCI, FAT32 persistence, ext2 cross-OS round-trips, the
+ext4/f2fs/btrfs/exFAT/NTFS interop lanes, USB MSC/HID/hub/xHCI rings,
+networking (DNS failover, TCP x5, TLS/HTTPS, IPv6), SMP, selfhost closures,
+graphics and GUI/VNC checks.
 
 ---
 
@@ -640,6 +657,13 @@ More details: [`docs/virtual_machines.md`](docs/virtual_machines.md).
 | `make test-integration-fast` | Run the faster QEMU integration subset. |
 | `make test-integration` | Run the full QEMU black-box integration suite. |
 | `make test` | Run unit tests and then full integration tests. |
+| `make kernel32` | Build the i386 kernel (`build/kernel32.elf`). |
+| `make kernelrv` / `make run-rv` | Build / boot the riscv64 kernel (`build/kernelrv.elf`). |
+| `make kernela64` / `make run-a64` | Build / boot the aarch64 ELF kernel. |
+| `make kernela64-img` / `make run-a64-img` | Build / boot the aarch64 **Image** protocol (`build/kernela64.img`; the path that carries `-initrd`). |
+| `make sdk` / `make sdk-check` | Stage the native third-party SDK / build the examples against it. |
+| `make w32-sdk` / `make w32-sdk-check` | Stage the Win32 personality SDK / build its examples. |
+| `make selfhost-deps` / `make selfhost-tcc` | Fetch / build the guest TinyCC toolchain for the selfhost lanes. |
 | `make clean` | Remove `build/`. |
 
 ---
@@ -671,19 +695,28 @@ AuraLite-OS/
 │   ├── net/                  # Ethernet/ARP/IPv4/ICMP/UDP/DNS/TCP
 │   ├── proc/                 # Threads, scheduler, ELF loader, processes
 │   └── kernel.c              # kmain() orchestration
-├── libauragui/               # User-space GUI toolkit wrappers/widgets
-├── libc/                     # Minimal user-space libc and crt0
-├── scripts/                  # CI/integration helper
-├── tests/unit/               # Host-side unit tests
-├── tests/integration/        # QEMU black-box integration tests
-├── tools/                    # ISO/initrd/VM/QEMU helper scripts
-├── userspace/                # user programs, grouped (see each README.md)
-│   ├── system/               #   init — started by the kernel itself
-│   ├── apps/                 #   applications
-│   ├── demos/                #   demonstrations
-│   └── tests/                #   in-OS test programs
-├── kernel.ld                 # Kernel linker script
-├── Makefile                  # Build system
+├── lib/                    # user-space libraries, one directory each
+│   ├── libc/               #   minimal libc, crt0, user linker scripts
+│   ├── libauragui/         #   AuraGUI toolkit wrappers/widgets
+│   ├── libgl/              #   software OpenGL 1.1/1.3 + GLSL ES compiler
+│   ├── libatls/            #   TLS 1.3, X.509, ChaCha20/X25519/ML-KEM-768
+│   ├── libahttp/           #   HTTP/1.1 + HTTPS client
+│   ├── libc32/libcrv/libca64/  # per-arch libc shims (i386 / rv64 / a64)
+│   └── rsbr/               #   freestanding Rust bridge (3 ISAs)
+├── w32/                    # Win32 personality: PE32+ loader, KERNEL32/USER32/GDI32
+├── doom/                   # doomgeneric platform backend (Freedoom runs)
+├── etc/ssl/                # shipped HTTPS trust store (roots.pem)
+├── scripts/                # CI/integration helper
+├── tests/unit/             # Host-side unit tests
+├── tests/integration/      # QEMU black-box integration tests
+├── tools/                  # ISO/initrd/VM/QEMU helper scripts + selfhost toolchain
+├── userspace/              # user programs, grouped (see each README.md)
+│   ├── system/             #   init/init32/initrv/inita64 + shared smallsh
+│   ├── apps/               #   applications
+│   ├── demos/              #   demonstrations
+│   └── tests/              #   in-OS test programs
+├── kernel.ld               # Kernel linker script
+├── Makefile                # Build system
 └── README.md
 ```
 
@@ -762,7 +795,7 @@ Start here:
 - [`docs/build_and_run.md`](docs/build_and_run.md) — build/run/troubleshooting.
 - [`docs/status.md`](docs/status.md) — current feature and limitation matrix.
 - [`docs/residue_ledger.md`](docs/residue_ledger.md) — the machine-checked
-  debt ledger (48 rows; the RESIDUE series' terminal state).
+  debt ledger (54 rows; the RESIDUE series' terminal state, RESIDUE2 open).
 - [`TODO.md`](TODO.md) — fine-grained known limitations, annotated against the
   ledger.
 - [`docs/architecture.md`](docs/architecture.md) — kernel architecture.
@@ -793,9 +826,9 @@ Start here:
   residue sequel: every open TODO box and every open ledger row
   scheduled into phases T0–T9, held to TODO.md by
   `tools/check_residue2_claims.py` (planned).
-- [`FSLAYOUT_PLAN.md`](FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
-- [`SDK_PLAN.md`](SDK_PLAN.md) — third-party application support (complete).
-- [`WIN32_PLAN.md`](WIN32_PLAN.md) — a Win32-compatible personality: PE32+
+- [`docs/plans/FSLAYOUT_PLAN.md`](docs/plans/FSLAYOUT_PLAN.md) — filesystem layout and enforced install directories (complete).
+- [`docs/plans/SDK_PLAN.md`](docs/plans/SDK_PLAN.md) — third-party application support (complete).
+- [`docs/plans/WIN32_PLAN.md`](docs/plans/WIN32_PLAN.md) — a Win32-compatible personality: PE32+
   loader, `ms_abi` boundary and a bounded import set (**complete**, W32-0 –
   W32-8). A mingw-w64-built `.exe` runs unmodified: `run hello.exe`. See
   [`docs/win32.md`](docs/win32.md) for the supported-function table and, more
@@ -809,16 +842,16 @@ Start here:
   ReactOS source was consulted (`w32/PROVENANCE.md`, `w32/LICENSING.md`).
   Running a Windows program you do not have a licence for is your
   responsibility, not the OS's.
-- [`WEBVIEW_PLAN.md`](WEBVIEW_PLAN.md) — the box-model web view plan (complete). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
-- [`INTERNET_PLAN.md`](INTERNET_PLAN.md) — TLS 1.3 and real internet access (planned). The prerequisite for HTTPS anywhere.
-- [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md) — real internet access: ECDSA P-256 (X1), usable HTTPS client (X2), then DNS/fragmentation/TCP/IPv6.
-- [`FIXES_PLAN.md`](FIXES_PLAN.md) — repair plan for known defects (planned), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
-- [`USB_PLAN.md`](USB_PLAN.md) — full USB support (planned, U0–U9). Mostly
-  repair: UHCI/OHCI/EHCI move real data, but xHCI's event ring is never read,
-  so its control/bulk/interrupt paths **fabricate** descriptors and SCSI
-  replies — which is why `test_usb_xhci.sh` passes against invented data while
-  `test_usb_hotplug.sh` fails. Deletes the synthesis, then builds the real
-  transfer engine.
+- [`docs/plans/WEBVIEW_PLAN.md`](docs/plans/WEBVIEW_PLAN.md) — the box-model web view plan (complete). Measured: a 2D renderer, with OpenGL used only for `<canvas>`.
+- [`docs/plans/INTERNET_PLAN.md`](docs/plans/INTERNET_PLAN.md) — TLS 1.3 and real internet access (complete, N0–N9). The prerequisite for HTTPS anywhere.
+- [`docs/plans/REALINTERNET_PLAN.md`](docs/plans/REALINTERNET_PLAN.md) — real internet access: ECDSA P-256 (X1), usable HTTPS client (X2), DNS/fragmentation/TCP/IPv6 (X3–X7), trust store (X8), fit & docs (X9) — complete; continued by [`docs/plans/REALINTERNET2_PLAN.md`](docs/plans/REALINTERNET2_PLAN.md) (Y0–Y7: congestion control, the netl3 seam, TCP-over-IPv6, HTTPS-over-IPv6, ML-KEM-768 and the X25519MLKEM768 hybrid ClientHello, live-web protocol — complete).
+- [`docs/plans/FIXES_PLAN.md`](docs/plans/FIXES_PLAN.md) — repair plan for known defects (**complete**: all 33 task boxes landed), ranked by danger rather than by ease. Adds nothing; fixes what is broken.
+- [`docs/plans/USB_PLAN.md`](docs/plans/USB_PLAN.md) — full USB support (U0–U9 landed).
+  The old synthesised-BOT-reply shim is gone: xHCI carries real command/event/
+  transfer rings (control with short-packet/stall recovery, bulk, interrupt,
+  nested hubs).  Remaining breadth — OHCI/EHCI transfer engines not wired to
+  the MSC class driver, HID collections beyond the QEMU-tested ones, isoc
+  devices — is handed off as ledger RES-38.
 - [`TODO.md`](TODO.md) — known limitations and future work.
 - [`CHANGELOG.md`](CHANGELOG.md) — chronological changes.
 
@@ -846,7 +879,7 @@ Short version:
   virtio-net RX sleeps on the IRQ wake (`wq_wait_deadline`, RESIDUE R9), and
   TCP/DNS/DHCP receive paths use bounded IRQ-backed waits.  User space has
   process-owned socket-style handles, and the TCP transport supports
-  per-connection state up to 8 streams.
+  per-connection state up to 16 streams.
 - `/disk` is intentionally tiny: flat namespace, 8 files maximum, 4 KiB per file.
 - FAT32 and ext2 are featureful enough for integration tests, but their hardware
   coverage is primarily QEMU/AHCI and they should still be treated as hobby OS
@@ -861,18 +894,24 @@ Short version:
   (`SYS_KBD_LAYOUT`). There are still no dead keys, so layouts needing them are
   not fully represented.
 - **TLS 1.3 and an HTTPS client exist and are tested against a local
-  openssl s_server, but real-world public-web interop is not yet complete.**
+  openssl s_server and against the live web.**
   `INTERNET_PLAN.md` N0–N7 shipped the entropy source, crypto primitives,
   X.509 parsing, the TLS 1.3 handshake/record layer, certificate
   validation, and `libahttp`. `REALINTERNET_PLAN.md` X1 added ECDSA P-256
   verification; X2 wired the TLS transport into `libahttp`, enabled full
   chain validation in the handshake, ported `/apps/http`, and ships the
-  trust store at `/etc/ssl/roots.pem`. The deterministic gates (host
-  `test_ahttp_https`, guest TLS transport) pass. A live fetch against a
-  modern Cloudflare host currently ends with the server closing the
-  connection (`X25519MLKEM768` PQ-group interop — a recorded follow-up).
-  See [`INTERNET_PLAN.md`](INTERNET_PLAN.md) and
-  [`REALINTERNET_PLAN.md`](REALINTERNET_PLAN.md).
+  trust store at `/etc/ssl/roots.pem`.  `REALINTERNET2_PLAN.md` Y5/Y6 added
+  ML-KEM-768 (FIPS 203, ACVP vectors) and the `X25519MLKEM768` hybrid
+  ClientHello (group `0x11EC`): a live fetch now negotiates the hybrid
+  group with PQ-preferring servers.  What remains is the signature-algorithm
+  boundary of the chain validator (Ed25519, RSA-PKCS#1v1.5-SHA256,
+  RSA-PSS-SHA256, ECDSA P-256): chains signed with e.g. ECDSA P-384
+  (Let's Encrypt YE2 today) fail with a named `certval` error rather than a
+  mystery EOF.  `docs/live_web.md` is the user-run paste-back protocol for
+  public-web receipts.
+  See [`docs/plans/INTERNET_PLAN.md`](docs/plans/INTERNET_PLAN.md),
+  [`docs/plans/REALINTERNET_PLAN.md`](docs/plans/REALINTERNET_PLAN.md) and
+  [`docs/plans/REALINTERNET2_PLAN.md`](docs/plans/REALINTERNET2_PLAN.md).
 - A kernel fault taken on a bad stack is handled: the `#DF` gate selects IST1
   and per-CPU IST stacks are programmed, so a kernel stack overflow or double
   fault runs its diagnostic on a known-good stack instead of triple-faulting.

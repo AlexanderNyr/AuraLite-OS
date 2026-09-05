@@ -32,7 +32,10 @@ pub fn main() -> i32 {
 
 ## RSBR API Reference
 
-RSBR communicates directly with the AuraLite-OS kernel via native x86_64 system calls (`syscall`). 
+RSBR communicates directly with the AuraLite-OS kernel via each target's
+native system-call instruction — x86_64 `syscall`, riscv64 `ecall` (a7),
+aarch64 `svc #0` (x8); see “Three ISAs, one bridge” below and
+`docs/rust_application_guide.md` §7 for the per-tenant details.
 
 ### Core App Functions
 

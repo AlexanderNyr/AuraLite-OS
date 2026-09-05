@@ -32,13 +32,13 @@ This directory contains the technical documentation for AuraLite OS.
 - [`../CHANGELOG.md`](../CHANGELOG.md) — chronological changes.
 - [`../tls.md`](../tls.md) — the TLS 1.3 stack: capabilities, limitations,
   security properties.
-- [`../WIN32_PLAN.md`](../WIN32_PLAN.md) — the Win32 personality plan, its
+- [`plans/WIN32_PLAN.md`](plans/WIN32_PLAN.md) — the Win32 personality plan, its
   legal grounding, and phase-by-phase status.
 
 ## Specialised references in this directory
 
 - [`residue_ledger.md`](residue_ledger.md) — the machine-checked debt ledger
-  (48 rows, checker-enforced arithmetic; the RESIDUE series' terminal state).
+  (54 rows, checker-enforced arithmetic; the RESIDUE series' terminal state, RESIDUE2 open).
 - [`metal_receipts.md`](metal_receipts.md) — the real-hardware receipt
   package (RESIDUE R11): nine paste-back slots, the WHPX PCID block.
 - [`seams.md`](seams.md) — seam decision notes for the pinned driver

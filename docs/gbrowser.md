@@ -1,6 +1,6 @@
 # AuraLite OS GUI Browser (`/apps/gbrowser`)
 
-**Status:** Phases W0–W7 of [`WEBVIEW_PLAN.md`](../WEBVIEW_PLAN.md) —
+**Status:** Phases W0–W7 of [`WEBVIEW_PLAN.md`](plans/WEBVIEW_PLAN.md) —
 all phases W0–W8 complete. `gbrowser` was retired in W8.
 
 This document states what the web view is, what it deliberately is not, and
@@ -120,9 +120,10 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 - An explicit open-element stack with a **depth cap of 512** (the plan's
   D3): past the cap, deeper elements are appended without nesting and
   `truncated` is set. The 10 000-deep document from the plan's gate is
-  built **in QEMU on the real 64 KiB user stack** every boot
+  built **in QEMU on the real guest user stack** (4 MiB since
+  REALINTERNET X9; 64 KiB when this gate was written) every boot
   (`dom deep test: PASS`), so a regression is caught where the bug is
-  visible, not on the 8 MB host stack.
+  visible, not on the host stack.
 - Implicit closes: `<p>`, `<li>`, `<td>`/`<th>` (never the row), `<tr>`,
   and 14 void elements (`area base br col embed hr img input link meta
   param source track wbr`) never nest.
@@ -144,7 +145,7 @@ list** (boxes + text runs) — nothing is rasterised yet; W4 paints it.
 
 - Iterative by construction: a (node, phase) walk stack and explicit
   block/inline context stacks, all caller-provided arrays with caps. The
-  5 000-box gate document is laid out in-guest on the real 64 KiB stack
+  5 000-box gate document is laid out in-guest on the real guest stack
   every boot (`layout smoke: PASS`).
 - Box model: width/margin/padding honoured; children lay out inside the
   content box. Until W5's CSS lands, values come from a small UA
@@ -237,7 +238,7 @@ The web view is now a usable (if humble) browser:
 - Test hooks (written before `run webview`, because the init shell blocks
   on a running child): `/tmp/webview.url` = initial page,
   `/tmp/webview.steps` = `link 0|back|https|nav <url>` actions.
-- Gate: `tests/integration/cases/test_webview_net.sh` — a real host server
+- Gate: `tests/integration/cases/test_gbrowser_net.sh` — a real host server
   serves `/`, `/page2.html`, `/chunked` and `/big` (100 KB); the guest
   fetches home, follows a link, goes back, attempts https for real
   (never the pre-X6 refusal page), decodes chunked and receives 100 KB

@@ -27,7 +27,7 @@ I_InitGraphics: DOOM screen size: w x h: 320 x 200
 I_InitGraphics: Auto-scaling factor: 2
 ```
 
-![DOOM running on AuraLite](docs/images/doom-on-auralite.png)
+![DOOM running on AuraLite](../images/doom-on-auralite.png)
 
 This document answers one question:
 

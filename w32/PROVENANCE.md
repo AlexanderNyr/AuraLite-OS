@@ -5,7 +5,7 @@ Every file under `w32/` is either **written for this repository** or
 and is enforced by `tools/check_provenance.sh`.
 
 The rules that govern additions are in [`LICENSING.md`](LICENSING.md); the
-reasoning is in [`../WIN32_PLAN.md`](../WIN32_PLAN.md) §1.
+reasoning is in [`../docs/plans/WIN32_PLAN.md`](../docs/plans/WIN32_PLAN.md) §1.
 
 ---
 

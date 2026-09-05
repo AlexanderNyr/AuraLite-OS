@@ -33,12 +33,12 @@ Return convention (in-band negative errno, since Phase P1):
 
 The kernel produces these values directly (e.g. `return -ENOENT;`); `errno` is
 purely user-space state. The errno numbers match the Linux asm-generic ABI and
-are defined in `kernel/lib/errno.h` (kernel) and `libc/include/errno.h` (libc).
+are defined in `kernel/lib/errno.h` (kernel) and `lib/libc/include/errno.h` (libc).
 
 ### User-space decode
 
 libc syscall wrappers decode the band and expose the POSIX `errno`/`-1`
-contract. The single chokepoint (`libc/src/libc.c`) is:
+contract. The single chokepoint (`lib/libc/src/libc.c`) is:
 
 ```c
 static long syscall_ret(int64_t raw) {
@@ -98,7 +98,7 @@ atomically.  CPU exceptions in Ring 3 map to synchronous signals
 
 ## User-space wrapper
 
-`libc/src/syscall.asm` exposes:
+`lib/libc/src/syscall.asm` exposes:
 
 ```c
 int64_t syscall(int64_t num,
@@ -147,17 +147,21 @@ selector formula is used.
 
 ## Stack handling
 
-`SYSCALL` does **not** switch stacks. In the current implementation, the syscall
-handler initially runs on the user's `RSP`; `syscall_dispatch()` is called from
-that context.
+The `SYSCALL` instruction itself does **not** switch stacks, so the entry stub
+does: `syscall_entry` (`kernel/arch/x86_64/syscall_entry.asm`) captures the
+user `RSP` and immediately switches onto the per-thread kernel stack published
+by `set_syscall_stack()`, so no kernel code — including
+`syscall_dispatch()` — runs on attacker-controlled user stack memory.
 
 Interrupts use the TSS/RSP0 path when transitioning from Ring 3 to Ring 0, so
 timer IRQs and exceptions do not reuse the user stack in the same way.
 
 Current caveats:
 
-- saved `RCX`, `R11` and user `RSP` are stored in globals, so this path is not
-  suitable for true SMP syscall concurrency yet;
+- all entry/exit state (saved `RCX`, `R11`, user `RSP`) lives in per-CPU
+  `struct cpu_local` slots reached through `%gs`, with offsets generated from
+  the C struct by `tools/gen_asm_offsets.c`; the older `.data` globals this
+  replaces were correct only while one CPU could enter the kernel at a time;
 - syscall handlers use `validate_user_range`, `copy_from_user` and
   `copy_to_user`; the copy primitives have a #PF fixup path for TOCTOU/unmap races;
 - blocking syscalls sleep on wait queues (`kernel/proc/wait_queue.c`, H4):
@@ -197,7 +201,7 @@ Current caveats:
 | 12 | `brk` | `sbrk(increment)` | ✅ | Adjusts the program break (heap). |
 | 39 | `getpid` | `getpid()` | ✅ | Returns current TCB ID. |
 | 57 | `fork` | `fork()` | 🧪 | Copy-on-write user address-space clone; simplified semantics. |
-| 59 | `execve` | `execve(path)` | 🧪 | Replaces current address space with a new ELF. No argv/envp. |
+| 59 | `execve` | `execve(path, argv, envp)` | 🧪 | Replaces current address space with a new ELF; argv/envp are marshalled onto the new stack (`test_execve_args.sh`). |
 | 60 | `exit` | `exit(code)` | ✅/🧪 | Terminates current thread; exit-code reporting is incomplete. |
 | 61 | `wait4` | `waitpid(pid, status, options)` | ✅ | WNOHANG + selector matching (pid>0 / ==0 group / ==-1 any / <-1 group |pid|); POSIX W* status word. |
 | 109 | `setpgid` | `setpgid(pid, pgid)` | ✅ | Same-session, non-leader; EPERM/ESRCH/EINVAL. |
@@ -237,7 +241,7 @@ Current caveats:
 
 ## libc wrappers
 
-Defined in `libc/include/unistd.h` and implemented in `libc/src/libc.c`:
+Defined in `lib/libc/include/unistd.h` and implemented in `lib/libc/src/libc.c`:
 
 ```c
 ssize_t write(int fd, const void *buf, size_t count);
@@ -247,7 +251,7 @@ int     close(int fd);
 void    _exit(int code);
 pid_t   getpid(void);
 pid_t   fork(void);
-int     execve(const char *path);
+int     execve(const char *path, char *const argv[], char *const envp[]);
 pid_t   wait(int *status);
 pid_t   spawn(const char *path);
 void    listdir(const char *path);
@@ -274,8 +278,8 @@ int     truncate(const char *path, uint64_t new_size);
 int     stat(const char *path, struct stat *out);
 ```
 
-GUI wrappers are defined in `libauragui/include/auragui.h` and implemented in
-`libauragui/src/auragui.c`. Applications should use the `ag_*` window, drawing,
+GUI wrappers are defined in `lib/libauragui/include/auragui.h` and implemented in
+`lib/libauragui/src/auragui.c`. Applications should use the `ag_*` window, drawing,
 event and widget APIs rather than invoking `SYS_GUI_CALL` directly.
 
 ## File descriptor model

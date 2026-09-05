@@ -5,7 +5,7 @@ library, `libgl`, together with a GLU utility layer and an AuraGLX window
 binding. It renders entirely on the CPU: no GPU, no host acceleration, and
 therefore no dependency on QEMU flags, host drivers or a particular hypervisor.
 
-See [`GL_PLAN.md`](../GL_PLAN.md) for the phase-by-phase development plan and
+See [`GL_PLAN.md`](plans/GL_PLAN.md) for the phase-by-phase development plan and
 the reasoning behind each design decision.
 
 ---
@@ -302,7 +302,7 @@ at object-space `z = +0.5` ends up at window depth 0.25 — *nearer* than one at
 triangles cost 4.5 ms either way, and 3.2 ms even with rasterisation removed
 entirely. The per-vertex transform dominates, so removing a call per vertex is
 noise. Arrays exist for API completeness; a real speed-up needs a faster
-transform stage. See the header comment in `libgl/src/glarray.c` for why a
+transform stage. See the header comment in `lib/libgl/src/glarray.c` for why a
 separate bulk path was rejected.
 
 **Display lists store a command log**, not captured geometry, so a
@@ -389,7 +389,7 @@ Under QEMU expect roughly an order of magnitude worse. Practical advice:
 
 ## The GLSL front end (phase G11a)
 
-A GLSL ES 1.0 compiler front end lives in `libgl/src/glsl_*.c`: a lexer, a
+A GLSL ES 1.0 compiler front end lives in `lib/libgl/src/glsl_*.c`: a lexer, a
 recursive-descent parser and a type checker, producing a typed AST. It is
 **not yet reachable from the GL API** — `glCreateShader` and friends arrive in
 G11c — but it is complete, tested and runs on the target.
@@ -455,7 +455,7 @@ is destroyed; 112 KB of the floor is the type checker's symbol table.
 
 ## The GLSL execution engine (phase G11b)
 
-An AST-walking interpreter in `libgl/src/glsl_exec.c` runs the tree the front
+An AST-walking interpreter in `lib/libgl/src/glsl_exec.c` runs the tree the front
 end produces. It is still not reachable from the GL API — that is G11c — but
 it computes correct results for the whole language.
 
@@ -699,7 +699,7 @@ Four real defects, each invisible to the phase that introduced it:
 
 ## The VirGL hardware backend (phase G13)
 
-`libgl/src/glvirgl.c` reaches a real virtio-gpu through `SYS_GPU_CALL`: it
+`lib/libgl/src/glvirgl.c` reaches a real virtio-gpu through `SYS_GPU_CALL`: it
 creates a 3D context, allocates a render target, and presents finished frames
 by uploading them and driving `SET_SCANOUT` + `RESOURCE_FLUSH`.
 
@@ -768,7 +768,7 @@ what was ruled out, remain in `TODO.md`.
 ## Backends
 
 `libgl` selects a rendering backend through a small table of function pointers
-(`GL/glbackend.h`), modelled on the kernel's `netdev` abstraction. The software
+(`lib/libgl/include/GL/glbackend.h`), modelled on the kernel's `netdev` abstraction. The software
 rasterizer is registered as an ordinary backend rather than special-cased, so
 dispatch has one shape everywhere.
 
@@ -786,7 +786,7 @@ move the per-frame blit onto the GPU while everything else stays on the CPU.
 A VirGL candidate is registered and **declines** at `init()`. AuraLite's VirGL
 command transport lives in the kernel (`drivers/gpu/virgl.c`) with no syscall
 exposed to user space, and libgl is user space by design. The steps to complete
-it are listed at the top of `libgl/src/glvirgl.c`; the prerequisite is a kernel
+it are listed at the top of `lib/libgl/src/glvirgl.c`; the prerequisite is a kernel
 syscall for 3D submission.
 
 ---
@@ -865,7 +865,7 @@ twice over — APs run user threads, and the R5 receipt pins it.)
 
 ## Adding a GL application
 
-1. Write it against `GL/gl.h`, `GL/glu.h` and `GL/auraglx.h`.
+1. Write it against `lib/libgl/include/GL/gl.h`, `lib/libgl/include/GL/glu.h` and `lib/libgl/include/GL/auraglx.h`.
 2. Add the object and ELF rules to the Makefile, and the target to
    `USER_GL_APPS` — those link `libgl`, unlike ordinary user programs.
 3. Add a `cp` line to the initrd rule.

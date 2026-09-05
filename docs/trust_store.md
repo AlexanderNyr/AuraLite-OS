@@ -91,4 +91,4 @@ of its own, needs a clock and network trust model of its own, and a hobby OS
 has no way to do it honestly today. Certificate Transparency is likewise not
 enforced. This is a recorded exclusion, not an oversight: a revoked leaf will
 be accepted until its (short) validity window ends. The docs' security
-statement (`docs/tls.md`) reflects this.
+statement (`../tls.md`) reflects this.

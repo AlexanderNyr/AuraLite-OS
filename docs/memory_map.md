@@ -27,17 +27,23 @@ Exact addresses vary per build; inspect with `readelf -lW build/kernel.elf`.
 
 | Region      | Virtual address              | Size    | Flags       |
 |-------------|------------------------------|---------|-------------|
-| Kernel heap | `0xFFFFFFFF88000000`         | 16 MiB  | R + W + NX  |
+| Kernel heap | `0xFFFFFFFF88000000`         | 64 MiB  | R + W + NX  |
 
-The heap grows on demand: `kheap_expand()` maps PMM frames via the VMM in 64 KiB
-chunks as `kmalloc` exhausts the free list. Pages are mapped No-Execute.
+The heap grows on demand: `kheap_expand()` commits at least one 2 MiB page per
+expansion (RESIDUE2 T1) as `kmalloc` exhausts the size-class cache and the free
+list. Pages are mapped No-Execute.
 
 ## Stack regions (guarded)
 
 | Region | Virtual address | Layout |
 |--------|-----------------|--------|
-| Thread kernel stacks | `0xFFFFFFFF8C000000` | 128 slots × 24 KiB: `[4 KiB guard][16 KiB usable][4 KiB guard]` |
-| Per-CPU IST1 stacks (FIX_R1) | `0xFFFFFFFF8C300000` | 32 slots × 20 KiB: `[4 KiB guard][16 KiB usable]` |
+| Thread kernel stacks | `0xFFFFFFFF8C000000` | 128 slots × 40 KiB: `[4 KiB guard][32 KiB usable][4 KiB guard]` |
+| Per-CPU IST1 stacks (FIX_R1) | `THREAD_STACK_REGION_END` (= `0xFFFFFFFF8C500000` with the slot counts above) | 32 slots × 20 KiB: `[4 KiB guard][16 KiB usable]` |
+
+The IST base is derived from `THREAD_STACK_REGION_END` (`tss.c`), not
+hardcoded: an earlier hardcoded `0xFFFFFFFF8C300000` assumed 24 KiB thread
+slots and was silently overrun when the usable stack grew to 32 KiB — the
+derivation is the fix.
 
 Guard pages are simply never mapped via the VMM, so a stack overflow takes a
 page fault on the guard instead of corrupting a neighbour; for the IST1 slots
@@ -93,17 +99,21 @@ The kernel reaches any physical address as `physical + HHDM_offset`.
 
 | Region       | Virtual address              | Size    | Notes                           |
 |--------------|------------------------------|---------|---------------------------------|
-| User code    | `0x40000000`                 | varies  | ELF PT_LOAD segments (RWX+User) |
+| User code    | `0x40000000`                 | varies  | ELF PT_LOAD segments, per-segment R/X/W from `p_flags` (RX text, R rodata, RW data) |
 | User data    | `~0x40000120`                | varies  | rodata + .bss (co-located)      |
-| User stack   | `0x7FFFF0000000` – top       | 64 KiB  | Grows down, USER + RW           |
+| User stack   | below `0x7FFFF00000000`, randomised | 4 MiB usable + unmapped guard page | Grows down, USER + RW + NX |
 
 The ELF loader maps segments at their `p_vaddr` (linked at `0x40000000` via
-`libc/user.ld`). The user stack is mapped just below the 128 TiB canonical
-boundary.
+`lib/libc/user.ld`) and honours `p_flags`: non-`PF_X` segments are mapped
+No-Execute and only `PF_W` segments are writable (`/tests/elfperm` +
+`test_elf_permissions.sh` pin write-to-text and execute-from-data faults).
+The user stack top is randomised per process (`USER_STACK_ENTROPY`,
+`kernel/proc/guard.c`) just below the 128 TiB canonical boundary, with an
+unmapped guard page below the 4 MiB usable area (`USER_STACK_SIZE`).
 
-Current caveat: PT_LOAD segments are mapped writable/user-accessible during
-loading, and final segment `p_flags` are not yet enforced as strict R/W/X
-permissions. User pointer validation for syscalls is also future work.
+User pointers passed to syscalls go through `validate_user_range()` and the
+`copy_from_user()`/`copy_to_user()` primitives with a #PF fixup path
+(`kernel/proc/usercopy.c`), audited in CI by `tools/audit_user_pointers.py`.
 
 ## Paging (VMM)
 

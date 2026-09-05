@@ -19,9 +19,11 @@ F4 (the source tree) and F5 (aliases removed).
 | `/proc` | procfs | no | process and kernel introspection |
 | `/tmp` | tmpfs | yes | in-memory, lost on reboot |
 | `/opt` | tmpfs (second volume) | yes | installed packages; see below |
+| `/dev/shm` | tmpfs (third volume) | yes | POSIX shared-memory volume |
 | `/disk` | diskfs | yes | small persistent store on AHCI |
 | `/fat` | FAT32 | yes | full FAT32 with LFN and subdirectories |
 | `/ext2` | ext2 | yes | full ext2 with indirect blocks |
+| `/usb` | usbfs | no | hotplugged USB mass storage; FAT32 media exposed read-only under `/usb/fat` |
 
 Resolution is by longest-prefix mount match, then the filesystem's own lookup.
 
@@ -74,8 +76,8 @@ A trailing slash asserts "this is a directory": `/etc/` resolves, and
 
 | Constant | Value | Where |
 |---|---|---|
-| `INITRD_MAX_FILES` | 192 | `kernel/fs/initrd.c` |
-| `INITRD_MAX_DIRS` | 32 | `kernel/fs/initrd.c` |
+| `INITRD_MAX_FILES` | 1024 | `kernel/fs/initrd.c` |
+| `INITRD_MAX_DIRS` | 128 | `kernel/fs/initrd.c` |
 | USTAR name field | 100 bytes | format; enforced by `mkinitrd.sh` |
 | `VFS_PATH_MAX` | 256 | `kernel/fs/vfs.h` |
 
@@ -151,7 +153,7 @@ explicit path always bypasses the search.
 the root, a program in its proper directory must win over its own alias;
 searching `/` first would let the aliases silently shadow the real layout.
 
-The implementation is `libc/src/progpath.c`, not the shell, because the GUI
+The implementation is `lib/libc/src/progpath.c`, not the shell, because the GUI
 launcher launches programs too. One list, one lookup, both callers.
 
 ```
