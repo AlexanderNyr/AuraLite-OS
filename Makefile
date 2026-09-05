@@ -190,7 +190,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/lib/selftest.c kernel/lib/perfstat.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -262,14 +262,14 @@ KERNELRV_DIR  := kernel/arch/riscv64
 # ("8-byte loops ready for shared-tree adoption") paid; membench_rv
 # measures exactly these linked bodies, and H1 makes them word-wide.
 KERNELRV_SHARED := kernel/net/miniproto.c kernel/dt/fdt.c kernel/drivers/virtio_mmio.c kernel/lib/string.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c kernel/fs/buffer_cache.c \
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/fs/tmpfs.c kernel/fs/devfs.c \
                    kernel/drivers/pci_ecam.c kernel/drivers/virtio_pci.c
 KERNELRV_SRCS := $(shell find $(KERNELRV_DIR) -name '*.c' 2>/dev/null) $(KERNELRV_SHARED)
 KERNELRV_ASMS := $(shell find $(KERNELRV_DIR) -name '*.S' 2>/dev/null)
 KERNELRV_OBJS := $(patsubst %.c,$(BUILD_DIR)/krv/%.o,$(KERNELRV_SRCS)) \
                  $(patsubst %.S,$(BUILD_DIR)/krv/%.o,$(KERNELRV_ASMS))
 KERNELRV_HDRS := $(shell find $(KERNELRV_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h kernel/lib/string.h \
-                 kernel/lib/kprintf.h kernel/lib/spinlock.h kernel/fs/blkdev.h kernel/fs/ext2.h kernel/fs/vfs.h \
+                 kernel/lib/kprintf.h kernel/lib/spinlock.h kernel/fs/blkdev.h kernel/fs/ext2.h kernel/fs/vfs.h kernel/fs/tmpfs.h kernel/fs/devfs.h \
                  kernel/drivers/pci_ecam.h kernel/drivers/virtio_pci.h
 CFLAGSRV      := --target=riscv64 -march=rv64gc -mabi=lp64d \
                  -mcmodel=medany -mno-relax \
@@ -332,14 +332,14 @@ KERNELA64_DIR  := kernel/arch/aarch64
 # object the rv64 pair switched to in this patch, and the THIRD
 # miniproto consumer proves the same packets.
 KERNELA64_SHARED := kernel/dt/fdt.c kernel/lib/string.c kernel/net/miniproto.c kernel/drivers/virtio_mmio.c \
-                    kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c kernel/fs/buffer_cache.c \
+                    kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/fs/tmpfs.c kernel/fs/devfs.c \
                     kernel/drivers/pci_ecam.c kernel/drivers/virtio_pci.c kernel/lib/selftest.c
 KERNELA64_SRCS := $(shell find $(KERNELA64_DIR) -name '*.c' 2>/dev/null) $(KERNELA64_SHARED)
 KERNELA64_ASMS := $(shell find $(KERNELA64_DIR) -name '*.S' 2>/dev/null)
 KERNELA64_OBJS := $(patsubst %.c,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_SRCS)) \
                   $(patsubst %.S,$(BUILD_DIR)/ka64/%.o,$(KERNELA64_ASMS))
 KERNELA64_HDRS := $(shell find $(KERNELA64_DIR) -name '*.h' 2>/dev/null) boot/shared/boot_info.h kernel/dt/fdt.h kernel/lib/string.h kernel/drivers/virtio_mmio.h drivers/virtio/virtio_common.h kernel/net/miniproto.h drivers/uart/uart_ring.h \
-                  kernel/lib/kprintf.h kernel/lib/spinlock.h kernel/fs/blkdev.h kernel/fs/ext2.h kernel/fs/vfs.h \
+                  kernel/lib/kprintf.h kernel/lib/spinlock.h kernel/fs/blkdev.h kernel/fs/ext2.h kernel/fs/vfs.h kernel/fs/tmpfs.h kernel/fs/devfs.h \
                   kernel/drivers/pci_ecam.h kernel/drivers/virtio_pci.h
 CFLAGSA64      := --target=aarch64-unknown-none-elf \
                   -mstrict-align -mgeneral-regs-only \
@@ -2615,6 +2615,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_stack_guard \
                 $(BUILD_DIR)/test_select_stack \
                 $(BUILD_DIR)/test_blkdev \
+                $(BUILD_DIR)/test_ksha256 \
+                $(BUILD_DIR)/test_fscheck \
                 $(BUILD_DIR)/test_vma \
                 $(BUILD_DIR)/test_page_cache \
                 $(BUILD_DIR)/test_mprotect \
@@ -3412,6 +3414,27 @@ $(BUILD_DIR)/test_blkdev: tests/unit/test_blkdev.c kernel/fs/blkdev.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined -I . \
 	          tests/unit/test_blkdev.c kernel/fs/blkdev.c -o $@
+
+# RESIDUE2 T3: the kernel-local SHA-256 (kernel/lib/sha256.c) against the
+# RFC 6234 vectors — the same object the btrfs checksum path links.
+$(BUILD_DIR)/test_ksha256: tests/unit/test_ksha256.c kernel/lib/sha256.c \
+                           kernel/lib/sha256.h kernel/lib/string.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_ksha256.c kernel/lib/sha256.c \
+	          kernel/lib/string.c -o $@
+
+# RESIDUE2 T3: the fscheck walkers fed crafted + corrupted FAT32/ext2
+# images through a RAM blkdev — the same fscheck.c the kernel links.
+$(BUILD_DIR)/test_fscheck: tests/unit/test_fscheck.c kernel/fs/fscheck.c \
+                           kernel/fs/fscheck.h kernel/fs/blkdev.c \
+                           kernel/lib/string.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -I . \
+	          tests/unit/test_fscheck.c kernel/fs/fscheck.c \
+	          kernel/fs/blkdev.c kernel/lib/string.c -o $@
 
 # FSFULL_F1: the auto-format gate, compiled as-is.  Trivial state, but
 # the default value is the safety property — the test pins it so a

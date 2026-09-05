@@ -63,4 +63,16 @@ uint8_t pci_get_prog_if(uint8_t bus, uint8_t dev, uint8_t func);
 int pci_find_class(uint8_t class_code, uint8_t subclass,
                    uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func);
 
+/*
+ * RESIDUE2 T3 (AHCI breadth): resume a class scan strictly AFTER the
+ * given position.  Lets one driver bind EVERY device of a class — e.g.
+ * all SATA/AHCI controllers on the bus — instead of only the first.
+ * Returns 0 on found, -1 when the scan is exhausted.
+ */
+int pci_find_class_after(uint8_t class_code, uint8_t subclass,
+                         uint8_t after_bus, uint8_t after_dev,
+                         uint8_t after_func,
+                         uint8_t *out_bus, uint8_t *out_dev,
+                         uint8_t *out_func);
+
 #endif /* AURALITE_DRIVERS_PCI_PCI_H */

@@ -26,6 +26,13 @@ typedef struct {
 
 void spinlock_init(spinlock_t *lock);
 void spinlock_acquire(spinlock_t *lock);
+
+/* RESIDUE2 T3: non-blocking acquire.  Returns 1 if the lock was taken,
+ * 0 if it is already held.  For code that must never block — e.g. the
+ * buffer cache's 1 Hz drain running at interrupt level (bc_tick): a
+ * plain acquire there would deadlock whenever the interrupted thread
+ * happens to hold the very same lock. */
+int spinlock_try_acquire(spinlock_t *lock);
 void spinlock_release(spinlock_t *lock);
 
 /* Returns the RFLAGS captured before disabling interrupts; pass to _restore. */

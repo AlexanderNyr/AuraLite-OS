@@ -41,6 +41,7 @@
 #define PORT_PXTFD   0x20
 #define PORT_PXSIG   0x24
 #define PORT_PXSSTS  0x28
+#define PORT_PXSCTL  0x2C
 #define PORT_PXSERR  0x30
 #define PORT_PXCI    0x38
 
@@ -142,6 +143,7 @@ struct ahci_port {
 static volatile uint32_t *abar = NULL;
 static struct ahci_port ports[AHCI_MAX_PORTS];
 static int port_count = 0;
+static int ctrl_count = 0;   /* RESIDUE2 T3: controllers bound so far */
 
 /*
  * Per-port hardware lock (A2-R1).
@@ -176,12 +178,21 @@ static spinlock_t ahci_port_locks[AHCI_MAX_PORTS];
 static volatile uint64_t sectors_read_total    = 0;
 static volatile uint64_t sectors_written_total = 0;
 
+/* RESIDUE2 T3 (AHCI breadth): the driver supports MORE THAN ONE AHCI
+ * controller, so register access can no longer go through the single
+ * global `abar`.  Each detected port remembers which controller's ABAR
+ * it lives on and which physical port register file (0..NP-1) inside
+ * that controller it is.  The public port numbers stay flat and are
+ * handed out in detection order. */
+static volatile uint32_t *port_abar[AHCI_MAX_PORTS];
+static uint8_t port_hw[AHCI_MAX_PORTS];
+
 /* ---- MMIO helpers ---- */
 static inline uint32_t port_read(int p, uint32_t off) {
-    return abar[(0x100 + p * 0x80 + off) / 4];
+    return port_abar[p][(0x100 + port_hw[p] * 0x80 + off) / 4];
 }
 static inline void port_write(int p, uint32_t off, uint32_t val) {
-    abar[(0x100 + p * 0x80 + off) / 4] = val;
+    port_abar[p][(0x100 + port_hw[p] * 0x80 + off) / 4] = val;
 }
 static inline uint32_t abar_read(uint32_t off) { return abar[off / 4]; }
 static inline void abar_write(uint32_t off, uint32_t val) { abar[off / 4] = val; }
@@ -263,17 +274,64 @@ static int ahci_init_port(int port) {
     return 0;
 }
 
-static void ahci_enumerate(uint32_t pi) {
-    for (int i = 0; i < 32; i++) {
+/* RESIDUE2 T3 (AHCI breadth): COMRESET recovery.  A PxSSTS.DET of 1
+ * means the port sees a device but the PHY never finished the
+ * handshake — the AHCI spec's (10.4.2) prescribed response is a port
+ * reset via PxSCTL.DET.  Without it such ports sit dark even though a
+ * disk is attached.  The sequence is: engine off, DET=1 for >= 1 ms,
+ * DET=0 again, wait for DET==3, clear the error register. */
+static int ahci_comreset(int p) {
+    port_stop(p);
+    port_write(p, PORT_PXSCTL, 1);          /* DET=1: initiate COMRESET */
+    for (int t = 0; t < 200000; t++)
+        __asm__ volatile ("pause");         /* >= 1 ms hold */
+    port_write(p, PORT_PXSCTL, 0);          /* DET=0: wait for device */
+    int t = 2000000;                        /* ~10 ms budget */
+    while ((port_read(p, PORT_PXSSTS) & 0x0F) != 3) {
+        if (t-- <= 0)
+            return -1;
+        __asm__ volatile ("pause");
+    }
+    port_write(p, PORT_PXSERR, 0xFFFFFFFF); /* W1C diagnostic errors */
+    return 0;
+}
+
+/* Enumerate one controller's implemented ports and attach the disks
+ * found on them, assigning flat driver port numbers from *next_port. */
+static void ahci_enumerate(uint32_t pi, uint32_t np, int *next_port) {
+    uint32_t limit = np < 32 ? np : 32;
+    for (uint32_t i = 0; i < limit; i++) {
         if (!(pi & (1u << i))) continue;
-        uint32_t ssts = port_read(i, PORT_PXSSTS);
-        if ((ssts & 0x0F) != 3) continue;
-        uint32_t sig = port_read(i, PORT_PXSIG);
+        if (*next_port >= AHCI_MAX_PORTS) {
+            kprintf("[ahci] port table full, ignoring further ports\n");
+            return;
+        }
+        /* Point the flat-slot register helpers at this controller/port
+         * BEFORE touching any Px* register. */
+        int slot = *next_port;
+        port_abar[slot] = abar;
+        port_hw[slot]   = (uint8_t)i;
+
+        uint32_t ssts = port_read(slot, PORT_PXSSTS);
+        uint32_t det  = ssts & 0x0F;
+        if (det == 1) {
+            /* Device present but PHY not established: COMRESET it. */
+            kprintf("[ahci] hw port %u: DET=1, issuing COMRESET\n", i);
+            if (ahci_comreset(slot) != 0) {
+                kprintf("[ahci] hw port %u: no device after COMRESET\n", i);
+                continue;
+            }
+            ssts = port_read(slot, PORT_PXSSTS);
+            det  = ssts & 0x0F;
+        }
+        if (det != 3) continue;             /* nothing attached */
+        uint32_t sig = port_read(slot, PORT_PXSIG);
         if (sig == SATA_SIG_ATA) {
-            kprintf("[ahci] port %d: SATA disk (sig=0x%08x)\n", i, sig);
-            if (ahci_init_port(i) == 0) {
-                ports[i].present = 1;
+            kprintf("[ahci] hw port %u: SATA disk (sig=0x%08x)\n", i, sig);
+            if (ahci_init_port(slot) == 0) {
+                ports[slot].present = 1;
                 port_count++;
+                (*next_port)++;
             }
         }
     }
@@ -361,18 +419,20 @@ static int ahci_exec(int port, uint8_t cmd, int write, uint64_t lba,
 
 /* ---- Public API ---- */
 
-int ahci_init(void) {
-    uint8_t bus, dev, func;
-
-    if (pci_find_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_SATA_AHCI,
-                       &bus, &dev, &func) != 0) {
-        kprintf("[ahci] no AHCI controller found\n");
-        return -1;
-    }
-    kprintf("[ahci] controller at PCI %u:%u.%u\n", bus, dev, func);
+/* RESIDUE2 T3 (AHCI breadth): bring up ONE AHCI controller.  The port
+ * count comes from CAP.NP (bits 4:0, 0-based) rather than assuming 32,
+ * and the implemented mask is read from PI. */
+static int ahci_attach_ctrl(uint8_t bus, uint8_t dev, uint8_t func,
+                            int *next_port) {
+    kprintf("[ahci] controller %d at PCI %u:%u.%u\n",
+            ctrl_count, bus, dev, func);
     pci_enable_bus_master(bus, dev, func);
 
     uint32_t abar_phys = pci_get_bar(bus, dev, func, 5) & ~0xF;
+    if (!abar_phys) {
+        kprintf("[ahci] controller %d: BAR5 empty, skipping\n", ctrl_count);
+        return -1;
+    }
     uint64_t hhdm = boot_get_hhdm_offset();
 
     /* Map 8 KiB of ABAR. */
@@ -384,14 +444,43 @@ int ahci_init(void) {
     /* Enable AHCI mode. */
     abar_write(AHCI_GHC, abar_read(AHCI_GHC) | GHC_AE);
 
-    uint32_t pi = abar_read(AHCI_PI);
-    kprintf("[ahci] version=0x%x, PI=0x%08x\n", abar_read(AHCI_VS), pi);
+    uint32_t cap = abar_read(AHCI_CAP);
+    uint32_t np  = (cap & 0x1Fu) + 1;       /* CAP.NP is 0-based */
+    uint32_t pi  = abar_read(AHCI_PI);
+    kprintf("[ahci] version=0x%x, CAP=0x%08x (NP=%u), PI=0x%08x\n",
+            abar_read(AHCI_VS), cap, np, pi);
+
+    ahci_enumerate(pi, np, next_port);
+    ctrl_count++;
+    return 0;
+}
+
+int ahci_init(void) {
+    uint8_t bus, dev, func;
 
     memset(ports, 0, sizeof(ports));
     for (int i = 0; i < AHCI_MAX_PORTS; i++)
         spinlock_init(&ahci_port_locks[i]);
-    ahci_enumerate(pi);
-    kprintf("[ahci] %d SATA device(s) ready\n", port_count);
+
+    /* RESIDUE2 T3 (AHCI breadth): bind EVERY SATA/AHCI controller on
+     * the bus, not just the first.  QEMU topologies with two `-device
+     * ahci` instances exercise this path in test_ahci_matrix.sh. */
+    uint8_t a_bus = 0, a_dev = 0xFF, a_func = 0xFF;
+    int next_port = 0;
+    while (pci_find_class_after(PCI_CLASS_MASS_STORAGE,
+                                PCI_SUBCLASS_SATA_AHCI,
+                                a_bus, a_dev, a_func,
+                                &bus, &dev, &func) == 0) {
+        ahci_attach_ctrl(bus, dev, func, &next_port);
+        a_bus = bus; a_dev = dev; a_func = func;
+    }
+
+    if (ctrl_count == 0) {
+        kprintf("[ahci] no AHCI controller found\n");
+        return -1;
+    }
+    kprintf("[ahci] %d controller(s), %d SATA device(s) ready\n",
+            ctrl_count, port_count);
     return 0;
 }
 

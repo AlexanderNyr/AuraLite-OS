@@ -2,6 +2,61 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T3 — storage] 2026-09-04
+
+The storage stack stops being QEMU-shaped and stops writing known-zero
+checksums: all four T3 boxes close, and ledger RES-07 closes with them
+(`patches/RESIDUE2_T3_storage.patch`).
+
+- **Btrfs on-disk SHA-256.**  New kernel-local FIPS 180-4 SHA-256
+  (`kernel/lib/sha256.c`, host gate `test_ksha256` against the RFC 6234
+  vectors; the kernel stays off libatls per D2).  Every btrfs block now
+  carries a 32-byte SHA-256 trailer (bytes 4064..4095, digest over
+  0..4063) verified on every read with a named failure line; the old
+  CRC32C is gone.  One recorded deviation: the trailer scheme instead
+  of a 64-byte header v2, so every structural block offset survives.
+  The self-test corrupts a sealed block on disk and requires refusal +
+  re-seal (`tests/btrfs/test_btrfs.sh` 19/19).
+- **fscheck: consistency walkers for FAT32 and ext2.**  Read-only,
+  checks-first (`kernel/fs/fscheck.{h,c}`), armed by the
+  `opt/auralite.fscheck` fw_cfg knob (default off; the probe prints
+  ENABLED/DISABLED + source).  Named findings, CLEAN summaries, host
+  gate `test_fscheck` over crafted + corrupted images, guest gate
+  `test_fscheck.sh` 10/10.  The walker's first catch was a real ext2
+  formatter bug — the superblock block unmarked in the block bitmap,
+  allocatable as data on a full sweep — fixed at the source.
+- **AHCI breadth.**  Multi-controller scan (new
+  `pci_find_class_after()` in the shared PCI code), port count from
+  CAP.NP, COMRESET recovery for DET==1 ports, per-controller ABAR
+  state.  `test_ahci_matrix.sh` 17/17 over four topologies: ich9
+  port 0, ich9 port 1 with an empty port 0, two controllers at once,
+  and the q35 chipset with its onboard ICH9 AHCI — AuraLite boots on
+  q35 now.
+- **Buffer cache writeback.**  Stores mark buffers dirty; durability
+  comes from eviction, a new 1 Hz `bc_tick()` drain on the PIT seconds
+  tick (non-blocking via the new `spinlock_try_acquire`), the `.sync`
+  path and `kernel_halt`.  FAT32/ext2/diskfs moved onto the cached
+  `fs_read_block`/`fs_write_block` with `.sync = fs_cache_sync`.
+  `test_bc_writeback.sh` proves the hard lane — files survive a
+  SIGTERM kill of the VM with no shutdown path — and prints the
+  `[bc] writeback stores=N flushed=M coalesced=C` receipt (one run:
+  472 stores → 140 device writes).
+- **RES-07 closed (narrowed, recorded in the row).**  buffer_cache.c,
+  tmpfs.c and devfs.c join all three port shared lists and mount in
+  every bringup — cache init, /dev, /tmp and a per-tenant round-trip
+  receipt (`[fs32|rvfs|a64fs] RES-07: tmpfs /tmp round-trip OK`).
+  devfs split into a portable null/zero core + registration hook and
+  the x86-only `devfs_ext.c` (tty0, audio); the port heaps gained a
+  size-header `krealloc` for tmpfs.  symlink/cwd stay x86-only under
+  RES-06 precedent.  fs/shell/parity/boot smokes green on i386, rv64
+  and a64.
+- Gates: `make test-unit` EXIT 0; the fs integration suites green with
+  writeback live (test_fs_stress, fat32_persistence/full, ext2,
+  fsformat_knob, ahci_rw, diskfs, btrfs, exfat, f2fs, ntfs).  Honest
+  note: `test_ext4` fails identically on pristine pre-T3 HEAD
+  (verified in a clean worktree) — its mkfs.ext4-interop lane is
+  pre-existing debt, outside this phase.
+
 ## [RESIDUE2 T0 — plan and coverage rig] 2026-09-04
 
 The residue sequel opens: the user asked for everything in the project

@@ -447,7 +447,10 @@ install; btrfs last: its tooling is the heaviest).
       root block, so old generations remain intact on disk (the header's
       "copy-on-write" is now real on metadata too).
 - [x] **CRC32C checksums**: computed on write, verified on read, for the
-      claimed-but-unimplemented data-integrity story.
+      claimed-but-unimplemented data-integrity story.  (Superseded by
+      RESIDUE2 T3: CRC32C replaced with a per-block SHA-256 trailer
+      verified on every read; the scheme and its one recorded
+      deviation live in RESIDUE2_PLAN.md's T3 Result.)
 - [x] **rename + rmdir + truncate**; `.link`/`.settimes` (+ `fsync`).
 - [x] **Subvolumes/snapshots**: explicitly out of scope (the header's
       claim is retracted in F6).
@@ -667,8 +670,9 @@ and is out of scope here, named in this plan's D-notes.
 - **No journaling (JBD2) replay, no ext4 HTree writing, no ext4
   flex_bg-group allocation.**
 - **No F2FS garbage collection, no SIT/NAT journals, no fsync barriers.**
-- **No btrfs subvolumes, snapshots, RAID, checksum trees beyond F4b's
-  CRC32C, no reflink.**
+- **No btrfs subvolumes, snapshots, RAID, checksum trees beyond the
+  per-block checksum (F4b's CRC32C, since RESIDUE2 T3 a SHA-256
+  trailer), no reflink.**
 - **No NTFS writes, compression, $LogFile replay, ACLs.**
 - **No partitioning or GPT/MBR parsing** (RES-04 stays re-affirmed: the raw
   mount skip is F1's negative control, not a partitioner).

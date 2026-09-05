@@ -79,9 +79,31 @@ uint8_t pci_get_prog_if(uint8_t bus, uint8_t dev, uint8_t func) {
 
 int pci_find_class(uint8_t class_code, uint8_t subclass,
                    uint8_t *out_bus, uint8_t *out_dev, uint8_t *out_func) {
+    return pci_find_class_after(class_code, subclass, 0, 0xFF, 0xFF,
+                                out_bus, out_dev, out_func);
+}
+
+/* RESIDUE2 T3 (AHCI breadth): class scan with a resume cursor.  The
+ * position (after_bus, after_dev, after_func) itself is never matched;
+ * passing (0, 0xFF, 0xFF) therefore behaves like a from-scratch scan. */
+int pci_find_class_after(uint8_t class_code, uint8_t subclass,
+                         uint8_t after_bus, uint8_t after_dev,
+                         uint8_t after_func,
+                         uint8_t *out_bus, uint8_t *out_dev,
+                         uint8_t *out_func) {
+    /* The (0, 0xFF, 0xFF) cursor means "start at the very beginning":
+     * no device index is ever >= (0, 0xFF, 0xFF). */
+    int have_cursor = !(after_bus == 0 && after_dev == 0xFF &&
+                        after_func == 0xFF);
     for (uint8_t bus = 0; bus < 1; bus++) {
+        if (have_cursor && bus < after_bus) continue;
         for (uint8_t dev = 0; dev < 32; dev++) {
+            if (have_cursor && bus == after_bus && dev < after_dev)
+                continue;
             for (uint8_t func = 0; func < 8; func++) {
+                if (have_cursor && bus == after_bus && dev == after_dev &&
+                    func <= after_func)
+                    continue;
                 if (pci_get_vendor(bus, dev, func) == 0xFFFF) continue;
                 if (pci_get_class(bus, dev, func) == class_code &&
                     pci_get_subclass(bus, dev, func) == subclass) {

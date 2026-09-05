@@ -36,6 +36,13 @@ void spinlock_acquire(spinlock_t *lock) {
     }
 }
 
+int spinlock_try_acquire(spinlock_t *lock) {
+    uint8_t expected = 0;
+    return atomic_compare_exchange_strong_explicit(
+        (_Atomic uint8_t *)&lock->locked, &expected, 1,
+        memory_order_acquire, memory_order_relaxed) ? 1 : 0;
+}
+
 void spinlock_release(spinlock_t *lock) {
     atomic_store_explicit((_Atomic uint8_t *)&lock->locked, 0,
                           memory_order_release);

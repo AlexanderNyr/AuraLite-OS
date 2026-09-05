@@ -117,6 +117,9 @@ ALL_CASES=(
     test_ext2
     test_fs_stress
     test_fsformat_knob
+    test_fscheck
+    test_bc_writeback
+    test_ahci_matrix
     # F7 (FSFULL_PLAN.md): the five real on-disk filesystems each have a
     # self-contained harness under tests/<fs>/; these thin wrappers register
     # them with the shard runner.  Each builds its own disks, so there is no
@@ -266,7 +269,7 @@ group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|shell_all|sysmon_data|userspace_apps)$' ;;
-        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs)$' ;;
+        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs|fscheck|bc_writeback|ahci_matrix)$' ;;
         # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI
         # shard, mirroring the usb shard partition.  Kept separate from the
         # `fs` group so the multi-boot harnesses (each is several QEMU

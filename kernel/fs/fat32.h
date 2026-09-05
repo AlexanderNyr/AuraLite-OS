@@ -24,6 +24,11 @@ int  fat32_init(void);
 void fat32_self_test(void);
 int  fat32_append_log(const char *data, uint64_t len);
 
+/* RESIDUE2 T3: where the mounted volume lives (for fscheck).  The bdev
+ * is -1 when not mounted; the base LBA is always the superfloppy's. */
+int      fat32_get_bdev(void);
+uint32_t fat32_get_base_lba(void);
+
 /* Legacy shim: prints a flat root listing.  Kept for backward compatibility
  * with the older shell.  New code should use vfs_readdir("/fat"). */
 void fat32_list(void);

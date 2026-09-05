@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "kernel/fs/diskfs.h"
 #include "kernel/fs/blkdev.h"
+#include "kernel/fs/buffer_cache.h"   /* RESIDUE2 T3: cache-backed I/O */
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
@@ -83,12 +84,14 @@ static int valid_name(const char *path) {
     return strlen(path) < DISKFS_NAME_MAX;
 }
 
+/* RESIDUE2 T3 (writeback): /disk rides the same cache-backed path as
+ * the other raw-block filesystems. */
 static int read_sector(uint64_t lba, void *buf) {
-    return blkdev_read(disk_dev, lba, 1, buf);
+    return fs_read_block(disk_dev, lba, 1, buf);
 }
 
 static int write_sector(uint64_t lba, const void *buf) {
-    return blkdev_write(disk_dev, lba, 1, buf);
+    return fs_write_block(disk_dev, lba, 1, buf);
 }
 
 static void sync_table(void) {
@@ -310,6 +313,7 @@ const struct vfs_ops diskfs_ops = {
     .readdir = diskfs_readdir,
     .unlink  = diskfs_unlink,
     .stat    = diskfs_stat,
+    .sync    = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
 };
 
 void diskfs_list(void) {

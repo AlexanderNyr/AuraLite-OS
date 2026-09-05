@@ -4,7 +4,7 @@
 # /btrfs volume.
 #
 # Scope note (honest bar): AuraLite's btrfs is a *custom* layout — its own
-# CoW keyed tree, per-block magic and CRC32C checksums — not the full real
+# CoW keyed tree, per-block magic and SHA-256 block-trailer checksums
 # btrfs on-disk format (no subvolumes, snapshots, chunk tree, RAID; those are
 # explicitly out of scope per FSFULL_PLAN F6).  So host `mkfs.btrfs` /
 # `btrfs check` binary-format interop is NOT applicable the way it is for
@@ -14,7 +14,7 @@
 #   - CoW overwrite: writes generation-2 over generation-1 data and verifies
 #     BOTH blocks still exist on disk, both CRC-valid, each with its own
 #     content, and the tree re-resolves to the new block.
-#   - multi-block (8 KiB) byte-exact round-trip; CRC32C verify-on-read runs
+#   - multi-block (8 KiB) byte-exact round-trip; SHA-256 verify-on-read runs
 #     on every block read.
 #   - mkdir/create-in-subdir/rename/link(nlink>=2)/settimes/stat,
 #     truncate-down with zero/trunc read-back, unlink, rmdir, fsync.
@@ -44,7 +44,7 @@ il_init
 IL_SELFTEST=fast
 il_have qemu-system-x86_64
 
-il_section "btrfs (CoW tree, CRC32C, full mutation surface + internal self-test)"
+il_section "btrfs (CoW tree, SHA-256 trailer, full mutation surface + internal self-test)"
 
 # 6 AHCI disks: btrfs is the 5th (blkdev 4, /btrfs).  All are fresh so every
 # FS phase formats independently.
@@ -125,7 +125,12 @@ il_assert_grep "$LOG1" "\[btrfs\] fsync: persisted tree root LBA" \
                                                           "fsync persisted tree root"
 il_assert_grep "$LOG1" "truncate: .* -> 7 bytes"        "truncate down to 7 bytes"
 il_assert_grep "$LOG1" "hello-f"                          "truncate read-back (first 7 bytes)"
-il_assert_grep "$LOG1" "\[btrfs\] PASS:"                  "btrfs CoW/CRC self-test clean (allocations)"
+il_assert_grep "$LOG1" "\[btrfs\] PASS:"                  "btrfs CoW/SHA-256 self-test clean (allocations)"
+# RESIDUE2 T3: the self-test's step 9 corrupts a sealed block on disk and
+# requires the SHA-256 trailer to refuse it (negative control).  Fixed-string
+# match: the parens in "(RESIDUE2 T3)" defeat grep -E (known lib.sh issue).
+il_assert_grep_fixed "$LOG1" "[btrfs] PASS: SHA-256 detects on-disk corruption (RESIDUE2 T3)" \
+                                                          "SHA-256 catches on-disk corruption"
 il_assert_grep "$LOG1" "btrfsck: clean"                  "btrfsck builtin reports clean"
 il_assert_grep "$LOG1" "\[btrfs\] unlink: removed 'sub/f2.txt'" "last link unlink"
 il_assert_grep "$LOG1" "\[btrfs\] rmdir: removed 'sub'"  "rmdir on btrfs"
@@ -142,7 +147,7 @@ il_run_qemu "$LOG2" 40 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
     -fw_cfg "opt/auralite.fsformat,string=0"
 
 il_assert_grep "$LOG2" "\[btrfs\] mounted CoW filesystem" "btrfs remounted without reformat"
-il_assert_grep "$LOG2" "CRC32C checksums \+ CoW tree re-parenting enabled" \
-                                                          "mount banner present"
+il_assert_grep "$LOG2" "SHA-256 checksums \(block trailer\) \+ CoW tree re-parenting enabled" \
+                                                          "mount banner present (SHA-256 trailer)"
 
 il_summary

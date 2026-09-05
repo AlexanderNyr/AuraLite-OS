@@ -18,7 +18,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-04 | W | DONE@R1 | no partition parse: raw mounts silently ignore GPT/MBR (PARITY §6) | probe prints named skip on partitioned media; smoke pins it |
 | RES-05 | W | DONE@R1 | TSS IST1 filled but no gate uses it (status.md) | double-fault lane uses IST1 with a receipt, or ist fill removed |
 | RES-06 | W | OPEN | vfs.c off-x86 — R2 NARROWED: the mount/resolve core split into vfsmount.c (21st fs file, adopted on ALL FOUR widths); what remains x86-coupled is the fd/OFD/pipe machinery (the `sti` sits in the pipe wait; tcb fd tables, wait queues) | the fd half compiles portable, or its coupling is re-affirmed as the x86 process layer's |
-| RES-07 | W | OPEN | buffer_cache/tmpfs/devfs/cwd/symlink not adopted on ports (PARITY P2) | objects join the three shared lists; link green |
+| RES-07 | W | DONE@T3 | buffer_cache/tmpfs/devfs/cwd/symlink not adopted on ports (PARITY P2) — T3 NARROWED the close: buffer_cache/tmpfs/devfs join all three shared lists and mount in every bringup (cache init + /dev + /tmp + a per-tenant round-trip receipt; devfs split into a portable null/zero core + x86-only devfs_ext.c for tty0/audio); symlink/cwd stay x86-only under RES-06 precedent (the fd/OFD half, RES-06, remains their owner) | objects join the three shared lists; link green — receipts: `[fs32|rvfs|a64fs] RES-07: tmpfs /tmp round-trip OK`, fs/shell/parity/boot smokes green on i386/rv64/a64 |
 | RES-08 | W | DONE@R2 | i386 shell fd layer initrd-only (PARITY P4/P7) | i386 shell cats /ext2 file through VFS; smoke pins it |
 | RES-09 | W | DONE@R2 | no path-level VFS mounts on rv64/a64 (PARITY P2) | `[vfs] mounted /` printed on both tenants; smokes pin it |
 | RES-10 | W | DONE@R3 | i386 TCP/sockets absent — net32 is miniproto only (I386 I8) | one TCP payload round-trips in an i386 smoke |
@@ -79,6 +79,7 @@ plus RES-53).  PSS verify flipped RES-53 → DONE; OPEN back to 5
 (RES-02/06/07/16/18).  PENDING-USER@Y7 1, RE-AFFIRMED@Y7 2,
 HANDED-OFF@Y7 1.
 RESIDUE2 T2: RES-16 → DONE@T2; OPEN then 5 (RES-02/06/07/18/54).  TODO.md unchecked 40 → 38 (the T2 ISO box and the T1 errno box the T1 commit forgot to flip); baseline moved same-commit.
+RESIDUE2 T3: RES-07 → DONE@T3 (narrowed close recorded in the row); OPEN then 4 (RES-02/06/18/54).  TODO.md unchecked 38 → 34 (the four T3 storage boxes); baseline moved same-commit.
 
 Harvest baseline lives in `tools/residue_baseline.txt` (the
 harvester's own regex is the metric; the §2 draft quoted counts

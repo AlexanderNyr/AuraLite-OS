@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include "kernel/fs/fat32.h"
 #include "kernel/fs/blkdev.h"
+#include "kernel/fs/buffer_cache.h"   /* RESIDUE2 T3: cache-backed I/O */
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
 #include "kernel/lib/klog.h"
@@ -152,20 +153,25 @@ static inline void wr16(uint8_t *p, uint16_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF;
 static inline void wr32(uint8_t *p, uint32_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; p[2]=(v>>16)&0xFF; p[3]=(v>>24)&0xFF; }
 
 /* ---- Block I/O ---- */
+/* RESIDUE2 T3 (writeback): FAT32 I/O goes through the buffer cache
+ * (fs_read_block/fs_write_block) instead of raw blkdev calls.  This
+ * keeps FAT32 coherent with every other cache-backed filesystem and
+ * gives its stores the same deferred-write durability policy (evict /
+ * 1 Hz tick / sync / halt). */
 static int read_sect_abs(uint32_t lba, void *buf) {
-    return blkdev_read(fs.bdev, lba, 1, buf);
+    return fs_read_block(fs.bdev, lba, 1, buf);
 }
 static int write_sect_abs(uint32_t lba, const void *buf) {
-    return blkdev_write(fs.bdev, lba, 1, buf);
+    return fs_write_block(fs.bdev, lba, 1, buf);
 }
 static uint32_t cluster_to_lba(uint32_t cl) {
     return fs.data_lba + (cl - 2u) * fs.sect_per_clus;
 }
 static int read_cluster(uint32_t cl, void *buf) {
-    return blkdev_read(fs.bdev, cluster_to_lba(cl), fs.sect_per_clus, buf);
+    return fs_read_block(fs.bdev, cluster_to_lba(cl), fs.sect_per_clus, buf);
 }
 static int write_cluster(uint32_t cl, const void *buf) {
-    return blkdev_write(fs.bdev, cluster_to_lba(cl), fs.sect_per_clus, buf);
+    return fs_write_block(fs.bdev, cluster_to_lba(cl), fs.sect_per_clus, buf);
 }
 
 /* ---- FAT access ---- */
@@ -1519,6 +1525,7 @@ const struct vfs_ops fat32_ops = {
     .rename   = fat32_rename_op,
     .stat     = fat32_stat_op,
     .truncate = fat32_truncate_op,
+    .sync     = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
 };
 
 /* ---- Public API ---- */
@@ -1570,6 +1577,10 @@ int fat32_init(void) {
     kprintf("[fat32] persistent kernel log: /fat/AURALOG.TXT\n");
     return 0;
 }
+
+/* ---- RESIDUE2 T3: mount-location accessors for fscheck ---- */
+int fat32_get_bdev(void) { return fs.mounted ? fs.bdev : -1; }
+uint32_t fat32_get_base_lba(void) { return FAT_DEFAULT_BASE_LBA; }
 
 /* ---- Self-tests ---- */
 void fat32_self_test(void) {

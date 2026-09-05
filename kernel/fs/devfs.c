@@ -1,4 +1,14 @@
-/* devfs.c — /dev filesystem with null and zero character devices. */
+/* devfs.c — portable /dev core with null and zero character devices.
+ *
+ * RESIDUE2 T3 (RES-07): this object now links UNCHANGED on all four
+ * architectures.  The core knows only devices it can serve without any
+ * arch-specific dependency: /dev/null and /dev/zero.  Platform devices
+ * (the x86 console tty, the PC-speaker/audio sink) register through
+ * devfs_register_ext() from an arch-side module — on x86_64 that is
+ * kernel/fs/devfs_ext.c, wired by kernel.c right after devfs_init().
+ * The ports simply never register them, so /dev/null and /dev/zero are
+ * the same on every tenant.
+ */
 
 #include <stdint.h>
 #include "kernel/fs/devfs.h"
@@ -7,16 +17,20 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
-#include "kernel/audio/audio.h"
-#include "kernel/tty/tty.h"
 
 #define DEVFS_MAX_DEVICES 8
 
-enum dev_type { DEV_NULL, DEV_ZERO, DEV_AUDIO, DEV_TTY };
+enum dev_type { DEV_NULL, DEV_ZERO, DEV_EXT };
 
 struct devfs_device {
     char     name[32];
     uint32_t type;
+    /* DEV_EXT only: the arch module's handlers. */
+    int64_t (*ext_read)(struct vnode *vn, uint64_t pos, void *buf,
+                        uint64_t count);
+    int64_t (*ext_write)(struct vnode *vn, uint64_t pos, const void *buf,
+                         uint64_t count);
+    int     (*ext_ioctl)(struct vnode *vn, unsigned long cmd, void *arg);
 };
 
 struct devfs_state {
@@ -28,49 +42,62 @@ struct devfs_state {
 static struct devfs_state state;
 
 /* Device identifiers (stable pointers for vnode.fs_data). */
-static struct devfs_device dev_null  = { "/dev/null",  DEV_NULL  };
-static struct devfs_device dev_zero  = { "/dev/zero",  DEV_ZERO  };
-static struct devfs_device dev_audio = { "/dev/audio", DEV_AUDIO };
-static struct devfs_device dev_tty0  = { "/dev/tty0",  DEV_TTY   };
+static struct devfs_device dev_null  = { "/dev/null",  DEV_NULL, 0, 0, 0 };
+static struct devfs_device dev_zero  = { "/dev/zero",  DEV_ZERO, 0, 0, 0 };
 
 void devfs_init(void) {
     state.count = 0;
     memset(state.vnodes, 0, sizeof(state.vnodes));
 
     /* /dev/null */
+    state.devices[state.count] = dev_null;
     strncpy(state.vnodes[state.count].name, "null", 31);
     state.vnodes[state.count].type    = VFS_TYPE_CHARDEV;
     state.vnodes[state.count].size    = 0;
     state.vnodes[state.count].ops     = &devfs_ops;
-    state.vnodes[state.count].fs_data = &dev_null;
+    state.vnodes[state.count].fs_data = &state.devices[state.count];
     state.count++;
 
     /* /dev/zero */
+    state.devices[state.count] = dev_zero;
     strncpy(state.vnodes[state.count].name, "zero", 31);
     state.vnodes[state.count].type    = VFS_TYPE_CHARDEV;
     state.vnodes[state.count].size    = 0;
     state.vnodes[state.count].ops     = &devfs_ops;
-    state.vnodes[state.count].fs_data = &dev_zero;
+    state.vnodes[state.count].fs_data = &state.devices[state.count];
     state.count++;
 
-    /* /dev/audio */
-    strncpy(state.vnodes[state.count].name, "audio", 31);
-    state.vnodes[state.count].type    = VFS_TYPE_CHARDEV;
-    state.vnodes[state.count].size    = 0;
-    state.vnodes[state.count].ops     = &devfs_ops;
-    state.vnodes[state.count].fs_data = &dev_audio;
-    state.count++;
-
-    /* /dev/tty0 — the system console terminal. */
-    strncpy(state.vnodes[state.count].name, "tty0", 31);
-    state.vnodes[state.count].type    = VFS_TYPE_CHARDEV;
-    state.vnodes[state.count].size    = 0;
-    state.vnodes[state.count].ops     = &devfs_ops;
-    state.vnodes[state.count].fs_data = &dev_tty0;
-    state.count++;
-
-    kprintf("[devfs] registered %d device(s): null, zero, audio, tty0\n",
+    kprintf("[devfs] registered %d portable device(s): null, zero\n",
             state.count);
+}
+
+/* RESIDUE2 T3 (RES-07): the arch-side registration hook.  On x86_64,
+ * devfs_ext.c adds tty0 and audio here; the other ports never call it.
+ * Returns 0 on success, -1 when the table is full. */
+int devfs_register_ext(const char *name,
+                       int64_t (*read_fn)(struct vnode *, uint64_t, void *,
+                                          uint64_t),
+                       int64_t (*write_fn)(struct vnode *, uint64_t,
+                                           const void *, uint64_t),
+                       int (*ioctl_fn)(struct vnode *, unsigned long,
+                                       void *)) {
+    if (state.count >= DEVFS_MAX_DEVICES || !name)
+        return -1;
+    int i = state.count;
+    memset(&state.devices[i], 0, sizeof(state.devices[i]));
+    strncpy(state.devices[i].name, name, 31);
+    state.devices[i].type      = DEV_EXT;
+    state.devices[i].ext_read  = read_fn;
+    state.devices[i].ext_write = write_fn;
+    state.devices[i].ext_ioctl = ioctl_fn;
+
+    strncpy(state.vnodes[i].name, name, 31);
+    state.vnodes[i].type    = VFS_TYPE_CHARDEV;
+    state.vnodes[i].size    = 0;
+    state.vnodes[i].ops     = &devfs_ops;
+    state.vnodes[i].fs_data = &state.devices[i];
+    state.count++;
+    return 0;
 }
 
 static struct vnode *devfs_lookup(void *fs_data, const char *path) {
@@ -108,7 +135,6 @@ static int devfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
 
 static int64_t devfs_read(struct vnode *vn, uint64_t pos,
                           void *buf, uint64_t count) {
-    (void)pos;
     struct devfs_device *d = (struct devfs_device *)vn->fs_data;
     switch (d->type) {
     case DEV_NULL:
@@ -116,10 +142,10 @@ static int64_t devfs_read(struct vnode *vn, uint64_t pos,
     case DEV_ZERO:
         memset(buf, 0, (size_t)count);
         return (int64_t)count;
-    case DEV_TTY:
-        /* Drain whatever the line discipline has committed (may be 0; the
-         * syscall layer's blocking loop re-polls + yields). */
-        return tty_read_available(tty_console(), (char *)buf, (int)count);
+    case DEV_EXT:
+        if (d->ext_read)
+            return d->ext_read(vn, pos, buf, count);
+        return 0;
     default:
         break;
     }
@@ -128,33 +154,22 @@ static int64_t devfs_read(struct vnode *vn, uint64_t pos,
 
 static int64_t devfs_write(struct vnode *vn, uint64_t pos,
                            const void *buf, uint64_t count) {
-    (void)pos;
     struct devfs_device *d = (struct devfs_device *)vn->fs_data;
-    if (d->type == DEV_TTY) {
-        return tty_write(tty_console(), (const char *)buf, (int)count);
+    switch (d->type) {
+    case DEV_EXT:
+        if (d->ext_write)
+            return d->ext_write(vn, pos, buf, count);
+        return (int64_t)count;    /* no sink registered: discard politely */
+    default:
+        break;
     }
-    if (d->type == DEV_AUDIO) {
-        const char *s = (const char *)buf;
-        if (count > 5 && memcmp(s, "BEEP ", 5) == 0) {
-            uint64_t freq = 0, dur = 0;
-            const char *p = s + 5;
-            while (*p >= '0' && *p <= '9') { freq = freq * 10 + (*p - '0'); p++; }
-            while (*p == ' ' || *p == '\t') p++;
-            while (*p >= '0' && *p <= '9') { dur = dur * 10 + (*p - '0'); p++; }
-            audio_play_tone((uint32_t)freq, (uint32_t)dur);
-        } else {
-            audio_write_buffer((const uint8_t *)buf, (uint32_t)count);
-        }
-        return (int64_t)count;
-    }
-    return (int64_t)count;   /* discard data, report success */
+    return (int64_t)count;   /* null/zero discard data, report success */
 }
 
 static int devfs_ioctl(struct vnode *vn, unsigned long cmd, void *arg) {
     struct devfs_device *d = (struct devfs_device *)vn->fs_data;
-    if (d->type == DEV_TTY) {
-        return tty_ioctl(tty_console(), cmd, arg);
-    }
+    if (d->type == DEV_EXT && d->ext_ioctl)
+        return d->ext_ioctl(vn, cmd, arg);
     return -ENOTTY;   /* not a terminal */
 }
 

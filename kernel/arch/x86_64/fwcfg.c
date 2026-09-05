@@ -29,6 +29,7 @@
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/lib/selftest.h"
 #include "kernel/fs/fsformat.h"
+#include "kernel/fs/fscheck.h"
 #include "kernel/lib/string.h"
 
 #define FW_CFG_SELECTOR   0x510
@@ -38,6 +39,7 @@
 
 #define SELFTEST_FILE     "opt/auralite.selftest"
 #define FSFORMAT_FILE     "opt/auralite.fsformat"
+#define FSCHECK_FILE      "opt/auralite.fscheck"
 
 static uint32_t read_be32(void) {
     uint32_t v = 0;
@@ -140,4 +142,22 @@ void fwcfg_fsformat_probe(void) {
     /* Anything else (including a multi-byte value) leaves the build
      * default in place: a typo in a QEMU flag must degrade to the SAFE
      * state, and the safe state is the default (refuse). */
+}
+
+/* RESIDUE2 T3: the read-only FAT32/ext2 consistency walkers are an
+ * opt-in boot diagnostic (fsformat.c shape).  Default OFF: a normal
+ * boot pays nothing; a CI lane or a suspicious operator passes
+ * -fw_cfg name=opt/auralite.fscheck,string=1 and gets named findings. */
+void fwcfg_fscheck_probe(void) {
+    char val[16];
+    if (!fwcfg_read_string(FSCHECK_FILE, val, (int)sizeof(val) - 1)) {
+        return;
+    }
+
+    if (val[0] == '1') {
+        fscheck_set(1, "fw_cfg");
+    } else if (val[0] == '0') {
+        fscheck_set(0, "fw_cfg");
+    }
+    /* Unrecognised strings leave the default (off) in place. */
 }

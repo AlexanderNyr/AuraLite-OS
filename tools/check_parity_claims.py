@@ -42,7 +42,7 @@ SYSCALL_CASE_PIN = {       # P4: 6 -> 11; RESIDUE R6 added brk: 12.
     ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 12,
     ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   12,
 }
-FS_FILE_COUNT = 22         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2; +fsformat.c FSFULL F1).
+FS_FILE_COUNT = 24         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2; +fsformat.c FSFULL F1; +fscheck.c + devfs_ext.c RESIDUE2 T3).
 
 # Flag sets copied from the Makefile's CFLAGSRV / CFLAGSA64 (compile
 # flags only; -Werror deliberately kept so new warnings fail here

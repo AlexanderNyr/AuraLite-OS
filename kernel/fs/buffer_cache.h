@@ -42,6 +42,13 @@ int bc_sync(struct buffer *buf);
 /* Force write all dirty buffers in the cache to disk. */
 void bc_flush_all(void);
 
+/* RESIDUE2 T3 (writeback): the 1 Hz drain.  Flush up to 256 dirty
+ * buffers per call (coldest first) and print the deferred/flushed
+ * receipt when anything was written.  Hooked from the BSP seconds tick
+ * in drivers/timer/pit.c; a hard VM kill therefore loses at most ~1 s
+ * of stores.  Safe to call before bc_init() (no-op). */
+void bc_tick(void);
+
 /* Evict the least recently used clean buffer to make space. 
  * Returns true if a buffer was successfully evicted. */
 bool bc_evict(void);
@@ -59,10 +66,12 @@ bool bc_evict(void);
  *
  * `dev` is the blkdev id, `lba` the starting 512-byte sector, `count`
  * the number of 512-byte sectors (a 4 KiB FS block is count=8).
- * Return 0 on success, -1 on any cache/device error.  On a write error
- * a partially-written buffer set may be left dirty; bc_flush_all will
- * retry it, so callers should treat the error as "I/O failed", not
- * "nothing was written".
+ * Return 0 on success, -1 on any cache/device error.  RESIDUE2 T3:
+ * writes are WRITE-BACK (the buffer is marked dirty; eviction, the
+ * 1 Hz bc_tick(), bc_flush_all/fs_cache_sync and kernel_halt provide
+ * durability).  On a write error a partially-written buffer set may be
+ * left dirty; bc_flush_all will retry it, so callers should treat the
+ * error as "I/O failed", not "nothing was written".
  */
 int fs_read_block(int dev, uint64_t lba, uint32_t count, void *buf);
 int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf);

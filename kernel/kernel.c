@@ -42,6 +42,7 @@
 #include "kernel/fs/f2fs.h"
 #include "kernel/fs/ntfs.h"
 #include "kernel/fs/fsformat.h"
+#include "kernel/fs/fscheck.h"
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "drivers/uart/uart.h"
@@ -84,6 +85,10 @@ static void uart_tx_irq_thunk(struct registers *regs) {
 
 /* Halt the (only) CPU indefinitely with interrupts off. */
 void kernel_halt(void) {
+    /* RESIDUE2 T3 (writeback): the last flush point.  Dirty cache
+     * buffers must reach the device before the CPU stops; after this,
+     * a kill loses nothing that the VFS accepted. */
+    bc_flush_all();
     /* OPT_PLAN.md O3 (D4): the ring may still hold the last words —
      * drain it synchronously before the lights go out, and latch every
      * later byte onto the synchronous path. */
@@ -275,6 +280,17 @@ void kmain(boot_info_t *boot_info) {
                 fs_format_source());
     }
 
+    /* RESIDUE2 T3: the read-only FAT32/ext2 consistency walkers are an
+     * opt-in boot diagnostic; the gate prints its state like the two
+     * knobs before it. */
+    {
+        extern void fwcfg_fscheck_probe(void);
+        fwcfg_fscheck_probe();
+        kprintf("[fscheck] consistency walk: %s (%s)\n",
+                fscheck_enabled() ? "ENABLED" : "DISABLED",
+                fscheck_source());
+    }
+
     kprintf("[boot] initialising physical memory manager...\n");
     pmm_init();
     /* HW H3 follow-up: the fb console's RAM shadow needs frames; arm
@@ -364,8 +380,11 @@ void kmain(boot_info_t *boot_info) {
         }
     }
 
-    /* Mount devfs at "/dev". */
+    /* Mount devfs at "/dev".  RESIDUE2 T3 (RES-07): devfs.c is now the
+     * portable core (null + zero); the x86_64-only devices (tty0, audio)
+     * attach through devfs_ext.c before the mount goes live. */
     devfs_init();
+    devfs_ext_init();
     vfs_mount("/dev", &devfs_ops, NULL);
 
     /* Mount procfs at "/proc". */
@@ -538,6 +557,21 @@ void kmain(boot_info_t *boot_info) {
      * experimental-tests gate that never ran. */
     if (selftest_mode() == SELFTEST_FULL)
         run_fs_selftests();
+
+    /* RESIDUE2 T3: defensive consistency walk over the mature disk
+     * filesystems, opt-in via fw_cfg (see fscheck.c).  Read-only by
+     * contract; every finding is a named line an integration case can
+     * grep, and a clean volume prints the CLEAN summary instead. */
+    if (fscheck_enabled()) {
+        int fb = fat32_get_bdev();
+        if (fb >= 0)
+            fscheck_fat32(fb, fat32_get_base_lba());
+        int eb = ext2_get_bdev();
+        if (eb >= 0)
+            fscheck_ext2(eb, ext2_get_base_lba());
+        if (fb < 0 && eb < 0)
+            kprintf("[fscheck] no FAT32/ext2 volume mounted; nothing to walk\n");
+    }
 
     /* USB UHCI + OHCI + EHCI drivers. */
     kprintf("[boot] initialising USB (UHCI) driver...\n");

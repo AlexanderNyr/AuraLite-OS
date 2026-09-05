@@ -17,6 +17,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/proc/signal.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/fs/buffer_cache.h"   /* RESIDUE2 T3: bc_tick() 1 Hz drain */
 
 #define TIMER_TAG "[timer] "
 
@@ -70,6 +71,11 @@ static void timer_irq_handler(struct registers *regs) {
          * O4 wait_queue fix. */
         if (timer_freq_hz != 0 && (timer_ticks % timer_freq_hz) == 0) {
             gui_poke();
+            /* RESIDUE2 T3 (writeback): the seconds tick is also the
+             * buffer cache's periodic drain — a hard kill of the VM can
+             * lose at most ~1 s of deferred stores.  No-op before
+             * bc_init(). */
+            bc_tick();
         }
     }
     if (sched_is_ready()) {

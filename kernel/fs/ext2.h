@@ -30,6 +30,11 @@
 int  ext2_init(int prefer_port);
 void ext2_self_test(void);
 
+/* RESIDUE2 T3: where the mounted volume lives (for fscheck).  The bdev
+ * is -1 when not mounted. */
+int      ext2_get_bdev(void);
+uint32_t ext2_get_base_lba(void);
+
 /* Lazy-print the root listing (used by `vfs_list` fall-back). */
 void ext2_list(void);
 

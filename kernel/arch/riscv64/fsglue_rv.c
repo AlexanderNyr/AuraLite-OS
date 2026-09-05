@@ -22,6 +22,10 @@
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/devfs.h"
+#include "kernel/fs/tmpfs.h"
+#include "kernel/fs/buffer_cache.h"
+#include "kernel/lib/string.h"
 #include "kernel/fs/vfsmount.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/arch/riscv64/kheap_rv.h"
@@ -39,8 +43,35 @@ void klog_putchar(char c) { (void)c; }
 
 /* ---- the heap names ext2.c links against ---------------------------- */
 
-void *kmalloc(size_t size)          { return kmalloc_rv(size); }
-void  kfree(void *p)                { kfree_rv(p); }
+/* RESIDUE2 T3 (RES-07): tmpfs.c links krealloc(), which needs the old
+ * allocation size.  The flat port allocators do not track it, so every
+ * kmalloc here carries an 8-byte size header; kfree/krealloc read it
+ * back.  All shared objects in this binary allocate and free through
+ * these two names, so the header is consistent everywhere. */
+void *kmalloc(uint64_t size)
+{
+    uint64_t *p = kmalloc_rv((size_t)size + 8);
+    if (!p) return 0;
+    *p = (uint64_t)size;
+    return p + 1;
+}
+
+void kfree(void *p)
+{
+    if (p) kfree_rv((uint64_t *)p - 1);
+}
+
+void *krealloc(void *ptr, uint64_t size)
+{
+    if (!ptr) return kmalloc((uint64_t)size);
+    if (size == 0) { kfree(ptr); return 0; }
+    uint64_t old = *((uint64_t *)ptr - 1);
+    void *np = kmalloc((uint64_t)size);
+    if (!np) return 0;
+    memcpy(np, ptr, (size_t)(old < size ? old : size));
+    kfree(ptr);
+    return np;
+}
 
 /* ---- timestamps ------------------------------------------------------ */
 /* rdtime counts at 10 MHz on QEMU virt (the DTB's timebase-frequency);
@@ -108,6 +139,39 @@ const struct vfs_ops *rvfs_ops(void)
 
 void rvfs_bringup(void)
 {
+
+    /* RESIDUE2 T3 (RES-07): the buffer cache backs ext2's I/O on this
+     * tenant too (ext2.c routes through fs_read_block/fs_write_block);
+     * it must exist before the first mount. */
+    bc_init();
+
+    /* RESIDUE2 T3 (RES-07): the portable in-memory filesystems join
+     * this tenant — /dev (the shared devfs core: null + zero) and
+     * /tmp (the shared writable tmpfs volume).  Same objects x86_64
+     * links, compiled UNCHANGED into this port. */
+    devfs_init();
+    vfsm_mount("/dev", &devfs_ops, 0);
+    tmpfs_init();
+    vfsm_mount("/tmp", &tmpfs_ops, tmpfs_volume_tmp());
+    /* Adoption proof: one direct ops round-trip on the shared tmpfs
+     * object, exactly the way x86_64's tmpfs_self_test starts. */
+    {
+        struct vnode *tv = tmpfs_ops.create(tmpfs_volume_tmp(), "res07.txt");
+        static const char msg[] = "res07-port-tmpfs";
+        if (tv) {
+            int64_t w = tmpfs_ops.write(tv, 0, msg, sizeof(msg) - 1);
+            char rb[32];
+            int64_t r = tmpfs_ops.read(tv, 0, rb, sizeof(rb));
+            if (w == (int64_t)(sizeof(msg) - 1) && r == w &&
+                memcmp(rb, msg, (size_t)r) == 0)
+                kprintf("[rvfs] RES-07: tmpfs /tmp round-trip OK "
+                        "(%lld bytes)\n", (long long)r);
+            else
+                kprintf("[rvfs] RES-07: tmpfs round-trip FAILED\n");
+        } else {
+            kprintf("[rvfs] RES-07: tmpfs create FAILED\n");
+        }
+    }
     int dev = blkdev_register("vblk0", &vblk_bd_ops, 0, BLKDEV_SECTOR_SIZE);
     if (dev < 0) {
         kprintf("[blkdev] REFUSED vblk0: rc=%d\n", dev);

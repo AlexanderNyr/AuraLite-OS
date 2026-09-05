@@ -18,6 +18,10 @@
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/devfs.h"
+#include "kernel/fs/tmpfs.h"
+#include "kernel/fs/buffer_cache.h"
+#include "kernel/lib/string.h"
 #include "kernel/fs/vfsmount.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/arch/i386/kheap32.h"
@@ -51,12 +55,33 @@ void klog_putchar(char c) { (void)c; }
  * instead of truncating it into a small "success". */
 void *kmalloc(uint64_t size)
 {
-    if (size > 0xFFFFFFFFu)
+    if (size > 0xFFFFFFFFu - 8u)
         return 0;
-    return kmalloc32((size_t)size);
+    uint64_t *p = kmalloc32((size_t)size + 8);
+    if (!p) return 0;
+    *p = size;                    /* RESIDUE2 T3: krealloc needs old size */
+    return p + 1;
 }
 
-void kfree(void *p) { kfree32(p); }
+void kfree(void *p)
+{
+    if (p) kfree32((uint64_t *)p - 1);
+}
+
+/* RESIDUE2 T3 (RES-07): tmpfs.c links krealloc().  The size header
+ * above tells us how much of the old buffer survives. */
+void *krealloc(void *ptr, uint64_t size)
+{
+    if (!ptr) return kmalloc(size);
+    if (size == 0) { kfree(ptr); return 0; }
+    if (size > 0xFFFFFFFFu - 8u) return 0;
+    uint64_t old = *((uint64_t *)ptr - 1);
+    void *np = kmalloc(size);
+    if (!np) return 0;
+    memcpy(np, ptr, (size_t)(old < size ? old : size));
+    kfree(ptr);
+    return np;
+}
 
 /* ---- timestamps ------------------------------------------------------ */
 /* PIT ticks at 100 Hz (the very rate TIMEFIX pinned); seconds. */
@@ -106,6 +131,39 @@ static const struct blkdev_ops ata_bd_ops = {
 
 void fs32_bringup(void)
 {
+    /* RESIDUE2 T3 (RES-07): the buffer cache backs ext2's I/O on this
+     * tenant too (ext2.c routes through fs_read_block/fs_write_block);
+     * it must exist before the first mount. */
+    bc_init();
+
+    /* RESIDUE2 T3 (RES-07): the portable in-memory filesystems join
+     * this tenant — /dev (the shared devfs core: null + zero) and
+     * /tmp (the shared writable tmpfs volume).  Same objects x86_64
+     * links, compiled UNCHANGED into this port. */
+    devfs_init();
+    vfsm_mount("/dev", &devfs_ops, 0);
+    tmpfs_init();
+    vfsm_mount("/tmp", &tmpfs_ops, tmpfs_volume_tmp());
+    /* Adoption proof: one direct ops round-trip on the shared tmpfs
+     * object, exactly the way x86_64's tmpfs_self_test starts. */
+    {
+        struct vnode *tv = tmpfs_ops.create(tmpfs_volume_tmp(), "res07.txt");
+        static const char msg[] = "res07-port-tmpfs";
+        if (tv) {
+            int64_t w = tmpfs_ops.write(tv, 0, msg, sizeof(msg) - 1);
+            char rb[32];
+            int64_t r = tmpfs_ops.read(tv, 0, rb, sizeof(rb));
+            if (w == (int64_t)(sizeof(msg) - 1) && r == w &&
+                memcmp(rb, msg, (size_t)r) == 0)
+                kprintf("[fs32] RES-07: tmpfs /tmp round-trip OK "
+                        "(%lld bytes)\n", (long long)r);
+            else
+                kprintf("[fs32] RES-07: tmpfs round-trip FAILED\n");
+        } else {
+            kprintf("[fs32] RES-07: tmpfs create FAILED\n");
+        }
+    }
+
     int d0 = blkdev_register("ata0", &ata_bd_ops, (void *)0,
                              BLKDEV_SECTOR_SIZE);
     kprintf("[blkdev] blk%d = ata0 (primary master, %u sectors)\n",

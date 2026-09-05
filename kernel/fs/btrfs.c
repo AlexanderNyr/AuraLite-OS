@@ -5,8 +5,14 @@
  *     never modified in place — a fresh block is allocated, the modified
  *     copy is written there, and its parent is re-pointed (CoW up the tree
  *     to a new root).  The old blocks remain intact on disk.
- *   - CRC32C checksum on every block, computed on write and verified on
- *     read, giving the claimed-but-unimplemented data-integrity story.
+ *   - SHA-256 checksum on every block (RESIDUE2 T3), computed on write
+ *     and verified on read.  The digest lives in a 32-byte TRAILER (the
+ *     last 32 bytes of the block) so the header/item offsets stay where
+ *     the tree code has always had them; it is computed by the kernel-
+ *     local FIPS 180-4 implementation in kernel/lib/sha256.c (D2 keeps
+ *     the kernel off libatls).  Legacy volumes that still carry the old
+ *     CRC32C-only layout fail the digest on their very first read and
+ *     are refused by name — checksums that cannot fail protect nothing.
  *   - A CoW keyed tree (root block -> leaf blocks) holds all metadata:
  *     inode items, directory items and extent items, keyed by
  *     (objectid, type, offset).
@@ -14,7 +20,8 @@
  * This is NOT binary-interoperable with host mkfs.btrfs (the on-disk
  * layout is our own simplified one), so the F4b "interop lane" is
  * documented as out of scope the same way f2fs's was; the integrity gate
- * is CRC32C verification on every read plus the structural tree walk.
+ * is SHA-256 trailer verification on every read (RESIDUE2 T3) plus the
+ * structural tree walk.
  *
  * On-disk layout (byte offsets, block size 4096):
  *   65536  — superblock
@@ -36,6 +43,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/spinlock.h"
+#include "kernel/lib/sha256.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/fs/blkdev.h"
 
@@ -50,7 +58,12 @@
 #define BTRFS_HDR_SIZE       32            /* per-block header bytes */
 #define BTRFS_SUPER_OFFSET   65536         /* byte offset of superblock */
 #define BTRFS_FIRST_FREE     69632         /* 65536 + 4096 */
-#define DATA_PAYLOAD         (BTRFS_NODE_SIZE - BTRFS_HDR_SIZE)  /* 4064 */
+/* RESIDUE2 T3: the last 32 bytes of every block carry its SHA-256
+ * digest, so the usable payload is the block minus header minus
+ * trailer.  Leaf/root data packing starts below the trailer. */
+#define BTRFS_CSUM_SIZE      32
+#define BTRFS_CSUM_OFFSET    (BTRFS_NODE_SIZE - BTRFS_CSUM_SIZE)  /* 4064 */
+#define DATA_PAYLOAD         (BTRFS_CSUM_OFFSET - BTRFS_HDR_SIZE) /* 4032 */
 
 /* block types (blk_hdr.type) */
 #define BT_SUPER   1
@@ -71,8 +84,15 @@
 #define BTRFS_MAX_DEPTH    16
 #define BTRFS_MAX_OPEN_VNODES 64
 
-/* Per-block header (32 bytes) at the start of every block. */
-/* 0:csum(4) 4:magic(4) 8:gen(4) 12:type(4) 16:owner(8) 24:self(8) */
+/* Per-block header (32 bytes) at the start of every block, plus a
+ * 32-byte SHA-256 TRAILER at the very end (RESIDUE2 T3).
+ *
+ *   header : 0:rsvd(4, was the old CRC32C slot, now 0)
+ *            4:magic(4) 8:gen(4) 12:type(4) 16:owner(8) 24:self(8)
+ *   trailer: 4064:sha256[32] — digest of bytes 0..4063 with the
+ *            trailer itself excluded, computed on every write and
+ *            verified on every read.
+ */
 
 /* Root block (BT_ROOT): 32:nptrs(4) 36: bt_ptr[]  (32B each)
  *   bt_ptr: 0:obj(8) 8:off(8) 16:type(4) 20:rsvd(4) 24:child_lba(8) */
@@ -146,16 +166,10 @@ static inline void w32(uint8_t *p, uint32_t v) {
     p[2] = (v >> 16) & 0xFF; p[3] = (v >> 24) & 0xFF;
 }
 
-/* CRC32C (Castagnoli, reflected poly 0x82F63B78).  Table-less bitwise. */
-static uint32_t crc32c(uint32_t crc, const uint8_t *p, size_t n) {
-    crc = ~crc;
-    while (n--) {
-        crc ^= *p++;
-        for (int i = 0; i < 8; i++)
-            crc = (crc >> 1) ^ (0x82F63B78u & (0u - (crc & 1)));
-    }
-    return ~crc;
-}
+/* RESIDUE2 T3: the old table-less CRC32C lived here.  It is gone —
+ * every block's integrity is now the kernel-local SHA-256
+ * (kernel/lib/sha256.c, RFC 6234-vector-tested on the host), written
+ * to the block trailer on every store and verified on every fetch. */
 
 static uint64_t name_hash(const uint8_t *s, int n) {
     uint64_t h = 1469598103934665603ULL;
@@ -195,28 +209,34 @@ static uint64_t blk_alloc(void) {
     return lba;
 }
 
-/* Stamp the 32-byte header and write a block (computing CRC32C on write). */
+/* Stamp the 32-byte header, seal the SHA-256 trailer and write a block
+ * (RESIDUE2 T3).  The digest covers bytes 0..4063 — the header fields
+ * are INSIDE the digest, so a corrupted owner/gen/type/self is caught
+ * too, not just payload bit-flips. */
 static int blk_write(uint64_t lba, uint8_t *blk, uint32_t type, uint64_t owner) {
-    w32(blk + 0, 0);                                  /* csum, filled below */
+    w32(blk + 0, 0);                                  /* rsvd (old csum slot) */
     w32(blk + 4, BTRFS_BLK_MAGIC);
     w32(blk + 8, (uint32_t)bm.generation);
     w32(blk + 12, type);
     w64(blk + 16, owner);
     w64(blk + 24, lba);
-    uint32_t c = crc32c(0, blk + 32, BTRFS_NODE_SIZE - 32);
-    w32(blk + 0, c);
+    ksha256(blk, BTRFS_CSUM_OFFSET, blk + BTRFS_CSUM_OFFSET);
     return btrfs_write_block(lba, blk);
 }
 
-/* Read a block and verify its CRC32C + magic.  Returns 0 on success. */
+/* Read a block and verify its SHA-256 trailer + magic (RESIDUE2 T3).
+ * Returns 0 on success.  A digest mismatch names its two honest causes:
+ * bit-rot on the media, or a pre-T3 legacy volume whose trailer bytes
+ * are whatever the old CRC32C era left there (neither is served). */
 static int blk_read(uint64_t lba, uint8_t *blk) {
     if (btrfs_read_block(lba, blk) != 0) return -1;
     if (r32(blk + 4) != BTRFS_BLK_MAGIC) return -1;
-    uint32_t expect = r32(blk + 0);
-    uint32_t c = crc32c(0, blk + 32, BTRFS_NODE_SIZE - 32);
-    if (c != expect) {
-        kprintf("[btrfs] CRC32C FAIL on block %llu (got 0x%08x want 0x%08x)\n",
-                (unsigned long long)lba, c, expect);
+    uint8_t digest[KSHA256_DIGEST_SIZE];
+    ksha256(blk, BTRFS_CSUM_OFFSET, digest);
+    if (memcmp(digest, blk + BTRFS_CSUM_OFFSET, KSHA256_DIGEST_SIZE) != 0) {
+        kprintf("[btrfs] SHA-256 FAIL on block %llu (digest mismatch: "
+                "corrupt block or legacy CRC32C volume)\n",
+                (unsigned long long)lba);
         return -1;
     }
     return 0;
@@ -258,7 +278,9 @@ static int leaf_rebuild(uint8_t *leaf, struct leaf_slot *slots, int n,
     }
     memset(leaf, 0, BTRFS_NODE_SIZE);
     w32(leaf + 32, (uint32_t)n);
-    uint32_t data_cur = BTRFS_NODE_SIZE;
+    /* RESIDUE2 T3: item data packs down from below the SHA-256 trailer —
+     * the last 32 bytes of the block belong to the digest. */
+    uint32_t data_cur = BTRFS_CSUM_OFFSET;
     for (int i = 0; i < n; i++) {
         data_cur -= slots[i].dsz;
         placed[i] = data_cur;
@@ -1164,7 +1186,7 @@ int btrfs_init(int prefer_port) {
     kprintf("       size=%llu, nodesize=%llu, tree_root=%llu, gen=%llu\n",
             (unsigned long long)bm.total_bytes, (unsigned long long)bm.nodesize,
             (unsigned long long)bm.tree_root_lba, (unsigned long long)bm.generation);
-    kprintf("       CRC32C checksums + CoW tree re-parenting enabled\n");
+    kprintf("       SHA-256 checksums (block trailer) + CoW tree re-parenting enabled\n");
     bm.mounted = 1;
     return 0;
 }
@@ -1178,7 +1200,7 @@ int btrfs_self_test(void) {
         kprintf("[btrfs] self-test: SKIPPED (not mounted)\n");
         return -1;
     }
-    kprintf("[btrfs] self-test: CoW tree, CRC32C, multi-block, rename, rmdir, truncate...\n");
+    kprintf("[btrfs] self-test: CoW tree, SHA-256, multi-block, rename, rmdir, truncate...\n");
 
     /* 1. create + single write + read-back (CRC verified on read) */
     struct vnode *f = btrfs_create(NULL, "test_btrfs.dat");
@@ -1284,6 +1306,37 @@ int btrfs_self_test(void) {
     /* 8. fsync persists the tree */
     if (btrfs_sync(NULL) != 0) { kprintf("[btrfs] FAIL: fsync\n"); return -11; }
 
-    kprintf("[btrfs] PASS: CoW tree, CRC32C, multi-block, rename, rmdir, truncate, link, settimes, fsync\n");
+    /* 9. RESIDUE2 T3 negative control: flip ONE byte of a block on the
+     * media and require blk_read() to refuse it by digest.  A checksum
+     * that never fires protects nothing, so the firing is the receipt.
+     * The block is re-sealed afterwards so the volume stays clean. */
+    {
+        uint64_t lba = blk_alloc();
+        for (int i = 0; i < BTRFS_NODE_SIZE; i++)
+            bdatabuf[i] = (uint8_t)(i * 13 + 5);
+        if (blk_write(lba, bdatabuf, BT_DATA, 0) != 0) {
+            kprintf("[btrfs] FAIL: csum-probe write\n"); return -12;
+        }
+        if (btrfs_read_block(lba, bscratch) != 0) {
+            kprintf("[btrfs] FAIL: csum-probe raw read\n"); return -12;
+        }
+        bscratch[100] ^= 0xFF;                       /* one bit-flip */
+        if (btrfs_write_block(lba, bscratch) != 0) {
+            kprintf("[btrfs] FAIL: csum-probe raw write\n"); return -12;
+        }
+        if (blk_read(lba, bscratch) == 0) {
+            kprintf("[btrfs] FAIL: SHA-256 accepted a corrupted block\n");
+            return -12;
+        }
+        /* re-seal: the good copy still sits in bdatabuf */
+        if (blk_write(lba, bdatabuf, BT_DATA, 0) != 0 ||
+            blk_read(lba, bscratch) != 0) {
+            kprintf("[btrfs] FAIL: csum-probe restore\n"); return -12;
+        }
+        kprintf("[btrfs]   SHA-256 negative control: corrupted block refused, re-seal verified\n");
+    }
+
+    kprintf("[btrfs] PASS: CoW tree, SHA-256, multi-block, rename, rmdir, truncate, link, settimes, fsync\n");
+    kprintf("[btrfs] PASS: SHA-256 detects on-disk corruption (RESIDUE2 T3)\n");
     return 0;
 }

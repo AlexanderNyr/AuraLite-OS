@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include "kernel/fs/ext2.h"
 #include "kernel/fs/blkdev.h"
+#include "kernel/fs/buffer_cache.h"   /* RESIDUE2 T3: cache-backed I/O */
 #include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -210,12 +211,15 @@ static uint32_t ext2_now(void) {
 
 /* ---- Block I/O ---- */
 
+/* RESIDUE2 T3 (writeback): ext2 I/O routes through the buffer cache so
+ * its reads share the LRU with every other filesystem and its stores
+ * are deferred to the evict / 1 Hz tick / sync / halt flush points. */
 static int read_blocks(uint32_t fs_lba, uint32_t count, void *buf) {
     /* fs_lba here is a 512-byte LBA RELATIVE to fs_base_lba */
-    return blkdev_read(es.bdev, es.fs_base_lba + fs_lba, count, buf);
+    return fs_read_block(es.bdev, es.fs_base_lba + fs_lba, count, buf);
 }
 static int write_blocks(uint32_t fs_lba, uint32_t count, const void *buf) {
-    return blkdev_write(es.bdev, es.fs_base_lba + fs_lba, count, buf);
+    return fs_write_block(es.bdev, es.fs_base_lba + fs_lba, count, buf);
 }
 
 /* Read/write one filesystem block (block_size bytes = block_size/512 sectors). */
@@ -1291,6 +1295,7 @@ const struct vfs_ops ext2_ops = {
     .truncate = ext2_truncate_op,
     .chmod    = ext2_chmod_op,
     .chown    = ext2_chown_op,
+    .sync     = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
 };
 
 /* ---- mkfs.ext2 (in-kernel formatter) ---- */
@@ -1386,7 +1391,14 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     memset(block_buf, 0, es.block_size);
     /* Block bitmap covers blocks [first_data_block .. first_data_block+blocks_per_group)
      * (i.e., bit 0 = first_data_block).  For block_size=1024, first_data_block=1, so
-     * bit 0 represents block #1.  We mark gdt/bbm/ibm/itab/root_blk used. */
+     * bit 0 represents block #1.  We mark sb/gdt/bbm/ibm/itab/root_blk used. */
+    /* RESIDUE2 T3 (fscheck): bit 0 is the superblock block.  The old
+     * formatter left it clear, so the bitmap showed one block freer
+     * than s_free_blocks_count claimed — and a full-disk allocation
+     * sweep could hand the superblock block out as data.  The fscheck
+     * walker names the drift ("group 0 free blocks gd=N != bitmap N+1");
+     * the honest fix is to mark the block used here. */
+    bitmap_set(block_buf, 0);
     uint32_t used_blks[] = { gdt_blk, bbm_blk, ibm_blk, root_blk };
     for (unsigned k = 0; k < sizeof(used_blks)/sizeof(used_blks[0]); k++) {
         uint32_t off = used_blks[k] - es.first_data_block;
@@ -1526,6 +1538,10 @@ int ext2_init(int prefer_port) {
     kprintf("[ext2] blkdev %d mounted at /ext2\n", p);
     return 0;
 }
+
+/* ---- RESIDUE2 T3: mount-location accessors for fscheck ---- */
+int ext2_get_bdev(void) { return es.mounted ? es.bdev : -1; }
+uint32_t ext2_get_base_lba(void) { return es.fs_base_lba; }
 
 void ext2_self_test(void) {
     if (!es.mounted) return;

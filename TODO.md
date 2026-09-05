@@ -412,14 +412,19 @@ build when a box and the plan disagree.
   Still missing: the TLS 1.3 handshake and record layer (N3/N4),
   certificate validation with RSA-PKCS#1v1.5 verification (N5), and the
   HTTPS client (N6).  Until then there is no HTTPS.  `kernel/fs/btrfs.c`
-  still writes its SHA-256 checksum field as zeros (kernel code; it does
-  not use libatls, by design D2).
+  seals every block with a kernel-local SHA-256 trailer (RESIDUE2 T3:
+  `kernel/lib/sha256.c`, still no libatls, by design D2).
 - [ ] TLS 1.3 handshake + record layer, certificate validation
   (RSA-PKCS#1v1.5), HTTPS client (INTERNET_PLAN N3–N6). (class:
   security) (RESIDUE2 T5)
-- [ ] Btrfs on-disk SHA-256 checksums (written as zeros today; D2
-  keeps the kernel off libatls — needs an in-kernel SHA-256).
-  (class: storage) (RESIDUE2 T3)
+- [x] Btrfs on-disk SHA-256 checksums. (**Done, RESIDUE2 T3:**
+  `kernel/lib/sha256.c` + `tests/unit/test_ksha256.c` (RFC 6234
+  vectors); every btrfs block now carries a 32-byte SHA-256 trailer
+  verified on every read, with a named digest-mismatch failure and a
+  self-test negative control — `tests/btrfs/test_btrfs.sh` 19/19.  The
+  trailer scheme deviates from the plan's 64-byte header v2: all
+  structural block offsets stay put, recorded in RESIDUE2_PLAN.md
+  Result.) (class: storage) (RESIDUE2 T3)
 
 ### Storage / filesystems
 
@@ -651,11 +656,11 @@ build when a box and the plan disagree.
 
 ### Filesystems and storage
 
-- [ ] Broaden AHCI compatibility beyond the QEMU test path. (RESIDUE2 T3)
-- [ ] Add fsck/recovery tooling or defensive consistency checks for FAT32/ext2. (RESIDUE2 T3)
+- [x] Broaden AHCI compatibility beyond the QEMU test path. (**Done, RESIDUE2 T3:** multi-controller scan via new `pci_find_class_after()` + CAP.NP port count + COMRESET recovery for DET==1 ports; `tests/integration/cases/test_ahci_matrix.sh` 17/17 across four topologies — ich9 port 0, ich9 port 1 with empty port 0, two controllers at once, and the q35 chipset's onboard AHCI.) (RESIDUE2 T3)
+- [x] Add fsck/recovery tooling or defensive consistency checks for FAT32/ext2. (**Done, RESIDUE2 T3:** `kernel/fs/fscheck.c` read-only consistency walkers (checks first, per the plan), armed by the `opt/auralite.fscheck` fw_cfg knob (default off); host gate `tests/unit/test_fscheck.c`, guest gate `test_fscheck.sh` 10/10 incl. named-finding corruption lanes; the walker's first real catch was an ext2 formatter bug — the superblock block unmarked in the bitmap — fixed at the source.) (RESIDUE2 T3)
 - [x] Add baseline file timestamps for VFS stat plus tmpfs, diskfs, ext2 and FAT32. Remaining permission-mode persistence/audit across every experimental FS stays future work.
 - [x] Add symbolic links (**Done:** `kernel/fs/symlink.c`; `test_fifo_symlinks` runs in the posix CI shard).  Richer path handling (canonicalisation) stays live — see the VFS entry above.
-- [ ] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07). (RESIDUE2 T3)
+- [x] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07). (**Done, RESIDUE2 T3:** stores mark buffers dirty; durability comes from eviction, the new 1 Hz `bc_tick()` PIT drain (try-lock, never blocks in IRQ), `.sync`/fs_cache_sync and kernel_halt; FAT32/ext2/diskfs routed through `fs_read_block`/`fs_write_block` with `.sync = fs_cache_sync`; `test_bc_writeback.sh` proves hard-kill survival and coalescing (e.g. 472 stores → 140 device writes); ledger RES-07 closed — buffer_cache/tmpfs/devfs now live in all three port shared lists with runtime receipts on i386/rv64/a64.) (RESIDUE2 T3)
 - [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).
 
 ### Networking

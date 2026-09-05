@@ -7,7 +7,7 @@
 | T0 — the rig: the coverage checker | ✅ done (366c850) | `patches/RESIDUE2_T0_rig.patch` |
 | T1 — kernel core (memory, reaping, processes, SMP-safety) | ✅ done | `patches/RESIDUE2_T1_kernel.patch` |
 | T2 — interrupts and discovery (MADT overrides, AP wake) | ✅ done | `patches/RESIDUE2_T2_irq.patch` |
-| T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs CRC) | ⬜ planned | `patches/RESIDUE2_T3_storage.patch` |
+| T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs SHA-256) | ✅ done | `patches/RESIDUE2_T3_storage.patch` |
 | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ⬜ planned | `patches/RESIDUE2_T4_posix.patch` |
 | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ⬜ planned | `patches/RESIDUE2_T5_net.patch` |
 | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ⬜ planned | `patches/RESIDUE2_T6_devs.patch` |
@@ -197,7 +197,7 @@ too.
 
 ### T3 — storage
 
-**Status:** not started
+**Status:** ✅ COMPLETE
 
 **Objective:** the storage stack stops being QEMU-shaped and stops
 writing known-zero checksums.
@@ -221,7 +221,69 @@ objects on the three shared port lists and the link green.
 **Test gate:** the FS stress/shard cases green; a new btrfs checksum
 vector test; fsck-mode tests for FAT32/ext2.
 
-**Result:** —
+**Result:** closed with the T3 storage patch.  All four boxes plus
+RES-07, each with its gate:
+
+1. **Btrfs SHA-256 (one recorded deviation).**  New kernel-local FIPS
+   180-4 implementation `kernel/lib/sha256.c`, host gate
+   `tests/unit/test_ksha256.c` (RFC 6234 vectors, 10/10).  On-disk
+   scheme: the 32-byte header stays as-is (byte 0 reserved, was the
+   old checksum field), the digest over bytes 0..4063 lives in a
+   32-byte trailer at 4064..4095, data payload 4032 — so every
+   structural offset survives.  Every read verifies and prints the
+   named failure `[btrfs] SHA-256 FAIL on block N (digest mismatch:
+   corrupt block or legacy CRC32C volume)`; self-test step 9 corrupts
+   a sealed block on disk and requires refusal + re-seal
+   (`tests/btrfs/test_btrfs.sh` 19/19).  Deviation from the design
+   rule's implied 64-byte header v2: the trailer keeps all offsets,
+   the v2 header would have shifted every field.
+2. **fscheck (checks first, as the rule demanded).**
+   `kernel/fs/fscheck.{h,c}` — read-only FAT32 + ext2 consistency
+   walkers behind the fw_cfg knob `opt/auralite.fscheck` (default off;
+   the probe prints ENABLED/DISABLED + source; walkers run post-mount
+   only when armed).  Host gate `tests/unit/test_fscheck.c` (crafted
+   + corrupted images through a RAM blkdev), guest gate
+   `tests/integration/cases/test_fscheck.sh` 10/10 including named
+   findings for FSInfo/superblock drift.  The walker's first real
+   catch was a genuine ext2 formatter bug — the superblock block was
+   never marked used in the block bitmap, so a full-disk sweep could
+   allocate the superblock as data; fixed at the source, not papered
+   over.
+3. **AHCI breadth = a matrix, as the rule demanded.**
+   Multi-controller scan (`pci_find_class_after` in the shared PCI
+   code), port count from CAP.NP, COMRESET recovery for DET==1 ports,
+   per-controller ABAR bookkeeping.  `test_ahci_matrix.sh` 17/17 over
+   four topologies: ich9 port 0, ich9 port 1 with an empty port 0,
+   TWO controllers at once, and the q35 chipset's onboard ICH9 AHCI —
+   AuraLite boots on q35 now.
+4. **Block cache writeback.**  Stores mark buffers dirty; durability
+   comes from eviction, the new 1 Hz `bc_tick()` drain on the PIT
+   seconds tick (non-blocking via the new `spinlock_try_acquire` —
+   the blocking acquire deadlocked in IRQ during write bursts), the
+   `.sync` path and `kernel_halt`.  FAT32/ext2/diskfs moved onto
+   `fs_read_block`/`fs_write_block` with `.sync = fs_cache_sync`.
+   `test_bc_writeback.sh` proves the hard case: files survive a
+   SIGTERM kill of the VM with no shutdown path (only the 1 Hz drain
+   can save them), and the receipt `[bc] writeback stores=N
+   flushed=M coalesced=C` shows absorption (one run: 472 stores →
+   140 device writes).
+5. **RES-07 closed (narrowed, recorded).**  `buffer_cache.c`,
+   `tmpfs.c`, `devfs.c` are in all three port shared lists and mount
+   in every bringup (`bc_init`, /dev, /tmp + a round-trip receipt per
+   tenant: `[fs32|rvfs|a64fs] RES-07: tmpfs /tmp round-trip OK`).
+   devfs split into a portable core (null + zero + a registration
+   hook) and the x86-only `devfs_ext.c` (tty0, audio).  The port
+   heaps gained a size-header `krealloc` for tmpfs.  symlink/cwd stay
+   x86-only under RES-06's precedent; RES-06 remains their owner.
+   fs/shell/parity/boot smokes green on i386, rv64 and a64.
+
+Test gate receipts: `make test-unit` EXIT 0 (1289+ host assertions);
+`test_fs_stress`, `test_fat32_persistence`, `test_fat32_full`,
+`test_ext2`, `test_fsformat_knob`, `test_ahci_rw`, `test_diskfs`,
+`test_btrfs`, `test_exfat`, `test_f2fs`, `test_ntfs` all green with
+the writeback cache live.  Honest note: `test_ext4` fails identically
+on pristine pre-T3 HEAD (verified in a clean worktree) — its
+mkfs.ext4-interop lane predates T3 and is not part of this phase.
 
 ---
 
