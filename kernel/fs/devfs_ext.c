@@ -15,6 +15,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/audio/audio.h"
 #include "kernel/tty/tty.h"
+#include "drivers/uart/uart.h"   /* RESIDUE2 T4: /dev/ttyS0 RX poll */
 
 /* ---- /dev/tty0: the console terminal ---- */
 
@@ -22,8 +23,9 @@ static int64_t tty0_read(struct vnode *vn, uint64_t pos, void *buf,
                          uint64_t count) {
     (void)vn;
     (void)pos;
-    /* Drain whatever the line discipline has committed (may be 0; the
-     * syscall layer's blocking loop re-polls + yields). */
+    /* Drain whatever the line discipline has committed.  With RESIDUE2 T4
+     * the syscall layer blocks FIRST (VMIN/VTIME aware) and only then calls
+     * this, so a 0 here means "genuinely empty" to a blocking caller. */
     return tty_read_available(tty_console(), (char *)buf, (int)count);
 }
 
@@ -37,6 +39,53 @@ static int64_t tty0_write(struct vnode *vn, uint64_t pos, const void *buf,
 static int tty0_ioctl(struct vnode *vn, unsigned long cmd, void *arg) {
     (void)vn;
     return tty_ioctl(tty_console(), cmd, arg);
+}
+
+/* ---- /dev/ttyS0: the serial terminal (RESIDUE2 T4) ----
+ *
+ * Reads POLL the UART first: every byte sitting in the RBR is pulled
+ * through the line discipline before the committed buffer is drained.  RX
+ * stays interrupt-free on purpose — the console stdin path polls the same
+ * register, and an IRQ consumer would race bytes away from it (read: from
+ * every serial-driven integration test). */
+
+static int64_t ttys0_read(struct vnode *vn, uint64_t pos, void *buf,
+                          uint64_t count) {
+    (void)vn;
+    (void)pos;
+    while (uart_has_data()) {
+        tty_input(tty_serial(), (unsigned char)uart_getchar());
+    }
+    return tty_read_available(tty_serial(), (char *)buf, (int)count);
+}
+
+static int64_t ttys0_write(struct vnode *vn, uint64_t pos, const void *buf,
+                           uint64_t count) {
+    (void)vn;
+    (void)pos;
+    return tty_write(tty_serial(), (const char *)buf, (int)count);
+}
+
+static int ttys0_ioctl(struct vnode *vn, unsigned long cmd, void *arg) {
+    (void)vn;
+    return tty_ioctl(tty_serial(), cmd, arg);
+}
+
+/*
+ * devfs_fd_tty() — map an open fd to its line discipline (NULL when the fd
+ * is not a tty devfs node).  The syscall read path asks this before the
+ * generic VFS chunk loop so it can block with true VMIN/VTIME semantics
+ * (RESIDUE2 T4).  The device vnodes carry their registration name in
+ * vn->name, which is the whole mapping.
+ */
+struct tty *devfs_fd_tty(int fd) {
+    struct vnode *vn = vfs_get_vnode(fd);
+    if (!vn) return NULL;
+    if (strncmp(vn->name, "tty0", sizeof(vn->name)) == 0)
+        return tty_console();
+    if (strncmp(vn->name, "ttyS0", sizeof(vn->name)) == 0)
+        return tty_serial();
+    return NULL;
 }
 
 /* ---- /dev/audio: the PC speaker / audio buffer sink ---- */
@@ -62,6 +111,7 @@ static int64_t audio_write(struct vnode *vn, uint64_t pos, const void *buf,
 /* Called from kernel.c right after devfs_init(), before /dev mounts. */
 void devfs_ext_init(void) {
     devfs_register_ext("tty0", tty0_read, tty0_write, tty0_ioctl);
+    devfs_register_ext("ttyS0", ttys0_read, ttys0_write, ttys0_ioctl);
     devfs_register_ext("audio", 0, audio_write, 0);
-    kprintf("[devfs] registered x86_64 device(s): tty0, audio\n");
+    kprintf("[devfs] registered x86_64 device(s): tty0, ttyS0, audio\n");
 }

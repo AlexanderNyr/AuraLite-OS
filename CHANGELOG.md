@@ -2,6 +2,54 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T4 — VFS and POSIX] 2026-09-05
+
+The biggest residue cluster closes: nine boxes, canonicalisation first
+(`patches/RESIDUE2_T4_posix.patch`).
+
+- **VFS path canonicalisation.** New `kernel/fs/path.c`
+  (`vfs_canonical_path`) — lexically pure, host-pinned by
+  `test_vfs_path` — feeds a mount-aware, symlink-expanding walk:
+  `..`-through-a-mount is judged canonically, mid-path links expand
+  relative to their parent, and the parity ratchet pins the new fs file
+  count (24→25).
+- **Relative paths anchor at the caller's cwd.** `vfs.c` gained
+  `anchor_path()`: bare-name `open`/`stat`/`execve` resolve through the
+  calling thread's `chdir` state (found live by the `execvpe` empty
+  `PATH`-segment lane — relative exec used to be a flat `ENOENT`).
+- **Install allowlist through the VFS.** The policy now judges
+  `vfs_realpath()` output (every symlink component expanded, `..`
+  canonicalised); insttest green (`test_install_dirs` 10/10).
+- **Lazy VMAs + file-backed `MAP_SHARED` write-back**
+  (`test_mmap_shared`/`test_mmap_file`), **SysV IPC completion**
+  (shm/sem/msg with execve-surviving attachments, hard links,
+  component-wise symlink/FIFO walk; `test_sysvipc`,
+  `test_fifo_symlinks`).
+- **execvpe/fexecve proven in-tree.** `userspace/tests/execvetest`
+  (four lanes) + `test_execvpe_lanes.sh` 10/10; POSIX2024 matrix gains
+  `execvpe`.
+- **epoll on select().** The `epoll_create/ctl/wait` triple rides the
+  existing select() machinery — no new syscalls (`test_epoll`).
+- **The TTY/stdio bundle.** One line-discipline pass: readline editor
+  (`test_readline` 11/11), `/dev/ttyS0`, true VMIN/VTIME, column
+  tracking, `scanf` family verified (matrix gains `vsscanf`).
+- **libm last-ULP review.** `test_mathulp` grades the shipping kernels
+  against long-double references: sin/cos ≤3.07 ULP (fdlibm-style
+  quadrant reduction, 33/33/53-bit π/2 split against the TRUE π/2 —
+  the classic double-rounded-constant trap documented in-tree), exp
+  3.70, log 0.87, pow ≤48 (worst 36.43 stated honestly — it composes
+  exp and log), fmod EXACT (binary long division), errno domain/range
+  contract everywhere, float variants audited. `floor`/`ceil` no
+  longer cast through `long long` past 2^63 (UB fixed).
+- **Keyboard dead keys.** `dead[]` side tables per layout (pinned
+  lo/hi bytes untouched) + pure CP437 compose rules (`test_deadkey`)
+  and the arm/consume/cancel state machine in `keyboard.c`, proven
+  live through PS/2 `sendkey` (`test_deadkeys.sh` 11/11).
+
+Gates at close: `make test-unit` EXIT 0; insttest green;
+`test_keymaps` 15/15 (no layout regression); POSIX2024 matrix gains
+rows and loses none.
+
 ## [RESIDUE2 T3 — storage] 2026-09-04
 
 The storage stack stops being QEMU-shaped and stops writing known-zero

@@ -1,6 +1,6 @@
 # AuraLite OS — RESIDUE2 Plan (close the remainder: every TODO box and every open ledger row, scheduled and machine-checked)
 
-## Status: IN PROGRESS — T0–T2 landed; T3–T9 specified
+## Status: IN PROGRESS — T0–T4 landed; T5–T9 specified
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -8,7 +8,7 @@
 | T1 — kernel core (memory, reaping, processes, SMP-safety) | ✅ done | `patches/RESIDUE2_T1_kernel.patch` |
 | T2 — interrupts and discovery (MADT overrides, AP wake) | ✅ done | `patches/RESIDUE2_T2_irq.patch` |
 | T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs SHA-256) | ✅ done | `patches/RESIDUE2_T3_storage.patch` |
-| T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ⬜ planned | `patches/RESIDUE2_T4_posix.patch` |
+| T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ✅ done | `patches/RESIDUE2_T4_posix.patch` |
 | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ⬜ planned | `patches/RESIDUE2_T5_net.patch` |
 | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ⬜ planned | `patches/RESIDUE2_T6_devs.patch` |
 | T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
@@ -289,7 +289,7 @@ mkfs.ext4-interop lane predates T3 and is not part of this phase.
 
 ### T4 — VFS and POSIX
 
-**Status:** not started
+**Status:** ✅ COMPLETE
 
 **Objective:** the biggest cluster: the POSIX/VFS/libc gaps that make
 AuraLite behave differently from every real system — named, bundled,
@@ -319,7 +319,40 @@ entries rather than losing any.
 **Test gate:** new host/guest tests per item; `make test-unit` EXIT 0;
 the install-policy checks (insttest) green.
 
-**Result:** —
+**Result:** DONE. All nine boxes closed, in the order the design rules
+demand (canonicalisation first, consumed by the allowlist in the same
+phase; VMAs before `MAP_SHARED`; one line-discipline pass for the whole
+TTY bundle with `/dev/ttyS0` riding it; epoll strictly on `select()`).
+Receipts, per box: path canonicalisation — `kernel/fs/path.c` +
+`vfs_canonical_path()` with the mount-aware walk (host gate
+`test_vfs_path`, `check_parity_claims.py` pin 24→25); install allowlist —
+`execpolicy` judges `vfs_realpath()` output, insttest green
+(`test_install_dirs` 10/10); lazy VMAs + file-backed `MAP_SHARED`
+write-back (`test_mmap_shared`/`test_mmap_file` cases green);
+`execvpe`/`fexecve` — `userspace/tests/execvetest` four lanes +
+`test_execvpe_lanes.sh` 10/10, which also exposed and fixed that
+relative paths never anchored at the caller's cwd (`vfs.c`:
+`anchor_path()` — open/stat/execve of a bare name now resolves through
+`chdir` state, POSIX `PATH` empty-segment semantics included); epoll on
+`select()` (`tests/unit/test_epoll.c`); the TTY/stdio bundle — readline
+editor (`test_readline` 11/11), `/dev/ttyS0`, true VMIN/VTIME, column
+tracking, `scanf` family verified; libm — `tests/unit/test_mathulp.c`
+measures the shipping kernels against long-double references (sin/cos
+≤3.07 ULP via fdlibm-style quadrant reduction with a 33/33/53-bit π/2
+split, exp 3.70, log 0.87, pow ≤48 with the measured worst 36.43 stated,
+fmod exact ≤1 ULP, errno contract, `float` variants audited); IPC
+completion — SysV shm/sem/msg (`test_sysvipc`), hard links
+(`vfs_link`), FIFO/symlink persistence and full path-component
+following (`test_fifo_symlinks`); dead keys — `dead[]` side tables +
+CP437 compose rules (`test_deadkey` host) with the arm/consume state
+machine in `keyboard.c` proven live (`test_deadkeys.sh` 11/11 through
+real PS/2 `sendkey`).  Gates at close: `make test-unit` EXIT 0,
+insttest green, `test_keymaps` 15/15 (no layout regression), POSIX2024
+matrix gains rows (`execvpe`, `vsscanf`, float math variants) and
+loses none.  Ledger note: RES-42's triage had parked readline/scanf
+and epoll on the POSIX plan's own list; T4 delivers all three, so
+that list is of historical interest only (the row itself stays
+DONE@R12).
 
 ---
 

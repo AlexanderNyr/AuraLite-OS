@@ -42,7 +42,7 @@ SYSCALL_CASE_PIN = {       # P4: 6 -> 11; RESIDUE R6 added brk: 12.
     ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 12,
     ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   12,
 }
-FS_FILE_COUNT = 24         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2; +fsformat.c FSFULL F1; +fscheck.c + devfs_ext.c RESIDUE2 T3).
+FS_FILE_COUNT = 25         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2; +fsformat.c FSFULL F1; +fscheck.c + devfs_ext.c RESIDUE2 T3; +path.c RESIDUE2 T4).
 
 # Flag sets copied from the Makefile's CFLAGSRV / CFLAGSA64 (compile
 # flags only; -Werror deliberately kept so new warnings fail here
@@ -192,6 +192,9 @@ def claims():
         # procfs.c / select.c paid at RESIDUE R6: the ktime seam
         # (kernel/time.h) took the pit.h coupling out of fs.
         "usbfs.c":  1,   # drivers/usb/msc.h   -- USB seam residue
+        # RESIDUE2 T4: /dev/ttyS0 needs the UART's RX-poll surface from
+        # devfs; the line-discipline pass routes it through this one seam.
+        "devfs_ext.c": 1,  # drivers/uart/uart.h -- TTY seam residue
     }
     inc_ok = True
     for src in fs_sources() + sorted(

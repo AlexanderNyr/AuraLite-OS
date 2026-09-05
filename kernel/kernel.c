@@ -26,6 +26,7 @@
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/execpolicy.h"   /* RESIDUE2 T4: policy resolves via VFS */
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
@@ -359,6 +360,9 @@ void kmain(boot_info_t *boot_info) {
 
     kprintf("[boot] initialising virtual file system...\n");
     vfs_init();
+    /* RESIDUE2 T4: the installation policy judges writes through the VFS —
+     * symlinks on the path resolve before the allowlist sees it. */
+    execpolicy_set_vfs_resolver(vfs_realpath);
 
     /* Mount the initrd (USTAR) at "/" if the bootloader provided one.
      * boot_info reports the initrd as a raw physical address; convert it

@@ -59,6 +59,13 @@ int exec_path_canonical(const char *path, char *out, size_t out_len);
  */
 int exec_install_allowed(const char *path);
 
+/*
+ * RESIDUE2 T4: install the VFS symlink resolver the policy judges through.
+ * The kernel passes vfs_realpath(); host tests may pass a fake.  NULL (the
+ * default) keeps the purely lexical judgement.
+ */
+void execpolicy_set_vfs_resolver(int (*fn)(const char *, char *, size_t));
+
 /* The allowlist, exposed for diagnostics and for the test to enumerate.
  * Returns the directory at @index, or NULL past the end. */
 const char *exec_install_dir(int index);

@@ -826,7 +826,9 @@ LIBC_EXTRA_OBJS := $(USER_BUILD)/pthread.o $(USER_BUILD)/rwlock.o $(USER_BUILD)/
                    $(USER_BUILD)/stdlib_extra.o $(USER_BUILD)/string_extra.o \
                    $(USER_BUILD)/time_extra.o \
                    $(USER_BUILD)/posix_extra.o $(USER_BUILD)/posix_spawn.o $(USER_BUILD)/q10_stubs.o \
-                   $(USER_BUILD)/progpath.o $(USER_BUILD)/apkg.o
+                   $(USER_BUILD)/progpath.o $(USER_BUILD)/apkg.o \
+                   $(USER_BUILD)/epoll.o \
+                   $(USER_BUILD)/readline.o
 
 # The C runtime objects, as one list.  This is the ONLY place they are
 # enumerated: the archive is built from it and the link line names the
@@ -895,6 +897,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/proctest.elf $(USER_BUILD)/fdtest.elf \
              $(USER_BUILD)/p10test.elf $(USER_BUILD)/argv_echo.elf \
              $(USER_BUILD)/execve_child.elf \
+             $(USER_BUILD)/execvetest.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
@@ -1455,6 +1458,12 @@ $(USER_BUILD)/execve_child.o: userspace/tests/execve_child/execve_child.c $(USER
 
 # RESIDUE2 T1: the SMP-sweep stress gate (O_APPEND / fork-wait / sig_pending).
 $(USER_BUILD)/smpstress.o: userspace/tests/smpstress/smpstress.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# RESIDUE2 T4: execvpe/fexecve proof lanes (prototypes without callers prove
+# nothing; see the program header).
+$(USER_BUILD)/execvetest.o: userspace/tests/execvetest/execvetest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2141,7 +2150,7 @@ INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
-                usertest mmapshare mmapfile membench smpstress irqapwake
+                usertest mmapshare mmapfile membench smpstress irqapwake execvetest
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
 # Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they
@@ -2568,6 +2577,10 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_initrd_dirs \
                 $(BUILD_DIR)/test_initrd_allocfail \
                 $(BUILD_DIR)/test_execpolicy \
+                $(BUILD_DIR)/test_vfs_path \
+                $(BUILD_DIR)/test_epoll \
+                $(BUILD_DIR)/test_readline \
+                $(BUILD_DIR)/test_mathulp \
                 $(BUILD_DIR)/test_progpath \
                 $(BUILD_DIR)/test_apkg \
                 $(BUILD_DIR)/test_printf_fmt \
@@ -2640,6 +2653,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_q16_tail \
                 $(BUILD_DIR)/test_sysvipc \
                 $(BUILD_DIR)/test_keymap \
+                $(BUILD_DIR)/test_deadkey \
                 $(BUILD_DIR)/test_rng \
                 $(BUILD_DIR)/test_sha256sum \
                 $(BUILD_DIR)/test_mkinitrd \
@@ -3598,6 +3612,15 @@ $(BUILD_DIR)/test_keymap: tests/unit/test_keymap.c drivers/keyboard/keymap.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	    tests/unit/test_keymap.c drivers/keyboard/keymap.c -o $@
 
+# RESIDUE2 T4: the dead-key (accent) side tables and the CP437 compose
+# rules (the arm/consume state machine itself is keyboard.c state, proven
+# end-to-end by tests/integration/cases/test_deadkeys.sh).
+$(BUILD_DIR)/test_deadkey: tests/unit/test_deadkey.c drivers/keyboard/keymap.c \
+                           drivers/keyboard/keymap.h drivers/keyboard/keyboard.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	    tests/unit/test_deadkey.c drivers/keyboard/keymap.c -o $@
+
 $(BUILD_DIR)/test_q1_headers: tests/unit/test_q1_headers.c \
                                lib/libc/include/stdarg.h lib/libc/include/stddef.h lib/libc/include/stdint.h \
                                lib/libc/include/float.h lib/libc/include/inttypes.h lib/libc/include/iso646.h \
@@ -3670,7 +3693,7 @@ $(BUILD_DIR)/libc_fmt.o: $(BUILD_DIR)/libc_fmt_full.o
 $(BUILD_DIR)/test_printf_fmt: tests/unit/test_printf_fmt.c $(BUILD_DIR)/libc_fmt.o
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -c $< -o $(BUILD_DIR)/test_printf_fmt.o
-	$(HOST_CC) $(BUILD_DIR)/test_printf_fmt.o $(BUILD_DIR)/libc_fmt.o -o $@
+	$(HOST_CC) $(BUILD_DIR)/test_printf_fmt.o $(BUILD_DIR)/libc_fmt.o -o $@ -lm
 
 # The package parser reads attacker-controlled input, so the shipping source
 # is compiled in and exercised directly with malformed files.
@@ -3707,6 +3730,45 @@ $(BUILD_DIR)/test_execpolicy: tests/unit/test_execpolicy.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_execpolicy.c kernel/fs/execpolicy.c -o $@
+
+# RESIDUE2 T4: the lexical canonicaliser under the VFS resolver rework and
+# the installation policy — same rule, the shipping source is the test.
+$(BUILD_DIR)/test_vfs_path: tests/unit/test_vfs_path.c \
+                            kernel/fs/path.c kernel/fs/path.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_vfs_path.c kernel/fs/path.c -o $@
+
+# RESIDUE2 T4: the select()-backed epoll triple — compiled against the guest
+# headers, linked against the host libc's select (see the test header).
+$(BUILD_DIR)/test_epoll: tests/unit/test_epoll.c \
+                         lib/libc/src/epoll.c lib/libc/include/sys/epoll.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I lib/libc/include -I . \
+	          tests/unit/test_epoll.c lib/libc/src/epoll.c -o $@
+
+# RESIDUE2 T4: the line editor core (pure state machine + history ring).
+$(BUILD_DIR)/test_readline: tests/unit/test_readline.c \
+                            lib/libc/src/readline.c lib/libc/include/readline.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I lib/libc/include -I . \
+	          tests/unit/test_readline.c lib/libc/src/readline.c -o $@
+
+# RESIDUE2 T4: last-ULP review of the shipping libm kernels.  The kernels
+# are lifted verbatim out of libc.c/math_extra.c by the extractor (a_*
+# names, in-body calls rewritten in-tree), so the test grades the SAME
+# code that ships in the image against the host's long-double reference.
+$(BUILD_DIR)/libc_math_gen.c: tools/extract_libc_impls.py \
+                              lib/libc/src/libc.c lib/libc/src/math_extra.c
+	@mkdir -p $(BUILD_DIR)
+	python3 tools/extract_libc_impls.py --math-review $@
+
+$(BUILD_DIR)/test_mathulp: tests/unit/test_mathulp.c $(BUILD_DIR)/libc_math_gen.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I $(BUILD_DIR) -I . \
+	          tests/unit/test_mathulp.c -o $@ -lm
 
 # The initrd directory view is derived from a flat file table, so it is tested
 # against the real parser rather than a reimplementation.

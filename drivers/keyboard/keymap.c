@@ -33,6 +33,7 @@ const struct keymap keymap_us = {
     },
     /* US keyboards reach the special characters directly; no third layer. */
     .altgr = { 0 },
+    .dead  = { 0 },   /* no dead keys on US */
     .name  = "us",
 };
 
@@ -80,6 +81,15 @@ const struct keymap keymap_de = {
         [0x32] = (char)0xE6,     /* AltGr+M = µ (CP437) */
         [0x56] = '|',            /* AltGr+< */
     },
+    /* RESIDUE2 T4: the two real German dead keys, armed on the plain
+     * layer only.  The lo/hi tables above are UNCHANGED (their bytes are
+     * pinned by tests/unit/test_keymap.c: lo[0x0D] == 0, hi[0x0D] == '`',
+     * lo[0x29] == '^') — the accent semantics ride in this side table,
+     * so the direct bytes stay reachable via Shift (`, °). */
+    .dead = {
+        [0x0D] = KB_DEAD_ACUTE,       /* ´ (right of ß)   */
+        [0x29] = KB_DEAD_CIRCUMFLEX,  /* ^ (left of 1)    */
+    },
     .name  = "de",
 };
 
@@ -115,4 +125,62 @@ char keymap_lookup(const struct keymap *km, uint8_t sc, uint8_t mods) {
                 (mods & KB_MOD_SHIFT)) c = (char)(c + 32);
     }
     return c;
+}
+
+/* ---------------- RESIDUE2 T4: dead keys (accents) ----------------------- */
+
+uint8_t keymap_dead_of(const struct keymap *km, uint8_t sc, uint8_t mods) {
+    if (!km || sc >= 128) return KB_DEAD_NONE;
+    /* Plain layer only: Shift and AltGr keep their direct bytes (the
+     * pinned hi[0x0D] == '`' must keep emitting a grave accent NOW, not
+     * arm one), and CapsLock never applies to accents. */
+    if (mods & (KB_MOD_SHIFT | KB_MOD_ALTGR)) return KB_DEAD_NONE;
+    return (uint8_t)km->dead[sc];
+}
+
+uint8_t keymap_dead_spacing(uint8_t accent) {
+    switch (accent) {
+    case KB_DEAD_ACUTE:       return '\'';  /* CP437 has no ´; closest */
+    case KB_DEAD_CIRCUMFLEX:  return '^';
+    default:                  return 0;
+    }
+}
+
+/*
+ * The CP437 compositions.  CP437 carries the lowercase accented vowels
+ * and É, but no Á Í Ó Ú / À È Ì Ò Ù / uppercase-circumflexed forms —
+ * those pairs intentionally miss and take the 2-byte spacing path.
+ */
+int keymap_dead_compose(uint8_t accent, uint8_t base, uint8_t out[2]) {
+    if (accent == KB_DEAD_NONE) { out[0] = base; return 1; }
+
+    if (base == ' ') {                    /* accent + space = spacing form */
+        out[0] = keymap_dead_spacing(accent);
+        return out[0] ? 1 : 0;
+    }
+
+    static const struct { uint8_t accent, base, out; } table[] = {
+        { KB_DEAD_ACUTE,      'a', 0xA0 },  /* á */
+        { KB_DEAD_ACUTE,      'e', 0x82 },  /* é */
+        { KB_DEAD_ACUTE,      'i', 0xA1 },  /* í */
+        { KB_DEAD_ACUTE,      'o', 0xA2 },  /* ó */
+        { KB_DEAD_ACUTE,      'u', 0xA3 },  /* ú */
+        { KB_DEAD_ACUTE,      'E', 0x90 },  /* É */
+        { KB_DEAD_CIRCUMFLEX, 'a', 0x83 },  /* â */
+        { KB_DEAD_CIRCUMFLEX, 'e', 0x88 },  /* ê */
+        { KB_DEAD_CIRCUMFLEX, 'i', 0x8C },  /* î */
+        { KB_DEAD_CIRCUMFLEX, 'o', 0x93 },  /* ô */
+        { KB_DEAD_CIRCUMFLEX, 'u', 0x96 },  /* û */
+    };
+    for (unsigned i = 0; i < sizeof(table) / sizeof(table[0]); i++) {
+        if (table[i].accent == accent && table[i].base == base) {
+            out[0] = table[i].out;
+            return 1;
+        }
+    }
+    /* No composition: the accent's spacing form, then the base byte —
+     * the stream keeps every character and its order (the X11 rule). */
+    out[0] = keymap_dead_spacing(accent);
+    out[1] = base;
+    return (out[0] != 0) ? 2 : 1;
 }

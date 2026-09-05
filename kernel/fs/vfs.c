@@ -11,6 +11,7 @@
  * atomic_compat.h); clang keeps its builtins. */
 #include "kernel/lib/atomic_compat.h"
 #include "kernel/fs/vfsmount.h"   /* R2: the mount core moved out */
+#include "kernel/fs/path.h"       /* RESIDUE2 T4: lexical canonicalisation */
 #include "kernel/fs/devfs.h"     /* SH6b: devfs_ops, for vfs_fd_is_devfs() */
 #include "kernel/fs/execpolicy.h"
 #include "kernel/lib/errno.h"
@@ -346,6 +347,34 @@ static const struct vfs_mount *mnt(int i) {
 static struct vnode *resolve_path(const char *path);
 
 /*
+ * RESIDUE2 T4 (the execvpe empty-PATH-segment receipt): relative paths
+ * anchor at the calling thread's cwd.  vfs_canonical_path itself stays
+ * purely lexical and refuses relative input — that contract is pinned by
+ * tests/unit/test_vfs_path.c — so the anchor happens HERE, at the VFS
+ * edge, once per entry: open("x") after chdir("/tests") must reach
+ * /tests/x, and execve of a bare name likewise (POSIX PATH semantics).
+ * Kernel threads and early boot (no cwd yet) anchor at "/".
+ */
+static int anchor_path(const char *path, char *out, size_t out_len) {
+    if (!path || !out || out_len < 2) return -1;
+    if (path[0] == '/') {
+        if (strlen(path) >= out_len) return -1;
+        strcpy(out, path);
+        return 0;
+    }
+    tcb_t *cur = sched_current();
+    const char *base = (cur && cur->cwd[0] == '/') ? cur->cwd : "/";
+    size_t blen = strlen(base);
+    int needs_sep = !(blen > 0 && base[blen - 1] == '/');
+    size_t plen = strlen(path);
+    if (blen + (size_t)needs_sep + plen >= out_len) return -1;
+    memcpy(out, base, blen);
+    if (needs_sep) out[blen++] = '/';
+    memcpy(out + blen, path, plen + 1);
+    return 0;
+}
+
+/*
  * Reconstruct an absolute path for @vn.
  *
  * A vnode's name is relative to its mount, so "x" on the /tmp mount is
@@ -572,27 +601,156 @@ static void symlink_target_to_absolute(const char *linkpath, const char *target,
     out[used + tlen] = '\0';
 }
 
+/*
+ * RESIDUE2 T4: resolution is now lexical-canonicalise + component-walk.
+ *
+ * The old resolver handed the RAW path to find_mount(), so "/tmp/../evil"
+ * split at the /tmp mount and handed tmpfs the name "../evil", which it
+ * rejects for containing a slash — traversal failed for an incidental
+ * reason, and ".."-through-a-mount behaved differently from every POSIX
+ * system.  It also only followed a symlink when the ENTIRE path was one:
+ * a link in the middle (/tmp/link/x) was never expanded.
+ *
+ * The walk below fixes both, in the order the plan demands (canonicalise
+ * FIRST, then follow links):
+ *
+ *   1. canonicalise the input (vfs_canonical_path: ".", "..", "//" gone);
+ *   2. scan prefixes left to right; the first prefix registered as a
+ *      symlink expands (target relative to the link's parent), the result
+ *      is re-canonicalised and the walk restarts on it — so a link that
+ *      produces another ".." is still judged canonically;
+ *   3. when no prefix is a link, the canonical path is looked up through
+ *      the mount table (named FIFOs first, as before).
+ *
+ * The whole-path check of the old code is subsumed: the full path is the
+ * last prefix scanned, so final-component links still expand for
+ * stat/open/read (lstat/readlink go through vfs_symlink_vnode directly).
+ * VFS_SYMLINK_MAX_FOLLOW bounds the total number of expansions across the
+ * entire walk (ELOOP, not a stack dive: the walk is iterative).
+ */
 static struct vnode *resolve_path_follow(const char *path, int depth) {
-    if (depth > VFS_SYMLINK_MAX_FOLLOW) return NULL;
+    char cur[VFS_PATH_MAX];
+    char abs[VFS_PATH_MAX];
+    if (anchor_path(path, abs, sizeof(abs)) != 0) return NULL;
+    if (vfs_canonical_path(abs, cur, sizeof(cur)) != 0) return NULL;
 
-    char target[VFS_PATH_MAX];
-    if (vfs_symlink_lookup(path, target, sizeof(target)) == 0) {
-        char next[VFS_PATH_MAX];
-        symlink_target_to_absolute(path, target, next, sizeof(next));
-        return resolve_path_follow(next, depth + 1);
+    int budget = VFS_SYMLINK_MAX_FOLLOW - depth;
+    if (budget < 0) return NULL;             /* caller already spent it */
+
+    for (;;) {
+        const size_t len = strlen(cur);
+        char target[VFS_PATH_MAX];
+
+        /* Leftmost symlinked prefix of cur (including cur itself). */
+        int expanded = 0;
+        for (size_t i = 1; i <= len && !expanded; ) {
+            while (i < len && cur[i] == '/') i++;
+            const size_t start = i;
+            while (i < len && cur[i] != '/') i++;
+            if (i == start) break;           /* trailing '/' already handled */
+
+            /* Prefix [0, i): probe it as a symlink. */
+            char prefix[VFS_PATH_MAX];
+            size_t plen = i;
+            if (plen >= sizeof(prefix)) return NULL;
+            memcpy(prefix, cur, plen);
+            prefix[plen] = '\0';
+            if (cur[i] == '/') prefix[plen] = '\0';   /* (defensive) */
+
+            if (vfs_symlink_lookup(prefix, target, sizeof(target)) == 0) {
+                if (budget-- == 0) return NULL;       /* ELOOP-class refusal */
+
+                /* Expand: relative targets anchor at the link's parent. */
+                char abs[VFS_PATH_MAX];
+                symlink_target_to_absolute(prefix, target, abs, sizeof(abs));
+
+                /* Append the untouched remainder (cur + i, "" or "/..."). */
+                char next[VFS_PATH_MAX];
+                size_t used = strlen(abs);
+                size_t rem = strlen(cur + i);
+                if (used + rem >= sizeof(next)) return NULL;
+                memcpy(next, abs, used);
+                memcpy(next + used, cur + i, rem);
+                next[used + rem] = '\0';
+
+                if (vfs_canonical_path(next, cur, sizeof(cur)) != 0) return NULL;
+                expanded = 1;
+            }
+        }
+
+        if (!expanded) break;                /* no links left: plain lookup */
     }
 
-    struct vnode *fifo = named_fifo_lookup(path);
+    struct vnode *fifo = named_fifo_lookup(cur);
     if (fifo) return fifo;
 
     const char *rel = NULL;
-    int m = find_mount(path, &rel);
+    int m = find_mount(cur, &rel);
     if (m < 0) return NULL;
     return mnt(m)->ops->lookup(mnt(m)->fs_data, rel);
 }
 
 static struct vnode *resolve_path(const char *path) {
     return resolve_path_follow(path, 0);
+}
+
+/*
+ * vfs_realpath() — resolve every symlink component of @path (including the
+ * final one) and return the canonical absolute result in @out.  This is the
+ * "through the VFS" half the installation policy needs (RESIDUE2 T4): a
+ * write aimed at /tmp/link/x where link -> /etc must be judged at /etc/x.
+ * Returns 0 on success; -1 when the path is not absolute/understandable,
+ * too long, or loops past VFS_SYMLINK_MAX_FOLLOW expansions.
+ */
+int vfs_realpath(const char *path, char *out, size_t out_len) {
+    if (!path || !out || out_len < 2) return -1;
+
+    char cur[VFS_PATH_MAX];
+    char abs[VFS_PATH_MAX];
+    if (anchor_path(path, abs, sizeof(abs)) != 0) return -1;
+    if (vfs_canonical_path(abs, cur, sizeof(cur)) != 0) return -1;
+
+    int budget = VFS_SYMLINK_MAX_FOLLOW;
+    for (;;) {
+        const size_t len = strlen(cur);
+        char target[VFS_PATH_MAX];
+        int expanded = 0;
+
+        for (size_t i = 1; i <= len && !expanded; ) {
+            while (i < len && cur[i] == '/') i++;
+            const size_t start = i;
+            while (i < len && cur[i] != '/') i++;
+            if (i == start) break;
+
+            char prefix[VFS_PATH_MAX];
+            if (i >= sizeof(prefix)) return -1;
+            memcpy(prefix, cur, i);
+            prefix[i] = '\0';
+
+            if (vfs_symlink_lookup(prefix, target, sizeof(target)) == 0) {
+                if (budget-- == 0) return -1;
+
+                char abs[VFS_PATH_MAX];
+                symlink_target_to_absolute(prefix, target, abs, sizeof(abs));
+
+                char next[VFS_PATH_MAX];
+                size_t used = strlen(abs);
+                size_t rem = strlen(cur + i);
+                if (used + rem >= sizeof(next)) return -1;
+                memcpy(next, abs, used);
+                memcpy(next + used, cur + i, rem);
+                next[used + rem] = '\0';
+
+                if (vfs_canonical_path(next, cur, sizeof(cur)) != 0) return -1;
+                expanded = 1;
+            }
+        }
+        if (!expanded) break;
+    }
+
+    if (strlen(cur) >= out_len) return -1;
+    strcpy(out, cur);
+    return 0;
 }
 
 /*
@@ -1004,6 +1162,14 @@ int vfs_set_cloexec(int fd, int on) {
 int vfs_get_cloexec(int fd) {
     if (fd < 0 || fd >= VFS_MAX_FDS) return 0;
     return current_cloexec()[fd];
+}
+
+/* RESIDUE2 T4: the O_NONBLOCK state of an fd, for the tty blocking read
+ * path (it decides -EAGAIN vs block).  Non-tty callers have no use for it
+ * yet, which is why it sits next to its sibling getter. */
+int vfs_fd_nonblock(int fd) {
+    struct ofd *o = fd_to_ofd(fd);
+    return o ? o->nonblock : 0;
 }
 
 /*

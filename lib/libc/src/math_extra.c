@@ -1,7 +1,7 @@
 /* libc/src/math_extra.c — extended math functions (P10)
  *
- * Core functions (sin/cos/fabs/sqrt/floor/ceil/exp/log/pow/log2) live in
- * libc.c and are backed by SSE instructions or vetted software routines.
+ * Core functions (sin/cos/fabs/sqrt/floor/ceil/exp/log/pow/log2/fmod) live
+ * in libc.c and are backed by SSE instructions or vetted software routines.
  * This file adds the rest of the C99 <math.h> surface.
  *
  * IMPORTANT: we must NOT route these through the matching __builtin_* (e.g.
@@ -13,6 +13,7 @@
  */
 
 #include <math.h>
+#include <errno.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -46,17 +47,17 @@ double nearbyint(double x) {
     return (fmod(lo, 2.0) == 0.0) ? lo : hi;
 }
 
-/* fmod(x, y): IEEE remainder with the sign of x, |result| < |y|. */
-double fmod(double x, double y) {
-    if (y == 0.0 || is_nan(x) || is_nan(y)) return NAN;
-    double q = trunc(x / y);
-    double r = x - q * y;
-    return r;
-}
+/*
+ * fmod moved to libc.c with the RESIDUE2 T4 sin/cos kernels: their large-
+ * argument fallback calls it, and libc.o must stay self-contained for
+ * aulink (which links without math_extra.o and no host libm).
+ */
 
-/* remainder(x, y): result in [-|y|/2, +|y|/2], ties to even quotient. */
+/* remainder(x, y): result in [-|y|/2, +|y|/2], ties to even quotient.
+ * RESIDUE2 T4: y == 0 is a domain error (EDOM/NaN), like fmod. */
 double remainder(double x, double y) {
-    if (y == 0.0 || is_nan(x) || is_nan(y)) return NAN;
+    if (is_nan(x) || is_nan(y)) return NAN;
+    if (y == 0.0) { errno = EDOM; return NAN; }
     double q = nearbyint(x / y);
     return x - q * y;
 }
@@ -101,17 +102,21 @@ double atan2(double y, double x) {
     return 0.0;   /* (0,0) */
 }
 
-/* asin(x) = atan(x / sqrt(1 - x^2)), with the endpoints handled exactly. */
+/* asin(x) = atan(x / sqrt(1 - x^2)), with the endpoints handled exactly.
+ * RESIDUE2 T4: |x| > 1 is a DOMAIN error — NaN plus errno=EDOM (POSIX),
+ * not a silent NaN. */
 double asin(double x) {
-    if (is_nan(x) || x < -1.0 || x > 1.0) return NAN;
+    if (is_nan(x)) return NAN;
+    if (x < -1.0 || x > 1.0) { errno = EDOM; return NAN; }
     if (x == 1.0) return M_PI_2;
     if (x == -1.0) return -M_PI_2;
     return atan(x / sqrt(1.0 - x * x));
 }
 
-/* acos(x) = pi/2 - asin(x). */
+/* acos(x) = pi/2 - asin(x).  Domain errors as asin(). */
 double acos(double x) {
-    if (is_nan(x) || x < -1.0 || x > 1.0) return NAN;
+    if (is_nan(x)) return NAN;
+    if (x < -1.0 || x > 1.0) { errno = EDOM; return NAN; }
     return M_PI_2 - asin(x);
 }
 
@@ -134,6 +139,7 @@ double tanh(double x) {
 
 /* ---- exp/log family ---- */
 double exp2(double x)  { return pow(2.0, x); }
+/* log10: domain/errno ride log()'s (EDOM for x<0, ERANGE for x==0). */
 double log10(double x) { return log(x) / 2.302585092994045901; /* ln(10) */ }
 
 /* cbrt(x): real cube root, preserving sign. */

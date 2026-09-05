@@ -596,27 +596,61 @@ int execv(const char *path, char *const argv[]) {
 /* execvp(): search PATH if @file contains no slash, then execv().  Our minimal
  * implementation honours PATH from the environment, defaulting to "/bin". */
 int execvp(const char *file, char *const argv[]) {
-    if (!file) { errno = ENOENT; return -1; }
-    if (strchr(file, '/')) return execv(file, argv);
+    extern char **environ;
+    return execvpe(file, argv, environ);
+}
 
-    const char *path = getenv("PATH");
+/*
+ * execvpe() — RESIDUE2 T4.  PATH search with an explicit environment, and
+ * the per-segment EACCES semantics POSIX actually specifies (and execvp's
+ * old loop skipped): a segment that fails with EACCES does not stop the
+ * search — an unreadable directory earlier in PATH must not shadow an
+ * executable later in it — but if NO segment worked, the remembered EACCES
+ * is the errno the caller sees, because "we found it and were refused"
+ * describes that outcome better than "it does not exist".
+ *
+ * execvp() is now a wrapper over this, so both spellings share one loop.
+ */
+int execvpe(const char *file, char *const argv[], char *const envp[]) {
+    if (!file || !*file) { errno = ENOENT; return -1; }
+    if (strchr(file, '/')) return execve(file, argv, envp);
+
+    /* The PATH comes from @envp (not the global environ): the caller chose
+     * that environment for the CHILD, and the search must see the same
+     * world the child will. */
+    const char *path = NULL;
+    if (envp) {
+        for (char *const *e = envp; *e; e++) {
+            if (strncmp(*e, "PATH=", 5) == 0) { path = *e + 5; break; }
+        }
+    }
+    if (!path) path = getenv("PATH");
     if (!path || !*path) path = "/bin";
 
+    int seen_eacces = 0;
     char buf[256];
     const char *p = path;
-    while (*p) {
+    for (;;) {
         const char *colon = strchr(p, ':');
         size_t seg = colon ? (size_t)(colon - p) : strlen(p);
-        if (seg + 1 + strlen(file) + 1 < sizeof(buf)) {
+        if (seg == 0) {
+            /* Empty segment: POSIX means the CURRENT directory ("p:cmd"). */
+            if (strlen(file) + 1 < sizeof(buf)) {
+                strcpy(buf, file);
+                execve(buf, argv, envp);   /* returns only on failure */
+                if (errno == EACCES) seen_eacces = 1;
+            }
+        } else if (seg + 1 + strlen(file) + 1 < sizeof(buf)) {
             memcpy(buf, p, seg);
             buf[seg] = '/';
             strcpy(buf + seg + 1, file);
-            execv(buf, argv);   /* returns only on failure */
+            execve(buf, argv, envp);       /* returns only on failure */
+            if (errno == EACCES) seen_eacces = 1;
         }
         if (!colon) break;
         p = colon + 1;
     }
-    errno = ENOENT;
+    errno = seen_eacces ? EACCES : ENOENT;
     return -1;
 }
 
@@ -960,35 +994,51 @@ void perror(const char *s) {
 double fabs(double x) { return __builtin_fabs(x); }
 
 double sqrt(double x) {
-    /* x86_64 has SSE2 in the baseline ABI; the builtin lowers to sqrtsd. */
-    if (x < 0.0) return NAN;
+    /* x86_64 has SSE2 in the baseline ABI; the builtin lowers to sqrtsd.
+     * RESIDUE2 T4: a negative argument is a DOMAIN error (POSIX): NaN plus
+     * errno=EDOM, not a silent NaN. */
+    if (x < 0.0) { errno = EDOM; return NAN; }
     return __builtin_sqrt(x);
 }
 
+/* floor/ceil: |x| >= 2^52 is already an integer (and the long long cast
+ * would be undefined past 2^63 — the review's audit finding), NaN/inf
+ * return themselves per POSIX. */
 double floor(double x) {
+    if (x != x || x >= 9.007199254740992e15 || x <= -9.007199254740992e15)
+        return x;
     double t = (double)(long long)x;          /* truncate toward zero */
     return (t > x) ? t - 1.0 : t;
 }
 
 double ceil(double x) {
+    if (x != x || x >= 9.007199254740992e15 || x <= -9.007199254740992e15)
+        return x;
     double t = (double)(long long)x;
     return (t < x) ? t + 1.0 : t;
 }
 
+/*
+ * exp(x) — RESIDUE2 T4 last-ULP review: the reduction now subtracts a
+ * HI/LO split of ln2 (LN2_HI + LN2_LO carries ln2 to ~1e-32), so the
+ * reduced argument's error no longer grows with k*eps(ln2) — the old form
+ * lost up to ~1.5e-13 absolute in r for |x| near 709, i.e. hundreds of
+ * ULP in the result.  Overflow is a RANGE error (errno=ERANGE, HUGE_VAL).
+ */
 double exp(double x) {
-    /* Range-reduce x = k*ln2 + r, then Taylor-series e^r for |r| <= ln2/2. */
-    const double LN2 = 0.69314718055994530942;
+    const double LN2_HI = 6.93147180369123816490e-01;  /* ln2, top bits   */
+    const double LN2_LO = 1.90821492927058770002e-10;  /* ln2, remainder  */
     if (x != x) return x;                      /* NaN */
-    if (x >  709.0) return HUGE_VAL;
+    if (x >  709.0) { errno = ERANGE; return HUGE_VAL; }
     if (x < -745.0) return 0.0;
-    long long k = (long long)(x / LN2 + (x >= 0 ? 0.5 : -0.5));
-    double r = x - (double)k * LN2;
+    long long k = (long long)(x / 0.69314718055994530942 + (x >= 0 ? 0.5 : -0.5));
+    double r = x - (double)k * LN2_HI - (double)k * LN2_LO;
     double term = 1.0, sum = 1.0;
     for (int n = 1; n < 18; n++) {
         term *= r / (double)n;
         sum  += term;
     }
-    /* Scale by 2^k via repeated multiply (k is small after reduction). */
+    /* Scale by 2^k via repeated multiply (powers of two are exact). */
     double scale = 1.0;
     double base  = (k >= 0) ? 2.0 : 0.5;
     long long kk = (k >= 0) ? k : -k;
@@ -996,12 +1046,18 @@ double exp(double x) {
     return sum * scale;
 }
 
+/*
+ * log(x) — RESIDUE2 T4: same HI/LO treatment for e*ln2 (the old single
+ * constant cost ~6000 ULP at x near 1e308; the split carries the product
+ * to well under an ULP of the result).  Domain errors per POSIX: x < 0 is
+ * EDOM + NaN, x == 0 is ERANGE + -HUGE_VAL.
+ */
 double log(double x) {
-    /* log(x): reduce x = m * 2^e with m in [1,2), use atanh series on
-     * s = (m-1)/(m+1):  log(m) = 2*(s + s^3/3 + s^5/5 + ...). */
-    if (x != x || x < 0.0) return NAN;
-    if (x == 0.0) return -HUGE_VAL;
-    const double LN2 = 0.69314718055994530942;
+    const double LN2_HI = 6.93147180369123816490e-01;
+    const double LN2_LO = 1.90821492927058770002e-10;
+    if (x != x) return x;
+    if (x < 0.0)  { errno = EDOM;   return NAN; }
+    if (x == 0.0) { errno = ERANGE; return -HUGE_VAL; }
     int e = 0;
     while (x >= 2.0) { x *= 0.5; e++; }
     while (x <  1.0) { x *= 2.0; e--; }
@@ -1012,7 +1068,7 @@ double log(double x) {
         sum  += term / (double)n;
         term *= s2;
     }
-    return 2.0 * sum + (double)e * LN2;
+    return 2.0 * sum + (double)e * LN2_HI + (double)e * LN2_LO;
 }
 
 double log2(double x) {
@@ -1020,9 +1076,19 @@ double log2(double x) {
     return log(x) / LN2;
 }
 
+/*
+ * pow() — RESIDUE2 T4 errno rules: 0^negative is a RANGE error
+ * (ERANGE, HUGE_VAL, sign per POSIX pole rules simplified to +HUGE_VAL)
+ * and a negative base with a non-integer exponent is a DOMAIN error
+ * (EDOM, NaN).  The integer-exponent path stays exact.
+ */
 double pow(double base, double e) {
     if (e == 0.0) return 1.0;
-    if (base == 0.0) return (e > 0.0) ? 0.0 : HUGE_VAL;
+    if (base == 0.0) {
+        if (e > 0.0) return 0.0;
+        errno = ERANGE;
+        return HUGE_VAL;
+    }
     /* Integer exponent: exact repeated multiply. */
     double ip = (double)(long long)e;
     if (ip == e) {
@@ -1034,35 +1100,140 @@ double pow(double base, double e) {
         return neg ? 1.0 / r : r;
     }
     /* General case: base^e = exp(e * log(base)); negative base undefined. */
-    if (base < 0.0) return NAN;
+    if (base < 0.0) { errno = EDOM; return NAN; }
     return exp(e * log(base));
 }
 
-double sin(double x) {
-    /* Reduce to [-pi, pi] then 9-term Taylor series. */
-    const double TWO_PI = 6.28318530717958647692;
-    const double PI = M_PI;
-    while (x >  PI) x -= TWO_PI;
-    while (x < -PI) x += TWO_PI;
-    double x2 = x * x, term = x, sum = x;
-    for (int n = 1; n < 13; n++) {
-        term *= -x2 / (double)((2 * n) * (2 * n + 1));
-        sum  += term;
+/*
+ * sin(x)/cos(x) — RESIDUE2 T4 last-ULP review: the old reduction
+ * subtracted 2*pi in a while-loop, which (a) is O(|x|/2pi) and (b)
+ * ACCUMULATES one rounding per subtraction — at x=1e6 the argument carried
+ * ~1e-10 of noise and the sine of it was pure fiction.  The new reduction
+ * is Cody-Waite with a HI/LO split of 2*pi: k = round(x/2pi), r = x -
+ * k*HI - k*LO.  The split carries 2*pi to ~1e-16 below the double holding
+ * it, so the reduced argument is good to a few ULP of r INDEPENDENT of
+ * |x|, and the Taylor series (15 terms, worst near +/-pi) finishes the
+ * job.  errno: none (no domain errors for finite arguments).
+ */
+/* fmod lives HERE (not math_extra.c) since the RESIDUE2 T4 sin/cos
+ * reduction calls it for |x| > 1e18: aulink links libc.o without
+ * math_extra.o and resolves no host libm, so libc.o must be self-contained
+ * for the cores it exposes. */
+static int is_nan(double x) { return x != x; }
+
+/*
+ * fmod(x, y) — EXACT, RESIDUE2 T4 (the last-ULP review's foundation).
+ *
+ * The old body (x - trunc(x/y)*y) inherits the division's rounding error,
+ * which grew with |x/y| — the very defect that capped sin/cos accuracy for
+ * large arguments.  This one is binary long division in exact doubles:
+ * scale the divisor up to the dividend's binade (t *= 2 is exact), subtract
+ * (Sterbenz: exact when t <= r < 2t), repeat.  Every step is exact, so the
+ * result is the true mathematical x mod |y| rounded ONCE — the same
+ * guarantee glibc's fmod carries.
+ *
+ * Domain error (RESIDUE2 T4): y == 0 sets errno=EDOM and returns NaN
+ * (POSIX).
+ */
+double fmod(double x, double y) {
+    if (is_nan(x) || is_nan(y)) return NAN;
+    if (y == 0.0) { errno = EDOM; return NAN; }
+    if (y == HUGE_VAL || y == -HUGE_VAL) return x;   /* everything mod inf */
+    double r = (x < 0.0) ? -x : x;
+    double d = (y < 0.0) ? -y : y;
+    if (d > r) return x;                             /* |x| < |y|: x itself */
+    while (r >= d) {
+        double t = d;
+        while (t * 2.0 <= r) t *= 2.0;               /* exact scaling */
+        r -= t;                                      /* exact (Sterbenz) */
     }
-    return sum;
+    return (x < 0.0) ? -r : r;
+}
+
+double sin(double x) {
+    /* fdlibm-style quadrant reduction: n = round(x / (pi/2)) puts r in
+     * [-pi/4, pi/4]; the first subtraction is exact by Sterbenz and every
+     * correction rounds at the ulp of a number <= 1 — the property the
+     * measured table in test_mathulp.c pins.  HI/LO/LO2 carry pi/2 across
+     * three doubles split against the TRUE pi/2 (not its double rounding):
+     * 33 + 33 + 53 significand bits, so n*HI and n*LO are exact for
+     * |n| < 2^20 (|x| <~ 1.6e6) and the LO2 tail contributes < 1e-30.
+     * The fold loops subtract the same three parts — subtracting the
+     * double pi/2 here would re-inject its 1e-17 error. */
+    const double HPI_HI  = 1.57079632673412561417e+00;   /* 33 bits  */
+    const double HPI_LO  = 6.07710050359346054538e-11;   /* next 33  */
+    const double HPI_LO2 = 2.91273205609335603533e-20;   /* rest     */
+    const double HPI_SUM = 1.57079632679489661923;       /* rounded  */
+    if (x != x) return x;
+    long long n;
+    double r;
+    if (x > 1e18 || x < -1e18) {
+        /* Past the long-long quotient: the (now exact) fmod, then the
+         * same fold.  At this magnitude the double format cannot carry
+         * the phase anyway — honest best effort, stated in the review. */
+        r = fmod(x, HPI_SUM);
+        n = 0;
+    } else {
+        double k = (x >= 0.0 ? 0.5 : -0.5);
+        n = (long long)(x / HPI_SUM + k);
+        r = x - (double)n * HPI_HI - (double)n * HPI_LO - (double)n * HPI_LO2;
+    }
+    while (r >  HPI_SUM / 2.0) { r -= HPI_HI; r -= HPI_LO; r -= HPI_LO2; n++; }
+    while (r < -HPI_SUM / 2.0) { r += HPI_HI; r += HPI_LO; r += HPI_LO2; n--; }
+    double x2 = r * r, term = r, s = r, c = 1.0;
+    for (int i = 1; i < 15; i++) {
+        term *= -x2 / (double)((2 * i) * (2 * i + 1));
+        s    += term;
+    }
+    term = 1.0;
+    for (int i = 1; i < 15; i++) {
+        term *= -x2 / (double)((2 * i - 1) * (2 * i));
+        c    += term;
+    }
+    /* sin(n*pi/2 + r) by quadrant. */
+    switch ((int)(n & 3)) {
+    case 0:  return  s;
+    case 1:  return  c;
+    case 2:  return -s;
+    default: return -c;
+    }
 }
 
 double cos(double x) {
-    const double TWO_PI = 6.28318530717958647692;
-    const double PI = M_PI;
-    while (x >  PI) x -= TWO_PI;
-    while (x < -PI) x += TWO_PI;
-    double x2 = x * x, term = 1.0, sum = 1.0;
-    for (int n = 1; n < 13; n++) {
-        term *= -x2 / (double)((2 * n - 1) * (2 * n));
-        sum  += term;
+    const double HPI_HI  = 1.57079632673412561417e+00;   /* 33 bits  */
+    const double HPI_LO  = 6.07710050359346054538e-11;   /* next 33  */
+    const double HPI_LO2 = 2.91273205609335603533e-20;   /* rest     */
+    const double HPI_SUM = 1.57079632679489661923;       /* rounded  */
+    if (x != x) return x;
+    long long n;
+    double r;
+    if (x > 1e18 || x < -1e18) {
+        r = fmod(x, HPI_SUM);
+        n = 0;
+    } else {
+        double k = (x >= 0.0 ? 0.5 : -0.5);
+        n = (long long)(x / HPI_SUM + k);
+        r = x - (double)n * HPI_HI - (double)n * HPI_LO - (double)n * HPI_LO2;
     }
-    return sum;
+    while (r >  HPI_SUM / 2.0) { r -= HPI_HI; r -= HPI_LO; r -= HPI_LO2; n++; }
+    while (r < -HPI_SUM / 2.0) { r += HPI_HI; r += HPI_LO; r += HPI_LO2; n--; }
+    double x2 = r * r, term = r, s = r, c = 1.0;
+    for (int i = 1; i < 15; i++) {
+        term *= -x2 / (double)((2 * i) * (2 * i + 1));
+        s    += term;
+    }
+    term = 1.0;
+    for (int i = 1; i < 15; i++) {
+        term *= -x2 / (double)((2 * i - 1) * (2 * i));
+        c    += term;
+    }
+    /* cos(n*pi/2 + r) by quadrant. */
+    switch ((int)(n & 3)) {
+    case 0:  return  c;
+    case 1:  return -s;
+    case 2:  return -c;
+    default: return  s;
+    }
 }
 
 /* ---- ctype (C locale, ASCII) ----

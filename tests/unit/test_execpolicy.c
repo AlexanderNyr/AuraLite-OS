@@ -244,6 +244,84 @@ static int t_opt_is_allowed_explicitly(void) {
     return 1;
 }
 
+/* ---- RESIDUE2 T4: symlink resolution through the injected VFS seam ------- */
+
+/* A fake symlink registry: a /tmp/link -> /etc escape, a /tmp/in -> /opt
+ * interior link, and a /tmp/loopA <-> /tmp/loopB cycle.  Mirrors what
+ * vfs_realpath() does against kernel/fs/symlink.c, without linking the
+ * kernel.  Resolution is lexical beyond the registry (the real canonicaliser
+ * runs first inside exec_install_allowed). */
+static const char *fake_link_target(const char *path) {
+    if (strcmp(path, "/tmp/link") == 0) return "/etc";
+    if (strcmp(path, "/tmp/in") == 0)   return "/opt/pkgs";
+    if (strcmp(path, "/tmp/loopA") == 0) return "/tmp/loopB";
+    if (strcmp(path, "/tmp/loopB") == 0) return "/tmp/loopA";
+    if (strcmp(path, "/tmp/deep") == 0)  return "../etc";   /* relative escape */
+    return NULL;
+}
+
+/* One expansion per call is enough for the fake; a loop must be refused.
+ * (The REAL vfs_realpath loops internally; this simplified model explores
+ * exactly one link, which covers every registry entry above.) */
+static int fake_resolver(const char *path, char *out, size_t out_len) {
+    /* Walk prefixes left to right; expand the first registered link. */
+    size_t len = strlen(path);
+    for (size_t i = 1; i <= len; i++) {
+        while (i < len && path[i] != '/') i++;
+        if (i < 2) continue;
+        char prefix[256];
+        if (i >= sizeof(prefix)) return -1;
+        memcpy(prefix, path, i);
+        prefix[i] = '\0';
+        const char *tgt = fake_link_target(prefix);
+        if (!tgt) continue;
+        if (strcmp(tgt, "/tmp/loopA") == 0 || strcmp(tgt, "/tmp/loopB") == 0)
+            return -1;                       /* unbounded expansion: refuse */
+        /* Relative targets anchor at the link's parent. */
+        char abs[256];
+        if (tgt[0] == '/') {
+            snprintf(abs, sizeof(abs), "%s", tgt);
+        } else {
+            size_t parent = i;
+            while (parent > 1 && prefix[parent - 1] != '/') parent--;
+            snprintf(abs, sizeof(abs), "%.*s/%s", (int)(parent - 1), prefix, tgt);
+        }
+        snprintf(out, out_len, "%s%s", abs, path + i);
+        return 0;
+    }
+    snprintf(out, out_len, "%s", path);
+    return 0;
+}
+
+static int t_symlink_escape_refused(void) {
+    execpolicy_set_vfs_resolver(fake_resolver);
+    CHECK(exec_install_allowed("/tmp/link/evil") == 0);      /* -> /etc/evil */
+    CHECK(exec_install_allowed("/tmp/deep/evil") == 0);      /* -> ../etc/evil */
+    execpolicy_set_vfs_resolver(NULL);
+    return 1;
+}
+
+static int t_symlink_inside_still_allowed(void) {
+    execpolicy_set_vfs_resolver(fake_resolver);
+    CHECK(exec_install_allowed("/tmp/in/tool") == 1);        /* -> /opt/pkgs/tool */
+    execpolicy_set_vfs_resolver(NULL);
+    return 1;
+}
+
+static int t_symlink_loop_refused(void) {
+    execpolicy_set_vfs_resolver(fake_resolver);
+    CHECK(exec_install_allowed("/tmp/loopA/x") == 0);
+    execpolicy_set_vfs_resolver(NULL);
+    return 1;
+}
+
+static int t_no_resolver_keeps_lexical_behaviour(void) {
+    execpolicy_set_vfs_resolver(NULL);
+    CHECK(exec_install_allowed("/tmp/plain") == 1);
+    CHECK(exec_install_allowed("/opt/../etc/evil") == 0);
+    return 1;
+}
+
 int main(void) {
     printf("test_execpolicy: executable installation allowlist\n");
 
@@ -274,6 +352,13 @@ int main(void) {
 
     RUN(t_allowlist_enumerable);
     RUN(t_opt_is_allowed_explicitly);
+
+    /* RESIDUE2 T4: the policy resolves symlinks through the (injected) VFS
+     * before judging.  A fake registry stands in for vfs_realpath(). */
+    RUN(t_symlink_escape_refused);
+    RUN(t_symlink_inside_still_allowed);
+    RUN(t_symlink_loop_refused);
+    RUN(t_no_resolver_keeps_lexical_behaviour);
 
     printf("  %d/%d passed, %d failed\n", passed, tn, failed);
     return failed == 0 ? 0 : 1;

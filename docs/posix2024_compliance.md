@@ -87,12 +87,13 @@
 
 | Function | Status | Notes |
 |---|---|---|
-| sin/cos/tan | ✅ | |
-| asin/acos/atan/atan2 | ✅ | |
-| exp/log/log2/log10 | ✅ | |
-| pow/sqrt | ✅ | |
+| sin/cos/tan | ✅ | sin/cos ≤3.07 ULP measured (RESIDUE2 T4, `test_mathulp`) |
+| asin/acos/atan/atan2 | ✅ | EDOM contract RESIDUE2 T4 |
+| exp/log/log2/log10 | ✅ | exp 3.70 / log 0.87 ULP measured (RESIDUE2 T4) |
+| pow/sqrt | ✅ | pow ≤48 ULP stated honestly (RESIDUE2 T4); errno contract |
 | ceil/floor/fabs | ✅ | |
-| fmod | ✅ | |
+| fmod | ✅ | exact ≤1 ULP, EDOM on y==0 (RESIDUE2 T4) |
+| sinf/cosf/expf/logf/powf/sqrtf/fabsf/floorf/ceilf/fmodf | ✅ | float variants audited RESIDUE2 T4 |
 | fma | ✅ | |
 | frexp/ldexp/modf | ✅ | |
 | hypot | ✅ | |
@@ -267,7 +268,7 @@
 | fread/fwrite | ✅ | |
 | fgetc/fputc | ✅ | |
 | fgets/fputs | ✅ | |
-| scanf/fscanf/sscanf | ✅ | |
+| scanf/fscanf/sscanf/vsscanf | ✅ | vsscanf verified RESIDUE2 T4 |
 | tmpfile/tmpnam | ✅ | |
 | remove/rename | ✅ | |
 | fflush/feof/ferror | ✅ | |
@@ -387,7 +388,8 @@
 | pipe/pipe2 | ✅ | |
 | fork | ✅ | |
 | execve/execv/execvp | ✅ | |
-| fexecve | ✅ | Q5; functional since Q13 (/proc/self/fd) |
+| execvpe | ✅ | RESIDUE2 T4; child-envp PATH search incl. the empty (cwd) segment — `test_execvpe_lanes` |
+| fexecve | ✅ | Q5; functional since Q13 (/proc/self/fd); live receipt RESIDUE2 T4 |
 | link/linkat | ✅ | Q13 |
 | symlinkat | ✅ | Q13 |
 | getpid | ✅ | |
@@ -396,7 +398,7 @@
 | sbrk | ✅ | |
 | mmap/munmap | ✅ | |
 | access | ✅ | |
-| chdir/getcwd | ✅ | |
+| chdir/getcwd | ✅ | relative open/exec paths anchor at cwd since RESIDUE2 T4 |
 | chmod/fchmod | ✅ | |
 | chown/fchown | ✅ | |
 | getuid/geteuid/getgid/getegid | ✅ | |

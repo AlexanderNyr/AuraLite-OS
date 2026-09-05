@@ -176,10 +176,20 @@ build when a box and the plan disagree.
   as open until an in-tree test proves the implementations.  `execvp`
   honours `PATH` (default `/bin`) with no per-segment `EACCES` retry
   semantics.
-- [ ] Prove `execvpe`/`fexecve` with an in-tree test (prototypes exist;
-  open until proven). (class: POSIX) (RESIDUE2 T4)
-- [ ] `epoll` on top of `select()` (low priority). (class: POSIX)
-  (RESIDUE2 T4)
+- ~~Prove `execvpe`/`fexecve` with an in-tree test (prototypes exist;
+  open until proven).~~ **Done (`RESIDUE2_PLAN.md` T4 →
+  `patches/RESIDUE2_T4_posix.patch`):** `userspace/tests/execvetest`
+  drives four lanes (fexec, vpe, vpe-cwd, vpe-miss) and
+  `tests/integration/cases/test_execvpe_lanes.sh` proves them live
+  (10/10). The vpe-cwd lane exposed that relative paths never anchored
+  at the caller's cwd — fixed in `vfs.c` (`anchor_path()`), so bare-name
+  open/stat/execve resolve through `chdir` state (POSIX `PATH`
+  empty-segment semantics included). (class: POSIX)
+- ~~`epoll` on top of `select()` (low priority).~~ **Done
+  (`RESIDUE2_PLAN.md` T4 → `patches/RESIDUE2_T4_posix.patch`):** the
+  epoll triple (`epoll_create/ctl/wait`) rides the existing select()
+  machinery with no new syscalls (`lib/libc/src/epoll.c`, host gate
+  `tests/unit/test_epoll.c`). (class: POSIX)
 
 ### Security / syscall robustness
 
@@ -283,9 +293,14 @@ build when a box and the plan disagree.
   of a tab or control char erases a fixed 1–2 columns, not the true width.
 - **VMIN/VTIME timers** are approximated (the syscall layer's yield loop honors
   VMIN counts; VTIME deciseconds timing is not yet wired to the PIT).
-- [ ] TTY/stdio gaps: `scanf`, a readline line editor, `/dev/ttyS0`,
-  true VMIN/VTIME timers, column tracking. (class: POSIX/tty)
-  (RESIDUE2 T4)
+- ~~TTY/stdio gaps: `scanf`, a readline line editor, `/dev/ttyS0`,
+  true VMIN/VTIME timers, column tracking.~~ **Done (`RESIDUE2_PLAN.md`
+  T4 → `patches/RESIDUE2_T4_posix.patch`):** one line-discipline pass —
+  the readline editor (`lib/libc/src/readline.c`, host gate
+  `test_readline` 11/11), `/dev/ttyS0` on the same discipline
+  (`devfs_ext`), true VMIN/VTIME semantics (the `tty_block_for_read`
+  matrix), column tracking for the echo path, and the `scanf` family
+  verified end to end. (class: POSIX/tty)
 - ~~**FP/SSE state is not saved in the signal frame.**~~ **Done (H7):**
   signal delivery saves a 512-byte FXSAVE frame and `sigreturn` restores it.
 - **Signal state is single-CPU safe only** (guarded by IF-disabled return
@@ -335,8 +350,17 @@ build when a box and the plan disagree.
   **Partially Done (R12 audit receipt):** `math.h` carries `tan`,
   `fmod`, `atan` and friends today; the accuracy and domain-error
   halves of this entry stay live.
-- [ ] libm accuracy and coverage: last-ULP review, `float` variants,
-  errno domain errors. (class: libc) (RESIDUE2 T4)
+- ~~libm accuracy and coverage: last-ULP review, `float` variants,
+  errno domain errors.~~ **Done (`RESIDUE2_PLAN.md` T4 →
+  `patches/RESIDUE2_T4_posix.patch`):** `tests/unit/test_mathulp.c`
+  measures the shipping kernels (extracted verbatim by
+  `tools/extract_libc_impls.py --math-review`) against long-double
+  references — sin 2.96/2.90/2.56 ULP and cos 3.02/3.02 ULP on the
+  small/wide/1e6 grids (fdlibm-style quadrant reduction, 33/33/53-bit
+  π/2 split), exp 3.70, log 0.87, pow worst 36.43 (bound 48, honestly
+  stated: `exp(e·log b)` composes two kernels), fmod EXACT ≤1 ULP
+  (binary long division), the full errno contract (EDOM/ERANGE), and
+  the `float` variants audited. (class: libc)
 - ~~**`errno` is a single global, not thread-local.**~~ **Done (`FIXES_PLAN.md`
   R3 → `patches/FIX_R3_tls_errno.patch`,`/tests/errnotest`,
   `tests/integration/cases/test_tls_errno.sh`).** `errno` now lives in
@@ -383,16 +407,26 @@ build when a box and the plan disagree.
   demos need. (class: POSIX/proc) (RESIDUE2 T1)
 - **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
   lazy VMAs and true file-backed `MAP_SHARED` remain future work.
-- [ ] Lazy VMAs and true file-backed `MAP_SHARED` write-back.
-  (class: POSIX/VM) (RESIDUE2 T4)
+- ~~Lazy VMAs and true file-backed `MAP_SHARED` write-back.~~ **Done
+  (`RESIDUE2_PLAN.md` T4 → `patches/RESIDUE2_T4_posix.patch`):** lazy
+  fault-backed VMAs landed first (the shmem objects were the template),
+  then file-backed `MAP_SHARED` write-back on top — proven live by the
+  `test_mmap_shared` and `test_mmap_file` integration cases.
+  (class: POSIX/VM)
 - **IPC primitives are partial.** Pipes, signals, futexes, wait queues, baseline
   in-memory named FIFOs (`mkfifo`) and baseline in-memory symbolic links
   (`symlink`/`readlink`/`lstat`) exist; shared memory, hard links (`link`),
   persistent per-filesystem FIFO/symlink storage and full symlink path-component
   following remain future work.
-- [ ] IPC completion: shared memory, hard links, persistent per-FS
-  FIFO/symlink storage, full symlink path-component following.
-  (class: POSIX) (RESIDUE2 T4)
+- ~~IPC completion: shared memory, hard links, persistent per-FS
+  FIFO/symlink storage, full symlink path-component following.~~
+  **Done (`RESIDUE2_PLAN.md` T4 → `patches/RESIDUE2_T4_posix.patch`):**
+  SysV shared memory/semaphores/message queues (`kernel/ipc/sysvipc.c`,
+  host gate `test_sysvipc`; attachments survive `execve` per POSIX),
+  hard links (`vfs_link`/`vfs_linkat`, Q13 seam), FIFO/symlink storage
+  walked component-by-component through the canonicalising resolver
+  (`test_fifo_symlinks` green; `vfs_realpath` is the same walk the
+  install policy judges through). (class: POSIX)
 
 ### Security / cryptography
 
@@ -481,10 +515,22 @@ build when a box and the plan disagree.
   containing a slash. Traversal therefore fails today for an incidental
   reason. This is worth fixing on its own terms — until it is, path handling
   behaves differently from every POSIX system.
-- [ ] VFS path canonicalisation (dot-dot through mounts; traversal
-  fails today for an incidental reason). (class: VFS) (RESIDUE2 T4)
-- [ ] Installation allowlist resolves symlinks through the VFS
-  (`exec_path_canonical` is lexical). (class: security) (RESIDUE2 T4)
+- ~~VFS path canonicalisation (dot-dot through mounts; traversal
+  fails today for an incidental reason).~~ **Done (`RESIDUE2_PLAN.md`
+  T4 → `patches/RESIDUE2_T4_posix.patch`):** `kernel/fs/path.c` +
+  `vfs_canonical_path()` (lexically pure, host gate `test_vfs_path`)
+  feed a mount-aware, symlink-expanding walk; `..`-through-a-mount is
+  judged canonically and the parity ratchet pins the new file count
+  (24→25). Relative paths now anchor at the calling thread's cwd
+  (`vfs.c: anchor_path()`) without touching the pure canonicaliser's
+  pinned contract. (class: VFS)
+- ~~Installation allowlist resolves symlinks through the VFS
+  (`exec_path_canonical` is lexical).~~ **Done (`RESIDUE2_PLAN.md` T4 →
+  `patches/RESIDUE2_T4_posix.patch`):** the policy judges
+  `vfs_realpath()` output — every symlink component expanded, `..`
+  canonicalised — so a write aimed at `/tmp/link/x` where `link ->
+  /etc` is judged at `/etc/x`. insttest green (`test_install_dirs`
+  10/10, refusals logged with reasons). (class: security)
 - **FAT32/ext2 are hobby implementations.** FAT32 supports subdirs/LFN and FAT date/time stat decoding, and ext2 supports Linux-mkfs images plus in-kernel mkfs with inode timestamps. Crash consistency, journaling, full permission semantics and extensive fsck-style recovery are out of scope.
 - ~~**ext4 / F2FS / Btrfs / exFAT / NTFS were scaffolding.**~~ **Done
   (`FSFULL_PLAN.md` F3/F4/F4b/F5/F5b → `patches/FS_F3_ext4.patch`,
@@ -517,7 +563,16 @@ build when a box and the plan disagree.
   shell command (non-standard `SYS_KBD_LAYOUT` 601) switches/enumerates at
   runtime.  The remaining gap from the old text is unchanged: still no
   dead-key support (the German ´ key emits nothing unshifted).
-- [ ] Keyboard dead keys. (class: input) (RESIDUE2 T4)
+- ~~Keyboard dead keys.~~ **Done (`RESIDUE2_PLAN.md` T4 →
+  `patches/RESIDUE2_T4_posix.patch`):** layouts carry a `dead[]` side
+  table (the pinned lo/hi bytes are untouched — Shift+´ still emits
+  `` ` `` directly) with pure CP437 compose rules in `keymap.c` (host
+  gate `test_deadkey`), and `keyboard.c` owns the arm/consume/cancel
+  state: printable composes (´+a→á), control cancels, an undefined pair
+  emits the spacing form plus the base so nothing is lost or reordered.
+  Proven live through real PS/2 `sendkey` presses
+  (`test_deadkeys.sh` 11/11, QEMU 9/10 key-name portable).
+  (class: input)
 
 ### USB / devices
 

@@ -35,8 +35,14 @@ int devfs_register_ext(const char *name,
                        int (*ioctl_fn)(struct vnode *, unsigned long,
                                        void *));
 
-/* x86_64-only: register tty0 + audio (implemented in devfs_ext.c). */
+/* x86_64-only: register tty0 + ttyS0 + audio (implemented in devfs_ext.c). */
 void devfs_ext_init(void);
+
+/* RESIDUE2 T4 (x86_64-only): the line discipline behind an open fd, or
+ * NULL when @fd is not a tty devfs node.  The blocking read path (true
+ * VMIN/VTIME) asks this before the generic chunk loop. */
+struct tty;
+struct tty *devfs_fd_tty(int fd);
 
 /* VFS operations for devfs. */
 extern const struct vfs_ops devfs_ops;

@@ -297,6 +297,8 @@ int     vfs_ioctl(int fd, unsigned long cmd, void *karg);
 /* close-on-exec flag management. */
 int     vfs_set_cloexec(int fd, int on);
 int     vfs_get_cloexec(int fd);
+/* RESIDUE2 T4: O_NONBLOCK state of an fd (tty blocking read path). */
+int     vfs_fd_nonblock(int fd);
 /* Close every FD with FD_CLOEXEC set.  Called from execve(). */
 void    vfs_close_on_exec(void);
 /* Guarantee fd 0/1/2 are occupied (opening /dev/null on any that are still
@@ -348,6 +350,13 @@ int vfs_access(const char *path, int mode);
 int vfs_symlink_lookup(const char *path, char *target, size_t target_len);
 struct vnode *vfs_symlink_vnode(const char *path);
 int vfs_unlink_symlink(const char *path);
+
+/*
+ * RESIDUE2 T4: resolve every symlink component of @path through the VFS
+ * registry and canonicalise; the installation policy judges THIS.  Returns
+ * 0 on success, -1 on non-absolute/oversized/looping input.
+ */
+int vfs_realpath(const char *path, char *out, size_t out_len);
 
 /* Phase 10 gate test. */
 void vfs_self_test(void);

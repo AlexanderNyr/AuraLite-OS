@@ -15,18 +15,41 @@
 #include "kernel/proc/signal.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
+#include "kernel/time.h"        /* RESIDUE2 T4: ktime_ticks() for VTIME */
 
 /* ---- output (OPOST) ---- */
+
+/*
+ * RESIDUE2 T4 — the column model.  Every OUTPUT byte moves it, not just
+ * echo: a program printing "abc\t" leaves the cursor at column 8, and an
+ * erase after that must still be right.  Tabs advance to the next 8-column
+ * stop, \b steps back one, \r homes the line, \n (and the ONLCR \r\n pair)
+ * starts a new one.  Column math caps at 0 so backspacing at column 0
+ * cannot underflow.
+ */
+#define TTY_TAB_STOP 8
 
 static void tty_out_char(struct tty *t, char c) {
     if (t->termios.c_oflag & OPOST) {
         if (c == '\n' && (t->termios.c_oflag & ONLCR)) {
             t->out('\r');
             t->out('\n');
+            t->column = 0;
             return;
         }
     }
     t->out(c);
+    if (c == '\n') {
+        t->column = 0;
+    } else if (c == '\r') {
+        t->column = 0;
+    } else if (c == '\b') {
+        if (t->column > 0) t->column--;
+    } else if (c == '\t') {
+        t->column = (t->column / TTY_TAB_STOP + 1) * TTY_TAB_STOP;
+    } else {
+        t->column++;   /* printable + CP437 byte: one column each */
+    }
 }
 
 int tty_write(struct tty *t, const char *buf, int len) {
@@ -35,31 +58,43 @@ int tty_write(struct tty *t, const char *buf, int len) {
     return len;
 }
 
-/* Echo one input character, rendering control chars as ^X when ECHOCTL. */
-static void tty_echo(struct tty *t, char c) {
+/*
+ * Echo one input character, rendering control chars as ^X when ECHOCTL.
+ * RESIDUE2 T4: returns the number of SCREEN COLUMNS the echo occupied, so
+ * the canonical editor can record it per character (line_cols[]) and later
+ * erase exactly what was drawn.  The ^X pair is written through t->out
+ * directly (both bytes are one width-2 unit; routing them through
+ * tty_out_char would double-count).
+ */
+static int tty_echo(struct tty *t, char c) {
     if (!(t->termios.c_lflag & ECHO)) {
         /* ECHONL: a newline is echoed even with ECHO off. */
         if (c == '\n' && (t->termios.c_lflag & ECHONL)) tty_out_char(t, '\n');
-        return;
+        return 0;
     }
     unsigned char uc = (unsigned char)c;
     if ((t->termios.c_lflag & ECHOCTL) && uc < 0x20 && c != '\n' && c != '\t') {
         t->out('^');
         t->out((char)(uc + 0x40));
-    } else {
-        tty_out_char(t, c);
+        t->column += 2;
+        return 2;
     }
+    /* Tab width is decided by the column the tab is struck AT. */
+    int width = (c == '\t') ? TTY_TAB_STOP - (t->column % TTY_TAB_STOP) : 1;
+    tty_out_char(t, c);           /* advances t->column by the same width */
+    return width;
 }
 
-/* Visually erase the last echoed character (ECHOE): backspace, space, backspace.
- * Control chars echoed as ^X occupy two columns. */
-static void tty_echo_erase(struct tty *t, char erased) {
+/*
+ * Visually erase the last echoed character (ECHOE): backspace, space,
+ * backspace, @cols times — @cols is the RECORDED width from tty_echo(),
+ * which is what makes a tab erase its full 1..8 columns and a ^X its two.
+ */
+static void tty_echo_erase(struct tty *t, int cols) {
     if (!(t->termios.c_lflag & ECHO) || !(t->termios.c_lflag & ECHOE)) return;
-    int cols = 1;
-    unsigned char uc = (unsigned char)erased;
-    if ((t->termios.c_lflag & ECHOCTL) && uc < 0x20 && erased != '\n' && erased != '\t')
-        cols = 2;
+    if (cols <= 0) return;
     for (int i = 0; i < cols; i++) { t->out('\b'); t->out(' '); t->out('\b'); }
+    if (t->column >= cols) t->column -= cols; else t->column = 0;
 }
 
 /* ---- signal routing (interim: degenerate foreground group) ---- */
@@ -90,6 +125,10 @@ static void rbuf_push(struct tty *t, char c) {
     t->rbuf[t->rbuf_head] = c;
     t->rbuf_head = (t->rbuf_head + 1) % TTY_IBUF_SIZE;
     t->rbuf_count++;
+    /* RESIDUE2 T4: VTIME's inter-byte clock runs on the arrival of the
+     * LAST committed byte, so stamp every push (cheap) rather than
+     * tracking it per-reader. */
+    t->last_rx_ticks = ktime_ticks();
 }
 
 /* Commit the current canonical line (including any delimiter already appended)
@@ -130,15 +169,15 @@ void tty_input(struct tty *t, unsigned char c) {
         /* Canonical editing. */
         if (c == tm->c_cc[VERASE]) {
             if (t->line_len > 0) {
-                char erased = t->line[--t->line_len];
-                tty_echo_erase(t, erased);
+                t->line_len--;
+                tty_echo_erase(t, t->line_cols[t->line_len]);
             }
             return;
         }
         if (c == tm->c_cc[VKILL]) {
             while (t->line_len > 0) {
-                char erased = t->line[--t->line_len];
-                tty_echo_erase(t, erased);
+                t->line_len--;
+                tty_echo_erase(t, t->line_cols[t->line_len]);
             }
             return;
         }
@@ -151,15 +190,19 @@ void tty_input(struct tty *t, unsigned char c) {
         }
         if (c == '\n' || c == tm->c_cc[VEOL]) {
             /* Line delimiter: echo + include in the committed line. */
-            if (t->line_len < TTY_CANON_MAX) t->line[t->line_len++] = (char)c;
+            if (t->line_len < TTY_CANON_MAX) {
+                t->line[t->line_len] = (char)c;
+                t->line_cols[t->line_len++] = 0;   /* delimiter: erased as a unit */
+            }
             tty_echo(t, (char)c);
             commit_line(t);
             return;
         }
-        /* Ordinary character: append to the edit buffer + echo. */
+        /* Ordinary character: append to the edit buffer + echo, recording
+         * the echoed width for a true-width erase later (RESIDUE2 T4). */
         if (t->line_len < TTY_CANON_MAX - 1) {
-            t->line[t->line_len++] = (char)c;
-            tty_echo(t, (char)c);
+            t->line[t->line_len] = (char)c;
+            t->line_cols[t->line_len++] = (signed char)tty_echo(t, (char)c);
         }
         return;
     }
@@ -245,7 +288,7 @@ int tty_ioctl(struct tty *t, unsigned long cmd, void *arg) {
 /* ---- defaults + console singleton ---- */
 
 void tty_init(struct tty *t, void (*out)(char c)) {
-    memset(t, 0, sizeof(*t));
+    memset(t, 0, sizeof(*t));   /* line_cols/column/last_rx_ticks start at 0 */
     t->out = out;
     struct termios *tm = &t->termios;
     /* Sane cooked-mode defaults (Linux-like). */
@@ -275,7 +318,46 @@ extern void kputchar(char c);
 struct tty *tty_console(void) {
     if (!g_console_ready) {
         tty_init(&g_console, kputchar);
+        /* RESIDUE2 T4: the keyboard now mirrors decoded bytes here as well
+         * as into the legacy kb ring.  The legacy fd-0 stdin path (which
+         * the shell uses) owns ECHO and ISIG for those same bytes, so the
+         * console tty ships with both OFF: opening /dev/tty0 must not
+         * double every keystroke onto the screen or double-deliver ^C.  A
+         * program that wants its own line editor with echo sets TCSETS. */
+        g_console.termios.c_lflag &= ~(tcflag_t)(ECHO | ECHOE | ECHOK | ISIG);
         g_console_ready = 1;
     }
     return &g_console;
+}
+
+/* ---- RESIDUE2 T4: the serial tty (/dev/ttyS0) ----
+ *
+ * Same discipline, UART output sink.  Input is POLLed from the UART by the
+ * ttyS0 read path (drivers/uart stays RX-interrupt-free: the console stdin
+ * path polls the same RBR, and an IRQ consumer would race bytes away from
+ * every serial-driven integration test).  ECHO/ISIG default off for the
+ * same reason as the console: the shell's stdin path echoes serial bytes
+ * itself while it is the reader. */
+extern void uart_putchar(char c);   /* drivers/uart/uart.h, kept out for deps */
+
+static struct tty g_serial;
+static int g_serial_ready = 0;
+
+struct tty *tty_serial(void) {
+    if (!g_serial_ready) {
+        tty_init(&g_serial, uart_putchar);
+        g_serial.termios.c_lflag &= ~(tcflag_t)(ECHO | ECHOE | ECHOK | ISIG);
+        g_serial_ready = 1;
+    }
+    return &g_serial;
+}
+
+/* ---- RESIDUE2 T4: the blocking-read inputs (see tty.h) ---- */
+
+int tty_rx_count(struct tty *t) {
+    return t ? t->rbuf_count : 0;
+}
+
+uint64_t tty_last_rx_ticks(struct tty *t) {
+    return t ? t->last_rx_ticks : 0;
 }

@@ -17,6 +17,7 @@
 #include "kernel/arch/x86_64/apwake.h"  /* SYS_IRQ_AP_WAKE: RES-16 receipt */
 #include "kernel/tty/termios.h"
 #include "kernel/tty/tty.h"
+#include "kernel/fs/devfs.h"   /* RESIDUE2 T4: devfs_fd_tty */
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "kernel/net/socket.h"
@@ -392,9 +393,105 @@ static int64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
 }
 
 /* Returns bytes read (>= 0) or a negative errno (-EFAULT / ...). */
+/*
+ * RESIDUE2 T4 — block_one_tick(): genuinely sleep one PIT tick (the same
+ * dance the fd-0 stdin path does) instead of spin-yielding, so a blocked
+ * tty reader accounts as idle and the scheduler reaches hlt.
+ */
+static void block_one_tick(void) {
+    uint64_t rflags;
+    __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
+    tcb_t *cur = sched_current();
+    if (cur) {
+        cur->sleep_deadline = ktime_ticks() + 1;
+        cur->state = THREAD_BLOCKED;
+    }
+    schedule();
+    if (rflags & 0x200ULL) {
+        __asm__ volatile ("sti" ::: "memory");
+    }
+}
+
+/*
+ * RESIDUE2 T4 — true VMIN/VTIME for tty-backed fds (the box the old
+ * "yield loop honors VMIN counts" approximation deferred).  Runs BEFORE
+ * the generic chunk loop and returns 0 when the read may proceed, or a
+ * negative errno:
+ *
+ *   O_NONBLOCK                 -> -EAGAIN when nothing is readable now
+ *   ICANON                     -> block until a committed line exists
+ *   raw VMIN>0,  VTIME==0      -> block until VMIN bytes committed
+ *   raw VMIN==0, VTIME>0       -> overall timer: VTIME deciseconds for the
+ *                                 first byte, then return (possibly 0 bytes)
+ *   raw VMIN==0, VTIME==0      -> pure poll (no wait; caller reads what's there)
+ *   raw VMIN>0,  VTIME>0       -> inter-byte timer: the FIRST byte waits
+ *                                 indefinitely; VTIME deciseconds of silence
+ *                                 after the last byte returns the partial line
+ *
+ * The clock is ktime_ticks() (PIT, ~100 Hz == 10 ticks per decisecond —
+ * exactly VTIME's granularity).  A pending unblocked signal interrupts
+ * every wait with -EINTR.
+ */
+static int64_t tty_block_for_read(struct tty *t, int nonblock) {
+    if (nonblock) {
+        return tty_readable(t) ? 0 : -EAGAIN;
+    }
+
+    if (t->termios.c_lflag & ICANON) {
+        while (!tty_readable(t)) {
+            if (signal_interrupted()) return -EINTR;
+            block_one_tick();
+        }
+        return 0;
+    }
+
+    int vmin  = t->termios.c_cc[VMIN];
+    int vtime = t->termios.c_cc[VTIME];
+
+    if (vmin == 0 && vtime == 0) return 0;          /* pure poll */
+
+    if (vmin == 0) {                                /* overall timer */
+        uint64_t deadline = ktime_ticks() + (uint64_t)vtime * 10;
+        while (tty_rx_count(t) == 0) {
+            if (signal_interrupted()) return -EINTR;
+            if ((int64_t)(ktime_ticks() - deadline) >= 0) return 0;  /* timed out */
+            block_one_tick();
+        }
+        return 0;                                   /* >=1 byte arrived */
+    }
+
+    if (vtime == 0) {                               /* plain VMIN wait */
+        while (!tty_readable(t)) {
+            if (signal_interrupted()) return -EINTR;
+            block_one_tick();
+        }
+        return 0;
+    }
+
+    /* VMIN>0, VTIME>0: inter-byte timer. */
+    for (;;) {
+        if (tty_readable(t)) return 0;
+        if (tty_rx_count(t) > 0) {
+            uint64_t silent = ktime_ticks() - tty_last_rx_ticks(t);
+            if (silent >= (uint64_t)vtime * 10) return 0;   /* partial line */
+        }
+        if (signal_interrupted()) return -EINTR;
+        block_one_tick();
+    }
+}
+
 static int64_t syscall_vfs_read(int fd, void *user_buf, uint64_t len) {
     if (len == 0) return 0;
     if (!validate_user_range(user_buf, len, 1)) return -EFAULT;
+
+    /* RESIDUE2 T4: tty-backed fds block HERE, with VMIN/VTIME semantics,
+     * before the chunk loop calls into devfs (whose read drains whatever
+     * is committed — 0 bytes to a caller we already woke). */
+    struct tty *tty = devfs_fd_tty(fd);
+    if (tty) {
+        int64_t bw = tty_block_for_read(tty, vfs_fd_nonblock(fd));
+        if (bw != 0) return bw;
+    }
 
     char tmp[SYSCALL_IO_CHUNK];
     uint64_t done = 0;

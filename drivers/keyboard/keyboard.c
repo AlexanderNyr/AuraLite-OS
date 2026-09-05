@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include "drivers/keyboard/keyboard.h"
 #include "kernel/gui/gui.h"
+#include "kernel/tty/tty.h"     /* RESIDUE2 T4: mirror decoded bytes */
 #include "drivers/keyboard/keymap.h"
 #include "kernel/arch/arch.h"
 #include "kernel/arch/x86_64/irq.h"
@@ -49,6 +50,13 @@ static int kb_extended = 0;
 static int kb_pause_bytes_left = 0;
 static int kb_printscreen_prefix = 0;
 
+/* RESIDUE2 T4: the armed dead-key (accent) state.  Armed by a key marked
+ * in the layout's dead[] table, consumed (or cancelled) by the next key
+ * press; see keymap_dead_compose() for the byte-level semantics.  The
+ * USB HID injection path bypasses this state — mixing injected and PS/2
+ * typing mid-accent keeps the accent pending until the next PS/2 key. */
+static uint8_t pending_dead = KB_DEAD_NONE;
+
 /* The scan-code tables moved to drivers/keyboard/keymap.c as `keymap_us`
  * (FIX_R8), joined by `keymap_de`.  This file keeps only the active-layout
  * pointer; the decode itself is keymap_lookup() so the host-side unit test
@@ -70,6 +78,12 @@ static void kb_enqueue(char c) {
     } else {
         kb_ascii_drops++;
     }
+    /* RESIDUE2 T4: mirror the decoded byte into the console tty's line
+     * discipline, so /dev/tty0 (and anything else that opens it) sees the
+     * keyboard without touching the legacy ring.  The console tty ships
+     * with ECHO/ISIG off precisely because this doubles the byte stream —
+     * the legacy fd-0 reader keeps ownership of echo and ^C. */
+    tty_input(tty_console(), (unsigned char)c);
 }
 
 static void evt_enqueue(uint32_t key, uint16_t sc, uint8_t pressed) {
@@ -345,7 +359,44 @@ static void keyboard_handler(struct registers *regs) {
         return;
     }
 
+    /* RESIDUE2 T4: dead keys (accents) — armed instead of emitted. */
+    {
+        uint8_t dk = keymap_dead_of(active_keymap, sc, mods);
+        if (dk != KB_DEAD_NONE) {
+            /* Both edges reach the GUI ring (press/release pairing is
+             * kept, the byte is the spacing form — for '^' this is the
+             * same event value the key always carried); only a PRESS
+             * changes the accent state. */
+            evt_enqueue(keymap_dead_spacing(dk), raw, pressed);
+            if (pressed) {
+                /* Dead key pressed twice: flush the first accent's
+                 * spacing form, then re-arm. */
+                if (pending_dead != KB_DEAD_NONE)
+                    kb_enqueue((char)keymap_dead_spacing(pending_dead));
+                pending_dead = dk;
+            }
+            return;
+        }
+    }
+
     char c = ascii_for_scancode(sc);
+    if (pending_dead != KB_DEAD_NONE) {
+        if (pressed && (uint8_t)c >= 0x20) {
+            /* Printable base: compose (or emit spacing + base, in order,
+             * when CP437 has no composed form). */
+            uint8_t out[2];
+            int n = keymap_dead_compose(pending_dead, (uint8_t)c, out);
+            pending_dead = KB_DEAD_NONE;
+            for (int i = 0; i < n; i++) kb_enqueue((char)out[i]);
+            evt_enqueue((uint32_t)(uint8_t)c, raw, pressed);
+            return;
+        }
+        if (pressed) {
+            /* Control byte (Enter, Backspace, Esc...): standard cancel —
+             * the accent is dropped, the control byte passes through. */
+            pending_dead = KB_DEAD_NONE;
+        }
+    }
     if (c) {
         handle_key_event((uint32_t)(uint8_t)c, raw, pressed, 1);
     }
@@ -385,6 +436,9 @@ int keyboard_set_layout(const char *name) {
     if (!km) return -ENOENT;
     if (km != active_keymap) {
         active_keymap = km;
+        /* RESIDUE2 T4: an accent armed under the old layout must not
+         * compose under the new one — drop it on switch. */
+        pending_dead = KB_DEAD_NONE;
         kprintf("[kbd] layout set to '%s'\n", km->name);
     }
     return 0;

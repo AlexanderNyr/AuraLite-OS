@@ -83,25 +83,49 @@ int exec_path_canonical(const char *path, char *out, size_t out_len) {
 }
 
 /*
- * A NOTE ON WHAT THIS CANNOT PROMISE
+ * RESIDUE2 T4 — the symlink half of the policy, closed.
  *
  * exec_path_canonical() is lexical, so it defeats "/opt/../etc/evil" — the
- * obvious way an allowlist is bypassed — but it does not follow symlinks.  A
- * symlink at /tmp/link pointing to /etc would let a write through /tmp/link/x
- * land outside the allowlist.
+ * obvious way an allowlist is bypassed — but it never followed symlinks: a
+ * symlink at /tmp/link pointing to /etc let a write through /tmp/link/x
+ * land outside the allowlist.  That gap is now closed by resolving the path
+ * through the VFS BEFORE judging it.
  *
- * That gap is stated rather than papered over.  Closing it means resolving
- * the parent through the VFS, following links, before judging the path; the
- * VFS's symlink registry (kernel/fs/symlink.c) is in-memory and separate from
- * the mount table, so doing it correctly is more than a line of code.  The
- * policy is honest about its scope: it stops a program from writing an
- * executable to a path it names, not from being led somewhere by a link
- * someone else planted.
+ * Seam: execpolicy.c stays host-testable (tests/unit/test_execpolicy.c links
+ * it directly), so the resolver is injected rather than #included.  The
+ * kernel wires vfs_realpath() in at boot via execpolicy_set_vfs_resolver();
+ * until then — and in host tests that install their own fake — the hook is
+ * NULL and judgement falls back to the lexical canonical form, exactly the
+ * previous behaviour.  A resolver that refuses (loop, oversized) makes the
+ * path unjudgeable, and unjudgeable means NOT allowed.
  */
+static int (*resolve_symlink_fn)(const char *path, char *out, size_t out_len);
+
+void execpolicy_set_vfs_resolver(int (*fn)(const char *, char *, size_t)) {
+    resolve_symlink_fn = fn;
+}
+
 int exec_install_allowed(const char *path) {
     char canon[256];
     if (exec_path_canonical(path, canon, sizeof(canon)) != 0) {
         return 0;   /* cannot be understood, so cannot be approved */
+    }
+
+    /* Resolve symlinks through the VFS (all components, final included):
+     * the allowlist judges where the bytes would actually LAND. */
+    if (resolve_symlink_fn) {
+        char real[256];
+        if (resolve_symlink_fn(canon, real, sizeof(real)) != 0) {
+            return 0;   /* looped or unresolvable: not judgeable, not allowed */
+        }
+        /* Canonicalise the RESOLVED path again.  The policy does not trust
+         * even its own seam: a relative symlink target can re-introduce
+         * ".." after expansion (the host test's fake does exactly this),
+         * and vfs_realpath()'s contract is canonical only because it says
+         * so — the defence here costs one pass and removes the assumption. */
+        if (exec_path_canonical(real, canon, sizeof(canon)) != 0) {
+            return 0;
+        }
     }
 
     for (int i = 0; i < ALLOWED_COUNT; i++) {

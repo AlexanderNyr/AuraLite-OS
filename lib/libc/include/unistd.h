@@ -221,6 +221,9 @@ pid_t   fork(void);
 int     execve(const char *path, char *const argv[], char *const envp[]);
 int     execv(const char *path, char *const argv[]);
 int     execvp(const char *file, char *const argv[]);
+/* RESIDUE2 T4: PATH search with an explicit environment; the per-segment
+ * EACCES retry semantics live here (see libc.c). */
+int     execvpe(const char *file, char *const argv[], char *const envp[]);
 pid_t   wait(int *status);
 pid_t   spawn(const char *path);
 /* spawnv(): like spawn(), but hands the new process an argv vector.
