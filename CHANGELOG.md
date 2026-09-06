@@ -2,6 +2,26 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T9 — tooling and close-out] 2026-09-06 — THE PLAN IS COMPLETE
+
+- **Consumption-gated serial input** (flakiness box): the integration
+  driver types each line only after a NEW shell prompt appears in the
+  live serial log; the first line waits for the shell's first prompt
+  (90s TCG cap); 15s/line cap = legacy fallback; IL_FEED_SYNC=0 kills
+  the feature. Spawn-heavy set 7/7 and faster than blind sleeps.
+- **GDB helper kit**: tools/gdb/pretty.py + aura.gdb + README —
+  #RRGGBB theme printer, tcb state mnemonics, ofd summaries,
+  aura_theme/aura_default_theme/aura_windows. Gate test_gdb_scripts.sh
+  in make test-unit (gdb added to the CI image).
+- **CI screenshots**: vncdotool + PIL in the CI image (captures used
+  to soft-skip) and an always-on gui-screenshots artifact on the gui
+  shard; pipeline proven locally (720×400 PNGs on the artifact path).
+- Close-out: §5 terminal arithmetic filled (TODO 40→7, OPEN 6→1,
+  phases 10/10); checkers flipped with the last phase (rinet2 Y4 pin
+  moved with the T8 row flips); T8 initrd gained its missing
+  $(PIE32_ELF) prerequisite; T5–T8 statuses normalised to ✅ COMPLETE.
+- TODO 10 → 7 (the seven are future-work outside the plan).
+
 ## [RESIDUE2 T8 — ports and oddities] 2026-09-06
 
 - **RES-02 FIXED (root cause: SMAP).** The "-cpu max hides the shell

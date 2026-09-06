@@ -143,14 +143,68 @@ il_send_delay() {
 }
 
 # Internal: feed the queue into a process, honouring sleep markers.
+#
+# RESIDUE2 T9 (flakiness box): the feed is now CONSUMPTION-gated, not
+# clock-gated.  The legacy driver sent each line after a blind 0.20 s
+# gap, which races two measured guest quirks: the polling UART drops
+# input typed while a spawned child still owns the CPU, and a line
+# arriving mid-prompt can lose its first character to the echo.  The
+# fix paces by the ONLY signal that proves the shell is ready for
+# more: the "auralite#" prompt itself.  Before each line the feeder
+# waits (polling the live serial log) until a NEW prompt appeared
+# after the previous one -- i.e. the previous command finished and
+# the shell re-entered its read loop.  The first line waits for the
+# shell's FIRST prompt (up to 90 s: TCG through the full selftest),
+# which also retires the "guess the boot time" class of races.
+# Capped per line (15 s) so a command that legitimately never returns
+# to the prompt (GUI apps, `exit`) degrades to exactly the legacy
+# behaviour.  IL_FEED_SYNC=0 restores the old driver wholesale.
+_il_prompt_count() {
+    local n
+    n=$(grep -ac -- "auralite#" "$1" 2>/dev/null) || n=0
+    [ -n "$n" ] || n=0
+    echo "$n"
+}
+
 _il_feed_queue() {
+    local line log="${IL_FEED_LOG:-}" synced=0 base=0 n
+    if [ "${IL_FEED_SYNC:-1}" = "1" ] && [ -n "$log" ]; then
+        synced=1
+        base=$(_il_prompt_count "$log")
+        if [ "$base" -eq 0 ]; then
+            # Boot not shell-ready yet: wait for the first prompt.
+            for _ in $(seq 1 900); do
+                n=$(_il_prompt_count "$log")
+                [ "$n" -gt 0 ] && break
+                sleep 0.1
+            done
+            # The prompt JUST printed authorises the FIRST line (the
+            # per-line gate below demands a prompt NEWER than the last
+            # one it released; without this decrement the first line
+            # would wait out its whole cap for a second prompt that
+            # only its own consumption can produce -- found the hard
+            # way by the first T9 regression run: every case lost its
+            # first command and 15 s).
+            base=$(( $(_il_prompt_count "$log") - 1 ))
+            [ "$base" -lt 0 ] && base=0
+        fi
+    fi
     # Read input queue line-by-line; treat sleep markers specially.
-    local line
     while IFS= read -r line; do
         if [[ "$line" == *$'\x1b__SLEEP__'* ]]; then
             local secs="${line#*$'\x1b__SLEEP__'}"
             sleep "$secs"
         else
+            if [ "$synced" -eq 1 ]; then
+                # Wait for a prompt NEWER than the last one we fed
+                # (the previous command finished) before typing again.
+                for _ in $(seq 1 150); do
+                    n=$(_il_prompt_count "$log")
+                    [ "$n" -gt "$base" ] && break
+                    sleep 0.1
+                done
+                base=$(_il_prompt_count "$log")
+            fi
             printf '%s\n' "$line"
             # Small per-line gap: AuraLite's serial input is polling-based,
             # so we mustn't blast characters faster than it consumes them.
@@ -216,9 +270,11 @@ il_run_qemu() {
     )
 
     # Stream queued input → QEMU stdin, capture serial output → log.
-    # Use `timeout --foreground` so signals propagate cleanly.
+    # Use `timeout --foreground` so signals propagate cleanly.  The log
+    # path travels to the feeder through the environment (T9: the
+    # consumption-gated feed polls the live log for the shell prompt).
     set +e
-    _il_feed_queue \
+    IL_FEED_LOG="$log" _il_feed_queue \
       | timeout --foreground "${timeout_s}" "$IL_QEMU" "${base_args[@]}" "${extra[@]}" \
             >"$log" 2>&1
     local rc=$?

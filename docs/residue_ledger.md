@@ -97,3 +97,9 @@ RESIDUE2 T8: +1 marker line in HW_PLAN.md (the RES-02 fix addendum to
 the H2 result — SMAP root cause, user.c frame write, smoke receipt);
 baseline moved 15 → 16 in the same commit.  No new debt rows: T8
 CLOSES three (RES-02/06/18 → DONE@T8; rows updated above).
+
+RESIDUE2 T9 (close-out): +1 marker line in RESIDUE2_PLAN.md (the T9
+Result); baseline moved 20 → 21 same-commit.  The plan is COMPLETE:
+TODO 40 → 7 (the seven are future-work outside its scope), ledger
+OPEN 6 → 1 (RES-54), phases 10/10, checkers flipped with the last
+phase (rinet2 Y4 pin moved with the T8 row flips).

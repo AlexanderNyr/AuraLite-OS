@@ -49,7 +49,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
             mtools ovmf socat dosfstools e2fsprogs \
-            autoconf automake libtool git
+            autoconf automake libtool git \
+            gdb vncdotool python3-pil
 
       # mingw-w64 is NOT in REQUIRED_TOOLS and the OS build does not need it:
       # the Makefile detects it and skips the Win32 examples when it is
@@ -350,6 +351,20 @@ jobs:
             fi
           done
           echo "all 5 selfhost-img gates ran and passed"
+
+      # RESIDUE2 T9 (CI screenshots artifact): the GUI cases capture
+      # VNC screendumps (test_gui's 01_desktop.png / 02_with_launcher.png
+      # &c.) -- visual evidence you want when the shard is GREEN, not
+      # only in a failure dump.  vncdotool + PIL are installed above so
+      # the captures actually happen in CI (they used to soft-skip).
+      - name: Upload GUI screenshots (always)
+        if: matrix.group == 'gui' && !cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gui-screenshots
+          path: |
+            build/integration-logs/**/gui-screenshots/*.png
+          if-no-files-found: ignore
 
       # results-<group>.txt names every case PASS/FAIL with duration:
       # step stdout is admin-only on public repos, and serial logs

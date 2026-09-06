@@ -238,17 +238,20 @@ def claims():
             "[https6] PASS" in read("tests", "integration", "cases",
                                     "test_https6.sh") and
             "test_https6" in read("tests", "integration", "run_all.sh")))
+        # RESIDUE2 T8 moved the last three R-series rows this claim
+        # pinned as OPEN (RES-02/06/18 -> DONE@T8, receipts in the
+        # rows); the pin moves with the row -- same rule the claim
+        # itself already applied to RES-07/RES-16/RES-26.
         checks.append((
-            "Y4: RES-26 flipped to DONE@Y4 and the R-series OPEN rows "
-            "remain named (RES-16 left at RESIDUE2 T2; RES-07 flipped "
-            "to DONE@T3 by RESIDUE2 T3 — the pin moves with the row, "
-            "same rule as RES-26's)",
+            "Y4: RES-26 flipped to DONE@Y4 and the R-series rows stay "
+            "pinned at their CURRENT truth (RES-02/06/18 flipped to "
+            "DONE@T8 by RESIDUE2 T8 — the pin moves with the row)",
             "| RES-26 | W | DONE@Y4 |" in ledger and
-            "| RES-02 | W | OPEN |" in ledger and
-            "| RES-06 | W | OPEN |" in ledger and
+            "| RES-02 | W | DONE@T8 |" in ledger and
+            "| RES-06 | W | DONE@T8 |" in ledger and
             "| RES-07 | W | DONE@T3 |" in ledger and
             "| RES-16 | W | DONE@T2 |" in ledger and
-            "| RES-18 | W | OPEN |" in ledger))
+            "| RES-18 | W | DONE@T8 |" in ledger))
 
 
     # --- Y5: ML-KEM-768 (FIPS 203) --------------------------------------

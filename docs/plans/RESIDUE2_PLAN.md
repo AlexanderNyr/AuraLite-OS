@@ -1,6 +1,6 @@
 # AuraLite OS — RESIDUE2 Plan (close the remainder: every TODO box and every open ledger row, scheduled and machine-checked)
 
-## Status: IN PROGRESS — T0–T4 landed; T5–T9 specified
+## Status: COMPLETE — all ten phases landed (2026-09-06); residue ratchet baselines at their close values
 
 | Phase | Result | Deliverable |
 |-------|--------|-------------|
@@ -13,7 +13,7 @@
 | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ✅ done | `patches/RESIDUE2_T6_devs.patch` |
 | T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
 | T8 — ports and oddities (RES-02, RES-06, RES-18) | ✅ done | `patches/RESIDUE2_T8_ports.patch` |
-| T9 — tooling and close-out (GDB, flakiness, arithmetic) | ⬜ planned | `patches/RESIDUE2_T9_close.patch` |
+| T9 — tooling and close-out (GDB, flakiness, arithmetic) | ✅ done | `patches/RESIDUE2_T9_close.patch` |
 
 ## 1. Where this plan comes from
 
@@ -197,7 +197,7 @@ too.
 
 ### T3 — storage
 
-**Status:** ✅ COMPLETE
+**Status: ✅ COMPLETE**
 
 **Objective:** the storage stack stops being QEMU-shaped and stops
 writing known-zero checksums.
@@ -289,7 +289,7 @@ mkfs.ext4-interop lane predates T3 and is not part of this phase.
 
 ### T4 — VFS and POSIX
 
-**Status:** ✅ COMPLETE
+**Status: ✅ COMPLETE**
 
 **Objective:** the biggest cluster: the POSIX/VFS/libc gaps that make
 AuraLite behave differently from every real system — named, bundled,
@@ -358,7 +358,7 @@ DONE@R12).
 
 ### T5 — network and TLS
 
-**Status:** done
+**Status: ✅ COMPLETE**
 
 **Objective:** the net stack's honest edges — named in prose for
 months — become scheduled work: blocking semantics, production TCP
@@ -410,7 +410,7 @@ recvfrom + idle drain — no decorative interrupts left.)
 
 ### T6 — devices beyond QEMU
 
-**Status:** done
+**Status: ✅ COMPLETE**
 
 **Objective:** the driver cluster the ledger already measured: the USB
 transfer schedulers, the two wireless transports, the modern NICs, and
@@ -463,7 +463,7 @@ receipts above, RES-46's NIC half closed.
 
 ### T7 — GUI
 
-**Status:** done
+**Status: ✅ COMPLETE**
 
 **Objective:** RES-47's three boxes plus the apps gap — the compositor
 stops being educational by measurement, not by adjectives.
@@ -528,7 +528,7 @@ warnings; width ratchet 355 held (the first ACL draft cost +6
 
 ### T8 — ports and oddities
 
-**Status:** done
+**Status: ✅ COMPLETE**
 
 **Objective:** the three OPEN rows that are neither subsystem work nor
 tooling: the two narrowed oddities and the port-coupling remainder.
@@ -611,7 +611,7 @@ note).
 
 ### T9 — tooling and close-out
 
-**Status:** not started
+**Status: ✅ COMPLETE**
 
 **Objective:** the developer-experience boxes and the terminal
 arithmetic, in the GL2 L7 style.
@@ -633,7 +633,55 @@ TODO.md empty of open debt, every close receipt-carrying.
 **Test gate:** `make test-unit` EXIT 0; integration shards green with
 the flakiness fixes.
 
-**Result:** —
+**Result (2026-09-06):** three boxes closed, the arithmetic filled,
+the checkers flipped with the last phase — the plan is COMPLETE.
+
+*Flakiness box:* the sleep-based serial driver became
+CONSUMPTION-gated (`_il_feed_queue`): each line is typed only after a
+NEW `auralite#` prompt appears in the live serial log — i.e. the
+previous command finished and the shell re-entered its read loop —
+and the first line waits for the shell's first prompt (90s cap
+through the TCG full selftest), retiring the guess-the-boot-time
+race class with it.  A 15s/line cap degrades never-returns-to-prompt
+cases (GUI apps, `exit`) to exactly the legacy behaviour;
+`IL_FEED_SYNC=0` restores the old driver wholesale.  The first cut
+had an off-by-one (the boot prompt consumed the first line's
+authorisation: every case lost its first command and 15s) — caught
+by the regression run, fixed, and documented in the box receipt.
+Spawn-heavy set green 7/7 (spawn_argv_hostile ×3, process_cleanup,
+execve_args, shell_commands, gui_apps) and FASTER than blind sleeps
+(execve_args 28s, shell_commands 44s).
+
+*GDB box:* `tools/gdb/` — signature-matched pretty-printers
+(gui_theme_t as #RRGGBB, struct tcb with state mnemonics, struct
+ofd), `aura_theme`/`aura_default_theme`/`aura_windows` commands,
+README.  Portability notes that cost real iterations: Debian's gdb
+omits the gdb.printing module (plain-callable registration) and
+multi-word command names need prefix registration (single-word
+`aura_*` names).  Gate `test_gdb_scripts.sh` runs in make test-unit
+(skips loudly without gdb/kernel.elf; CI installs gdb): the kit
+loads against build/kernel.elf's DWARF and the const default theme
+renders THROUGH the printer (#2F60C0) with no live target.
+
+*CI screenshots box:* vncdotool + python3-pil added to the CI image
+(the GUI cases' VNC captures used to soft-skip in CI — there was
+nothing to upload), plus an always-on `gui-screenshots` artifact
+step on the gui shard (green runs are exactly when you want the
+pictures; failures already got the whole log tree).  Pipeline
+proven locally end-to-end: 720×400 PNGs land on the artifact path.
+
+*Close-out riders in the same commit:* the Y4 pin in
+check_rinet2_claims.py moved with the T8 ledger flips (RES-02/06/18
+→ DONE@T8) — the claim's own rule, applied late; the T8 initrd rule
+gained its missing `$(PIE32_ELF)` prerequisite (latent until the
+first clean build); T5–T8 status lines normalised to the ✅ COMPLETE
+form the close-out checker keys on, and §5 above carries the
+grep-backed arithmetic.
+
+*Gates:* `make test-unit` EXIT 0 (claims 21/21 with the 10/10
+phase-table agreement, width 353/27, gdb 4/4, registry partition OK);
+integration: spawn-heavy 7/7, the GUI group 7/7 with screenshots
+captured on the artifact path.
 
 ---
 
@@ -662,10 +710,13 @@ the flakiness fixes.
 
 | Metric | Audit (2026-09-04) | At close |
 |---|---|---|
-| TODO.md unchecked boxes | 40 | |
-| Ledger rows OPEN | 6 | |
+| TODO.md unchecked boxes | 40 | **7** (grep `-c '^- \[ \]'`; the seven are future-work boxes outside this plan's scope: isochronous STREAMING's narrowed remainder, large pages ×2 + real waitpid (T1's re-affirmed arch remainder), SMP-safety sweep, 16-byte C-ABI alignment check, POSIX-completeness beyond the floor) |
+| Ledger rows OPEN | 6 | **1** (RES-54 only — GL2's compiler hand-off, deliberately not this plan's; RES-16→T2, RES-07→T3, RES-02/06/18→T8) |
 | Ledger rows PENDING-USER | 4 (not ours) | 4 |
 | Phases ✅ | 0/10 | 10/10 |
+| Integration registry | 171 | 179 (+bt/wifi unit-side; T6 +5, T7 +3) |
+| Width ratchets (casts / asm-files) | 355 / 29 | 353 / 27 |
+| Kernel build warnings (clang 19) | — | 0 (full clean rebuild, both kernels) |
 
 ---
 
