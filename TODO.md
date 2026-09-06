@@ -448,8 +448,13 @@ build when a box and the plan disagree.
   HTTPS client (N6).  Until then there is no HTTPS.  `kernel/fs/btrfs.c`
   seals every block with a kernel-local SHA-256 trailer (RESIDUE2 T3:
   `kernel/lib/sha256.c`, still no libatls, by design D2).
-- [ ] TLS 1.3 handshake + record layer, certificate validation
-  (RSA-PKCS#1v1.5), HTTPS client (INTERNET_PLAN N3–N6). (class:
+- ~~TLS 1.3 handshake + record layer, certificate validation
+  (RSA-PKCS#1v1.5), HTTPS client (INTERNET_PLAN N3–N6).~~ **Done
+  (RESIDUE2 T5):** TLS 1.3 with X25519MLKEM768 hybrid key exchange,
+  certificate chain validated against the 17-root shipped trust store;
+  `test_realweb_rustlang` fetches https://rust-lang.org/ from the guest
+  over real internet (DNS → TCP:443 → TLS → HTTP 200, 18 KiB body,
+  clean FIN); `test_https6`/`test_tls*` green. (class:
   security) (RESIDUE2 T5)
 - [x] Btrfs on-disk SHA-256 checksums. (**Done, RESIDUE2 T3:**
   `kernel/lib/sha256.c` + `tests/unit/test_ksha256.c` (RFC 6234
@@ -616,10 +621,21 @@ build when a box and the plan disagree.
   integration runs harder to read. The fix is to consume and discard frames
   that no socket claims (or to mask RX interrupts when no consumer exists)
   rather than to silence the message.
-- [ ] e1000 RX ring drains while idle (unsolicited frames drop and
-  flood the serial log today). (class: networking) (RESIDUE2 T5)
-- [ ] Production TCP: sliding windows, congestion control, real
-  packet queues. (class: networking) (RESIDUE2 T5)
+- ~~e1000 RX ring drains while idle (unsolicited frames drop and
+  flood the serial log today).~~ **Done (RESIDUE2 T5):** the passive
+  input poller drains e1000/rtl8139/virtio rings while idle; unsolicited
+  frames are consumed, no RX-overrun spam. Gated by
+  `test_idle_rx_drain` (L2 lab idledrain mode). (class: networking)
+  (RESIDUE2 T5)
+- ~~Production TCP: sliding windows, congestion control, real
+  packet queues.~~ **Done (RESIDUE2 T5):** audited — sliding send
+  window min(cwnd, snd_wnd), Reno CC (tcp_cc.h, RFC 6928 IW), M6c
+  retransmit queue + M6d SACK, RFC 6298 adaptive RTO + backoff, PMTUD
+  MSS ladder and OOO receive were already in tcp.c (X5/Y1/M6 lines);
+  the residue was CONTENT INTEGRITY, now gated: `test_tcp_x5`
+  (1 MiB through window-full waits) and `test_tcp_ordering` (512 KiB
+  position-dependent pattern verified both directions, ~3 MB/s over
+  SLIRP). (class: networking) (RESIDUE2 T5)
 
 ### Graphics / GUI
 
@@ -724,7 +740,11 @@ build when a box and the plan disagree.
 - [x] Rewire TCP receive waits to timed IRQ-backed NIC waits.
 - [x] Rewire ARP/DHCP/ICMP and kernel UDP/DNS boot paths to bounded IRQ-backed NIC waits.
 - [x] Add AF_INET/SOCK_DGRAM user sockets with `sendto(44)` / `recvfrom(45)`.
-- [ ] Make remaining socket edge cases fully blocking. (RESIDUE2 T5)
+- ~~Make remaining socket edge cases fully blocking.~~ **Done (RESIDUE2
+  T5):** UDP `recvfrom` parks on the NIC RX wait queue via
+  `NET_WAIT_FOREVER` — no poll slice, no pause spin; link-down maps to
+  `-ENETDOWN` (was raw -1 == EPERM). Gated by `test_udp_blocking`
+  (L2 lab: knock → delayed reply → blocked past the host delay).
 - [x] Process-owned socket-style client handles (`socket/connect/send/recv/close`).
 - [x] Per-connection TCP state (`tcp_handle_t`, up to `TCP_MAX_CONNS=8`).  Legacy `SYS_NET_*` syscalls are now a thin shim over the per-connection layer and are formally **deprecated**.
 - [x] Full BSD socket ABI baseline including `sockaddr`, `bind`, `listen` and `accept` for AF_INET/SOCK_STREAM.

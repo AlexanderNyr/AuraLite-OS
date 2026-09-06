@@ -142,6 +142,13 @@ static uint32_t sw_rx_head = 0;
 static uint32_t sw_rx_tail = 0;
 static uint32_t sw_rx_count = 0;
 static uint32_t sw_rx_drops = 0;
+/* RESIDUE2 T5 (the idle RX drain): how many e1000_recv_wait() callers are
+ * in flight.  Guarded by rxq_lock so the idle drain's check-and-pop
+ * (e1000_rx_pop_idle) is atomic against a waiter appearing: a drain can
+ * never steal a frame a blocking consumer is about to claim. */
+static volatile int rx_waiters = 0;
+/* RESIDUE2 T5: frames consumed by the idle drain (receipt counter). */
+static uint32_t idle_drained = 0;
 static spinlock_t rxq_lock = SPINLOCK_UNLOCKED;
 static spinlock_t hw_rx_lock = SPINLOCK_UNLOCKED;
 static struct wait_queue e1000_rx_wq;
@@ -185,6 +192,42 @@ static int sw_rx_pop(void *buf, uint32_t bufsize) {
     sw_rx_head = (sw_rx_head + 1) % E1000_SW_RX_QUEUE_LEN;
     sw_rx_count--;
     spinlock_release_irqrestore(&rxq_lock, flags);
+    return (int)len;
+}
+
+/* RESIDUE2 T5 (the idle RX drain): atomic check-and-pop for
+ * netdev_passive_drain().  The waiter check and the pop share rxq_lock,
+ * so a recv_wait() that appears between two drained frames takes the
+ * queue back immediately (return -1) and nothing is ever stolen from
+ * under it.  Prints the receipt line at a 2^n cadence — one line when
+ * the drain first proves itself, then every 256 frames: readable under
+ * sustained unsolicited traffic, never a flood. */
+static int e1000_rx_pop_idle(void *buf, uint32_t bufsize) {
+    if (!buf || bufsize == 0) return 0;
+
+    uint64_t flags = spinlock_acquire_irqsave(&rxq_lock);
+    if (rx_waiters != 0) {
+        spinlock_release_irqrestore(&rxq_lock, flags);
+        return -1;
+    }
+    if (sw_rx_count == 0) {
+        spinlock_release_irqrestore(&rxq_lock, flags);
+        return 0;
+    }
+    struct sw_rx_packet *p = &sw_rx_queue[sw_rx_head];
+    uint16_t len = p->len;
+    if (len > bufsize) len = (uint16_t)bufsize;
+    memcpy(buf, p->data, len);
+    p->len = 0;
+    sw_rx_head = (sw_rx_head + 1) % E1000_SW_RX_QUEUE_LEN;
+    sw_rx_count--;
+    spinlock_release_irqrestore(&rxq_lock, flags);
+
+    idle_drained++;
+    if (idle_drained == 1 || (idle_drained & 0xFF) == 0) {
+        kprintf("[e1000] idle drain: %u unsolicited frame(s) consumed "
+                "(queue kept empty; ARP/NDP answered)\n", idle_drained);
+    }
     return (int)len;
 }
 
@@ -262,7 +305,16 @@ static void e1000_irq_handler(struct registers *regs) {
             wq_wake_all(&e1000_rx_wq);
         }
         if (icr & ICR_RXO) {
-            kprintf("[e1000] RX overrun (drops=%u)\n", sw_rx_drops);
+            /* RESIDUE2 T5: rate-limit the overrun line.  A queue that
+             * overruns once a burst tends to overrun every burst — the
+             * old per-interrupt print was the serial-log flood the TODO
+             * named.  At most one line per ~5 s of ticks. */
+            static uint64_t last_overrun_print = 0;
+            uint64_t now = timer_get_ticks();
+            if (now - last_overrun_print >= 500) {   /* PIT @ 100 Hz */
+                last_overrun_print = now;
+                kprintf("[e1000] RX overrun (drops=%u)\n", sw_rx_drops);
+            }
         }
     }
 
@@ -542,20 +594,21 @@ int e1000_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
     tcb_t *cur = sched_current();
     uint64_t old_sleep_deadline = cur ? cur->sleep_deadline : 0;
 
+    /* RESIDUE2 T5: mark this consumer BEFORE the first pop attempt (under
+     * the same lock e1000_rx_pop_idle checks), so the idle drain stops
+     * touching the queue the moment a waiter exists. */
+    {
+        uint64_t flags = spinlock_acquire_irqsave(&rxq_lock);
+        rx_waiters++;
+        spinlock_release_irqrestore(&rxq_lock, flags);
+    }
+
+    int n;
     for (;;) {
-        int n = e1000_recv(buf, bufsize);
-        if (n != 0) {
-            if (cur) cur->sleep_deadline = old_sleep_deadline;
-            return n;
-        }
-        if (!e1000_link_up()) {
-            if (cur) cur->sleep_deadline = old_sleep_deadline;
-            return -1;
-        }
-        if (deadline && timer_get_ticks() >= deadline) {
-            if (cur) cur->sleep_deadline = old_sleep_deadline;
-            return 0;
-        }
+        n = e1000_recv(buf, bufsize);
+        if (n != 0) break;
+        if (!e1000_link_up()) { n = -1; break; }
+        if (deadline && timer_get_ticks() >= deadline) { n = 0; break; }
 
         if (!cur) {
             __asm__ volatile ("pause");
@@ -566,6 +619,13 @@ int e1000_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
         wq_wait(&e1000_rx_wq, NULL);
         if (deadline) cur->sleep_deadline = old_sleep_deadline;
     }
+
+    {
+        uint64_t flags = spinlock_acquire_irqsave(&rxq_lock);
+        rx_waiters--;
+        spinlock_release_irqrestore(&rxq_lock, flags);
+    }
+    return n;
 }
 
 int e1000_recv_blocking(void *buf, uint32_t bufsize) {
@@ -575,12 +635,13 @@ int e1000_recv_blocking(void *buf, uint32_t bufsize) {
 /* ---- netdev backend registration ---------------------------------------- */
 
 static const struct netdev e1000_netdev = {
-    .name      = "e1000",
-    .send      = e1000_send,
-    .recv      = e1000_recv,
-    .recv_wait = e1000_recv_wait,
-    .get_mac   = e1000_get_mac,
-    .link_up   = e1000_link_up,
+    .name        = "e1000",
+    .send        = e1000_send,
+    .recv        = e1000_recv,
+    .recv_wait   = e1000_recv_wait,
+    .get_mac     = e1000_get_mac,
+    .link_up     = e1000_link_up,
+    .rx_pop_idle = e1000_rx_pop_idle,   /* RESIDUE2 T5: the idle drain */
 };
 
 void e1000_register_netdev(void) {

@@ -67,4 +67,20 @@ const uint8_t *net_ipfrag_step(const uint8_t *frame, int len, int *out_len);
 void net_ipfrag_sweep(void);
 void net_ipfrag_self_test(void);
 
+/* RESIDUE2 T5 (the idle RX drain): passive input for frames no blocking
+ * consumer claimed.  Handles what must be answered even while idle —
+ * inbound ARP REQUESTs for our address (the kernel never replied to
+ * these before; a peer resolving us had to wait for a syscall to touch
+ * the NIC) and IPv6 NDP (NS responder / RA learner via net_ipv6_handle_frame).
+ * Returns 1 when the frame was actively handled, 0 when it was (or will
+ * be) silently discarded.  Called from non-IRQ context (the kmain idle
+ * loop via netdev_passive_drain) — the ARP reply transmits. */
+int net_passive_input(const uint8_t *frame, int len);
+
+/* RESIDUE2 T5 (blocking sockets): timeout sentinel for the UDP receive
+ * path — block on the NIC's RX wait queue until a datagram for the port
+ * arrives, no deadline.  This is what "fully blocking" means for
+ * recvfrom(2): a sleep, not the old 10-tick poll slice. */
+#define NET_WAIT_FOREVER ((uint64_t)-1)
+
 #endif /* AURALITE_NET_NET_H */

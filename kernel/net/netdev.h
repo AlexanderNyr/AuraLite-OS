@@ -30,6 +30,15 @@ struct netdev {
     void (*get_mac)(uint8_t mac[6]);
     /* Non-zero when the link is up. */
     int  (*link_up)(void);
+    /* RESIDUE2 T5 (the idle RX drain): pop one frame ONLY while no
+     * recv_wait() is in flight on this driver — the waiter check and the
+     * pop happen atomically under the driver's queue lock, so a drain can
+     * never steal a frame a blocking consumer is about to claim.  Returns
+     * the frame length (>0), 0 when the queue is empty, and -1 when a
+     * waiter appeared (the drain must stop; everything queued belongs to
+     * it until it leaves).  Optional: drivers without the hook are never
+     * idle-drained. */
+    int  (*rx_pop_idle)(void *buf, uint32_t bufsize);
 };
 
 /* Register a NIC backend.  The first registered device becomes active; later
@@ -46,6 +55,18 @@ int  netdev_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks);
 void netdev_get_mac(uint8_t mac[6]);
 int  netdev_link_up(void);
 const char *netdev_name(void);
+
+/* RESIDUE2 T5: the idle RX drain.  Pops frames no blocking consumer
+ * claims and feeds each through the kernel's passive input path (ARP
+ * replies, the NDP responder); everything else is consumed and
+ * discarded.  Returns the number of frames drained (0 = nothing
+ * pending), or -1 when a recv_wait consumer appeared mid-drain — the
+ * caller stops immediately, the queue belongs to that consumer.  This
+ * is the fix for the "RX ring floods while idle" disease: unsolicited
+ * traffic is consumed here instead of clogging the software queue
+ * until it overflows.  Meant to be called from a periodic, non-IRQ
+ * context (the kmain idle loop). */
+int  netdev_passive_drain(void);
 
 /* Cumulative byte/packet counters for the active NIC since boot. Any output
  * pointer may be NULL if that particular counter isn't needed. All zero if

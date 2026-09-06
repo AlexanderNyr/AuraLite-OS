@@ -155,6 +155,10 @@ static spinlock_t rxq_lock  = SPINLOCK_UNLOCKED;
 static spinlock_t hw_rx_lock = SPINLOCK_UNLOCKED;
 static struct wait_queue rtl_rx_wq;
 static struct wait_queue rtl_tx_wq;
+/* RESIDUE2 T5 (the idle RX drain, mirroring e1000): blocking-consumer
+ * count + consumed-by-drain receipt counter. */
+static volatile int rx_waiters = 0;
+static uint32_t idle_drained = 0;
 
 /* ---- register helpers (port I/O via arch.h) ---- */
 
@@ -202,6 +206,38 @@ static int sw_rx_pop(void *buf, uint32_t bufsize) {
     sw_rx_head = (sw_rx_head + 1) % RTL8139_SW_RX_QUEUE_LEN;
     sw_rx_count--;
     spinlock_release_irqrestore(&rxq_lock, flags);
+    return (int)len;
+}
+
+/* RESIDUE2 T5: atomic check-and-pop for netdev_passive_drain() — the
+ * waiter check and the pop share rxq_lock, exactly like the e1000's
+ * (see e1000.c for the receipt cadence rationale). */
+static int rtl8139_rx_pop_idle(void *buf, uint32_t bufsize) {
+    if (!buf || bufsize == 0) return 0;
+
+    arch_irqflags_t flags = spinlock_acquire_irqsave(&rxq_lock);
+    if (rx_waiters != 0) {
+        spinlock_release_irqrestore(&rxq_lock, flags);
+        return -1;
+    }
+    if (sw_rx_count == 0) {
+        spinlock_release_irqrestore(&rxq_lock, flags);
+        return 0;
+    }
+    struct sw_rx_packet *p = &sw_rx_queue[sw_rx_head];
+    uint16_t len = p->len;
+    if (len > bufsize) len = (uint16_t)bufsize;
+    memcpy(buf, p->data, len);
+    p->len = 0;
+    sw_rx_head = (sw_rx_head + 1) % RTL8139_SW_RX_QUEUE_LEN;
+    sw_rx_count--;
+    spinlock_release_irqrestore(&rxq_lock, flags);
+
+    idle_drained++;
+    if (idle_drained == 1 || (idle_drained & 0xFF) == 0) {
+        kprintf("[rtl8139] idle drain: %u unsolicited frame(s) consumed "
+                "(queue kept empty; ARP/NDP answered)\n", idle_drained);
+    }
     return (int)len;
 }
 
@@ -572,20 +608,19 @@ int rtl8139_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
     tcb_t *cur = sched_current();
     uint64_t old_sleep_deadline = cur ? cur->sleep_deadline : 0;
 
+    /* RESIDUE2 T5: claim the queue before the first pop (see e1000.c). */
+    {
+        arch_irqflags_t flags = spinlock_acquire_irqsave(&rxq_lock);
+        rx_waiters++;
+        spinlock_release_irqrestore(&rxq_lock, flags);
+    }
+
+    int n;
     for (;;) {
-        int n = rtl8139_recv(buf, bufsize);
-        if (n != 0) {
-            if (cur) cur->sleep_deadline = old_sleep_deadline;
-            return n;
-        }
-        if (!rtl8139_link_up()) {
-            if (cur) cur->sleep_deadline = old_sleep_deadline;
-            return -1;
-        }
-        if (deadline && timer_get_ticks() >= deadline) {
-            if (cur) cur->sleep_deadline = old_sleep_deadline;
-            return 0;
-        }
+        n = rtl8139_recv(buf, bufsize);
+        if (n != 0) break;
+        if (!rtl8139_link_up()) { n = -1; break; }
+        if (deadline && timer_get_ticks() >= deadline) { n = 0; break; }
         if (!cur) {
             arch_cpu_relax();
             continue;
@@ -596,17 +631,25 @@ int rtl8139_recv_wait(void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
         wq_wait_deadline(&rtl_rx_wq, NULL, deadline);
         if (deadline) cur->sleep_deadline = old_sleep_deadline;
     }
+
+    {
+        arch_irqflags_t flags = spinlock_acquire_irqsave(&rxq_lock);
+        rx_waiters--;
+        spinlock_release_irqrestore(&rxq_lock, flags);
+    }
+    return n;
 }
 
 /* ---- netdev backend registration ---------------------------------------- */
 
 static const struct netdev rtl8139_netdev = {
-    .name      = "rtl8139",
-    .send      = rtl8139_send,
-    .recv      = rtl8139_recv,
-    .recv_wait = rtl8139_recv_wait,
-    .get_mac   = rtl8139_get_mac,
-    .link_up   = rtl8139_link_up,
+    .name        = "rtl8139",
+    .send        = rtl8139_send,
+    .recv        = rtl8139_recv,
+    .recv_wait   = rtl8139_recv_wait,
+    .get_mac     = rtl8139_get_mac,
+    .link_up     = rtl8139_link_up,
+    .rx_pop_idle = rtl8139_rx_pop_idle,   /* RESIDUE2 T5: the idle drain */
 };
 
 void rtl8139_register_netdev(void) {

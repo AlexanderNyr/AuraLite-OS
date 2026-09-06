@@ -230,14 +230,19 @@ int64_t socket_recvfrom(int sid, void *buf, uint32_t len,
     if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND &&
         s->state != SOCK_SLOT_CONNECTED) return -EINVAL;
     uint16_t local_port = udp_auto_bind(s);
-    
-    /* Simplified blocking: poll with a small timeout in a loop. 
-     * A full wait_queue implementation would go in net_udp_recvfrom. */
-    while (1) {
-        int64_t r = net_udp_recvfrom(local_port, src_ip, src_port, buf, len, 10);
-        if (r != 0) return r;
-        __asm__ volatile ("pause");
-    }
+
+    /* RESIDUE2 T5: fully blocking.  The old shape polled a 10-tick
+     * slice in a pause loop and returned raw -1 when it expired —
+     * neither blocking (POSIX recvfrom sleeps) nor errno-clean (-1 IS
+     * EPERM; the FIX_R7 rule at the top of this file).  The caller now
+     * parks on the NIC's RX wait queue inside net_udp_recvfrom until a
+     * datagram for this port arrives; a zero-length datagram returns 0,
+     * which the syscall layer already passes through as a legal result.
+     * The only way out besides a datagram is the link going down, whose
+     * raw -1 is mapped to -ENETDOWN here rather than leaking as EPERM. */
+    int64_t r = net_udp_recvfrom(local_port, src_ip, src_port, buf, len,
+                                 NET_WAIT_FOREVER);
+    return (r < 0) ? -ENETDOWN : r;
 }
 
 void socket_close_process(uint64_t owner_pid) {

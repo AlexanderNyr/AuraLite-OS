@@ -2,6 +2,40 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T5 — network and TLS] 2026-09-05
+
+The net stack's four honest edges close, in dependency order
+(`patches/RESIDUE2_T5_net.patch`).
+
+- **Idle RX drain.** The passive input poller drains e1000/rtl8139/
+  virtio-net rings when no consumer exists; the `[e1000] RX overrun`
+  console spam is gone. Gated by `test_idle_rx_drain` (L2 lab).
+- **UDP `recvfrom` fully blocking.** `socket_recvfrom` no longer burns
+  a poll slice in a pause spin: it parks on the NIC RX wait queue via
+  the new `NET_WAIT_FOREVER` sentinel (`kernel/net/net.h`); failure
+  maps to `-ENETDOWN` (was raw -1, indistinguishable from EPERM).
+  Gated by `test_udp_blocking` — an L2 lab answers the guest's knock
+  only after a ≥4 s delay, and the guest must still be blocked in
+  `recvfrom` when the reply lands.
+- **Production TCP box struck as stale — after an audit, not a
+  wish.** Sliding windows, Reno CC (`tcp_cc.h`), the M6c retransmit
+  queue + M6d SACK, RFC 6298 adaptive RTO, PMTUD and OOO receive were
+  already in `tcp.c` (X5/Y1/M6 lines). The genuinely missing gate was
+  content integrity: `test_tcp_x5` (1 MiB piecemeal-ACK upload; pass
+  dated 2026-09-05) and the NEW `test_tcp_ordering` — 512 KiB of
+  position-dependent pattern verified byte-for-byte in BOTH directions
+  through a host echo server (~3 MB/s over SLIRP): any reorder,
+  duplicate or corruption fails at a named offset. New guest peer
+  `userspace/tests/tcpordtest`, host peer `tcp_echo_verify.py`.
+- **Real-web HTTPS receipt.** `test_realweb_rustlang` boots the guest
+  on the runner's real internet via SLIRP and fetches
+  https://rust-lang.org/ : DNS A+AAAA → v6 attempted/v4 fallback →
+  TCP:443 → TLS 1.3 `X25519MLKEM768` → chain validated against the 17
+  shipped roots → HTTP 200 (18594-byte body) → clean FIN. The phase's
+  Definition of Done, made repeatable.
+- Registry 169→171 (`test_tcp_ordering`, `test_realweb_rustlang`, both
+  in the `net` shard); TODO ratchet 25→21.
+
 ## [RESIDUE2 T4 — VFS and POSIX] 2026-09-05
 
 The biggest residue cluster closes: nine boxes, canonicalisation first

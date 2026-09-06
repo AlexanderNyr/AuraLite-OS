@@ -22,6 +22,7 @@ extern uint64_t timer_get_ticks(void);
 /* ---- Protocol constants ---- */
 #define ETHERTYPE_ARP   0x0806
 #define ETHERTYPE_IPV4  0x0800
+#define ETHERTYPE_IPV6  0x86DD   /* RESIDUE2 T5: passive-input dispatch */
 
 #define ARP_REQUEST  1
 #define ARP_REPLY    2
@@ -133,6 +134,8 @@ static uint8_t  our_mac[6];
 static uint32_t our_ip;
 static uint32_t gateway_ip;
 static uint32_t subnet_mask = 0;  /* set by DHCP */
+/* RESIDUE2 T5: ARP REQUESTs answered from the idle drain (net_passive_input). */
+static volatile uint32_t net_arp_passive_replies = 0;
 /* Accessors for TCP (tcp.c). */
 void net_get_mac(uint8_t mac[6]) {
     memcpy(mac, our_mac, 6);
@@ -298,6 +301,52 @@ int net_eth_send(const uint8_t dst_mac[6], uint16_t ethertype,
         total = 60;   /* minimum Ethernet frame size */
     }
     return netdev_send(frame, total);
+}
+
+/* RESIDUE2 T5: passive input for frames no blocking consumer claimed —
+ * see net.h.  This is the "answer even while idle" half of the idle RX
+ * drain: an ARP REQUEST for our address gets its reply HERE (before T5
+ * the kernel only ever SENT requests; a peer resolving us while no
+ * syscall owned the NIC got silence), and IPv6 rides the existing NDP
+ * responder (NS/NA + the RA learner).  Everything else returns 0: the
+ * caller (netdev_passive_drain) consumes and discards it, which is
+ * exactly what "drain the ring while idle" means — unsolicited traffic
+ * is dropped deliberately, by name, instead of clogging the software
+ * queue until it overflows. */
+int net_passive_input(const uint8_t *frame, int len) {
+    if (!frame || len < 14) return 0;
+
+    const struct eth_hdr *eh = (const struct eth_hdr *)frame;
+    uint16_t et = htons_(eh->ethertype);
+
+    if (et == ETHERTYPE_ARP) {
+        if (our_ip == 0) return 0;                    /* nothing to resolve yet */
+        if (len < (int)(14 + sizeof(struct arp_pkt))) return 0;
+        const struct arp_pkt *rq = (const struct arp_pkt *)(frame + 14);
+        if (htons_(rq->opcode) != ARP_REQUEST) return 0;
+        if (ntohl_(rq->target_ip) != our_ip) return 0; /* not asking for us */
+
+        struct arp_pkt rp;
+        rp.hw_type    = htons_(1);
+        rp.proto_type = htons_(0x0800);
+        rp.hw_len     = 6;
+        rp.proto_len  = 4;
+        rp.opcode     = htons_(ARP_REPLY);
+        memcpy(rp.sender_mac, our_mac, 6);
+        rp.sender_ip  = htonl_(our_ip);
+        memcpy(rp.target_mac, rq->sender_mac, 6);
+        rp.target_ip  = rq->sender_ip;                /* already host order */
+        if (net_eth_send(rq->sender_mac, ETHERTYPE_ARP, &rp, sizeof(rp)) < 0)
+            return 0;
+        net_arp_passive_replies++;
+        return 1;
+    }
+
+    if (et == ETHERTYPE_IPV6) {
+        return net_ipv6_handle_frame(frame, len);
+    }
+
+    return 0;   /* nobody's frame: consumed and discarded by the drain */
 }
 
 /* ---- ARP: resolve an IP address to a MAC. ---- */
@@ -590,10 +639,19 @@ int net_udp_sendto(uint32_t dst_ip, uint16_t dst_port,
 int net_udp_recvfrom(uint16_t local_port, uint32_t *src_ip, uint16_t *src_port,
                      void *buf, uint32_t bufsize, uint64_t timeout_ticks) {
     uint8_t rbuf[2048];
-    uint64_t deadline = timer_get_ticks() + (timeout_ticks ? timeout_ticks : NET_UDP_TIMEOUT_TICKS);
-    while (timer_get_ticks() < deadline) {
-        int n = net_recv_wait_until(rbuf, sizeof(rbuf), deadline);
-        if (n <= 0) break;
+    /* RESIDUE2 T5: NET_WAIT_FOREVER parks the caller on the NIC's RX
+     * wait queue with no deadline — the "fully blocking" recvfrom(2)
+     * shape (the old bounded slice returned -1 after ~100 ms, which the
+     * socket layer then papered over with a pause-spin). */
+    uint64_t deadline = (timeout_ticks == NET_WAIT_FOREVER) ? 0
+                        : timer_get_ticks() +
+                          (timeout_ticks ? timeout_ticks : NET_UDP_TIMEOUT_TICKS);
+    for (;;) {
+        int n = deadline
+            ? net_recv_wait_until(rbuf, sizeof(rbuf), deadline)
+            : netdev_recv_wait(rbuf, sizeof(rbuf), 0);
+        if (deadline && (n <= 0 || timer_get_ticks() >= deadline)) break;
+        if (!deadline && n < 0) break;   /* link down: cannot block on a dead NIC */
         int fl = 0;
         const uint8_t *f = net_ipfrag_step(rbuf, n, &fl);   /* X4 reassembly */
         if (!f) continue;

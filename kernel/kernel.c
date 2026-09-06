@@ -27,6 +27,7 @@
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/execpolicy.h"   /* RESIDUE2 T4: policy resolves via VFS */
+#include "kernel/net/netdev.h"      /* RESIDUE2 T5: the idle RX drain */
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/initrd.h"
 #include "kernel/fs/devfs.h"
@@ -708,6 +709,14 @@ void kmain(boot_info_t *boot_info) {
      * to the idle loop the other 99% of the time (measured: idle busy%
      * fell from ~36 to single digits with the O7 set). */
     for (;;) {
+        /* RESIDUE2 T5: the idle RX drain.  Nobody else owns the NIC
+         * between syscalls, so unsolicited frames land here: answered
+         * (ARP/NDP) or consumed and discarded — never left to clog the
+         * 64-slot software queue until it overflows and floods the log.
+         * Runs in process context with IRQs on (the passive handlers
+         * may transmit), and yields to a blocking consumer the instant
+         * one appears (the driver's atomic waiter check). */
+        netdev_passive_drain();
         klog_flush();
         timer_sleep_ms(100);
     }

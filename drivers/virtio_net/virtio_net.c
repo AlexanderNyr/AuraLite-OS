@@ -21,8 +21,10 @@
 #include "kernel/boot_info.h"
 #include "kernel/mm/pmm.h"
 #include "drivers/timer/pit.h"
+#include "kernel/arch/arch.h"       /* RESIDUE2 T5: irqflags for the drain lock */
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/spinlock.h"   /* RESIDUE2 T5: the idle RX drain lock */
 #include "kernel/proc/wait_queue.h"
 #include "kernel/arch/x86_64/irq.h"
 
@@ -188,6 +190,10 @@ static uint8_t mac[6];
 static int have_mac;
 
 static struct wait_queue vnet_rx_wq;
+/* RESIDUE2 T5 (the idle RX drain): waiter marker + owner lock, so the
+ * drain's check-and-pop is atomic against a recv_wait appearing. */
+static spinlock_t vnet_rx_owner_lock = SPINLOCK_UNLOCKED;
+static volatile int vnet_rx_waiters = 0;
 static volatile uint64_t vnet_irq_wakes;  /* R9: RX interrupts seen */
 static int vnet_irq_receipt_printed;      /* one line, first sleep-wake */
 
@@ -543,12 +549,22 @@ int virtio_net_recv(void *out, uint32_t bufsize) {
 int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
     if (!virtio_net_available()) return -1;
 
+    /* RESIDUE2 T5 (the idle RX drain): mark this consumer before the
+     * first pop — the drain's check-and-pop shares this lock, so it
+     * hands the ring back the moment a waiter exists. */
+    {
+        arch_irqflags_t flags = spinlock_acquire_irqsave(&vnet_rx_owner_lock);
+        vnet_rx_waiters++;
+        spinlock_release_irqrestore(&vnet_rx_owner_lock, flags);
+    }
+    int n;
+
     if (timeout_ticks == 0) {
         /* Blocking wait — loop until a packet arrives. */
         for (;;) {
-            int n = virtio_net_recv(out, bufsize);
-            if (n != 0) return n;
-            if (!virtio_net_link_up()) return -1;
+            n = virtio_net_recv(out, bufsize);
+            if (n != 0) break;
+            if (!virtio_net_link_up()) { n = -1; break; }
             wq_wait(&vnet_rx_wq, NULL);
         }
     } else {
@@ -561,7 +577,7 @@ int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
          * sleep-wake prints the receipt the ledger asks for. */
         uint64_t start = timer_get_ticks();
         for (;;) {
-            int n = virtio_net_recv(out, bufsize);
+            n = virtio_net_recv(out, bufsize);
             if (n != 0) {
                 if (!vnet_irq_receipt_printed && vnet_irq_wakes > 0) {
                     vnet_irq_receipt_printed = 1;
@@ -569,15 +585,49 @@ int virtio_net_recv_wait(void *out, uint32_t bufsize, uint64_t timeout_ticks) {
                             "spun (%llu interrupt(s) so far)\n",
                             (unsigned long long)vnet_irq_wakes);
                 }
-                return n;
+                break;
             }
-            if (!virtio_net_link_up()) return -1;
+            if (!virtio_net_link_up()) { n = -1; break; }
             uint64_t now = timer_get_ticks();
-            if (now - start >= timeout_ticks) return 0;
+            if (now - start >= timeout_ticks) { n = 0; break; }
             wq_wait_deadline(&vnet_rx_wq, NULL,
                              start + timeout_ticks);
         }
     }
+
+    {
+        arch_irqflags_t flags = spinlock_acquire_irqsave(&vnet_rx_owner_lock);
+        vnet_rx_waiters--;
+        spinlock_release_irqrestore(&vnet_rx_owner_lock, flags);
+    }
+    return n;
+}
+
+/* RESIDUE2 T5: atomic check-and-pop for netdev_passive_drain() (see
+ * e1000.c).  virtio-net has no software queue to clog — the used ring
+ * recycles as it pops — but the PASSIVE half matters just as much:
+ * without a drain there is nobody to answer ARP or NDP while idle. */
+static int virtio_net_rx_pop_idle(void *out, uint32_t bufsize) {
+    if (!virtio_net_available()) return 0;
+    arch_irqflags_t flags = spinlock_acquire_irqsave(&vnet_rx_owner_lock);
+    if (vnet_rx_waiters != 0) {
+        spinlock_release_irqrestore(&vnet_rx_owner_lock, flags);
+        return -1;
+    }
+    /* The check and the pop stay under one lock-irqsave: the only other
+     * poppers are waiters (excluded above), and the IRQ handler only
+     * wakes — so this is the sole ring consumer while the lock is held. */
+    static uint32_t idle_drained = 0;
+    int n = virtio_net_recv(out, bufsize);
+    spinlock_release_irqrestore(&vnet_rx_owner_lock, flags);
+    if (n > 0) {
+        idle_drained++;
+        if (idle_drained == 1 || (idle_drained & 0xFF) == 0) {
+            kprintf("[virtio-net] idle drain: %u unsolicited frame(s) "
+                    "consumed (ARP/NDP answered)\n", idle_drained);
+        }
+    }
+    return n;
 }
 
 /* ---- netdev backend registration ---------------------------------------- */
@@ -587,6 +637,7 @@ static const struct netdev virtio_net_netdev = {
     .send      = virtio_net_send,
     .recv      = virtio_net_recv,
     .recv_wait = virtio_net_recv_wait,
+    .rx_pop_idle = virtio_net_rx_pop_idle,   /* RESIDUE2 T5: idle drain */
     .get_mac   = virtio_net_get_mac,
     .link_up   = virtio_net_link_up,
 };

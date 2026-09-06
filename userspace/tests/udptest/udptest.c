@@ -25,7 +25,7 @@ static unsigned short rd16(const unsigned char *p) {
     return (unsigned short)(((unsigned short)p[0] << 8) | p[1]);
 }
 
-int main(void) {
+static int lane_dns(void) {
     puts("UDPTEST: starting SOCK_DGRAM DNS probe");
 
     int s = socket(AF_INET, SOCK_DGRAM, 0);
@@ -132,4 +132,69 @@ int main(void) {
         return 1;
     }
     return 0;
+}
+
+/* RESIDUE2 T5 (blocking sockets): recvfrom(2) must SLEEP until a
+ * datagram arrives.  The L2 lab (tests/integration/l2lab.py, mode
+ * udpblock) answers this socket's knock only after a deliberate ~4 s
+ * delay — with the old 10-tick poll slice the call returned -1 long
+ * before the reply; only a true block can see it. */
+static int lane_block(void) {
+    puts("UDPTEST-BLOCK: starting fully-blocking recvfrom probe");
+
+    int s = socket(AF_INET, SOCK_DGRAM, 0);
+    if (s < 0) {
+        puts("UDPTEST-BLOCK FAIL: socket() failed");
+        return 1;
+    }
+
+    struct sockaddr_in local;
+    memset(&local, 0, sizeof(local));
+    local.sin_family = AF_INET;
+    local.sin_port = htons(53001);
+    local.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(s, (struct sockaddr *)&local, sizeof(local)) < 0) {
+        puts("UDPTEST-BLOCK FAIL: bind() failed");
+        closesocket(s);
+        return 1;
+    }
+
+    /* Knock: the lab learns our MAC/IP from this frame (and answers the
+     * ARP request the send path emits), then waits ~4 s before replying. */
+    struct sockaddr_in peer;
+    memset(&peer, 0, sizeof(peer));
+    peer.sin_family = AF_INET;
+    peer.sin_port = htons(53001);
+    peer.sin_addr.s_addr = htonl((10u << 24) | (9u << 16) | (9u << 8) | 99u);
+    const char *knock = "BLOCK-KNOCK";
+    ssize_t sent = sendto(s, knock, strlen(knock), 0,
+                          (struct sockaddr *)&peer, sizeof(peer));
+    if (sent < 0) {
+        printf("UDPTEST-BLOCK FAIL: knock sendto returned %d\n", (int)sent);
+        closesocket(s);
+        return 1;
+    }
+    puts("UDPTEST-BLOCK: knock sent; blocking in recvfrom (host replies in ~4s)");
+
+    unsigned char resp[64];
+    struct sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    ssize_t n = recvfrom(s, resp, sizeof(resp) - 1, 0,
+                         (struct sockaddr *)&from, &from_len);
+    if (n < 0) {
+        printf("UDPTEST-BLOCK FAIL: recvfrom returned %d "
+               "(old 10-tick poll expiry)\n", (int)n);
+        closesocket(s);
+        return 1;
+    }
+    resp[n > 0 ? n : 0] = 0;
+    printf("UDPTEST-BLOCK PASS: blocked past the host delay, got %d byte(s)"
+           " '%s'\n", (int)n, (char *)resp);
+    closesocket(s);
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "block") == 0) return lane_block();
+    return lane_dns();
 }

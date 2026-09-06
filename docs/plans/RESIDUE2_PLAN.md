@@ -9,7 +9,7 @@
 | T2 — interrupts and discovery (MADT overrides, AP wake) | ✅ done | `patches/RESIDUE2_T2_irq.patch` |
 | T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs SHA-256) | ✅ done | `patches/RESIDUE2_T3_storage.patch` |
 | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ✅ done | `patches/RESIDUE2_T4_posix.patch` |
-| T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ⬜ planned | `patches/RESIDUE2_T5_net.patch` |
+| T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ✅ done | `patches/RESIDUE2_T5_net.patch` |
 | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ⬜ planned | `patches/RESIDUE2_T6_devs.patch` |
 | T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
 | T8 — ports and oddities (RES-02, RES-06, RES-18) | ⬜ planned | `patches/RESIDUE2_T8_ports.patch` |
@@ -358,7 +358,7 @@ DONE@R12).
 
 ### T5 — network and TLS
 
-**Status:** not started
+**Status:** done
 
 **Objective:** the net stack's honest edges — named in prose for
 months — become scheduled work: blocking semantics, production TCP
@@ -385,7 +385,23 @@ refused.
 **Test gate:** `test_socket_errno`, `test_https*`, net integration
 shards green; new TCP throughput/ordering cases.
 
-**Result:** —
+**Result:** DONE. Batch 1 — idle RX drain (e1000/rtl8139/virtio rings
+drained by the passive poller; L2-lab idledrain gate). Batch 2 — UDP
+recvfrom parks on the NIC RX wait queue via `NET_WAIT_FOREVER`
+(`socket_recvfrom` no longer spin-polls, link-down maps to
+-ENETDOWN); gated by `test_udp_blocking` (L2 lab, delayed reply). Batch
+3 — the "production TCP" box audited STALE: sliding windows, Reno CC
+(tcp_cc.h), retransmit queue + SACK, RFC 6298 RTO, PMTUD and OOO
+receive were already in tcp.c (X5/Y1/M6 lines); closed with two new
+gates — `test_tcp_x5` (manual, dated below) and
+`test_tcp_ordering` (512 KiB position-dependent pattern verified BOTH
+directions through an echo server; ~3 MB/s over SLIRP), the content
+integrity the x5 byte-count could not prove. Batch 4 — the DoD
+fetches: `test_realweb_rustlang` boots the guest on real internet
+through SLIRP and fetches https://rust-lang.org/ — DNS A+AAAA, v6
+attempted/v4 fallback, TCP:443, TLS 1.3 X25519MLKEM768, chain
+validated against the 17 shipped roots, HTTP 200 (18594-byte body),
+clean FIN. 171 integration cases registered; regressions green.
 
 ---
 

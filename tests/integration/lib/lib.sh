@@ -72,6 +72,12 @@ il_init() {
     # alternative backend, e.g. IL_NIC=virtio-net-pci for the virtio-net path).
     IL_NIC="${IL_NIC:-e1000}"
 
+    # RESIDUE2 T5: full netdev replacement for the L2-lab cases.  When set,
+    # it replaces the default SLIRP line entirely (the -device still pairs
+    # with netdev id net0, so keep id=net0 in the replacement); unset means
+    # the historical user/SLIRP NAT plus any IL_NETDEV_OPTS additions.
+    IL_NETDEV="${IL_NETDEV:-}"
+
     # CPU model (overridable so a test can toggle CPU features, e.g.
     # IL_CPU="qemu64,+rdrand,+rdseed" for the N0 hardware-entropy path).
     IL_CPU="${IL_CPU:-qemu64}"
@@ -185,6 +191,17 @@ il_run_qemu() {
     # smoke exercise `fast`/`off` deliberately).
     local selftest="${IL_SELFTEST:-full}"
 
+    # RESIDUE2 T5: IL_NETDEV (set by the L2-lab cases) replaces the whole
+    # netdev line; unset keeps the historical user/SLIRP NAT (+opts).
+    local netdev_args=(
+        -netdev "user,id=net0${IL_NETDEV_OPTS:-}"
+        -device "${IL_NIC},netdev=net0"
+    )
+    if [ -n "$IL_NETDEV" ]; then
+        # shellcheck disable=SC2206   # deliberate word split: QEMU tokens
+        netdev_args=( ${IL_NETDEV} -device "${IL_NIC},netdev=net0" )
+    fi
+
     local base_args=(
         -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
         -m 512M
@@ -194,8 +211,7 @@ il_run_qemu() {
         -no-reboot
         -cpu "$IL_CPU"
         -boot order=c
-        -netdev "user,id=net0${IL_NETDEV_OPTS:-}"
-        -device "${IL_NIC},netdev=net0"
+        "${netdev_args[@]}"
         -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
     )
 
@@ -231,6 +247,17 @@ il_run_qemu_prompt() {
     local extra=( "$@" )
     local smp="${IL_SMP:-2}"
     local selftest="${IL_SELFTEST:-full}"
+    # RESIDUE2 T5: IL_NETDEV (set by the L2-lab cases) replaces the whole
+    # netdev line; unset keeps the historical user/SLIRP NAT (+opts).
+    local netdev_args=(
+        -netdev "user,id=net0${IL_NETDEV_OPTS:-}"
+        -device "${IL_NIC},netdev=net0"
+    )
+    if [ -n "$IL_NETDEV" ]; then
+        # shellcheck disable=SC2206   # deliberate word split: QEMU tokens
+        netdev_args=( ${IL_NETDEV} -device "${IL_NIC},netdev=net0" )
+    fi
+
     local base_args=(
         -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on"
         -m 512M
@@ -240,8 +267,7 @@ il_run_qemu_prompt() {
         -no-reboot
         -cpu "$IL_CPU"
         -boot order=c
-        -netdev "user,id=net0${IL_NETDEV_OPTS:-}"
-        -device "${IL_NIC},netdev=net0"
+        "${netdev_args[@]}"
         -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
     )
     local queue rc had_errexit=0

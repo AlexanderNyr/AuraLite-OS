@@ -151,6 +151,8 @@ ALL_CASES=(
     test_dns_tcp
     test_ip_frag
     test_e1000_irq
+    test_e1000_idle_drain
+    test_udp_blocking
     test_virtio_net
     test_rtl8139
     test_udp_sockets
@@ -158,6 +160,8 @@ ALL_CASES=(
     test_http_x6
     test_tcp_server
     test_tcp_x5
+    test_tcp_ordering
+    test_realweb_rustlang
     test_tcp_options
     test_ipv6_ping6
     test_tcp6
@@ -279,7 +283,7 @@ group_re() {
         # boots) do not stretch the plain filesystem shard's wall-clock.
         fsfull) echo '^test_(ext4|f2fs|btrfs|exfat|ntfs)$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|xhci_[a-z]+)$' ;;
-        net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
+        net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
         gui)   echo '^test_(gui|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
         # slowest (the SH8 closure, ~23 min in the guest plus the idle budget)

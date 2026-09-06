@@ -915,6 +915,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/stoptest.elf $(USER_BUILD)/insttest.elf $(USER_BUILD)/hostilearg.elf \
              $(USER_BUILD)/socktest.elf \
              $(USER_BUILD)/tcpx5test.elf \
+             $(USER_BUILD)/tcpordtest.elf \
              $(USER_BUILD)/fpustress.elf \
              $(USER_BUILD)/siginfotest.elf \
              $(USER_BUILD)/auxvtest.elf \
@@ -1204,6 +1205,12 @@ $(USER_BUILD)/socktest.o: userspace/tests/socktest/socktest.c $(USER_CFLAGS_INC)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 $(USER_BUILD)/tcpx5test.o: userspace/tests/tcpx5test/tcpx5test.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# RESIDUE2 T5: the ordering/throughput gate's guest peer (see
+# tests/integration/cases/test_tcp_ordering.sh).
+$(USER_BUILD)/tcpordtest.o: userspace/tests/tcpordtest/tcpordtest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2149,7 +2156,7 @@ INITRD_DEMOS := guess snake glcube glshade glgears glrunner
 INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
-                socktest tcpx5test fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
+                socktest tcpx5test tcpordtest fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
                 usertest mmapshare mmapfile membench smpstress irqapwake execvetest
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
