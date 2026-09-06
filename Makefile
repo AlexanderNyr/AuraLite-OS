@@ -599,6 +599,21 @@ $(INIT32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD
 	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/init32.o $(USER32_BUILD)/syscall32.o -o $@
 	@echo "  [user32] $@"
 
+# RESIDUE2 T8 (RES-18): the static-PIE receipt program.  -fPIE code +
+# ld.lld -pie + pie32.ld (image base 0) -> ET_DYN with .rel.dyn
+# R_386_RELATIVE entries; the i386 tenant's elf32load seats it at
+# ELF32_PIE_BASE and relocates.  Gate: i386_pie_smoke.sh.
+PIE32_ELF := $(USER32_BUILD)/pie32
+
+$(USER32_BUILD)/pie32.o: userspace/tests/pie32/pie32.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS32) -fPIE -c $< -o $@
+
+$(PIE32_ELF): $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/pie32.o lib/libc32/pie32.ld
+	$(LD) -m elf_i386 -nostdlib -pie -T lib/libc32/pie32.ld \
+	    $(USER32_BUILD)/crt0_32.o $(USER32_BUILD)/pie32.o -o $@
+	@echo "  [user32-pie] $@"
+
 # I7: the interactive shell.  Linked at 0x30000000 (shell32.ld) so the
 # children it spawns at 0x08048000 share the address space -- see the
 # script's header for the treaty.
@@ -2525,6 +2540,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # other's class, and the path split means neither can even try.
 	@mkdir -p $(INITRD_DIR)/bin32
 	@strip -s $(INIT32_ELF) -o $(INITRD_DIR)/bin32/init32
+	@strip -s $(PIE32_ELF) -o $(INITRD_DIR)/bin32/pie32
 	@strip -s $(SHELL32_ELF) -o $(INITRD_DIR)/bin32/shell32
 	@strip -s $(FSIO32_ELF) -o $(INITRD_DIR)/bin32/fsio
 # RISCV_PLAN V5: the rv64 userland, THIRD tenant under /binrv.  GNU

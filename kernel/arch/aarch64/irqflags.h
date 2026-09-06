@@ -50,6 +50,16 @@ static inline void arch_irq_restore(arch_irqflags_t flags)
     }
 }
 
+/* Unconditional enable (RESIDUE2 T8, RES-06): for "about to sleep on a
+ * wait queue" sites that arrive with IF state unknown -- the pipe wait
+ * enabled interrupts by hand before the sweep; this is that sti with a
+ * portable name.  save/restore remains the SCOPED pairing; enable is the
+ * one-way drop before a blocking wait. */
+static inline void arch_irq_enable(void)
+{
+    __asm__ volatile ("msr daifclr, #2" ::: "memory");
+}
+
 /* Sleep until the next interrupt with IRQ unmasked for the wait --
  * the sti;hlt contract, DAIF spelling.  The unmask is one
  * instruction before the wfi, not fused, and that is fine on this

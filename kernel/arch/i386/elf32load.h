@@ -2,7 +2,8 @@
  * (I386_PLAN I5; the task I4's result note moved here, now that its
  * consumer -- init32 from the initrd -- exists).
  *
- * Accepts ELFCLASS32 / EM_386 / ET_EXEC only; the x86_64 kernel's
+ * Accepts ELFCLASS32 / EM_386 / ET_EXEC and (RESIDUE2 T8, RES-18)
+ * static PIE ET_DYN images, relocated at load; the x86_64 kernel's
  * elf.c keeps refusing class 32, so each kernel rejects the other's
  * binaries at parse time (the same both-sides rule elf32.inc and
  * elf.inc follow in the bootloader).

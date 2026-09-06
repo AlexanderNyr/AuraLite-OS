@@ -2,6 +2,29 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T8 — ports and oddities] 2026-09-06
+
+- **RES-02 FIXED (root cause: SMAP).** The "-cpu max hides the shell
+  banner" oddity, feature-bisected (67 QMP-delta candidates → smap):
+  the boot shell's initial user stack frame was written from CPL0
+  with raw stores and fault-looped under CR4.SMAP (697k identical
+  #PFs / 30s boot) — the shell never entered Ring 3. Frame write now
+  runs inside a user-access window; x86_cpumax_smoke.sh is the fix
+  gate (banner + prompt + uname round-trip under -cpu max, 8/8).
+- **RES-06 closed (the fd half compiles portable).** New
+  `arch_irq_enable()` in all four irqflags backends; vfs.c's two
+  pipe-wait `sti` migrated; kernel/fs/vfs.c now compiles at
+  x86_64/i386/rv64/aarch64 — pinned as width-gate lane 2b; asm-file
+  ratchet 29 → 27. Remaining coupling re-affirmed as architecture.
+- **RES-18 closed (PIE on a tenant).** i386 elf32load accepts ET_DYN:
+  static PIE seated at 0x10000000, R_386_RELATIVE applied in-loader;
+  new /bin32/pie32 (-fPIE, ld.lld -pie, image base 0) with a
+  relocation self-check; i386_pie_smoke.sh 6/6.
+- Toolchain-bump fallout: 5 inherited full-build warnings fixed
+  (virtio_blk ×3, ehci ×2) — full build back to zero; T7 Makefile
+  gusb.o-recipe repair (the T7 patch is regenerated).
+- Ledger OPEN rows 4 → 1 (RES-54 only); port shards 6/6 green.
+
 ## [RESIDUE2 T7 — GUI] 2026-09-06
 
 - **GUI-global state ACL** (ledger RES-47): clipboard set/get, theme set,

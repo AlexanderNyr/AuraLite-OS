@@ -23,6 +23,7 @@
 #include "kernel/proc/thread.h"
 #include "kernel/time.h"
 #include "kernel/boot_info.h"
+#include "kernel/arch/arch.h"    /* RESIDUE2 T8: arch_irq_enable (RES-06 pipe-wait migration) */
 
 /*
  * vfs_wrap_err() — normalise a filesystem op's return value to a negative
@@ -74,7 +75,11 @@ static int64_t pipe_read_op(struct vnode *vn, uint64_t pos, void *buf, uint64_t 
             if (p->writers == 0) { spinlock_release(&p->lock); return 0; } /* EOF */
             /* Interrupted by a signal with no data buffered -> -EINTR. */
             if (signal_interrupted()) { spinlock_release(&p->lock); return -EINTR; }
-            __asm__ volatile ("sti" ::: "memory");
+            /* RESIDUE2 T8 (RES-06): the pipe wait's hand-rolled sti,
+             * migrated onto the irqflags contract -- the last raw asm in
+             * the fd/OFD/pipe machinery, and the one that kept this file
+             * out of the port width-compile probes. */
+            arch_irq_enable();
             wq_wait(&p->read_wq, &p->lock);
             continue;
         }
@@ -110,7 +115,7 @@ static int64_t pipe_write_op(struct vnode *vn, uint64_t pos, const void *buf, ui
             if (p->readers == 0) { spinlock_release(&p->lock); return put ? (int64_t)put : pipe_broken(); }
             /* Interrupted by a signal before completing -> partial / -EINTR. */
             if (signal_interrupted()) { spinlock_release(&p->lock); return put ? (int64_t)put : -EINTR; }
-            __asm__ volatile ("sti" ::: "memory");
+            arch_irq_enable();      /* same contract as the read side */
             wq_wait(&p->write_wq, &p->lock);
             continue;
         }

@@ -49,7 +49,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # that is the ratchet clicking, and the whole point.
 BASELINE_UINT64_CASTS = 355   # was 359; P7 removed select.c's four (the -m32 fix WAS the removal)
 BASELINE_X64_INCLUDES = 69    # was 80; the portio.h -> arch.h batch paid 11
-BASELINE_ASM_FILES    = 29    # was 33 at V6 arming; the first batch paid 4
+BASELINE_ASM_FILES    = 27    # was 33 at V6 arming; V6 batch paid 4, RESIDUE2
+                              # T6 paid 1 (arch_compiler_barrier), T8 paid 2 (vfs.c
+                              # pipe-wait sti -> arch_irq_enable; RES-06 receipt:
+                              # vfs.c now compiles at all four widths -- width lane 2b)
                               # (spinlock->C11, kprintf, time, scheduler)
 
 PORTABLE_DIRS = ["kernel", "drivers", "w32/src"]

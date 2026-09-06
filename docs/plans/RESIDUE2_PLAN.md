@@ -12,7 +12,7 @@
 | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ✅ done | `patches/RESIDUE2_T5_net.patch` |
 | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ✅ done | `patches/RESIDUE2_T6_devs.patch` |
 | T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
-| T8 — ports and oddities (RES-02, RES-06, RES-18) | ⬜ planned | `patches/RESIDUE2_T8_ports.patch` |
+| T8 — ports and oddities (RES-02, RES-06, RES-18) | ✅ done | `patches/RESIDUE2_T8_ports.patch` |
 | T9 — tooling and close-out (GDB, flakiness, arithmetic) | ⬜ planned | `patches/RESIDUE2_T9_close.patch` |
 
 ## 1. Where this plan comes from
@@ -34,7 +34,7 @@ Measured at audit time (2026-09-04, this tree):
 | Source | Count | Notes |
 |---|---|---|
 | TODO.md unchecked boxes | **40** | 20 pre-existing + 20 newly boxed from prose |
-| Ledger rows OPEN | **6** | RES-02/06/07/16/18/54 |
+| Ledger rows OPEN | **1** | RES-54 only (RES-02/06/18 closed at T8, RES-16 at T2, RES-07 at T3) |
 | Ledger rows PENDING-USER | **4** | RES-30/32/33/48 — need the user's real hardware; see §4 |
 
 Every unchecked box now ends with the `(RESIDUE2 T#)` tag of the phase
@@ -528,7 +528,7 @@ warnings; width ratchet 355 held (the first ACL draft cost +6
 
 ### T8 — ports and oddities
 
-**Status:** not started
+**Status:** done
 
 **Objective:** the three OPEN rows that are neither subsystem work nor
 tooling: the two narrowed oddities and the port-coupling remainder.
@@ -552,7 +552,60 @@ named receipts.
 **Test gate:** the port boot shards (rv64/a64/i386) green; the new
 smoke case for RES-02 green or the oddity fixed.
 
-**Result:** —
+**Result (2026-09-06):** all three rows closed — none needed the
+"leave OPEN" escape; every receipt branch taken was the stronger one.
+
+*RES-02 (diagnosis-first, then a fix):* reproduced the oddity live
+(qemu64 shows the banner, -cpu max does not), enumerated the feature
+delta via QMP (67 candidates) and binary-searched `-cpu max,-f,...`
+boots.  Culprit: **SMAP**.  Root cause: the boot shell's hand-rolled
+initial user stack (kernel/proc/user.c) writes its argc/argv frame
+from CPL0 with raw stores; under CR4.SMAP every store faulted and the
+init thread spun in an unkillable #PF loop (697k identical faults
+measured in a 30s boot, RIP pinned to user_test_thread via `-d int` +
+addr2line) — the shell never entered Ring 3, and "first SYS_WRITE
+never lands" was simply the first absent receipt.  exec/spawn was
+already safe (build_initial_stack rides copy_to_user).  Fix: the frame
+write runs inside an explicit user-access window.  x86_cpumax_smoke.sh
+rewritten as the FIX gate: 8/8 including banner, prompt and a uname
+round-trip under -cpu max (FIFO-driven, banner-gated input; the
+file:-chardev stdin trap documented).  check_hw_claims.py's H2 claim
+moved with reality.
+
+*RES-06 (the stronger receipt branch):* `arch_irq_enable()` added to
+all four irqflags backends (x86_64/i386 `sti`, riscv64 `csrsi
+sstatus,2`, aarch64 `msr daifclr,#2`), vfs.c's two pipe-wait `sti`
+migrated onto it — the fd/OFD/pipe machinery now COMPILES at all four
+widths (pre-fix, the rv64 compile failed ON the sti; post-fix,
+test_width_sweep.sh lane 2b compiles the real file per width and
+fails red on any regression).  The asm-file ratchet clicked 29 → 27.
+The remaining coupling — tcb fd tables / wait queues — is re-affirmed
+in the row as the x86 process layer's: the port kernels have no
+process layer to host them.
+
+*RES-18 (the real relocation work):* elf32load.c accepts ET_DYN — a
+static PIE is seated at 0x10000000 (deliberately distinct from the
+ET_EXEC child base and the shell window) and its .rel.dyn
+R_386_RELATIVE entries are applied in-loader.  /bin32/pie32 is built
+-fPIE + ld.lld -pie + lib/libc32/pie32.ld (image base 0): ET_DYN with
+3 RELATIVE entries and a pointer-table self-check that mutates the
+receipt line if any entry was skipped.  i386_pie_smoke.sh 6/6: loader
+receipt, runtime-address proof, self-check, ET_EXEC no-regression,
+no faults, no refusals.
+
+*Also in the commit:* clang-19 toolchain-bump fallout fixed (5
+full-build warnings: virtio_blk packed-member addresses ×3 via
+allocate-into-locals, ehci uint8 clamp ×2 via widen-then-clamp) —
+full build back to 0 warnings; and the T7 Makefile insertion that
+ate gusb.o's recipe line (latent until the first make clean) — the
+T7 patch is regenerated with the fix.
+
+*Gates:* port shards green — i386/rv64/a64 boot smokes 3/3, shell
+smokes 3/3, i386_pie 6/6, cpumax 8/8; x86_64 boot-path regression
+(boot_to_shell, selftest, selftest_modes) green after the user.c
+fix; make test-unit green (claims 21/21, width 27/27 with the new
+vfs.c lane, HW_PLAN baseline 15→16 moved same-commit with the ledger
+note).
 
 ---
 

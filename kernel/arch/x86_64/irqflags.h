@@ -36,6 +36,16 @@ static inline void arch_irq_restore(arch_irqflags_t flags)
     }
 }
 
+/* Unconditional enable (RESIDUE2 T8, RES-06): for "about to sleep on a
+ * wait queue" sites that arrive with IF state unknown -- the pipe wait
+ * enabled interrupts by hand before the sweep; this is that sti with a
+ * portable name.  save/restore remains the SCOPED pairing; enable is the
+ * one-way drop before a blocking wait. */
+static inline void arch_irq_enable(void)
+{
+    __asm__ volatile ("sti" ::: "memory");
+}
+
 /* Sleep until the next interrupt, interrupts ENABLED for the wait --
  * the sti;hlt idiom (both idle loops use it; the I7 keyboard bug is
  * why the sti is fused rather than separate). */

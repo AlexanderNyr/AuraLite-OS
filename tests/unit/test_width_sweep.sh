@@ -131,6 +131,8 @@ void probe(void)
     arch_cpu_relax();
     arch_irq_restore(f);
     arch_wait_for_interrupt();
+    arch_irq_enable();      /* RESIDUE2 T8 (RES-06): the pipe-wait primitive */
+    arch_irq_restore(0);
 }
 EOF
 for lane in \
@@ -145,6 +147,27 @@ for lane in \
         note "OK   irqflags contract closes at $name"
     else
         note "FAIL irqflags contract at $name"
+        fail=1
+    fi
+done
+
+# Lane 2b (RESIDUE2 T8, RES-06 receipt): the fd/OFD/pipe machinery
+# itself -- kernel/fs/vfs.c -- compiles at EVERY width.  The ledger row
+# named the pipe wait's raw sti as the coupling; it now rides the
+# irqflags contract (arch_irq_enable), and this compile of the REAL
+# file (not a probe TU) is the receipt that keeps it true.
+for lane in \
+    "x86_64:--target=x86_64-elf" \
+    "i386:--target=i686-elf -malign-double" \
+    "rv64:--target=riscv64 -march=rv64gc -mabi=lp64d" \
+    "a64:--target=aarch64-unknown-none-elf -mgeneral-regs-only"; do
+    name="${lane%%:*}"; flags="${lane#*:}"
+    # shellcheck disable=SC2086
+    if clang $flags -ffreestanding -std=c11 -I . \
+            -c kernel/fs/vfs.c -o "build/width_vfs_$name.o" 2>/dev/null; then
+        note "OK   vfs.c (fd/OFD/pipe) compiles at $name"
+    else
+        note "FAIL vfs.c no longer compiles at $name -- a portable file regressed"
         fail=1
     fi
 done

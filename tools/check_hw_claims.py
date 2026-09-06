@@ -114,9 +114,11 @@ def claims():
                                            "test_perf_smoke.sh") and
          "crossover: 0 (ERMS fast-string)" in
          read("tests", "integration", "x86_cpumax_smoke.sh")),
-        ("H2: the -cpu max shell-banner oddity is recorded as "
-         "pre-existing (control run), not hidden",
-         "pre-H2" in read("tests", "integration",
+        # RESIDUE2 T8 rewrote this claim: RES-02 was root-caused
+        # (SMAP + the hand-rolled initial user stack) and FIXED, so the
+        # lane now PINS the fix instead of documenting the oddity.
+        ("H2: the -cpu max lane pins the RES-02 FIX (banner + round-trip)",
+         "RES-02 root-caused and FIXED" in read("tests", "integration",
                           "x86_cpumax_smoke.sh") and
          "recorded here as `-cpu max` residue" in plan),
 

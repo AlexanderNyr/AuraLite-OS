@@ -126,9 +126,17 @@ static int setup_queue(void) {
     if (qsz == 0 || qsz > 256) qsz = 256;
     q.qsize = qsz;
 
-    q.desc_phys = alloc_zero_page((void **)&q.desc);
-    q.avail_phys = alloc_zero_page((void **)&q.avail);
-    q.used_phys = alloc_zero_page((void **)&q.used);
+    /* vblk_queue is packed (hardware register layout), so the member
+     * ADDRESSES may not be taken (clang 19 -Waddress-of-packed-member,
+     * surfaced by the 2026-09 toolchain bump): allocate into locals,
+     * assign the values. */
+    struct vring_desc  *desc;
+    struct vring_avail *avail;
+    struct vring_used  *used;
+    q.desc_phys  = alloc_zero_page((void **)&desc);
+    q.avail_phys = alloc_zero_page((void **)&avail);
+    q.used_phys  = alloc_zero_page((void **)&used);
+    q.desc = desc; q.avail = avail; q.used = used;
     if (!q.desc_phys || !q.avail_phys || !q.used_phys) return -1;
 
     common_cfg->queue_select = 0;

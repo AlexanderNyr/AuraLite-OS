@@ -261,6 +261,14 @@ kernel — behaves identically, so the smoke asserts the kernel-side
 handoff and the oddity is recorded here as `-cpu max` residue for
 whoever needs the interactive lane someday.
 
+(RESIDUE2 T8, 2026-09-06: that residue is now FIXED.  Feature-bisecting
+`-cpu max` pinned SMAP; the boot shell's hand-rolled initial user stack
+wrote its argc frame from CPL0 with raw stores and fault-looped under
+CR4.SMAP, so the shell never entered Ring 3 -- the "missing banner" was
+the first absent receipt, nothing more.  user.c now writes the frame
+inside an explicit user-access window; x86_cpumax_smoke.sh drives the
+banner, the prompt and a uname round-trip under -cpu max.)
+
 The PERFORMANCE half stays a §6 metal receipt: TCG emulates
 rep-string one iteration at a time regardless of ERMS, so the
 threshold's wall-clock effect is invisible here by construction —

@@ -627,11 +627,15 @@ static struct ehci_intr_ep *ehci_find_intr_ep(uint8_t dev_addr, uint8_t endpoint
 
 /* Link a QH into every `interval` frames of the periodic list. */
 static void ehci_periodic_link(uint32_t qh_phys, uint8_t interval) {
-    if (interval < 1) interval = 1;
-    if (interval > EHCI_FRAME_COUNT) interval = EHCI_FRAME_COUNT;
+    /* Widen BEFORE clamping: EHCI_FRAME_COUNT (1024) does not fit a
+     * uint8_t, so the old in-place clamp was dead code clang 19 flags
+     * (-Wtautological-constant-out-of-range-compare). */
+    uint32_t iv_max = interval;
+    if (iv_max < 1) iv_max = 1;
+    if (iv_max > EHCI_FRAME_COUNT) iv_max = EHCI_FRAME_COUNT;
     /* Round down to a power of two: the frame list is indexed by masking. */
     uint32_t iv = 1;
-    while ((iv << 1) <= interval) iv <<= 1;
+    while ((iv << 1) <= iv_max) iv <<= 1;
     for (uint32_t f = 0; f < EHCI_FRAME_COUNT; f += iv)
         periodic_list[f] = qh_phys | QH_TYPE_QH;
 }

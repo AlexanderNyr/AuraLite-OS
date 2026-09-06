@@ -106,11 +106,23 @@ static void user_test_thread(void *arg) {
     {
         uint64_t rsp = (stack_top - 64) & ~0xFULL;
         volatile uint64_t *frame = (volatile uint64_t *)rsp;
+        /* RESIDUE2 T8 (RES-02 root cause, found by feature-bisecting
+         * -cpu max): these five stores write USER memory from CPL0.
+         * With CR4.SMAP active (any -cpu max boot) every one faulted,
+         * the handler returned to the same instruction, and the init
+         * thread spun in an unkillable #PF loop -- 697k identical
+         * faults in a 30s boot, the shell never entered Ring 3, and
+         * the oddity surfaced as "first SYS_WRITE never lands" only
+         * because that receipt was the first thing missing.  exec/spawn
+         * builds its stack through copy_to_user; this hand-rolled boot
+         * frame is the one unguarded CPL0->user writer in the tree. */
+        user_access_enable();
         frame[0] = 0;   /* argc        */
         frame[1] = 0;   /* argv NULL   */
         frame[2] = 0;   /* envp NULL   */
         frame[3] = 0;   /* auxv AT_NULL type  */
         frame[4] = 0;   /* auxv AT_NULL value */
+        user_access_disable();
         jump_to_user(entry, rsp, 0);
     }
 }

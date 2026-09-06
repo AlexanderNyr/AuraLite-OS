@@ -1,5 +1,11 @@
 /* kernel/arch/i386/elf32load.c -- ELF32 user loader (I386_PLAN I5).
  *
+ * RESIDUE2 T8 (RES-18): the loader also accepts ET_DYN -- a static
+ * PIE.  Dynamic images are mapped at a dedicated PIE base and their
+ * .rel.dyn R_386_RELATIVE entries are applied by hand (the kernel is
+ * its own dynamic linker: add base to every relocated word).  The
+ * receipt lives in tests/integration/i386_pie_smoke.sh.
+ *
  * The validation order mirrors kernel/proc/elf.c: magic, class,
  * machine, type, then bounds-checked phdr walk.  Every PT_LOAD page
  * is allocated fresh, copied through the direct map, and mapped
@@ -21,8 +27,17 @@
 #define ELFCLASS32 1
 #define EM_386     3
 #define ET_EXEC    2
+#define ET_DYN     3
 #define PT_LOAD    1
 #define PF_W       2
+#define SHT_REL    9
+#define R_386_RELATIVE 8
+
+/* Where a PIE is seated.  Distinct from the ET_EXEC child base
+ * (0x08048000) and the shell (0x30000000) on purpose: if relocation
+ * were skipped, absolute pointers would aim at the link-time image
+ * (base 0) and fault, not silently alias a live mapping. */
+#define ELF32_PIE_BASE 0x10000000u
 
 struct elf32_ehdr {
     uint8_t  e_ident[EI_NIDENT];
@@ -35,6 +50,16 @@ struct elf32_ehdr {
 struct elf32_phdr {
     uint32_t p_type, p_offset, p_vaddr, p_paddr;
     uint32_t p_filesz, p_memsz, p_flags, p_align;
+};
+
+struct elf32_shdr {
+    uint32_t sh_name, sh_type, sh_flags, sh_addr;
+    uint32_t sh_offset, sh_size, sh_link, sh_info;
+    uint32_t sh_addralign, sh_entsize;
+};
+
+struct elf32_rel {
+    uint32_t r_offset, r_info;
 };
 
 /* Track what we mapped so unmap can undo it.  I7 turned the single
@@ -83,6 +108,52 @@ static int map_user_page(uint32_t vaddr, uint32_t flags)
     return 0;
 }
 
+/* Frame backing a mapped user page (0 if not ours). */
+static uint32_t frame_of(uint32_t va)
+{
+    va &= ~(PAGE_SIZE_32 - 1);
+    for (uint32_t m = 0; m < mapped_count; m++)
+        if (MV[m] == va)
+            return MF[m];
+    return 0;
+}
+
+/* Apply .rel.dyn R_386_RELATIVE relocations for an image seated at
+ * `base` (RES-18: the kernel as its own dynamic linker).  Returns the
+ * number applied, or -1 on a record pointing outside the image. */
+static int pie_apply_relative(const uint8_t *image, uint32_t size, uint32_t base)
+{
+    const struct elf32_ehdr *eh = (const struct elf32_ehdr *)image;
+    if (eh->e_shoff == 0 ||
+        eh->e_shoff + (uint32_t)eh->e_shnum * eh->e_shentsize > size)
+        return -1;
+
+    int applied = 0;
+    for (uint16_t s = 0; s < eh->e_shnum; s++) {
+        const struct elf32_shdr *sh = (const struct elf32_shdr *)
+            (image + eh->e_shoff + (uint32_t)s * eh->e_shentsize);
+        if (sh->sh_type != SHT_REL)
+            continue;
+        if (sh->sh_offset + sh->sh_size > size || sh->sh_entsize != 8)
+            continue;
+        for (uint32_t r = 0; r + 8 <= sh->sh_size; r += 8) {
+            const struct elf32_rel *rel = (const struct elf32_rel *)
+                (image + sh->sh_offset + r);
+            if ((rel->r_info & 0xFF) != R_386_RELATIVE)
+                continue;           /* only the static-PIE contract */
+            uint32_t va = base + rel->r_offset;
+            uint32_t frame = frame_of(va);
+            if (!frame)
+                return -1;          /* relocation target not mapped */
+            volatile uint32_t *slot =
+                (volatile uint32_t *)(p2v_32(frame) + (va & (PAGE_SIZE_32 - 1)));
+            *slot += base;
+            applied++;
+        }
+    }
+    return applied;
+}
+
 uint32_t elf32load_map(const uint8_t *image, uint32_t size)
 {
     if (size < sizeof(struct elf32_ehdr))
@@ -101,11 +172,15 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
                   eh->e_ident[4]);
         return 0;
     }
-    if (eh->e_machine != EM_386 || eh->e_type != ET_EXEC) {
+    if (eh->e_machine != EM_386 ||
+        (eh->e_type != ET_EXEC && eh->e_type != ET_DYN)) {
         kprintf32("[elf32] refused: machine=%u type=%u\n",
                   eh->e_machine, eh->e_type);
         return 0;
     }
+    /* RES-18: a PIE links at image base 0; seat it at the PIE base.
+     * ET_EXEC keeps its absolute addresses (base 0, as before). */
+    const uint32_t base = (eh->e_type == ET_DYN) ? ELF32_PIE_BASE : 0;
     if (eh->e_phoff + (uint32_t)eh->e_phnum * eh->e_phentsize > size) {
         kprintf32("[elf32] refused: phdr table out of bounds\n");
         return 0;
@@ -119,8 +194,9 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
         if (ph->p_type != PT_LOAD)
             continue;
 
-        if (ph->p_vaddr < ELF32_USER_MIN ||
-            ph->p_vaddr + ph->p_memsz > ELF32_USER_MAX ||
+        uint32_t vaddr = ph->p_vaddr + base;
+        if (vaddr < ELF32_USER_MIN ||
+            vaddr + ph->p_memsz > ELF32_USER_MAX ||
             ph->p_offset + ph->p_filesz > size) {
             kprintf32("[elf32] refused: segment outside the user window\n");
             elf32load_unmap();
@@ -132,8 +208,8 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
         /* No NX on this arch: a non-PF_X segment still executes if
          * jumped to.  Stated at load, enforced never (plan D3). */
 
-        uint32_t first = ph->p_vaddr & ~(PAGE_SIZE_32 - 1);
-        uint32_t last  = (ph->p_vaddr + ph->p_memsz + PAGE_SIZE_32 - 1)
+        uint32_t first = vaddr & ~(PAGE_SIZE_32 - 1);
+        uint32_t last  = (vaddr + ph->p_memsz + PAGE_SIZE_32 - 1)
                          & ~(PAGE_SIZE_32 - 1);
         for (uint32_t va = first; va < last; va += PAGE_SIZE_32) {
             /* Segments may share a page boundary; map once. */
@@ -149,16 +225,25 @@ uint32_t elf32load_map(const uint8_t *image, uint32_t size)
         /* Copy file bytes through the direct map (pages were zeroed,
          * so memsz > filesz BSS is already correct). */
         for (uint32_t off = 0; off < ph->p_filesz; off++) {
-            uint32_t va    = ph->p_vaddr + off;
-            uint32_t frame = 0;
-            for (uint32_t m = 0; m < mapped_count; m++)
-                if (MV[m] == (va & ~(PAGE_SIZE_32 - 1)))
-                    { frame = MF[m]; break; }
+            uint32_t va    = vaddr + off;
+            uint32_t frame = frame_of(va);
             ((uint8_t *)p2v_32(frame))[va & (PAGE_SIZE_32 - 1)] =
                 image[ph->p_offset + off];
         }
     }
 
+    if (eh->e_type == ET_DYN) {
+        int rel = pie_apply_relative(image, size, base);
+        if (rel < 0) {
+            kprintf32("[elf32] PIE refused: relocation outside image\n");
+            elf32load_unmap();
+            return 0;
+        }
+        /* kprintf32 has no %08x: plain %x keeps the receipt greppable. */
+        kprintf32("[elf32] PIE: base 0x%x, %d R_386_RELATIVE applied, "
+                  "entry 0x%x\n", base, rel, base + eh->e_entry);
+        return base + eh->e_entry;
+    }
     kprintf32("[elf32] mapped %u user page(s), entry %x\n",
               mapped_count, eh->e_entry);
     return eh->e_entry;
