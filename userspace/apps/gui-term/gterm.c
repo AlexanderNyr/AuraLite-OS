@@ -220,6 +220,9 @@ static void bi_cat(const char *arg) {
 
 /* ---- command dispatch ------------------------------------------------- */
 
+/* RESIDUE2 T7: defined with the history ring below the builtins. */
+static void bi_history(void);
+
 static void run_command(const char *line, int *want_exit) {
     while (*line == ' ') line++;
     if (!*line) return;
@@ -250,7 +253,7 @@ static void run_command(const char *line, int *want_exit) {
     const char *arg = (argc >= 2) ? argv[1] : "";
 
     if      (strcmp(cmd, "help")  == 0) {
-        term_push("builtins: help clear exit pwd cd ls cat mkdir rm echo uname");
+        term_push("builtins: help clear exit pwd cd ls cat mkdir rm echo uname history");
         term_push("any installed program works too: weather, sysinfo, snake, ...");
     }
     else if (strcmp(cmd, "clear") == 0) { hist_n = 0; }
@@ -264,6 +267,7 @@ static void run_command(const char *line, int *want_exit) {
     else if (strcmp(cmd, "cd")    == 0) {
         if (chdir(arg[0] ? arg : "/") < 0) term_push("cd: no such directory");
     }
+    else if (strcmp(cmd, "history") == 0) { bi_history(); }
     else if (strcmp(cmd, "ls")    == 0) { bi_ls(arg); }
     else if (strcmp(cmd, "cat")   == 0) { bi_cat(arg); }
     else if (strcmp(cmd, "mkdir") == 0) {
@@ -288,6 +292,54 @@ static void run_command(const char *line, int *want_exit) {
     }
 }
 
+/* ---- command history (RESIDUE2 T7) ------------------------------------- */
+/*
+ * Classic shell history for the GUI terminal: Enter stores the line, Up
+ * (0x102) walks backwards through what was typed, Down (0x103) walks
+ * forward again, and editing any recalled line just edits it -- exactly
+ * like the text shell's readline ring.  The save slot always holds the
+ * line being edited so Down can come back to it.
+ */
+#define CMD_HIST 32
+static char cmd_hist[CMD_HIST][160];
+static int  cmd_hist_n = 0;      /* total entries ever stored   */
+static int  cmd_hist_pos = 0;    /* 0 = live line, N = entry N  */
+
+static void cmd_store(const char *line) {
+    if (!line[0]) return;
+    /* Skip storing a line that repeats the immediately previous one. */
+    if (cmd_hist_n > 0 &&
+        strcmp(cmd_hist[(cmd_hist_n - 1) % CMD_HIST], line) == 0)
+        return;
+    snprintf(cmd_hist[cmd_hist_n % CMD_HIST], 160, "%s", line);
+    cmd_hist_n++;
+}
+
+static void cmd_recall(int delta) {
+    if (cmd_hist_n == 0) return;
+    int p = cmd_hist_pos + delta;
+    if (p < 0) p = 0;
+    if (p > cmd_hist_n) p = 0;   /* Down past the newest entry -> live line */
+    cmd_hist_pos = p;
+    if (p == 0) {
+        ag_textbox_set(input, "");          /* back to the live line */
+    } else {
+        ag_textbox_set(input, cmd_hist[(p - 1) % CMD_HIST]);
+    }
+    repaint();
+}
+
+static void bi_history(void) {
+    if (cmd_hist_n == 0) { term_push("(no history yet)"); return; }
+    int first = cmd_hist_n - CMD_HIST;
+    if (first < 0) first = 0;
+    char ln[COLS + 1];
+    for (int i = first; i < cmd_hist_n; i++) {
+        snprintf(ln, sizeof ln, "  %d  %s", i + 1, cmd_hist[i % CMD_HIST]);
+        term_push(ln);
+    }
+}
+
 /* ---- widgets / events ------------------------------------------------- */
 
 static int want_exit = 0;
@@ -295,6 +347,8 @@ static int want_exit = 0;
 static void on_enter(ag_widget_t *w, void *u) {
     (void)u;
     ag_widget_t *box = (w == input) ? w : input;
+    cmd_store(box->text);
+    cmd_hist_pos = 0;               /* recall cursor back to the live line */
     run_command(box->text, &want_exit);
     ag_textbox_set(box, "");
     repaint();                          /* show 'exit' echo before leaving */
@@ -340,8 +394,13 @@ int main(void) {
         }
         int quit = ag_view_dispatch(&view, &e);   /* Run-button fires here */
         if (want_exit || quit) break;
-        if (e.type == AG_EVT_KEY_DOWN && e.key == '\n' && input->focused)
+        if (e.type == AG_EVT_KEY_DOWN && e.key == '\n' && input->focused) {
             on_enter(input, 0);                   /* echoes '$ exit' first */
+        } else if (e.type == AG_EVT_KEY_DOWN && input->focused) {
+            /* RESIDUE2 T7: shell-style history recall. */
+            if (e.key == 0x102)      cmd_recall(1);   /* UP   -> older */
+            else if (e.key == 0x103) cmd_recall(-1);  /* DOWN -> newer */
+        }
         if (want_exit) break;
         repaint();
     }

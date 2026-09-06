@@ -171,6 +171,109 @@ int ag_theme_set(const ag_theme_t *t) {
     return (int)syscall(SYS_GUI_THEME_NUM, 2, (uint64_t)t, 0, 0, 0, 0);
 }
 
+/* ---- Theme persistence (RESIDUE2 T7) ----
+ *
+ * The desktop theme persists as a small dotfile: "key=0xVALUE" lines, one
+ * per struct field, written by ag_theme_save() and parsed by
+ * ag_theme_load().  Loading starts from the CURRENT theme and overrides
+ * only the keys present in the file, so a dotfile written by an older
+ * build (fewer fields) still loads cleanly -- versioning by omission.
+ *
+ * load() deliberately does NOT apply the theme: applying means a
+ * GUI-global mutation, which the T7 ACL restricts to processes that own a
+ * window.  Call ag_theme_set() once your window exists.
+ */
+
+#include "fcntl.h"
+#include "stddef.h"     /* offsetof */
+#include "stdio.h"      /* FILE/fgets for ag_theme_load */
+
+typedef struct { const char *key; size_t off; } theme_field_t;
+
+#define TF(fld) { #fld, offsetof(ag_theme_t, fld) }
+
+static const theme_field_t theme_fields[] = {
+    TF(desktop_top), TF(desktop_bot),
+    TF(win_bg), TF(win_content),
+    TF(title_active), TF(title_inactive), TF(title_text),
+    TF(border), TF(border_active),
+    TF(taskbar_bg), TF(taskbar_border), TF(taskbar_text),
+    TF(start_btn_bg), TF(start_btn_text),
+    TF(close_bg), TF(close_bg_hover), TF(max_bg), TF(min_bg),
+    TF(icon_text), TF(icon_selected),
+    TF(notif_bg), TF(notif_border), TF(notif_text),
+    TF(shadow_color), TF(shadow_offset),
+    TF(taskbar_h), TF(titlebar_h), TF(border_w), TF(resize_grip),
+    TF(icon_size), TF(icon_pad), TF(win_round),
+};
+#define THEME_FIELD_N (int)(sizeof(theme_fields) / sizeof(theme_fields[0]))
+
+int ag_theme_save2(const char *path, const ag_theme_t *t) {
+    if (!path || !t) return -1;
+    int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    int rc = 0;
+    if (dprintf(fd, "# aura-theme v1 (RESIDUE2 T7)\n") < 0) rc = -1;
+    for (int i = 0; i < THEME_FIELD_N && rc == 0; i++) {
+        uint32_t v = *(const uint32_t *)((const char *)t + theme_fields[i].off);
+        if (dprintf(fd, "%s=0x%08X\n", theme_fields[i].key, v) < 0) rc = -1;
+    }
+    if (fsync(fd) != 0) rc = -1;   /* dotfile must survive the boot */
+    if (close(fd) != 0) rc = -1;
+    return rc;
+}
+
+int ag_theme_save(const char *path) {
+    ag_theme_t t;
+    if (ag_theme_get(&t) != 0) return -1;
+    return ag_theme_save2(path, &t);
+}
+
+int ag_theme_load(const char *path, ag_theme_t *out) {
+    if (!path || !out) return -1;
+    /* Base = current theme: unknown/missing keys keep today's values. */
+    if (ag_theme_get(out) != 0) return -1;
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;             /* no dotfile yet -> caller keeps default */
+    char line[96];
+    int matched = 0;
+    /* The file is machine-written, LF-terminated; fgets handles it. */
+    while (fgets(line, (int)sizeof(line), f)) {
+        char *nl = strchr(line, '\n');
+        if (nl) *nl = 0;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        /* Own hex parser: the libc mini-sscanf stops at the 'x' of a
+         * "0x..." value and happily returns 0 -- every field would load
+         * as zero.  Accept 0x/0X-prefixed or bare hex, reject garbage. */
+        const char *p = eq + 1;
+        if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) p += 2;
+        if (!p[0]) continue;
+        uint32_t v = 0;
+        int ok = 1;
+        for (; *p; p++) {
+            char c = *p;
+            int d;
+            if (c >= '0' && c <= '9')      d = c - '0';
+            else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+            else { ok = 0; break; }
+            v = (v << 4) | (uint32_t)d;
+        }
+        if (!ok) continue;
+        for (int i = 0; i < THEME_FIELD_N; i++) {
+            if (strcmp(line, theme_fields[i].key) == 0) {
+                *(uint32_t *)((char *)out + theme_fields[i].off) = v;
+                matched++;
+                break;
+            }
+        }
+    }
+    fclose(f);
+    return matched > 0 ? 0 : -1;
+}
+
 /* ---- Desktop icons ---- */
 
 int ag_add_icon(int32_t x, int32_t y, const char *label, int icon_id) {
@@ -706,6 +809,13 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                 if (e->mods & 0x02) {
                     if (e->key == 'c' || e->key == 'C') {
                         ag_set_clipboard(w->text);
+                    } else if (e->key == 'x' || e->key == 'X') {
+                        /* RESIDUE2 T7: cut = copy the whole line, then
+                         * clear the box (cursor home, change notified). */
+                        ag_set_clipboard(w->text);
+                        w->text[0] = '\0';
+                        w->cursor_pos = 0;
+                        if (w->on_change) w->on_change(w, w->user);
                     } else if (e->key == 'v' || e->key == 'V') {
                         char buf[AG_MAX_WIDGET_TEXT];
                         if (ag_get_clipboard(buf, sizeof(buf)) == 0) {

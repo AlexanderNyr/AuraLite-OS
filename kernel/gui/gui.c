@@ -503,6 +503,25 @@ uint64_t gui_window_owner(int wid) {
     return (uint64_t)(uint32_t)windows[wid].owner_pid;
 }
 
+/* RESIDUE2 T7 (clipboard ACL): does this pid own at least one live window?
+ *
+ * The GUI permission model draws one line: per-window ops require owning
+ * THAT window (require_owner in gui_syscalls.c), and mutations of
+ * GUI-GLOBAL state -- the kernel clipboard, the desktop theme, taskbar
+ * notifications, desktop icons -- require being a GUI participant at all,
+ * i.e. owning at least one window.  A windowless background process has
+ * no business scraping the clipboard or restyling the desktop underneath
+ * the user's windows.
+ */
+int gui_pid_has_windows(uint64_t owner_pid) {
+    if (owner_pid == 0) return 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (gui_window_owned_by(i, owner_pid))
+            return 1;
+    }
+    return 0;
+}
+
 void gui_cleanup_process(uint64_t owner_pid) {
     if (owner_pid == 0) return;
     int cleaned = 0;

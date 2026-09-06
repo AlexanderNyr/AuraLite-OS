@@ -50,6 +50,14 @@ static int require_icon_owner(int icon_idx) {
     return gui_icon_owned_by(icon_idx, pid);
 }
 
+/* RESIDUE2 T7: gate for GUI-GLOBAL state (clipboard, theme, notifications,
+ * desktop icons).  Per-window ops use require_owner(); global mutations ask
+ * whether the caller is a GUI participant at all: it must own at least one
+ * live window.  Windowless daemons are rejected with -1. */
+static int require_gui_participant(void) {
+    return gui_pid_has_windows(current_pid());
+}
+
 static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5) {
     switch (op) {
@@ -167,6 +175,9 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         return 0;
     }
     case GUI_OP_SET_CLIPBOARD: {
+        /* T7 ACL: only a process owning at least one window may write the
+         * desktop clipboard. */
+        if (!require_gui_participant()) return -1;
         if (!a2) return (uint64_t)-1;
         if (copy_string_from_user(gui_kernel_clipboard, (const char *)(uintptr_t)a2, GUI_USER_TEXT_MAX) != 0) {
             gui_kernel_clipboard[0] = 0;
@@ -175,6 +186,8 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         return 0;
     }
     case GUI_OP_GET_CLIPBOARD: {
+        /* T7 ACL: ... and only such a process may read it back. */
+        if (!require_gui_participant()) return -1;
         if (!a2 || a3 == 0) return (uint64_t)-1;
         uint64_t len = strlen(gui_kernel_clipboard) + 1;
         if (len > a3) len = a3;
@@ -246,6 +259,8 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         return (uint64_t)rc;
     }
     case GUI_OP_ADD_ICON: {
+        /* T7 ACL: the desktop icon space is global -- participants only. */
+        if (!require_gui_participant()) return -1;
         char label[32];
         if (copy_string_from_user(label, (const char *)(uintptr_t)a3, sizeof(label)) != 0) return (uint64_t)-1;
         return (uint64_t)gui_add_icon(lo32(a2), hi32(a2), label, (int)a4);
@@ -254,6 +269,8 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         if (!require_icon_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_remove_icon((int)a2);
     case GUI_OP_NOTIFY: {
+        /* T7 ACL: taskbar notifications are desktop-global state. */
+        if (!require_gui_participant()) return -1;
         char text[128];
         if (copy_string_from_user(text, (const char *)(uintptr_t)a2, sizeof(text)) != 0) return (uint64_t)-1;
         return (uint64_t)gui_notify(text, (uint32_t)a3, (uint32_t)a4);
@@ -300,6 +317,10 @@ static uint64_t syscall_gui_theme_impl(uint64_t subop, uint64_t a2, uint64_t a3,
         return 0;
     }
     case 2: { /* Set theme. */
+        /* T7 ACL: the theme restyles every window on the desktop, so a
+         * windowless process must not be able to set it.  Reading (subop 1)
+         * stays open: the theme struct carries no secrets. */
+        if (!require_gui_participant()) return -1;
         gui_theme_t t;
         if (!a2) return (uint64_t)-1;
         if (copy_from_user(&t, (const void *)(uintptr_t)a2, sizeof(t)) != 0)

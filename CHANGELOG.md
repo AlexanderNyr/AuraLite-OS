@@ -2,6 +2,27 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T7 — GUI] 2026-09-06
+
+- **GUI-global state ACL** (ledger RES-47): clipboard set/get, theme set,
+  notifications and desktop icons now require owning at least one live
+  window (`gui_pid_has_windows`); theme reads stay open. New gate
+  `test_gui_acl` (windowless denied → window owner granted → destroy
+  denied, 14 probes).
+- **Theme persistence** (RES-47): `ag_theme_save/save2/load` dotfile
+  (`/disk/.aura-theme`, 31 fields, fsync'd); glaunch applies it at
+  desktop start; gtheme rewritten (live apply + `--save/--show/--selftest`;
+  the old save path was broken and the app was missing from the initrd).
+  New gate `test_gui_theme` — two boots of the same disk, accent survives
+  the reboot.
+- **Input/clipboard** (RES-47): Ctrl+X cut in libauragui textboxes; gterm
+  command history (Up/Down + `history`).
+- **Apps** (RES-47): gedit is now a multi-line editor (separated engine,
+  line numbers, caret, Ln/Col+dirty, `--selftest` engine gate); new
+  `/apps/gclip` clipboard manager (`--selftest` round-trips incl. buffer
+  clamp). New gate `test_gui_apps` (gedit 8/8 + gclip 7/7).
+- Registry 176 → 179; residue TODO 21 → 10 after this phase (14 → 10).
+
 ## [RESIDUE2 T6 — devices beyond QEMU] 2026-09-06
 
 Five stale boxes struck after a sweep, four real drivers landed

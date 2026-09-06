@@ -3,6 +3,7 @@
 #include "auragui.h"
 #include "unistd.h"
 #include "string.h"
+#include "stdio.h"      /* printf: theme-load receipt (RESIDUE2 T7) */
 
 static int wid;
 static ag_widget_t widgets[24];
@@ -50,6 +51,17 @@ int main(void) {
     wid = ag_window_create(40, 60, 280, H, "Application Launcher", AG_WIN_DEFAULT & ~AG_WIN_RESIZABLE);
     if (wid < 0) return 1;
     ag_window_show(wid);
+
+    /* RESIDUE2 T7: persisted user theme.  The dotfile convention needs no
+     * daemon: the DESKTOP process applies whatever gtheme saved, right
+     * after its own window exists (the T7 ACL gates theme-set on window
+     * ownership).  Missing/corrupt file -> default theme, no complaint. */
+    ag_theme_t t;
+    if (ag_theme_load(AG_THEME_DOTFILE, &t) == 0 && ag_theme_set(&t) == 0)
+        printf("[glaunch] theme loaded from %s\n", AG_THEME_DOTFILE);
+    else
+        printf("[glaunch] theme: default (no %s)\n", AG_THEME_DOTFILE);
+
     ag_view_init(&view, wid, widgets, 24, AG_PANEL);
 
     ag_add_label(&view, 16, 16, "AuraLite Applications", AG_ACCENT);

@@ -174,6 +174,18 @@ int  ag_wait_event(int wid, ag_event_t *out);
 int  ag_theme_get(ag_theme_t *out);
 int  ag_theme_set(const ag_theme_t *t);
 
+/* ---- Theme persistence (RESIDUE2 T7) ----
+ * The desktop theme persists as a dotfile of "key=0xVALUE" lines.
+ * save() snapshots the CURRENT theme; load() fills *out starting from the
+ * current theme and overriding only the keys the file carries (versioning
+ * by omission).  load() does NOT apply: applying is a GUI-global mutation,
+ * which the T7 ACL limits to window-owning processes -- call
+ * ag_theme_set() once your window exists. */
+#define AG_THEME_DOTFILE "/disk/.aura-theme"
+int  ag_theme_save(const char *path);                  /* current theme */
+int  ag_theme_save2(const char *path, const ag_theme_t *t); /* explicit */
+int  ag_theme_load(const char *path, ag_theme_t *out);
+
 /* ---- Desktop icons ---- */
 int  ag_add_icon(int32_t x, int32_t y, const char *label, int icon_id);
 int  ag_remove_icon(int icon_idx);

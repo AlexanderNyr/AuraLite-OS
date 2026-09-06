@@ -744,7 +744,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/trustinfo` | Shows the shipped trust-store roots and their not-after expiry (X8; see `docs/trust_store.md`). |
 | `/apps/browser` | Text web browser with simple HTML rendering. |
 | `/apps/gcalc` | Graphical calculator. |
-| `/apps/gedit` | Graphical text editor. |
+| `/apps/gedit` | Graphical text editor: multi-line buffer (insert/split/join, arrows/Home/End/Del), line numbers, caret, Ln/Col+dirty status; `gedit --selftest` pins the engine headless (RESIDUE2 T7). |
 | `/apps/gfiles` | Graphical file manager. |
 | `/apps/gterm` | Graphical terminal-style demo. |
 | `/apps/gsysmon` | Graphical system monitor demo. |
@@ -753,6 +753,8 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/glaunch` | GUI application launcher. |
 | `/apps/gaudio` | GUI music player. |
 | `/apps/gusb` | GUI USB manager. |
+| `/apps/gclip` | GUI clipboard manager: set/paste/clear the kernel clipboard, live view of its contents; `gclip --selftest` round-trips it headless. |
+| `/apps/gtheme` | GUI theme manager: live accent apply + persisted dotfile (`/disk/.aura-theme`, applied by `glaunch` at desktop start); CLI `--save/--show/--selftest`. |
 | `/apps/gbrowser` | GUI browser (formerly `/apps/webview`): HTML → DOM → layout → pixels, inline CSS, navigation (HTTP/1.1, chunked, growing buffer), Back/Fwd/Home/Go chrome, history, https refusal page, `<canvas data-scene="cube">` via OpenGL. See `docs/gbrowser.md`. |
 | `/demos/guess` | Number guessing game. |
 | `/demos/snake` | Terminal snake game. |

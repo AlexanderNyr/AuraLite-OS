@@ -225,6 +225,9 @@ void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h);
 void gui_cleanup_process(uint64_t owner_pid);
 int  gui_window_owned_by(int wid, uint64_t owner_pid);
 uint64_t gui_window_owner(int wid);
+/* RESIDUE2 T7: GUI-global state (clipboard/theme/notify/icons) is mutable
+ * only by pids that own at least one live window. */
+int  gui_pid_has_windows(uint64_t owner_pid);
 
 /* ---- Window lifecycle ---- */
 int  gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,

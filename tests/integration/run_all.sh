@@ -90,6 +90,9 @@ ALL_CASES=(
     test_external_install
     test_runtime_layout
     test_gui_bad_pointers
+    test_gui_acl
+    test_gui_theme
+    test_gui_apps
     test_opengl
     test_process_cleanup
     test_memory_reaping
@@ -289,7 +292,7 @@ group_re() {
         fsfull) echo '^test_(ext4|f2fs|btrfs|exfat|ntfs)$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
-        gui)   echo '^test_(gui|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
+        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
         # slowest (the SH8 closure, ~23 min in the guest plus the idle budget)
         # does not serialize behind the scripting cases.  selfhost-script = the

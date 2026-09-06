@@ -888,6 +888,7 @@ USER_CFLAGS += -I lib/libauragui/include
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/w32run.elf $(USER_BUILD)/sehtest.elf \
              $(USER_BUILD)/dlltest.elf $(USER_BUILD)/filesize.elf \
+             $(USER_BUILD)/guiacl.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
              $(USER_BUILD)/weather.elf \
              $(USER_BUILD)/trustinfo.elf \
@@ -908,6 +909,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/life.elf $(USER_BUILD)/fetch.elf \
              $(USER_BUILD)/play.elf $(USER_BUILD)/gaudio.elf \
              $(USER_BUILD)/gusb.elf \
+             $(USER_BUILD)/gclip.elf \
              $(USER_BUILD)/gbrowser.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
@@ -1095,6 +1097,11 @@ $(USER_BUILD)/filesize.o: userspace/tests/filesize/filesize.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/filesize.elf: $(USER_BUILD)/filesize.o $(USER_COMMON) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/filesize.o $(USER_COMMON_LNK) -o $@
+
+# guiacl: RESIDUE2 T7 GUI-global-state ACL probe (clipboard/theme/notify/icon).
+# Links through the generic GUI app pattern rule ($(USER_GUI_OBJ) included).
+$(USER_BUILD)/guiacl.o: userspace/tests/guiacl/guiacl.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
 # membench: the OPT_PLAN O0 copy-engine microbenchmark (O1's gate tooling).
 $(USER_BUILD)/membench.o: userspace/tests/membench/membench.c $(USER_CFLAGS_INC)
@@ -1679,6 +1686,7 @@ $(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c lib/libauragui/in
 $(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+$(USER_BUILD)/gclip.o: userspace/apps/gui-clip/gclip.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
                          userspace/apps/gbrowser/wv_html.h userspace/apps/gbrowser/wv_dom.h \
@@ -2151,9 +2159,9 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest dlltest filesize gcalc gedit gfiles gterm \
-                gsysmon gabout gweather gtaskmgr glaunch gaudio gusb gbrowser
+                gsysmon gabout gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser
 INITRD_DEMOS := guess snake glcube glshade glgears glrunner
-INITRD_TESTS := selftest proctest fdtest p10test argv_echo execve_child \
+INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test tcpordtest fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \

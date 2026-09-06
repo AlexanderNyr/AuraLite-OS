@@ -463,7 +463,7 @@ receipts above, RES-46's NIC half closed.
 
 ### T7 — GUI
 
-**Status:** not started
+**Status:** done
 
 **Objective:** RES-47's three boxes plus the apps gap — the compositor
 stops being educational by measurement, not by adjectives.
@@ -485,7 +485,44 @@ receipts.
 **Test gate:** the GUI integration cases (bad-pointer, cleanup, dirty
 rect) green; new ACL negative cases.
 
-**Result:** —
+**Result (2026-09-06):** all four RES-47 boxes closed with receipts,
+in five batches over the session.
+
+*Batches 1–2 (the ACL):* the permission model gained its second tier —
+per-window ops keep requiring ownership of THAT window
+(require_owner), while GUI-GLOBAL mutations (clipboard set+get,
+theme set, notify, desktop icons) now require `gui_pid_has_windows()`
+(gui.c; "is this pid a GUI participant at all").  Theme reads stay
+open (the struct carries no secrets).  Pinned by the new
+`test_gui_acl` (registry +1): the /guiacl probe walks windowless
+denied → one window granted + clipboard round-trip → destroy denied
+again, 14 probes, 5/5 assertions.
+
+*Batches 3–5 (behaviour and apps):* libauragui gained Ctrl+X cut and
+the theme-persistence module `ag_theme_save/save2/load` (31 named
+fields; versioning by omission; own hex parser — the libc mini-sscanf
+stops at the 0x prefix and zeroed every field); gterm gained a
+shell-style history ring (Up/Down, `history`, duplicate suppression);
+glaunch applies `/disk/.aura-theme` at desktop start (no daemon — the
+desktop process IS the applier); gtheme was rewritten around a live
+apply + dotfile save and gained `--save/--show/--selftest` CLI (its
+old save path was measured broken: O_RDONLY fd, write to it, nothing
+ever applied — and the app was not even in the initrd); gedit became
+a real multi-line editor with the engine separated from the chrome
+(POSIX trailing-newline semantics; 8-check headless engine gate);
+new app **gclip** (clipboard manager, dogfoods the ACL; 7-check
+selftest).  Registry +3 total (test_gui_acl, test_gui_theme,
+test_gui_apps → 179), TODO 14 → 10.
+
+*Gates:* `test_gui_theme` proves persistence ACROSS a reboot (two
+boots of the same cache=none disk image: save 0xAA3311, boot-2
+`--show` returns it, glaunch reports loading it); `test_gui_apps`
+9/9 (gedit 8/8 + gclip 7/7 in one boot); the plan's mandatory GUI
+shards re-run green as a group — test_gui (visual/VNC), bad-pointers,
+dirty-rect-UEFI, usb, plus the three new cases: 7/7.  make kernel 0
+warnings; width ratchet 355 held (the first ACL draft cost +6
+(uint64_t) casts — reworked to gui_window_owned_by reuse and bare
+-1 returns).
 
 ---
 
