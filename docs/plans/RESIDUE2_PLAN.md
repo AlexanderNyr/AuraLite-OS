@@ -10,7 +10,7 @@
 | T3 — storage (AHCI breadth, fsck tooling, block cache, btrfs SHA-256) | ✅ done | `patches/RESIDUE2_T3_storage.patch` |
 | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ✅ done | `patches/RESIDUE2_T4_posix.patch` |
 | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ✅ done | `patches/RESIDUE2_T5_net.patch` |
-| T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ⬜ planned | `patches/RESIDUE2_T6_devs.patch` |
+| T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ✅ done | `patches/RESIDUE2_T6_devs.patch` |
 | T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
 | T8 — ports and oddities (RES-02, RES-06, RES-18) | ⬜ planned | `patches/RESIDUE2_T8_ports.patch` |
 | T9 — tooling and close-out (GDB, flakiness, arithmetic) | ⬜ planned | `patches/RESIDUE2_T9_close.patch` |
@@ -402,12 +402,15 @@ through SLIRP and fetches https://rust-lang.org/ — DNS A+AAAA, v6
 attempted/v4 fallback, TCP:443, TLS 1.3 X25519MLKEM768, chain
 validated against the 17 shipped roots, HTTP 200 (18594-byte body),
 clean FIN. 171 integration cases registered; regressions green.
+(Ledger rows deepened: RES-26's HTTPS capstone is the real-web
+receipt; RES-28's IRQ-backed RX story is completed by the blocking
+recvfrom + idle drain — no decorative interrupts left.)
 
 ---
 
 ### T6 — devices beyond QEMU
 
-**Status:** not started
+**Status:** done
 
 **Objective:** the driver cluster the ledger already measured: the USB
 transfer schedulers, the two wireless transports, the modern NICs, and
@@ -434,7 +437,27 @@ NOT here — see §4).
 **Test gate:** new per-controller integration cases with device-skip;
 the existing USB case stays green.
 
-**Result:** —
+**Result:** DONE, in five batches. (1) Triage: five of the eight boxes
+(OHCI/EHCI/xHCI rings, HID, MSC-FAT32-read) were STALE — the named
+stubs are gone; the 13-gate USB sweep re-run 2026-09-05/06 pins them
+(one known xhci TD-timeout runner flake, re-run green).  (2) vmxnet3
+(rev-1 shared rings, gen bits, INTx autoMask) + e1000e (82574L legacy
+descriptors) — full data paths with DHCP→ARP→ping→DNS receipts
+(`test_vmxnet3`, `test_e1000e`); RES-46's NIC half closes.  (3) RES-39
+Bluetooth: transport moved to the controller-agnostic usb_core API,
+protocol pure + host-pinned (`test_bt_hci` 35/35); silicon is a loud
+D2 skip (QEMU dropped BT).  (4) RES-39 Wi-Fi: the MAC layer gained RX
+ingestion (scan/auth/AID from parsed frames — AID masked to 14 bits),
+protocol pure + host-pinned (`test_wifi_proto` 37/37), the wifi_virt
+virtual AP proves the flow end to end (`test_wifi_virtual_ap`);
+silicon is a loud D2 skip.  (5) Writable FAT32 (in-place + slack-grow,
+HOST-verified from the raw image: `test_usb_fat32_write`) and ext2
+hotplug automount (read-only view over real mke2fs/debugfs media:
+`test_usb_ext2_automount`); the box narrows to the honest isoc
+remainder — frame-accurate ISOCH streaming, framework-only today.
+Registry 171→176; width ratchets hold at 69/29 (arch.h forwards the
+x86_64 irq/paging headers; arch_compiler_barrier added); RES-38/RES-39
+receipts above, RES-46's NIC half closed.
 
 ---
 

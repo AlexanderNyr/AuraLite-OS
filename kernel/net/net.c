@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include "kernel/net/net.h"
 #include "drivers/e1000/e1000.h"
+#include "drivers/vmxnet3/vmxnet3.h"
+#include "drivers/e1000e/e1000e.h"
 #include "drivers/virtio_net/virtio_net.h"
 #include "drivers/rtl8139/rtl8139.h"
 #include "kernel/net/netdev.h"
@@ -1122,6 +1124,12 @@ int net_init(void) {
         have_nic = 1;
     } else if (virtio_net_init() == 0) {
         virtio_net_register_netdev();
+        have_nic = 1;
+    } else if (vmxnet3_init() == 0) {
+        vmxnet3_register_netdev();
+        have_nic = 1;
+    } else if (e1000e_init() == 0) {
+        e1000e_register_netdev();
         have_nic = 1;
     } else if (rtl8139_init() == 0) {
         rtl8139_register_netdev();

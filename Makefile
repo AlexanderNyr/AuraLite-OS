@@ -2596,6 +2596,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
                 $(BUILD_DIR)/test_pcid_policy \
                 $(BUILD_DIR)/test_tcp_cc \
+                $(BUILD_DIR)/test_bt_hci \
+                $(BUILD_DIR)/test_wifi_proto \
                 $(BUILD_DIR)/test_netl3 \
                 $(BUILD_DIR)/test_dualstack \
                 $(BUILD_DIR)/test_dns_aaaa \
@@ -3252,6 +3254,20 @@ $(BUILD_DIR)/test_pcid_policy: tests/unit/test_pcid_policy.c kernel/arch/x86_64/
 # reordering are manufactured HERE, deterministically (D2); the guest
 # lanes assert counters, not timing.
 $(BUILD_DIR)/test_tcp_cc: tests/unit/test_tcp_cc.c kernel/net/tcp_cc.h kernel/net/tcp_m6.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# RESIDUE2 T6 (ledger RES-39): the Bluetooth HCI wire protocol, pure
+# and host-pinned — QEMU has no BT subsystem left to gate against (D2);
+# bt.c consumes these builders/parsers over the usb_core transport.
+$(BUILD_DIR)/test_bt_hci: tests/unit/test_bt_hci.c drivers/bluetooth/bt_hci.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# RESIDUE2 T6 (ledger RES-39): the IEEE 802.11 wire protocol, pure and
+# host-pinned (QEMU has no 802.11 radio — D2); wifi.c consumes these
+# builders/parsers and wifi_virt.c drives them end to end.
+$(BUILD_DIR)/test_wifi_proto: tests/unit/test_wifi_proto.c drivers/wifi/wifi_proto.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

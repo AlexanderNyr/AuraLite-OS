@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [RESIDUE2 T6 — devices beyond QEMU] 2026-09-06
+
+Five stale boxes struck after a sweep, four real drivers landed
+(`patches/RESIDUE2_T6_devs.patch`).
+
+- **vmxnet3 + e1000e data paths** (RES-46's NIC half): VMware's
+  paravirtual rev-1 rings (generation bits, INTx autoMask) and the
+  82574L's legacy-descriptor path, both with the full netdev contract
+  (T5 idle drain + blocking recv).  Gates: `test_vmxnet3`,
+  `test_e1000e` — DHCP DORA, ARP, ICMP ping and a DNS resolve through
+  each NIC over SLIRP, 14 asserts each.
+- **Bluetooth (RES-39):** the HCI path now rides the
+  controller-agnostic usb_core transport (was UHCI-only); the wire
+  protocol is pure and host-pinned (`bt_hci.h`, `test_bt_hci` 35/35);
+  Read_BD_ADDR captures the address.  QEMU dropped its BT subsystem —
+  silicon is a loud D2 skip.
+- **Wi-Fi (RES-39):** the 802.11 MAC layer gained the RX half it never
+  had (`wifi_rx_frame`: scan results, auth verdict and the wire AID
+  from parsed frames); protocol pure + host-pinned (`wifi_proto.h`,
+  `test_wifi_proto` 37/37 — including the AID flag-mask and the FromDS
+  address mapping); `wifi_virt.c` virtual AP drives scan→auth→assoc→
+  data end to end (`test_wifi_virtual_ap`).  No QEMU radio — loud D2
+  skip.
+- **Writable FAT32 on USB:** in-place + slack-grow writes to existing
+  files through MSC WRITE(10), with the directory-entry size patched
+  on growth — and the proof is HOST-side: the gate parses the raw
+  image after the run (`test_usb_fat32_write`, writethrough).
+- **ext2 hotplug automount:** usbfs auto-detects ext2 at attach and
+  serves a read-only /usb/ext2 view (superblock→group-0 inode table→
+  direct+single-indirect reads) over real mke2fs/debugfs media
+  (`test_usb_ext2_automount`).
+- Stale-box sweep: OHCI ED/TD, EHCI qTD+MSC, xHCI rings/slots,
+  generic HID transport — all struck with dated 13-gate evidence; the
+  USB box narrows to the honest isoc-streaming remainder.
+- Registry 171→176; TODO ratchet 21→14; width ratchets hold (arch.h
+  x86_64 irq/paging forwards + `arch_compiler_barrier`); two latent
+  T4 warnings fixed (ppoll Wvisibility, kheap label-decl).
+
 ## [RESIDUE2 T5 — network and TLS] 2026-09-05
 
 The net stack's four honest edges close, in dependency order

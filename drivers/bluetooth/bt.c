@@ -4,8 +4,12 @@
  * Implements: device detection, HCI Reset, Read BD_ADDR, Read Local Version,
  * Inquiry (device scan).
  *
- * The HCI command/event protocol is fully implemented. The USB transfer layer
- * uses uhci_bulk_transfer / uhci_control_transfer.
+ * The HCI command/event protocol lives in bt_hci.h (pure, host-tested by
+ * tests/unit/test_bt_hci.c — RESIDUE2 T6).  The USB transfer layer rides
+ * the controller-agnostic usb_core API (usb_control_transfer /
+ * usb_bulk_transfer), so the HCI path reaches whatever host controller
+ * owns the device: UHCI, OHCI, EHCI or xHCI (the ledger RES-39 gap was
+ * the UHCI-only transport, not the protocol).
  *
  * QEMU: QEMU's internal Bluetooth HCI appears when a BT device (e.g.
  * -device bt-tablet) is attached. The HCI is accessed via the USB device
@@ -15,51 +19,10 @@
 #include <stdint.h>
 #include "drivers/bluetooth/bt.h"
 #include "drivers/usb/usb_core.h"
-#include "drivers/usb/uhci.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/boot_info.h"
-
-/* ---- HCI packet structures ---- */
-
-/* HCI command header (4 bytes, sent via control or bulk OUT). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct hci_cmd_hdr {
-    uint8_t  packet_type;   /* HCI_CMD_PKT = 0x01 */
-    uint16_t opcode;        /* OGF << 10 | OCF */
-    uint8_t  param_len;     /* number of parameter bytes following */
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* HCI event header (3 bytes, received via bulk/interrupt IN). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct hci_evt_hdr {
-    uint8_t  packet_type;   /* HCI_EVT_PKT = 0x04 */
-    uint8_t  event;         /* event code */
-    uint8_t  param_len;     /* parameter length */
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* Command Complete event parameters (after the header). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct hci_cmd_complete {
-    uint8_t  num_packets;
-    uint16_t opcode;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
 
 /* ---- Driver state ---- */
 static usb_device_t *bt_dev = NULL;
@@ -82,16 +45,12 @@ static uint16_t bt_max_pkt __attribute__((unused)) = 64;
 static int bt_send_cmd(uint16_t opcode, const void *params, uint8_t param_len) {
     if (!bt_dev) return -1;
 
-    /* Build the HCI command packet. */
+    /* Build the HCI command packet (bt_hci.h builder). */
     uint8_t pkt[4 + 255];
-    struct hci_cmd_hdr *hdr = (struct hci_cmd_hdr *)pkt;
-    hdr->packet_type = HCI_CMD_PKT;
-    hdr->opcode = opcode;
-    hdr->param_len = param_len;
-
     if (params && param_len > 0) {
         memcpy(pkt + 4, params, param_len);
     }
+    (void)bt_hci_cmd(pkt, opcode, param_len);
 
     /* Send via USB control transfer. */
     struct usb_setup_pkt setup;
@@ -106,34 +65,35 @@ static int bt_send_cmd(uint16_t opcode, const void *params, uint8_t param_len) {
         return -1;
     }
 
-    /* Read the response event via bulk IN. */
+    /* Read the response event via bulk IN — the controller-agnostic
+     * usb_core backend (UHCI/OHCI/EHCI/xHCI), not a UHCI call. */
     uint8_t response[256];
-    ret = uhci_bulk_transfer(bt_dev->address, bt_bulk_in, response, 64);
+    ret = usb_bulk_transfer(bt_dev, bt_bulk_in, response, 64);
     if (ret < 0) {
         return -1;
     }
 
-    /* Verify it's an event packet. */
-    struct hci_evt_hdr *evt = (struct hci_evt_hdr *)response;
-    if (evt->packet_type != HCI_EVT_PKT) {
+    /* Parse the event with the host-tested bt_hci.h parsers. */
+    if (!bt_hci_evt_is(response, ret)) {
         return -1;
     }
 
-    /* Check for Command Complete. */
-    if (evt->event == HCI_EVT_CMD_COMPLETE) {
-        struct hci_cmd_complete *cc =
-            (struct hci_cmd_complete *)(response + sizeof(struct hci_evt_hdr));
-        if (cc->opcode != opcode) {
+    if (bt_hci_evt_event(response, ret) == HCI_EVT_CMD_COMPLETE) {
+        uint16_t cc_opcode = bt_hci_cc_opcode(response, ret);
+        if (cc_opcode != opcode) {
             kprintf("[bt] warning: CMD_COMPLETE opcode mismatch (got 0x%04x want 0x%04x)\n",
-                    cc->opcode, opcode);
+                    cc_opcode, opcode);
         }
-        return 0;
+        /* Capture the controller's BD_ADDR (RESIDUE2 T6: it was read
+         * but never kept — bt_get_bd_addr returned zeroes). */
+        if (opcode == HCI_READ_BD_ADDR) {
+            bt_hci_bd_addr(response, ret, bd_addr.b);
+        }
+        return bt_hci_status(response, ret);
     }
 
-    /* Command Status (0x0F) — status byte follows. */
-    if (evt->event == HCI_EVT_CMD_STATUS) {
-        uint8_t status = response[sizeof(struct hci_evt_hdr)];
-        return status;  /* 0 = success */
+    if (bt_hci_evt_event(response, ret) == HCI_EVT_CMD_STATUS) {
+        return bt_hci_status(response, ret);  /* 0 = success */
     }
 
     return 0;

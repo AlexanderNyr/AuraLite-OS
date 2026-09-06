@@ -589,14 +589,28 @@ build when a box and the plan disagree.
   root files are auto-detected read-only under `/usb/fat`; writable FAT32, ext2
   hotplug automount, isochronous devices and broader hardware recovery paths are
   still future work.
-- [ ] Writable FAT32 on USB, ext2 hotplug automount, isochronous
-  devices. (class: USB) (RESIDUE2 T6)
+- ~~Writable FAT32 on USB, ext2 hotplug automount~~ **Done (RESIDUE2
+  T6, 2026-09-06):** in-place + slack-grow writes to existing FAT32
+  files through MSC WRITE(10), verified host-side from the raw image
+  after the run (`test_usb_fat32_write`, writethrough); ext2
+  auto-detected at hotplug with a read-only /usb/ext2 view over real
+  mke2fs/debugfs images (`test_usb_ext2_automount`). (class: USB)
+  (RESIDUE2 T6)
+- [ ] Real isochronous STREAMING (narrowed 2026-09-06): frame-accurate
+  ISOCH TRBs on xHCI + a device that consumes them (usb-audio with a
+  real audiodev); today only the framework and attach gates exist and
+  say so honestly (`test_usb_isoc`). (class: USB) (RESIDUE2 T6)
 - **USB HID generic support is partial.** Boot keyboard/mouse works through UHCI,
   OHCI, high-speed EHCI and xHCI; generic keyboard and mouse/tablet report
   descriptors are parsed for common QEMU-tested layouts. Full HID collections/usages
   and EHCI full/low-speed split transactions remain future work.
-- **Bluetooth and Wi-Fi are protocol frameworks.** No complete lower-level
-  chipset/transport driver is registered by default.
+- **Bluetooth and Wi-Fi have no silicon.** Both protocol stacks are
+  now pure, host-pinned and complete at the wire level (bt_hci.h,
+  wifi_proto.h; RESIDUE2 T6): the BT transport rides the
+  controller-agnostic usb_core API and the Wi-Fi MAC layer ingests real
+  RX frames (scan/auth/AID from parsed bytes, proven over the wifi_virt
+  virtual AP).  What is still absent is a chipset register driver —
+  QEMU models neither radio, so real hardware remains a loud D2 skip.
 
 ### Networking
 
@@ -753,18 +767,23 @@ build when a box and the plan disagree.
 - [x] netdev NIC abstraction with boot-time backend selection (e1000 default, virtio-net fallback).
 - [x] virtio-net modern data-path driver (RX/TX virtqueues, 12-byte hdr, MAC from device cfg).
 - [x] virtio-net IRQ-driven RX (**Done, RESIDUE R9 / ledger RES-28:** timed waits sleep in `wq_wait_deadline`, the `RX via IRQ wake` receipt is CI-pinned).
-- [ ] vmxnet3 / e1000e data-path drivers (ledger RES-46; e1000.c is the reference). (RESIDUE2 T6)
+- ~~vmxnet3 / e1000e data-path drivers (ledger RES-46; e1000.c is the reference).~~ **Done
+  (RESIDUE2 T6, 2026-09-06):** `drivers/vmxnet3/` (rev-1 shared rings,
+  generation bits, INTx autoMask, netdev contract incl. T5 idle-drain)
+  and `drivers/e1000e/` (82574L legacy-descriptor data path, MAC from
+  RAL/RAH) — both DHCP→ARP→ping→DNS green through SLIRP
+  (`test_vmxnet3`, `test_e1000e`, 14 asserts each). (RESIDUE2 T6)
 
 ### USB and wireless
 
 - [x] Add stable OHCI/EHCI/xHCI control/bulk backend API hooks into `usb_core`.
-- [ ] Complete OHCI ED/TD transfer scheduling. (ledger RES-38; opener measured: uhci.c 555 lines is the complete reference, ohci 709/ehci 865/xhci 1995 with 3 named stubs) (RESIDUE2 T6)
-- [ ] Complete EHCI async/control/bulk qTD transfers and MSC backend. (ledger RES-38) (RESIDUE2 T6)
-- [ ] Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts. (ledger RES-38) (RESIDUE2 T6)
+- ~~Complete OHCI ED/TD transfer scheduling. (ledger RES-38; opener measured: uhci.c 555 lines is the complete reference, ohci 709/ehci 865/xhci 1995 with 3 named stubs)~~ **Done — box was STALE (RESIDUE2 T6, 2026-09-06):** the named stubs are gone; `test_usb_ohci` + the USB sweep (13 controller/HID/MSC/isoc gates re-run 2026-09-05/06, all green — one known xhci TD-timeout runner flake re-ran green) pin the real transfers. (RESIDUE2 T6)
+- ~~Complete EHCI async/control/bulk qTD transfers and MSC backend. (ledger RES-38)~~ **Done — box was STALE (RESIDUE2 T6, 2026-09-06):** real qTD transfers + MSC gate evidence (`test_usb_ehci`, `test_usb_msc`, `test_xhci_bulk`'s 1 MiB verified pattern). (RESIDUE2 T6)
+- ~~Complete xHCI command/event/transfer rings, slot addressing and endpoint contexts. (ledger RES-38)~~ **Done — box was STALE (RESIDUE2 T6, 2026-09-06):** `test_xhci_control/bulk/interrupt/address` pin each ring half; the boot self-test reports halted=0 CNR=0. (RESIDUE2 T6)
 - [x] USB HID keyboard/mouse class drivers for UHCI Boot Protocol devices.
-- [ ] Generic HID report parsing and OHCI/EHCI/xHCI HID transport. (ledger RES-38) (RESIDUE2 T6)
-- [ ] Real Bluetooth USB transport and at least one tested HCI controller path. (ledger RES-39; opener measured: bt.c 215 lines already rides uhci_bulk/control — the missing piece is a non-UHCI controller path, not protocol) (RESIDUE2 T6)
-- [ ] Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer. (ledger RES-39; opener measured: wifi.c 370 lines carries the full open-auth flow over a "registered wireless NIC", of which the tree has zero) (RESIDUE2 T6)
+- ~~Generic HID report parsing and OHCI/EHCI/xHCI HID transport. (ledger RES-38)~~ **Done — box was STALE (RESIDUE2 T6, 2026-09-06):** generic descriptors parsed for common layouts; transport proven per controller (`test_usb_generic_hid`, `test_usb_hid_input`, `test_usb_ehci_hid`, `test_gui_usb`). (RESIDUE2 T6)
+- ~~Real Bluetooth USB transport and at least one tested HCI controller path. (ledger RES-39; opener measured: bt.c 215 lines already rides uhci_bulk/control – the missing piece is a non-UHCI controller path, not protocol)~~ **Done (RESIDUE2 T6, 2026-09-06):** bt.c now rides the controller-agnostic usb_core bulk/control API (the OHCI/EHCI/xHCI path), the wire protocol is pure + host-pinned (`bt_hci.h`, `test_bt_hci` 35/35 in `make test-unit`), and Read_BD_ADDR finally captures the address.  A physical controller remains a loud D2 skip — QEMU dropped its BT subsystem. (RESIDUE2 T6)
+- ~~Real Wi-Fi chipset driver backend for the existing 802.11 MAC layer. (ledger RES-39; opener measured: wifi.c 370 lines carries the full open-auth flow over a "registered wireless NIC", of which the tree has zero)~~ **Done (RESIDUE2 T6, 2026-09-06):** the MAC layer gained the RX half it never had — `wifi_rx_frame()` feeds scan results, the auth verdict and the wire AID (masked to 14 bits) from PARSED frames; the protocol is pure + host-pinned (`wifi_proto.h`, `test_wifi_proto` 37/37) and `wifi_virt.c` (deterministic virtual AP over the wifi_driver_t seam) proves scan→auth→assoc→data end to end in the boot self-test, pinned by `test_wifi_virtual_ap`.  Real silicon stays a loud D2 skip — QEMU has no 802.11 model. (RESIDUE2 T6)
 
 ### GUI and userspace
 

@@ -18,6 +18,9 @@
 #define USBFS_INO_DISK    4
 #define USBFS_INO_FAT_DIR 5
 #define USBFS_INO_FAT_FILE_BASE 100
+/* RESIDUE2 T6 (ext2 hotplug automount): read-only ext2 view. */
+#define USBFS_INO_EXT2_DIR 6
+#define USBFS_INO_EXT2_FILE_BASE 10000
 
 static struct vnode usbfs_nodes[16];
 static int usbfs_ready = 0;
@@ -45,9 +48,34 @@ struct usb_fat_file {
     uint32_t size;
     uint8_t is_dir;
     uint64_t ino;
+    /* RESIDUE2 T6 (writable FAT32): where the 32-byte directory entry
+     * lives on the media, so writes can patch size/attributes. */
+    uint32_t dirent_lba;
+    uint16_t dirent_off;
 };
 static struct usb_fat_state fat;
 static struct usb_fat_file fat_files[32];
+
+/* ---- ext2 (read-only automount, RESIDUE2 T6) ------------------------ */
+struct usb_ext2_state {
+    int detected;
+    uint32_t block_size;       /* 1024 << log_block_size */
+    uint32_t inodes_per_group;
+    uint16_t inode_size;
+    uint32_t inode_table_block; /* group 0 (single-group images) */
+    char volume[17];
+};
+struct usb_ext2_file {
+    int in_use;
+    char name[VFS_PATH_MAX];
+    uint32_t inode;
+    uint32_t size;
+    uint32_t direct[12];
+    uint32_t indirect;
+    uint64_t ino;
+};
+static struct usb_ext2_state ext2;
+static struct usb_ext2_file ext2_files[32];
 
 static inline uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 static inline uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -83,12 +111,21 @@ static uint32_t make_info(char *out) {
     append(out, &p, "bytes: ");
     u64_to_dec(num, (uint64_t)msc_get_sector_count() * MSC_SECTOR_SIZE); append(out, &p, num); append(out, &p, "\n");
     append(out, &p, "fat32: "); append(out, &p, fat.detected ? "detected\n" : "not-detected\n");
-    append(out, &p, "files: info sector0.bin disk.img"); append(out, &p, fat.detected ? " fat/\n" : "\n");
+    append(out, &p, "ext2: "); append(out, &p, ext2.detected ? "detected\n" : "not-detected\n");
+    append(out, &p, "files: info sector0.bin disk.img");
+    if (fat.detected) append(out, &p, " fat/");
+    if (ext2.detected) append(out, &p, " ext2/");
+    append(out, &p, "\n");
     return p;
 }
 
 static int fat_read_sector(uint32_t lba, uint8_t *buf) {
     return msc_read(lba, 1, buf);
+}
+
+/* RESIDUE2 T6 (writable FAT32): the write half of the sector seam. */
+static int fat_write_sector(uint32_t lba, const uint8_t *buf) {
+    return msc_write(lba, 1, buf);
 }
 
 static int fat_signature_at(uint32_t base) {
@@ -140,6 +177,166 @@ static void usbfs_probe_fat32(void) {
     fat.detected = 1;
     kprintf("[usbfs] FAT32 detected: base=%u root_cluster=%u clusters=%u\n",
             fat.base_lba, fat.root_cluster, fat.cluster_count);
+}
+
+static int name_eq_ci(const char *a, const char *b); /* defined below */
+
+/* Read one ext2 block (block size may span sectors). */
+static int ext2_read_block(uint32_t blk, uint8_t *buf) {
+    uint32_t secs = ext2.block_size / MSC_SECTOR_SIZE;
+    for (uint32_t i = 0; i < secs; i++) {
+        if (fat_read_sector(blk * secs + i, buf + i * MSC_SECTOR_SIZE) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static void usbfs_probe_ext2(void) {
+    memset(&ext2, 0, sizeof(ext2));
+    memset(ext2_files, 0, sizeof(ext2_files));
+    if (!msc_is_present()) return;
+    /* The superblock lives 1024 bytes in (LBA 2..3), regardless of the
+     * block size.  Group descriptors follow at the next block. */
+    uint8_t sb[1024];
+    for (int i = 0; i < 2; i++) {
+        if (fat_read_sector(2 + i, sb + i * MSC_SECTOR_SIZE) != 0) return;
+    }
+    if (rd16(sb + 56) != 0xEF53) return;          /* s_magic */
+    ext2.block_size = 1024u << rd32(sb + 24);      /* s_log_block_size */
+    ext2.inodes_per_group = rd32(sb + 40);
+    ext2.inode_size = rd16(sb + 88);
+    if (ext2.block_size < 1024 || ext2.block_size > 8192 ||
+        ext2.inodes_per_group == 0 ||
+        ext2.inode_size < 128 || ext2.inode_size > 512)
+        return;
+    memcpy(ext2.volume, sb + 120, 16);
+    ext2.volume[16] = 0;
+
+    /* Group 0's inode table block.  For 1 KiB blocks the GDT sits at
+     * block 2 (the superblock is block 1); larger blocks put the GDT
+     * in block 1 (the superblock lives inside block 0 at offset 1024). */
+    uint8_t gd[512];
+    uint32_t gdt_block = (ext2.block_size == 1024) ? 2 : 1;
+    uint32_t gdt_lba = gdt_block * (ext2.block_size / MSC_SECTOR_SIZE);
+    if (fat_read_sector(gdt_lba, gd) != 0) return;
+    ext2.inode_table_block = rd32(gd + 8);         /* bg_inode_table */
+    if (ext2.inode_table_block == 0) return;
+    ext2.detected = 1;
+    kprintf("[usbfs] ext2 detected: volume=%s block_size=%u inode_size=%u\n",
+            ext2.volume, ext2.block_size, ext2.inode_size);
+}
+
+/* Read inode N's on-disk record into the given file struct. */
+static int ext2_read_inode(uint32_t ino_n, struct usb_ext2_file *out) {
+    if (!ext2.detected || ino_n == 0) return -1;
+    uint32_t group = (ino_n - 1) / ext2.inodes_per_group;
+    uint32_t idx = (ino_n - 1) % ext2.inodes_per_group;
+    /* Single-group images only (the automount's honest scope). */
+    if (group != 0) return -1;
+    uint8_t blk[8192];
+    uint32_t table_byte = idx * ext2.inode_size;
+    uint32_t b = ext2.inode_table_block + table_byte / ext2.block_size;
+    if (ext2_read_block(b, blk) != 0) return -1;
+    const uint8_t *inode = blk + (table_byte % ext2.block_size);
+    uint16_t mode = rd16(inode + 0);
+    if ((mode & 0xF000) != 0x8000 && (mode & 0xF000) != 0x4000) return -1;
+    if (out) {
+        out->size = rd32(inode + 4);
+        for (int i = 0; i < 12; i++) out->direct[i] = rd32(inode + 40 + 4 * i);
+        out->indirect = rd32(inode + 40 + 48);
+    }
+    return ((mode & 0xF000) == 0x4000) ? 2 : 1;   /* 2 = directory */
+}
+
+/* Walk a directory's entries; either list (find == NULL) or match. */
+static int ext2_scan_dir(const char *find, struct usb_ext2_file *out, int max) {
+    if (!ext2.detected) return -1;
+    struct usb_ext2_file dir;
+    memset(&dir, 0, sizeof(dir));
+    if (ext2_read_inode(2, &dir) != 2) return -1;   /* root = inode 2 */
+    static uint8_t blk[8192];
+    int n = 0;
+    /* Root directories of small images fit in the direct blocks. */
+    for (int bi = 0; bi < 12 && dir.direct[bi]; bi++) {
+        if (ext2_read_block(dir.direct[bi], blk) != 0) return -1;
+        uint32_t off = 0;
+        while (off + 8 <= ext2.block_size) {
+            uint32_t ino_n = rd32(blk + off);
+            uint16_t rec = rd16(blk + off + 4);
+            uint8_t nlen = blk[off + 6];
+            if (rec < 8 || off + rec > ext2.block_size) return n;
+            if (ino_n != 0 && nlen > 0 && nlen <= (uint8_t)(rec - 8)) {
+                char nm[VFS_PATH_MAX];
+                uint32_t copy = nlen;
+                if (copy > VFS_PATH_MAX - 1) copy = VFS_PATH_MAX - 1;
+                memcpy(nm, blk + off + 8, copy);
+                nm[copy] = 0;
+                int is_root_self = (strcmp(nm, ".") == 0 || strcmp(nm, "..") == 0);
+                if (!is_root_self) {
+                    if (find && name_eq_ci(nm, find)) {
+                        memset(out, 0, sizeof(*out));
+                        strncpy(out->name, nm, VFS_PATH_MAX - 1);
+                        out->inode = ino_n;
+                        out->ino = USBFS_INO_EXT2_FILE_BASE + ino_n;
+                        int kind = ext2_read_inode(ino_n, out);
+                        if (kind < 0) return -1;
+                        return 1;
+                    }
+                    if (!find && n < max) {
+                        memset(&out[n], 0, sizeof(out[n]));
+                        strncpy(out[n].name, nm, VFS_PATH_MAX - 1);
+                        out[n].inode = ino_n;
+                        out[n].ino = USBFS_INO_EXT2_FILE_BASE + ino_n;
+                        if (ext2_read_inode(ino_n, &out[n]) < 0)
+                            out[n].size = 0;
+                        out[n].in_use = 1;
+                        n++;
+                    }
+                }
+            }
+            off += rec;
+        }
+    }
+    return n;
+}
+
+/* Read file data: 12 direct blocks + the single-indirect block. */
+static int64_t read_ext2_file(struct usb_ext2_file *fi, uint64_t pos,
+                              void *buf, uint64_t count) {
+    if (!ext2.detected || !fi || pos >= fi->size) return 0;
+    if (pos + count > fi->size) count = fi->size - pos;
+    uint8_t *outb = (uint8_t *)buf;
+    uint64_t done = 0;
+    static uint8_t blk[8192], ind[8192];
+    int ind_loaded = 0;
+    uint32_t per_block = ext2.block_size / 4;
+    uint64_t first = pos / ext2.block_size;
+    uint32_t skip = (uint32_t)(pos % ext2.block_size);
+    for (uint64_t bidx = first;
+         done < count && bidx < 12 + (uint64_t)per_block; bidx++) {
+        uint32_t blk_no = 0;
+        if (bidx < 12) {
+            blk_no = fi->direct[bidx];
+        } else {
+            if (!fi->indirect) break;
+            if (!ind_loaded) {
+                if (ext2_read_block(fi->indirect, ind) != 0) break;
+                ind_loaded = 1;
+            }
+            blk_no = rd32(ind + (uint32_t)(bidx - 12) * 4);
+        }
+        if (blk_no == 0) break;
+        if (ext2_read_block(blk_no, blk) != 0) break;
+        uint32_t off = skip;          /* only the first block has a
+                                       * remainder; then blocks align */
+        skip = 0;
+        if (off >= ext2.block_size) continue;
+        uint32_t n = ext2.block_size - off;
+        if (n > count - done) n = (uint32_t)(count - done);
+        memcpy(outb + done, blk + off, n);
+        done += n;
+    }
+    return (int64_t)done;
 }
 
 static uint32_t fat_get(uint32_t cl) {
@@ -216,6 +413,8 @@ static int fat_scan_root(struct usb_fat_file *out, int max, const char *find) {
                     strncpy(out->name, nm, VFS_PATH_MAX - 1);
                     out->first_cluster = first; out->size = size; out->is_dir = is_dir;
                     out->ino = USBFS_INO_FAT_FILE_BASE + first;
+                    out->dirent_lba = fat_cluster_lba(cl) + s;
+                    out->dirent_off = (uint16_t)off;
                     return 1;
                 }
                 if (!find && n < max) {
@@ -223,6 +422,8 @@ static int fat_scan_root(struct usb_fat_file *out, int max, const char *find) {
                     strncpy(out[n].name, nm, VFS_PATH_MAX - 1);
                     out[n].first_cluster = first; out[n].size = size; out[n].is_dir = is_dir;
                     out[n].ino = USBFS_INO_FAT_FILE_BASE + first;
+                    out[n].dirent_lba = fat_cluster_lba(cl) + s;
+                    out[n].dirent_off = (uint16_t)off;
                     n++;
                 }
             }
@@ -252,6 +453,22 @@ static struct vnode *usbfs_lookup(void *fs_data, const char *path) {
     if (strcmp(path, "sector0.bin") == 0) return node(2, "sector0.bin", VFS_TYPE_FILE, msc_is_present() ? MSC_SECTOR_SIZE : 0, USBFS_INO_SECTOR0);
     if (strcmp(path, "disk.img") == 0) return node(3, "disk.img", VFS_TYPE_FILE, msc_is_present() ? disk_size : 0, USBFS_INO_DISK);
     if (strcmp(path, "fat") == 0 && fat.detected) return node(4, "fat", VFS_TYPE_DIR, 0, USBFS_INO_FAT_DIR);
+    if (strcmp(path, "ext2") == 0 && ext2.detected)
+        return node(6, "ext2", VFS_TYPE_DIR, 0, USBFS_INO_EXT2_DIR);
+    if (ext2.detected && strncmp(path, "ext2/", 5) == 0) {
+        const char *xname = path + 5;
+        struct usb_ext2_file *xfi = &ext2_files[0];
+        if (ext2_scan_dir(xname, xfi, 0) == 1) {
+            int kind = ext2_read_inode(xfi->inode, NULL);
+            struct vnode *vn = node(7, xfi->name,
+                                    kind == 2 ? VFS_TYPE_DIR : VFS_TYPE_FILE,
+                                    xfi->size, xfi->ino);
+            xfi->in_use = 1;
+            vn->fs_data = xfi;
+            return vn;
+        }
+        return NULL;
+    }
     if (fat.detected && path[0]=='f' && path[1]=='a' && path[2]=='t' && path[3]=='/') {
         const char *name = path + 4;
         struct usb_fat_file *fi = &fat_files[0];
@@ -267,6 +484,19 @@ static struct vnode *usbfs_lookup(void *fs_data, const char *path) {
 
 static int usbfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     if (!out || max < 1) return -1;
+    if (vn && vn->inode_id == USBFS_INO_EXT2_DIR) {
+        int n = ext2_scan_dir(NULL, ext2_files, 32);
+        if (n < 0) return -1;
+        if (n > max) n = max;
+        for (int i = 0; i < n; i++) {
+            strncpy(out[i].name, ext2_files[i].name, VFS_PATH_MAX - 1);
+            int kind = ext2_read_inode(ext2_files[i].inode, NULL);
+            out[i].type = (kind == 2) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+            out[i].size = ext2_files[i].size;
+            out[i].inode = ext2_files[i].ino;
+        }
+        return n;
+    }
     if (vn && vn->inode_id == USBFS_INO_FAT_DIR) {
         int n = fat_scan_root(fat_files, 32, NULL);
         if (n < 0) return -1;
@@ -295,6 +525,10 @@ static int usbfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     if (fat.detected && n < max) {
         strncpy(out[n].name, "fat", VFS_PATH_MAX - 1);
         out[n].type = VFS_TYPE_DIR; out[n].size = 0; out[n].inode = USBFS_INO_FAT_DIR; n++;
+    }
+    if (ext2.detected && n < max) {
+        strncpy(out[n].name, "ext2", VFS_PATH_MAX - 1);
+        out[n].type = VFS_TYPE_DIR; out[n].size = 0; out[n].inode = USBFS_INO_EXT2_DIR; n++;
     }
     return n;
 }
@@ -340,6 +574,75 @@ static int64_t write_raw(uint64_t pos, const void *buf, uint64_t count, uint64_t
     return (int64_t)done;
 }
 
+/* RESIDUE2 T6 (writable FAT32): overwrite an existing file's data in
+ * place and grow it into the slack of its last cluster (no new cluster
+ * allocation — the honest first half of writability).  The directory
+ * entry's size is patched when the write grows past the old size, so
+ * the change survives on the media. */
+static int64_t write_fat_file(struct usb_fat_file *fi, uint64_t pos,
+                              const void *buf, uint64_t count) {
+    if (!fat.detected || !fi || fi->is_dir || !fi->first_cluster ||
+        fi->first_cluster < 2)
+        return -1;
+
+    /* Capacity of the EXISTING cluster chain — the write boundary. */
+    uint32_t cl_bytes = (uint32_t)fat.sectors_per_cluster * MSC_SECTOR_SIZE;
+    uint32_t cap = 0;
+    for (uint32_t c = fi->first_cluster;
+         c >= 2 && c < 0x0FFFFFF8u && cap < 0x80000000u; ) {
+        cap += cl_bytes;
+        c = fat_get(c);
+    }
+    if (pos >= cap) return 0;
+    if (count > cap - pos) count = cap - pos;
+
+    const uint8_t *in = (const uint8_t *)buf;
+    uint64_t done = 0;
+    uint32_t cl = fi->first_cluster;
+    uint64_t skip = pos;
+    while (skip >= cl_bytes && cl >= 2 && cl < 0x0FFFFFF8u) {
+        cl = fat_get(cl);
+        skip -= cl_bytes;
+    }
+    while (done < count && cl >= 2 && cl < 0x0FFFFFF8u) {
+        for (uint8_t s = 0; s < fat.sectors_per_cluster && done < count; s++) {
+            uint32_t lba = fat_cluster_lba(cl) + s;
+            uint32_t off = 0;
+            if (skip) {
+                off = (skip >= MSC_SECTOR_SIZE) ? MSC_SECTOR_SIZE
+                                                : (uint32_t)skip;
+                skip -= off;
+                if (off >= MSC_SECTOR_SIZE) continue;
+            }
+            uint32_t n = MSC_SECTOR_SIZE - off;
+            if (n > count - done) n = (uint32_t)(count - done);
+            /* read-modify-write: FAT32 sectors are shared granularity */
+            if (fat_read_sector(lba, sector_scratch) != 0)
+                return (int64_t)done;
+            memcpy(sector_scratch + off, in + done, n);
+            if (fat_write_sector(lba, sector_scratch) != 0)
+                return (int64_t)done;
+            done += n;
+        }
+        cl = fat_get(cl);
+    }
+
+    /* Grow into slack: patch the directory entry's size on the media. */
+    if (pos + done > fi->size && fi->dirent_lba) {
+        if (fat_read_sector(fi->dirent_lba, sector_scratch) == 0) {
+            uint32_t ns = (uint32_t)(pos + done);
+            uint8_t *e = sector_scratch + fi->dirent_off;
+            e[28] = (uint8_t)ns;
+            e[29] = (uint8_t)(ns >> 8);
+            e[30] = (uint8_t)(ns >> 16);
+            e[31] = (uint8_t)(ns >> 24);
+            if (fat_write_sector(fi->dirent_lba, sector_scratch) == 0)
+                fi->size = ns;
+        }
+    }
+    return (int64_t)done;
+}
+
 static int64_t read_fat_file(struct usb_fat_file *fi, uint64_t pos, void *buf, uint64_t count) {
     if (!fat.detected || !fi || fi->is_dir || pos >= fi->size) return 0;
     if (pos + count > fi->size) count = fi->size - pos;
@@ -377,7 +680,11 @@ static int64_t usbfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
     }
     if (vn->inode_id == USBFS_INO_SECTOR0) return read_raw(pos, buf, count, MSC_SECTOR_SIZE);
     if (vn->inode_id == USBFS_INO_DISK) return read_raw(pos, buf, count, (uint64_t)msc_get_sector_count() * MSC_SECTOR_SIZE);
-    if (vn->inode_id >= USBFS_INO_FAT_FILE_BASE) return read_fat_file((struct usb_fat_file *)vn->fs_data, pos, buf, count);
+    if (vn->inode_id >= USBFS_INO_FAT_FILE_BASE &&
+        vn->inode_id < USBFS_INO_EXT2_FILE_BASE)
+        return read_fat_file((struct usb_fat_file *)vn->fs_data, pos, buf, count);
+    if (vn->inode_id >= USBFS_INO_EXT2_FILE_BASE)
+        return read_ext2_file((struct usb_ext2_file *)vn->fs_data, pos, buf, count);
     return -1;
 }
 
@@ -385,6 +692,12 @@ static int64_t usbfs_write(struct vnode *vn, uint64_t pos, const void *buf, uint
     if (!vn || !buf) return -1;
     if (vn->inode_id == USBFS_INO_SECTOR0) return write_raw(pos, buf, count, MSC_SECTOR_SIZE);
     if (vn->inode_id == USBFS_INO_DISK) return write_raw(pos, buf, count, (uint64_t)msc_get_sector_count() * MSC_SECTOR_SIZE);
+    /* RESIDUE2 T6: in-place writes to existing FAT32 files (the ext2
+     * automount stays a read-only view). */
+    if (vn->inode_id >= USBFS_INO_FAT_FILE_BASE &&
+        vn->inode_id < USBFS_INO_EXT2_FILE_BASE)
+        return write_fat_file((struct usb_fat_file *)vn->fs_data, pos,
+                              buf, count);
     return -1;
 }
 
@@ -398,7 +711,11 @@ static int usbfs_stat(struct vnode *vn, struct vfs_stat *out) {
     out->size = vn->size;
     if (vn->inode_id == USBFS_INO_DISK) out->size = (uint64_t)msc_get_sector_count() * MSC_SECTOR_SIZE;
     if (vn->inode_id == USBFS_INO_SECTOR0) out->size = msc_is_present() ? MSC_SECTOR_SIZE : 0;
-    if (vn->inode_id >= USBFS_INO_FAT_FILE_BASE && vn->fs_data) out->size = ((struct usb_fat_file *)vn->fs_data)->size;
+    if (vn->inode_id >= USBFS_INO_FAT_FILE_BASE &&
+        vn->inode_id < USBFS_INO_EXT2_FILE_BASE && vn->fs_data)
+        out->size = ((struct usb_fat_file *)vn->fs_data)->size;
+    if (vn->inode_id >= USBFS_INO_EXT2_FILE_BASE && vn->fs_data)
+        out->size = ((struct usb_ext2_file *)vn->fs_data)->size;
     out->inode = vn->inode_id;
     out->nlink = 1;
     out->blocks = (uint32_t)((out->size + 511) / 512);
@@ -424,13 +741,17 @@ void usbfs_init(void) {
 void usbfs_notify_attach(void) {
     usbfs_generation++;
     usbfs_probe_fat32();
-    kprintf("[usbfs] device available at /usb (info, sector0.bin, disk.img%s)\n",
-            fat.detected ? ", fat/" : "");
+    usbfs_probe_ext2();
+    kprintf("[usbfs] device available at /usb (info, sector0.bin, disk.img%s%s)\n",
+            fat.detected ? ", fat/" : "",
+            ext2.detected ? ", ext2/" : "");
 }
 
 void usbfs_notify_detach(void) {
     usbfs_generation++;
     memset(&fat, 0, sizeof(fat));
     memset(fat_files, 0, sizeof(fat_files));
+    memset(&ext2, 0, sizeof(ext2));
+    memset(ext2_files, 0, sizeof(ext2_files));
     kprintf("[usbfs] device removed from /usb\n");
 }

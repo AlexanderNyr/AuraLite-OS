@@ -122,7 +122,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
         mapped += PAGE_SIZE;
     }
 
-committed:
+committed:;
 
     /* Expose the freshly-mapped span as one free block. The footer is a
      * 16-byte {magic, size} boundary tag at the end of the span. */

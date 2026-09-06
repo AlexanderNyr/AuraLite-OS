@@ -889,6 +889,12 @@ int is_restartable(uint64_t num) {
     }
 }
 
+/* T4 hygiene: do_ppoll lives in kernel/fs/select.c and its pollfd struct
+ * is declared there; a block-scope extern hid the type (Wvisibility). */
+struct kernel_pollfd;
+int do_ppoll(struct kernel_pollfd *, uint64_t,
+             struct kernel_timespec *, const sigset_t *);
+
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
 
@@ -2123,8 +2129,6 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     }
     /* Q16: ppoll — pollfds + relative timespec + atomic signal mask. */
     case SYS_PPOLL: {
-        extern int do_ppoll(struct kernel_pollfd *, uint64_t,
-                            struct kernel_timespec *, const sigset_t *);
         if (a5 != 0 && a5 != sizeof(sigset_t)) return (uint64_t)-EINVAL;
         struct kernel_timespec kts;
         struct kernel_timespec *kts_p = NULL;

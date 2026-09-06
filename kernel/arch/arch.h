@@ -41,6 +41,11 @@
  * fence). */
 #if defined(__x86_64__)
 #  include "kernel/arch/x86_64/portio.h"
+/* RESIDUE2 T6: the new x86 PCI NIC drivers (vmxnet3, e1000e) need the
+ * IRQ registry and the HHDM MMIO mapper; forwarding them here keeps
+ * drivers/ free of direct x86_64 includes (the width ratchet's point). */
+#  include "kernel/arch/x86_64/irq.h"
+#  include "kernel/arch/x86_64/paging.h"
 #elif defined(__i386__)
 #  include "kernel/arch/i386/portio.h"
 #elif defined(__riscv)
@@ -82,6 +87,10 @@ static inline void     outl(uint16_t port, uint32_t val)
 #endif
 
 /* Interrupt masking + spin-wait (the V6 block, D6): arch_irq_save /
+ * arch_compiler_barrier -- a compiler-only ordering fence for
+ * publishing DMA ring state (no ISA assumption: every arch maps it to
+ * the empty asm memory clobber).  RESIDUE2 T6.
+ *
  * arch_irq_restore / arch_wait_for_interrupt / arch_cpu_relax -- one
  * contract, a backend per architecture the tree builds for.  (This
  * comment used to count them; it stopped at four, because the count
@@ -98,5 +107,11 @@ static inline void     outl(uint16_t port, uint32_t val)
 #elif defined(__aarch64__)
 #  include "kernel/arch/aarch64/irqflags.h"
 #endif
+
+/* RESIDUE2 T6: compiler-only ordering fence (see the header comment).
+ * Use between writing DMA descriptor state and ringing a doorbell. */
+static inline void arch_compiler_barrier(void) {
+    __asm__ volatile ("" ::: "memory");
+}
 
 #endif /* AURALITE_ARCH_ARCH_H */

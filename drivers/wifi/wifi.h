@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#include "drivers/wifi/wifi_proto.h"
+
 /*
  * Wi-Fi (IEEE 802.11) subsystem for AuraLite OS.
  *
@@ -23,45 +25,6 @@
  *   get_mac) that the Wi-Fi core uses for hardware access.
  */
 
-/* ---- 802.11 constants ---- */
-#define WIFI_MAX_SSID_LEN   32
-#define WIFI_MAX_SCAN_RESULTS 32
-#define WIFI_ETH_HDR_LEN    14
-
-/* Frame Control field types. */
-#define WIFI_FRAME_TYPE_MGMT    0x00
-#define WIFI_FRAME_TYPE_CTRL    0x04
-#define WIFI_FRAME_TYPE_DATA    0x08
-
-/* Management subtypes. */
-#define WIFI_MGMT_ASSOC_REQ     0x00
-#define WIFI_MGMT_ASSOC_RESP    0x01
-#define WIFI_MGMT_REASSOC_REQ   0x02
-#define WIFI_MGMT_REASSOC_RESP  0x03
-#define WIFI_MGMT_PROBE_REQ     0x04
-#define WIFI_MGMT_PROBE_RESP    0x05
-#define WIFI_MGMT_BEACON        0x08
-#define WIFI_MGMT_AUTH          0x0B
-#define WIFI_MGMT_DEAUTH        0x0C
-
-/* Reason codes. */
-#define WIFI_REASON_UNSPEC      1
-#define WIFI_REASON_AUTH_EXPIRE 2
-
-/* Auth algorithm. */
-#define WIFI_AUTH_OPEN          0
-#define WIFI_AUTH_SHARED_KEY    1
-
-/* Status codes. */
-#define WIFI_STATUS_SUCCESS     0
-#define WIFI_STATUS_UNSPEC      1
-
-/* Information Element IDs. */
-#define WIFI_IE_SSID            0
-#define WIFI_IE_RATES           1
-#define WIFI_IE_DS_PARAM        3
-#define WIFI_IE_RSN             48   /* WPA2 */
-
 /* Connection states. */
 typedef enum {
     WIFI_STATE_DISCONNECTED = 0,
@@ -72,105 +35,10 @@ typedef enum {
     WIFI_STATE_ERROR,
 } wifi_state_t;
 
-/* ---- 802.11 frame structures ---- */
-
-/* Frame Control (2 bytes). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct wifi_frame_ctrl {
-    uint8_t  protocol    : 2;
-    uint8_t  type        : 2;
-    uint8_t  subtype     : 4;
-    uint8_t  to_ds       : 1;
-    uint8_t  from_ds     : 1;
-    uint8_t  more_frag   : 1;
-    uint8_t  retry       : 1;
-    uint8_t  pwr_mgmt    : 1;
-    uint8_t  more_data   : 1;
-    uint8_t  protected_  : 1;
-    uint8_t  order       : 1;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* Management frame header (24 bytes). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct wifi_mgmt_hdr {
-    struct wifi_frame_ctrl fc;
-    uint16_t duration;
-    uint8_t  addr1[6];   /* destination / BSSID */
-    uint8_t  addr2[6];   /* source / transmitter */
-    uint8_t  addr3[6];   /* BSSID */
-    uint16_t seq_ctrl;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* Beacon / Probe Response fixed fields (12 bytes after the mgmt header). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct wifi_beacon_fixed {
-    uint64_t timestamp;
-    uint16_t beacon_interval;
-    uint16_t capability;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* Authentication frame body (6 bytes). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct wifi_auth_body {
-    uint16_t auth_alg;
-    uint16_t auth_transaction;
-    uint16_t status_code;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* Association Request fixed fields (4 bytes). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct wifi_assoc_req_body {
-    uint16_t capability;
-    uint16_t listen_interval;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
-/* Association Response body (6 bytes). */
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct wifi_assoc_resp_body {
-    uint16_t capability;
-    uint16_t status_code;
-    uint16_t aid;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
-
 /* ---- Scan result ---- */
 typedef struct {
-    uint8_t  bssid[6];
-    char     ssid[WIFI_MAX_SSID_LEN + 1];
-    uint8_t  ssid_len;
-    uint8_t  channel;
+    wifi_bss_desc_t bss;    /* parsed wire fields (wifi_proto.h) */
     int8_t   rssi;          /* signal strength (dBm, negative) */
-    uint16_t capability;
-    int      wpa2;
 } wifi_scan_result_t;
 
 /* ---- Wi-Fi device driver interface ---- */
@@ -195,6 +63,10 @@ int wifi_init(void);
  * Sends Probe Request frames and collects responses.
  * Returns the number of networks found. */
 int wifi_scan(void);
+
+/* Deliver a received 802.11 frame (beacons, probe responses, auth/assoc
+ * responses) into the MAC layer.  Called by the NIC driver's RX path. */
+int wifi_rx_frame(const void *frame, uint32_t len);
 
 /* Get a scan result by index. Returns NULL if out of range. */
 const wifi_scan_result_t *wifi_get_scan_result(int index);
