@@ -50,7 +50,16 @@ jobs:
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
             mtools ovmf socat dosfstools e2fsprogs \
             autoconf automake libtool git \
-            gdb vncdotool python3-pil
+            gdb python3-pil
+          # vncdotool ships in Debian but NOT in Ubuntu noble's repos
+          # (the first T9 CI run died here with "Unable to locate
+          # package vncdotool", exit 100); the PyPI package provides
+          # the same CLI.  --break-system-packages for noble's PEP 668;
+          # the plain form covers images without the flag.  A failure
+          # warns instead of reddening: test_gui soft-skips captures.
+          python3 -m pip install --break-system-packages vncdotool 2>/dev/null \
+            || python3 -m pip install vncdotool 2>/dev/null \
+            || echo "::warning::vncdotool install failed; GUI captures will soft-skip"
 
       # mingw-w64 is NOT in REQUIRED_TOOLS and the OS build does not need it:
       # the Makefile detects it and skips the Win32 examples when it is
@@ -243,7 +252,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
             mtools ovmf socat dosfstools e2fsprogs \
-            autoconf automake libtool git
+            autoconf automake libtool git python3-pil
+          # RESIDUE2 T9: the gui shard's visual gates capture VNC
+          # screendumps; vncdotool comes from PyPI (not in noble apt).
+          python3 -m pip install --break-system-packages vncdotool 2>/dev/null \
+            || python3 -m pip install vncdotool 2>/dev/null \
+            || echo "::warning::vncdotool install failed; GUI captures will soft-skip"
 
       # The gui shard carries the six w32 gates; mingw builds their
       # example binaries.  Installed for every shard (uniform steps

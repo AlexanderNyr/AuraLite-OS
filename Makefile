@@ -1701,6 +1701,7 @@ $(USER_BUILD)/glaunch.o: userspace/apps/gui-launcher/glaunch.c lib/libauragui/in
 $(USER_BUILD)/gaudio.o: userspace/apps/gui-audio/gaudio.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gclip.o: userspace/apps/gui-clip/gclip.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
