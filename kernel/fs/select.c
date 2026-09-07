@@ -5,6 +5,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/proc/wait_queue.h"
+#include "kernel/proc/signal.h"   /* signal_actionable_pending (run 92482275773) */
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/time.h"
@@ -141,8 +142,13 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
         /* Q16 (pselect/ppoll): a wake with nothing ready must be a signal
          * interrupt (signal_send now wakes blocked threads for unmasked
          * signals).  Return -EINTR so pselect/select can restart or run the
-         * handler, exactly like kernel_nanosleep. */
-        if (ready == 0 && cur && (cur->sig_pending & ~cur->sig_mask)) {
+         * handler, exactly like kernel_nanosleep.
+         * RESIDUE2 CI fix (run 92482275773): ACTIONABLE signals only — a
+         * pending default-ignore signal (e.g. SIGCHLD with no handler,
+         * posted by a SIGKILLed child one delivery slot behind a caught
+         * signal) must not turn the timeout into EINTR: no handler would
+         * ever run for it. */
+        if (ready == 0 && cur && signal_actionable_pending(cur)) {
             kfree(rentries);
             kfree(wentries);
             kfree(rwqs);

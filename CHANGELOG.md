@@ -2,6 +2,46 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI fix — fourth wave] 2026-09-07 — run 92482275773: one red job, one kernel race
+
+14 of 15 jobs green; the posix shard's test_posix2024_conf lost exactly
+one conformtest subcheck — the same "pselect mask blocks the signal
+(no EINTR)" that flaked locally all along (~2 of 5 runs, errno=4).
+
+- **Root cause (kernel, not the test).** Every child exit posts SIGCHLD
+  to its parent (thread.c), and a default-ignore signal — SIGCHLD with
+  no handler — is dropped at the next delivery boundary without
+  touching userspace.  But the interruptible sleeps' EINTR gates tested
+  the RAW pending set (`sig_pending & ~sig_mask`), and
+  signal_deliver_iret clears ONE signal per boundary (the lowest
+  number).  The conformtest sequence is a perfect storm: the SIGKILLed
+  sender child's final in-flight SIGUSR2 plus its death's SIGCHLD are
+  both pending at the waitpid-exit boundary; SIGUSR2 (lower number, has
+  a handler) is delivered, SIGCHLD survives; the microsecond userspace
+  gap to the next pselect carries no irq boundary that would drop it;
+  pselect blocks 300 ms with a mask covering only SIGUSR2; the timeout
+  wake then sees unmasked-pending SIGCHLD and returns -EINTR out of a
+  signal nobody would ever feel.  POSIX ties EINTR to a handler
+  actually running.
+- **Fix.** New predicates in kernel/proc/signal.c —
+  `signal_actionable(t, signo)` (would run a handler / stop / kill;
+  SIG_IGN and default-ignore dispositions are not actionable) and
+  `signal_actionable_pending(t)`.  signal_send wakes a blocked thread
+  only for an actionable signal, and all five interruptible-sleep EINTR
+  gates (select/pselect/ppoll in select.c, nanosleep in time.c, the
+  three SysV IPC waits in sysvipc.c) now use the predicate.  The
+  waitpid gates keep their existing caught-only condition (deliberate,
+  documented).
+- **Unit cover.** test_select_stack.c (which compiles select.c into the
+  test) stubs the predicate behind a knob and asserts both gate sides:
+  a non-actionable pending signal yields the timeout 0 (the exact CI
+  flake shape), an actionable one yields -EINTR.
+
+Local verification: posix2024_conf 12/12 consecutive runs at 95/95
+(the flake was ~40%); stopped 17/17, signals 9/9, jobcontrol 14/14,
+siginfo 5/5, termios 2/2; make test-unit EXIT 0; selfhost-tcc 19/19;
+shell_all 16/16; gui 9/9; ext4 13/13.
+
 ## [CI fix — third wave] 2026-09-07 — run 92442558788: five red jobs, five roots
 
 The second wave's patch left eight verified fixes sitting in the

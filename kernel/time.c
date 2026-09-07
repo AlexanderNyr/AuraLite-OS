@@ -151,7 +151,10 @@ int kernel_nanosleep(const struct kernel_timespec *req, struct kernel_timespec *
          * between the signal check and setting THREAD_BLOCKED (BUG-30). */
         arch_irqflags_t rflags = arch_irq_save();
 
-        if (cur && (cur->sig_pending & ~cur->sig_mask)) {
+        /* RESIDUE2 CI fix (run 92482275773): actionable signals only --
+         * a pending default-ignore signal (SIGCHLD with no handler) must
+         * not EINTR a nanosleep: no handler would ever run for it. */
+        if (cur && signal_actionable_pending(cur)) {
             arch_irq_restore(rflags);
             cur->sleep_deadline = 0;
             cur->state = THREAD_READY;

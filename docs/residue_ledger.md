@@ -147,3 +147,20 @@ the host-side mcopy (buffer-cache flush; 26/26). sync(2) userland
 bulk data-phase timeout 1 s -> 10 s (vCPU starvation vs virtual
 clock skew on overcommitted runners). No ledger rows opened or
 closed; baseline unchanged.
+
+RESIDUE2 CI fix (fourth wave, 2026-09-07, run 92482275773): one red
+job (posix2024_conf, one conformtest subcheck -- the pselect-mask
+flake, previously observed ~2 of 5 local runs). Root: a KERNEL race,
+not test timing -- every child exit posts SIGCHLD, a default-ignore
+signal is dropped at the next delivery boundary, but the
+interruptible sleeps' EINTR gates tested raw sig_pending&~sig_mask,
+and signal_deliver_iret clears one signal per boundary (the SIGKILLed
+sender's last in-flight SIGUSR2 occupies the boundary slot ahead of
+its own SIGCHLD; the microsecond gap to the next pselect has no irq
+boundary to drop it; the 300 ms timeout wake then returns EINTR from
+a signal nobody would ever feel). Fix: signal_actionable() /
+signal_actionable_pending() predicates; signal_send wakes only for
+actionable signals; the five EINTR gates (select.c, time.c, sysvipc.c
+x3) use the predicate; test_select_stack.c covers both gate sides.
+posix2024_conf 12/12 consecutive green at 95/95. No ledger rows opened
+or closed; baseline unchanged.

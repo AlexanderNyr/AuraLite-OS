@@ -171,6 +171,15 @@ int  signal_send_group(int64_t pgid, int signo);
  * -EINTR (waitpid/waitid/nanosleep). */
 int  signal_caught_pending(struct tcb *t);
 
+/* RESIDUE2 CI fix (run 92482275773): 1 iff @signo would act on @t (run a
+ * handler, stop, kill) — SIG_IGN and default-ignore dispositions do not.
+ * signal_actionable_pending() is the any-signal form used by the
+ * interruptible sleeps (select/pselect/ppoll/nanosleep/SysV IPC): only an
+ * actionable signal may wake them or earn -EINTR, because POSIX ties EINTR
+ * to a handler actually running. */
+int  signal_actionable(struct tcb *t, int signo);
+int  signal_actionable_pending(struct tcb *t);
+
 /* Process-group / session syscalls. */
 int64_t do_setsid(void);
 int64_t do_setpgid(int64_t pid, int64_t pgid);

@@ -102,12 +102,14 @@ void signal_send(tcb_t *target, int signo) {
      * atomically with the block, so the signal must be able to wake it.
      * The blocked syscall re-checks readiness and the pending set when it
      * resumes and returns -EINTR (see do_select / kernel_nanosleep).
-     * Ignored signals (SIG_IGN) and masked signals do not wake: the first
-     * is covered by the pending&~mask check, the second by the
-     * sa_handler != SIG_IGN check. */
+     * RESIDUE2 CI fix (run 92482275773): only an ACTIONABLE signal wakes
+     * (see signal_actionable) — an ignored or default-ignore signal
+     * (SIGCHLD/SIGWINCH/SIGCONT with no handler) is dropped at delivery
+     * without touching userspace, so waking for it would return -EINTR
+     * from a signal no handler ever ran for. */
     if (target->state == THREAD_BLOCKED &&
         (target->sig_pending & ~target->sig_mask) &&
-        target->sig_actions[signo].sa_handler != SIG_IGN) {
+        signal_actionable(target, signo)) {
         target->state = THREAD_READY;
         if (__sync_lock_test_and_set(&target->on_queue, 1) == 0) {
             sched_add_thread(target);
@@ -149,6 +151,42 @@ int signal_caught_pending(tcb_t *t) {
         if (!(pend & sig_bit(sgn))) continue;
         struct sigaction *sa = &t->sig_actions[sgn];
         if (sa->sa_handler != SIG_DFL && sa->sa_handler != SIG_IGN) return 1;
+    }
+    return 0;
+}
+
+/* RESIDUE2 CI fix (run 92482275773): actionable-signal predicates.
+ *
+ * A signal "acts on" a thread when it would run a handler, stop it, or
+ * kill it.  Everything else -- an explicit SIG_IGN, or a SIG_DFL whose
+ * default action is ignore (SIGCHLD/SIGWINCH/SIGCONT with no handler) --
+ * is dropped at the next delivery boundary without touching userspace,
+ * so it must neither WAKE a blocked thread nor EINTR one: POSIX has
+ * select/pselect/nanosleep return -EINTR only when a signal handler
+ * actually ran.  CI run 92482275773 lost conformtest's "pselect mask
+ * blocks the signal" exactly this way: the SIGKILLed sender child's
+ * exit posts SIGCHLD (DFL_IGN, no handler) one delivery slot behind a
+ * final in-flight SIGUSR2; the waitpid-exit boundary delivers SIGUSR2
+ * (the lower number) and leaves SIGCHLD pending, the microsecond
+ * userspace gap to the next pselect carries no irq boundary that would
+ * drop it, and the 300 ms timeout wake then saw sig_pending & ~sig_mask
+ * nonzero -- EINTR out of a signal nobody would ever feel. */
+int signal_actionable(tcb_t *t, int signo) {
+    if (!t || signo < 1 || signo >= NSIG) return 0;
+    if (signo == SIGKILL || signo == SIGSTOP) return 1;
+    struct sigaction *sa = &t->sig_actions[signo];
+    if (sa->sa_handler == SIG_IGN) return 0;
+    if (sa->sa_handler == SIG_DFL) return default_action(signo) != DFL_IGN;
+    return 1;
+}
+
+int signal_actionable_pending(tcb_t *t) {
+    if (!t) return 0;
+    uint32_t raw = __sync_fetch_and_or(&t->sig_pending, 0);
+    uint32_t pend = (raw & ~t->sig_mask) | (raw & SIG_UNCATCHABLE);
+    if (!pend) return 0;
+    for (int s = 1; s < NSIG; s++) {
+        if ((pend & sig_bit(s)) && signal_actionable(t, s)) return 1;
     }
     return 0;
 }

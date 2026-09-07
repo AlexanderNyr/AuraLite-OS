@@ -28,6 +28,7 @@
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/proc/wait_queue.h"
+#include "kernel/proc/signal.h"    /* signal_actionable_pending (run 92482275773) */
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/vma.h"
@@ -272,7 +273,8 @@ int64_t sysv_semop(int semid, const void *sops_user, uint64_t nsops) {
 
         uint64_t rflags;
         __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-        if (cur && (cur->sig_pending & ~cur->sig_mask)) {
+        /* RESIDUE2 CI fix (run 92482275773): actionable signals only. */
+        if (cur && signal_actionable_pending(cur)) {
             __asm__ volatile ("sti" ::: "memory");
             cur->state = THREAD_READY;
             wq_remove_entry(&s->wq, &entry);
@@ -668,7 +670,8 @@ int64_t sysv_msgsnd(int msqid, const void *msgp_user, uint64_t msgsz, int msgflg
             spinlock_release_irqrestore(&sysv_lock, rf);
             uint64_t rflags;
             __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-            if (cur && (cur->sig_pending & ~cur->sig_mask)) {
+            /* RESIDUE2 CI fix (run 92482275773): actionable signals only. */
+        if (cur && signal_actionable_pending(cur)) {
                 __asm__ volatile ("sti" ::: "memory");
                 cur->state = THREAD_READY;
                 wq_remove_entry(&q->sq, &entry);
@@ -770,7 +773,8 @@ int64_t sysv_msgrcv(int msqid, void *msgp_user, uint64_t msgsz,
         spinlock_release_irqrestore(&sysv_lock, rf);
         uint64_t rflags;
         __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
-        if (cur && (cur->sig_pending & ~cur->sig_mask)) {
+        /* RESIDUE2 CI fix (run 92482275773): actionable signals only. */
+        if (cur && signal_actionable_pending(cur)) {
             __asm__ volatile ("sti" ::: "memory");
             cur->state = THREAD_READY;
             wq_remove_entry(&q->rq, &entry);

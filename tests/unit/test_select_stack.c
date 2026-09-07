@@ -26,6 +26,15 @@ void kernel_block_current(void) { kernel_block_calls++; fake_cur.state = 0; }
 struct wait_queue *vfs_get_read_wq(struct ofd *o) { return &o->read_wq; }
 struct wait_queue *vfs_get_write_wq(struct ofd *o) { return &o->write_wq; }
 
+/* RESIDUE2 CI fix (run 92482275773): select.c's EINTR gate now asks the
+ * signal subsystem whether any pending unmasked signal is ACTIONABLE
+ * (would run a handler / stop / kill) instead of testing raw
+ * sig_pending & ~sig_mask -- a default-ignore signal (SIGCHLD with no
+ * handler) must not turn a timeout into EINTR.  Stubbed with a knob so
+ * both sides of the gate stay unit-testable. */
+static int fake_actionable_pending = 0;
+int signal_actionable_pending(tcb_t *t) { (void)t; return fake_actionable_pending; }
+
 /* Stubs for the pipe-aware readiness helpers used by select.c (BUG-28).
  * The real implementations live in kernel/fs/vfs.c. */
 static int force_readable = 0;
@@ -49,6 +58,7 @@ static void reset_state(void) {
     wq_remove_calls = 0;
     kmalloc_calls = 0;
     kfree_calls = 0;
+    fake_actionable_pending = 0;
 }
 
 static void test_zero_timeout_no_alloc(void) {
@@ -113,9 +123,42 @@ static void test_pipe_ready_returns_immediately(void) {
     force_readable = 0;
 }
 
+/* RESIDUE2 CI fix (run 92482275773): the EINTR gate must distinguish
+ * actionable pending signals (handler/stop/kill -> -EINTR) from pending
+ * default-ignore ones (e.g. SIGCHLD with no handler -> plain timeout 0).
+ * The kernel-side predicate is stubbed with a knob; both sides covered. */
+static void test_eintr_gate_requires_actionable_signal(void) {
+    struct vnode vnode;
+    struct ofd ofd;
+    fd_set rfds;
+    struct kernel_timeval tv = {1, 0};
+
+    reset_state();
+    memset(&vnode, 0, sizeof(vnode));
+    memset(&ofd, 0, sizeof(ofd));
+    ofd.vn = &vnode;
+    ofd.access_mode = O_RDONLY;
+    fake_cur.fd_table[0] = &ofd;
+    FD_ZERO(&rfds);
+    FD_SET(0, &rfds);
+
+    /* A pending default-ignore signal (not actionable): timeout, not EINTR
+     * -- this is the exact shape of the CI flake the fix closes. */
+    fake_actionable_pending = 0;
+    assert(do_select(1, &rfds, NULL, NULL, &tv) == 0);
+    assert(kernel_block_calls == 1);
+
+    /* A pending caught signal: -EINTR. */
+    fake_actionable_pending = 1;
+    assert(do_select(1, &rfds, NULL, NULL, &tv) == -EINTR);
+    assert(kernel_block_calls == 2);
+    fake_actionable_pending = 0;
+}
+
 int main(void) {
     test_zero_timeout_no_alloc();
     test_blocking_path_heap_allocates_per_nfds();
     test_pipe_ready_returns_immediately();
+    test_eintr_gate_requires_actionable_signal();
     return 0;
 }
