@@ -17,11 +17,11 @@ set -u
 cd "$(dirname "$0")/../.."
 . tests/integration/lib/lib.sh
 il_init
-# F7 (FSFULL_PLAN.md): boot in FAST selftest mode so the kernel's
-# destructive on-disk self-tests do not run during this coverage
-# harness's own volume drive (the harness invokes its self-test
-# explicitly where it needs it).  The five self-tests themselves run
-# in the FULL selftest lane (verified by a dedicated full boot).
+# F7 (FSFULL_PLAN.md): Pass 2 boots in FAST selftest mode so the kernel's
+# other on-disk self-tests stay quiet during the blank-volume lane.  Pass 1
+# below overrides this to FULL: the case asserts the ext4 self-test receipt
+# ("[ext4] PASS:"), which only runs in the FULL lane — the original harness
+# asserted it from a FAST boot, a receipt that lane never prints.
 IL_SELFTEST=fast
 il_have qemu-system-x86_64
 
@@ -109,9 +109,16 @@ il_send "sync"
 il_send_delay 1
 il_send "exit"
 
-# ext4 is the 4th AHCI disk (blkdev 3, /ext4 in the kernel); the volume is at D3.
-il_run_qemu "$LOG_HOST" 45 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
+# ext4 is the 4th AHCI disk (blkdev 3, /ext4 in the kernel); the volume is at
+# D3.  FULL selftest lane: the "[ext4] PASS:" receipt below is printed by the
+# kernel's ext4 self-test, which runs only in FULL (it exercises the driver
+# against the just-mounted mkfs volume before the shell does).  Budget 150 s
+# covers the full boot selftest suite plus the mutation surface on a loaded
+# CI runner (45 s met only local timings).
+IL_SELFTEST=full
+il_run_qemu "$LOG_HOST" 150 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
     -fw_cfg "opt/auralite.fsformat,string=0"
+IL_SELFTEST=fast
 
 il_assert_grep "$LOG_HOST" "\[ext4\] mounted existing volume"  "ext4 recognised mkfs.ext4 image (no journal)"
 il_assert_grep "$LOG_HOST" "\[ext4\] PASS:"                    "ext4 kernel self-test"
@@ -125,6 +132,7 @@ il_assert_grep "$LOG_HOST" "rmdir: removed /ext4/aura_dir"      "rmdir on ext4"
 
 # Host re-verifies the volume is still structurally sound after the kernel
 # wrote, renamed and deleted on it.
+IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
 if "$E2FSCK" -fn "$DISK_HOST" >/dev/null 2>&1; then
     il_pass "host e2fsck -fn passes on the volume AuraLite mutated"
 else
@@ -156,7 +164,13 @@ il_run_qemu "$LOG_BLANK" 45 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
 il_assert_grep "$LOG_BLANK" "format complete"                "kernel formatted the blank ext4 volume"
 il_assert_grep "$LOG_BLANK" "kernelwrote"                    "write+read on kernel-formatted volume"
 
-if "$E2FSCK" -fn "$DISK_BLANK" >/dev/null 2>&1; then
+# RESIDUE2 CI fix: fsck the disk the GUEST formatted.  The harness used to
+# re-check $DISK_BLANK — the pristine zero image cp'd onto $D3 before boot —
+# so e2fsck always saw blank bytes ("Bad magic number") even when the kernel
+# had minted a perfectly valid volume on $D3.  The QEMU disk args carry no
+# snapshot flag, so $D3 holds the guest-formatted filesystem.
+IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+if "$E2FSCK" -fn "$D3" >/dev/null 2>&1; then
     il_pass "host e2fsck -fn passes on kernel-formatted ext4 image"
 else
     il_fail "host e2fsck -fn rejected kernel-formatted ext4 image"

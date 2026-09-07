@@ -30,6 +30,19 @@
 #define __sync_fetch_and_add(p, v)     __atomic_fetch_add((p), (v), __ATOMIC_SEQ_CST)
 #define __sync_fetch_and_sub(p, v)     __atomic_fetch_sub((p), (v), __ATOMIC_SEQ_CST)
 
+/* RESIDUE2 CI fix: the bitwise __sync_* forms signal.c uses (legacy
+ * spelling of atomic RMW masks).  tcc has __atomic_fetch_and/or as
+ * builtins but no __atomic_and_fetch/or_fetch, so the *_and_fetch
+ * direction composes as (fetch op v) op v — exact, because applying
+ * the same mask twice is idempotent.  CI run 92244125363: the
+ * selfhost tcc build failed with 'undefined reference to
+ * __sync_and_and_fetch / __sync_fetch_and_or' because only the
+ * arithmetic forms were re-spelled. */
+#define __sync_fetch_and_and(p, v)     __atomic_fetch_and((p), (v), __ATOMIC_SEQ_CST)
+#define __sync_fetch_and_or(p, v)      __atomic_fetch_or((p), (v), __ATOMIC_SEQ_CST)
+#define __sync_and_and_fetch(p, v)     (__atomic_fetch_and((p), (v), __ATOMIC_SEQ_CST) & (v))
+#define __sync_or_and_fetch(p, v)      (__atomic_fetch_or((p), (v), __ATOMIC_SEQ_CST) | (v))
+
 /* tcc's <stdatomic.h> has __atomic_store_n/__atomic_load_n macros but no
  * __atomic_exchange_n; the 4-argument __atomic_exchange (result through the
  * third argument) is a builtin both tcc and clang/gcc implement. */

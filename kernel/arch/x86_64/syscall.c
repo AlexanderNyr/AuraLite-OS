@@ -42,6 +42,7 @@
 #include "kernel/ipc/sysvipc.h"
 #include "kernel/mm/shmem.h"
 #include "kernel/mm/page_cache.h"
+#include "kernel/fs/buffer_cache.h"  /* SYS_SYNC: bc_flush_all / fs_cache_sync */
 
 /* P10 types */
 typedef struct {
@@ -200,6 +201,7 @@ typedef struct {
 #define SYS_F2FS_FSCK      602   /* non-standard: internal f2fs structural fsck (F4) */
 #define SYS_BTRFS_SELFTEST 603   /* non-standard: btrfs CoW/CRC self-test (F4b) */
 #define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 receipt */
+#define SYS_SYNC           611   /* non-standard: whole-cache flush (bc_flush_all) */
 #define SYS_WAITID         247   /* Linux x86-64 number (RESIDUE2 T1) */
 #define SYS_GETPPID        110   /* Linux x86-64 number (RESIDUE2 T1) */
 
@@ -1039,23 +1041,31 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                 /* ISIG: terminal signal characters (^C/^\/^Z) on the console
                  * tty generate signals and are not added to the input line.
                  * (Keeps the existing fd-0 stdin path; full /dev/tty0 line
-                 * discipline is used by programs that open it directly.) */
+                 * discipline is used by programs that open it directly.)
+                 *
+                 * RESIDUE2 CI fix (run 92244125363): this legacy path runs
+                 * its ISIG handling UNCONDITIONALLY.  T4 turned the console
+                 * tty's ISIG/ECHO defaults off (a /dev/tty0 reader must not
+                 * double-deliver ^C through tty_input()), but keying THIS
+                 * path off that flag silently deleted every ^C/^Z the
+                 * integration feeder sends while the shell owns fd 0 —
+                 * test_stopped's whole job-control gate collapsed (no
+                 * SIGTSTP, ticker ran to the budget kill).  The c_cc[]
+                 * key bindings still come from the console termios. */
                 {
                     struct tty *con = tty_console();
-                    if (con->termios.c_lflag & ISIG) {
-                        int sig = 0;
-                        if (raw == con->termios.c_cc[VINTR]) sig = SIGINT;
-                        else if (raw == con->termios.c_cc[VQUIT]) sig = SIGQUIT;
-                        else if (raw == con->termios.c_cc[VSUSP]) sig = SIGTSTP;
-                        if (sig) {
-                            /* Route to the console terminal's foreground process
-                             * group (P6); falls back to the current task. */
-                            tty_send_signal_fg(con, sig);
-                            /* Echo ^X then interrupt the read with -EINTR (or a
-                             * partial line if bytes were already typed). */
-                            kputchar('^'); kputchar((char)(raw + 0x40));
-                            return got ? got : (uint64_t)-EINTR;
-                        }
+                    int sig = 0;
+                    if (raw == con->termios.c_cc[VINTR]) sig = SIGINT;
+                    else if (raw == con->termios.c_cc[VQUIT]) sig = SIGQUIT;
+                    else if (raw == con->termios.c_cc[VSUSP]) sig = SIGTSTP;
+                    if (sig) {
+                        /* Route to the console terminal's foreground process
+                         * group (P6); falls back to the current task. */
+                        tty_send_signal_fg(con, sig);
+                        /* Echo ^X then interrupt the read with -EINTR (or a
+                         * partial line if bytes were already typed). */
+                        kputchar('^'); kputchar((char)(raw + 0x40));
+                        return got ? got : (uint64_t)-EINTR;
                     }
                 }
 
@@ -1132,6 +1142,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (vn && vn->ops && vn->ops->sync) {
             vn->ops->sync(vn->fs_data);
         }
+        return 0;
+    }
+    case SYS_SYNC: {
+        /* RESIDUE2 CI fix: whole-system sync() — flush the shared
+         * buffer cache (and with it every filesystem that routes block
+         * I/O through it, F2).  fs_cache_sync() also prints the
+         * greppable "[bc] hits/misses" receipt.  The ext4 interop
+         * harness ends its mutation passes with `sync` before the
+         * guest exits, so the host-side `e2fsck -fn` sees a fully
+         * persisted volume instead of whatever the 1 Hz writeback tick
+         * happened to push out. */
+        fs_cache_sync(NULL);
         return 0;
     }
     case SYS_CLOSE:

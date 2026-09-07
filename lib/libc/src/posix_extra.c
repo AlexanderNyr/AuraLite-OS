@@ -756,6 +756,8 @@ struct mq_notify_reg {
     volatile int    done;            /* watcher sets when it has exited */
     int             target_pid;      /* getpid() at registration time */
     volatile int    ready;           /* watcher has observed the queue once */
+    unsigned long long delivered_size; /* RESIDUE2 CI fix: file size at the
+                                      * last delivery (see watcher comment) */
 };
 static struct mq_notify_reg mq_notify_regs[MQ_NOTIFY_MAX];
 
@@ -790,7 +792,12 @@ static void *mq_notify_watcher(void *arg) {
     if (wfd < 0) { r->done = 1; return NULL; }
     struct stat st;
     int was_empty = 1;
-    if (fstat(wfd, &st) == 0) was_empty = (st.st_size == 0);
+    if (fstat(wfd, &st) == 0) {
+        was_empty = (st.st_size == 0);
+        r->delivered_size = was_empty ? 0ULL : (unsigned long long)st.st_size;
+    } else {
+        r->delivered_size = 0ULL;
+    }
     /* Publish readiness only after the initial state is captured, so
      * mq_notify() can return knowing the watcher is actually observing the
      * queue.  Without this, a slow first scheduling of the watcher thread
@@ -800,12 +807,23 @@ static void *mq_notify_watcher(void *arg) {
     while (!r->stop) {
         if (fstat(wfd, &st) == 0) {
             int empty = (st.st_size == 0);
-            if (!empty && was_empty) {
-                /* empty -> non-empty edge */
+            /* RESIDUE2 CI fix (run 92244125363 follow-up): the plain
+             * empty->non-empty edge could be LOST when a drain followed
+             * by a new send both happened between two 2 ms polls — the
+             * watcher woke to a non-empty file it had already reported
+             * and never re-armed (conformtest's "re-armed after drain"
+             * check failed deterministically).  Also fire when the file
+             * grew to a DIFFERENT size than the last delivery, which
+             * covers exactly that drain+send burst; same-size sends
+             * after an unseen drain remain unobservable at 2 ms. */
+            if (!empty && (was_empty || st.st_size != r->delivered_size)) {
+                /* empty -> non-empty edge (or a fresh drain+send burst) */
                 mq_notify_deliver(&r->sev, r->target_pid);
                 was_empty = 0;
+                r->delivered_size = (long)st.st_size;
             } else if (empty) {
                 was_empty = 1;       /* re-arm once drained */
+                r->delivered_size = 0;
             }
         }
         struct timespec ts = { 0, 2000000 };    /* 2 ms poll */

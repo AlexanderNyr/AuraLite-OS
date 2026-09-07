@@ -2,6 +2,51 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI fix — second wave] 2026-09-06 — all four red roots closed
+
+Four roots behind the red jobs of CI run 92244125363 (the first wave,
+92232963170, was the T9-ci_fix commit):
+
+- **ext4 interop (test_ext4 red).** `struct ext4_dirent` used a private
+  9-byte dialect (name_len u16); the on-disk standard is the 8-byte
+  header with name_len u8 + file_type u8 — directories written by
+  AuraLite were unreadable by e2fsck/read-interop. The formatter side
+  gained the missing mkfs.ext4 facts: cluster geometry from
+  s_log_cluster_size/s_clusters_per_group (4 MiB AHCI images with
+  sector_count=0), incompat FILETYPE, group-descriptor bitmap padding
+  SET, reserved inodes 1..10 accounted, free_inodes=ipg−11, and
+  i_blocks derived from the actual extent tree. 13/13 local.
+- **Job control (test_stopped red).** Root cause: T4's console-tty
+  change dropped ISIG from the fd-0 path, so ^C/^Z were swallowed;
+  the ISIG dispatch in the fd-0 read path is now unconditional (the
+  tick gate in the test is defensive only). 17/17 local.
+- **mq_notify (posix2024_conf red).** The watcher only fired on
+  mq_receive; delivered_size (unsigned long long) now also fires on
+  size-only changes. 95/95 local.
+- **selfhost tcc boot loop (test_selfhost_kernel_tcc red).** Root
+  cause is in the BIOS stage2 ELF loader, not the kernel: the staged
+  image at 2 MiB and the kernel's physical extent OVERLAP once the
+  image passes ~1.06 MiB (the tcc kernel did when the device phase
+  landed), so copying PT_LOAD #2 (.rodata) zeroes the still-live phdr
+  table inside the staging buffer and the walk silently drops
+  PT_LOAD #3 — .data/.got are never copied, gdt_init reads a NULL
+  GOT cell, lgdt gets RDI=0, and the box triple-faults in a reset
+  loop ("the hang"). elf_load now spools the program headers into a
+  local buffer before any segment copy runs (refuses loudly on
+  phentsize≠56 or >8 headers). Proven by gdb staging/dst dumps and a
+  phase bisect (T4/T5 green, T6 red); 19/19 local after the fix.
+- selfhost link: kernel/lib/atomic_compat.h (new) gives the tcc link
+  `__sync_lock_test_and_set`; apwake.c includes it (aulink parity
+  ALL PASS).
+- sh5c gate sync (local-only latent): the unit gate asserted "tcc
+  compiled 127 kernel C files" while the kernel link line has carried
+  135 since the device phase (four files the RESIDUE2 phases added —
+  path.c, e1000e.c, vmxnet3.c, wifi_virt.c — on top of a count that
+  had already drifted to 131 at the series' base).  CI never saw it:
+  the unit job builds no host tcc, so the gate skips there; any local
+  test-unit with the selfhost deps present was red.  Constant moved
+  127→135, the assertion stays exact.
+
 ## [RESIDUE2 T9 — tooling and close-out] 2026-09-06 — THE PLAN IS COMPLETE
 
 - **Consumption-gated serial input** (flakiness box): the integration

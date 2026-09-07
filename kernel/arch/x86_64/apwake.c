@@ -18,6 +18,12 @@
 #include "kernel/arch/x86_64/lapic.h"
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/cpu_local.h"
+/* RESIDUE2 CI fix: this file spells the queue claim with the legacy
+ * __sync_lock_test_and_set builtin; under tcc (selfhost lane) that
+ * symbol only exists as the atomic_compat.h macro — without the
+ * include the guest aulink link died with "undefined reference to
+ * '__sync_lock_test_and_set'" (CI run 92244125363 follow-up). */
+#include "kernel/lib/atomic_compat.h"
 #include "kernel/arch/x86_64/portio.h"
 #include "kernel/proc/thread.h"
 #include "kernel/lib/spinlock.h"

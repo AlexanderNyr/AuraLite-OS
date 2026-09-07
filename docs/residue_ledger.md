@@ -103,3 +103,26 @@ Result); baseline moved 20 → 21 same-commit.  The plan is COMPLETE:
 TODO 40 → 7 (the seven are future-work outside its scope), ledger
 OPEN 6 → 1 (RES-54), phases 10/10, checkers flipped with the last
 phase (rinet2 Y4 pin moved with the T8 row flips).
+
+RESIDUE2 CI fix (second wave, 2026-09-06): not a plan phase — the
+post-close CI runs 92232963170/92244125363 reddened four jobs, all
+four roots closed in one commit. ext4: private dirent dialect
+(9-byte header) → the on-disk 8-byte u8+u8 header + the missing
+mkfs.ext4 formatter facts (cluster fields, FILETYPE, bitmap padding,
+reserved inodes, extent-derived i_blocks); ext4 13/13. stopped:
+ISIG dispatch unconditional again in the fd-0 path (T4 had gated it
+off the console tty); 17/17. posix2024: mq_notify fires on
+delivered_size changes too; 95/95. selfhost-tcc: the "hang" was a
+silent triple-fault reset loop — the BIOS stage2 ELF loader walked
+the phdr table INSIDE the 2 MiB staging buffer, and once the tcc
+kernel's physical extent passed the staging base (the device phase
+pushed it over), the PT_LOAD #2 copy zeroed the live phdr table and
+PT_LOAD #3 (.data/.got) was silently dropped; elf_load now spools
+the headers locally before any copy (phentsize!=56 or >8 headers
+refuses loudly); 19/19. No ledger rows opened or closed; the
+baseline is unchanged (no new debt markers).
+Same commit also syncs the sh5c unit gate's kernel C-file count
+(127 -> 135): a local-only latent (CI's unit job builds no host tcc,
+so the gate skips there), moved with the run's fix because any local
+test-unit with the selfhost deps present was red; the assertion stays
+exact (every C source on the kernel link line must compile).

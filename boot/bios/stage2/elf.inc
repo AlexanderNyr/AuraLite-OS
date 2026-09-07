@@ -35,6 +35,18 @@ _elf_phdr_off:       dd 0                  ; low 32 bits of e_phoff
 _elf_phnum:          dd 0
 _elf_phentsize:      dd 0
 
+; Local copy of the program headers.  The staged image at 2 MiB can be
+; clobbered by the very PT_LOAD copies this loader performs: kernels whose
+; physical extent reaches past 2 MiB (e.g. the tcc selfhost build once the
+; device phase landed) have segment destinations overlapping the staging
+; buffer, and an earlier copy zeroes the file area that still holds the
+; live phdr table (phdrs live at file offset 0x40).  Walking the headers
+; from this buffer instead keeps the loop valid in that situation; it is
+; what fixed the SH5c selfhost boot reset loop.  Eight headers is far
+; above anything kernel.ld/aulink emit today (3).
+ELF_PHDR_MAX         equ 8
+_elf_phdr_buf:       times ELF_PHDR_MAX * 56 db 0
+
 ; ELF constants.
 PT_LOAD              equ 1
 KERNEL_VMA_LOW32     equ 0x80000000        ; low 32 bits of 0xFFFFFFFF80000000
@@ -82,17 +94,47 @@ elf_load:
     movzx eax, word [fs:esi + 56]
     mov  [_elf_phnum], eax
 
+    ; Spool every program header into the local buffer above BEFORE any
+    ; segment copy runs.  The headers live inside the staged image, and a
+    ; copy of an earlier PT_LOAD can overwrite the staging area (kernels
+    ; with a physical extent past 2 MiB); reading phdrs from the image at
+    ; that point yields garbage and silently drops later segments (the
+    ; SH5c selfhost boot loop: .data/.got were never copied, so the first
+    ; lgdt took RDI=0 and triple-faulted in a loop).  Only the ELF64
+    ; phentsize is supported, and more than ELF_PHDR_MAX headers is a
+    ; refuse-loudly case.
+    cmp  dword [_elf_phentsize], 56
+    jne  .fail
+    mov  eax, [_elf_phnum]
+    cmp  eax, ELF_PHDR_MAX
+    ja   .fail
+    mov  esi, [_elf_phdr_off]
+    add  esi, [_elf_image_base]            ; ESI = flat src of phdr table
+    mov  edi, _elf_phdr_buf
+    mov  ecx, [_elf_phnum]
+    imul ecx, ecx, 56
+.spool:
+    test ecx, ecx
+    jz   .spool_done
+    mov  al, [fs:esi]
+    mov  [edi], al
+    inc  esi
+    inc  edi
+    dec  ecx
+    jmp  .spool
+.spool_done:
+
     ; Iterate program headers.
     xor  ecx, ecx                         ; ECX = index
 .ph_loop:
     cmp  ecx, [_elf_phnum]
     jae  .done
 
-    ; Compute flat address of this phdr: image_base + phoff + i*phentsize.
+    ; Compute address of this phdr: _elf_phdr_buf + i*phentsize.
+    ; (Headers are read from the local spool, not from the staged image.)
     mov  eax, ecx
     mul  dword [_elf_phentsize]           ; EDX:EAX = i * phentsize
-    add  eax, [_elf_phdr_off]
-    add  eax, [_elf_image_base]
+    add  eax, _elf_phdr_buf
     mov  edi, eax                         ; EDI = phdr flat addr
 
     ; Skip non-PT_LOAD.

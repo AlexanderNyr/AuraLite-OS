@@ -35,36 +35,51 @@ LOG="$IL_LOGDIR/stopped.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
-il_send_delay 7
+# RESIDUE2 CI fix (run 92244125363): the cascade of guessed sleeps
+# (25 s for leg 1, 8 s for the ticker) raced on a loaded CI runner —
+# locally stoptest finished inside 18 s, on the runner it did not, so
+# the bare Ctrl+Z landed while leg 1 still owned the console and the
+# whole leg-1b/leg-2 chain collapsed (189 s, budget kill).  Every wait
+# below is now CONTENT-gated (il_send_wait) or prompt-gated (the
+# T9 feeder): we hold the next line until the guest printed the
+# receipt that proves it is ready for it, so the case is insensitive
+# to runner speed.  The case also ends with an explicit `exit` inside
+# the budget instead of relying on the timeout kill.
 il_send "run stoptest"
-il_send_delay 25
+il_send_wait "STOPTEST ALL PASS" 150
 
 # Leg 1b: bare Ctrl+Z at the interactive prompt.
 il_send_raw "$(printf '\032')"
 il_send_raw $'\n'
-il_send_delay 3
+il_send_delay 2
 il_send "echo shell-alive"
-il_send_delay 3
+il_send_wait "shell-alive" 30
 
 # Leg 2: the interactive gate: start a long-lived ticker; Ctrl+Z (0x1A) after
 # a few ticks; jobs; fg; let it run on; Ctrl+C (0x03); jobs; sentinel echo.
 # Every control byte goes on its own feeder line: il_send_delay's sleep marker
 # on the same line would swallow a raw byte whole.
 il_send "run stoptest tick 400"
-il_send_delay 8
+# Wait for tick 4, not tick 1: the ticker prints tick 1 BEFORE its forked
+# stdin pump reaches the read() loop, and a ^Z byte sent in that window is
+# dropped by the polling UART (measured: the ticker ran to tick 69 with the
+# stop byte lost).  Tick 4 proves the pump is consuming console input.
+il_send_wait "STOPTEST tick 4 of 400" 60
 il_send_raw "$(printf '\032')"
 il_send_raw $'\n'
-il_send_delay 4
+il_send_delay 2
 il_send "jobs"
-il_send_delay 4
+il_send_wait "Stopped /tests/stoptest" 30
 il_send "fg"
-il_send_delay 10
+il_send_delay 6
 il_send_raw "$(printf '\003')"
 il_send_raw $'\n'
-il_send_delay 4
+il_send_delay 2
 il_send "jobs"
-il_send_delay 3
+il_send_wait "no jobs" 30
 il_send "echo gate-end"
+il_send_wait "gate-end" 30
+il_send "exit"
 
 il_run_qemu "$LOG" 180
 
