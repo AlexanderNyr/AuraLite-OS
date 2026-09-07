@@ -92,6 +92,46 @@ for sym in main __libc_start_main; do
     if [ -n "$p_ld" ] && [ -n "$p_au" ]; then echo "PASS: symbol $sym present in both outputs"; else echo "FAIL: symbol $sym missing (lld='$p_ld' aulink='$p_au')"; FAILED=1; fi
 done
 
+# RESIDUE2 CI fix (SH5b regression): a relocation against a LOCAL symbol
+# inside a merge section may carry a NEGATIVE addend (gcc/clang emit
+# symbol+(-5) for a constant-pool element five bytes before the anchor).
+# CI run 92244125363 died with "merge addend 0xfffffffffffffffb out of
+# range in .rodata.cst4" because the element lookup used the raw addend
+# instead of sym->value+addend.  Reproduce exactly that shape: .cst8
+# pool, anchor at element offset 16, .quad anchor-5 -> element [8,16).
+MERGE_S="$ROOT/build/aulink-merge-negative.s"
+MERGE_O="$ROOT/build/aulink-merge-negative.o"
+cat > "$MERGE_S" <<'ASM'
+    .section .rodata.cst8,"aM",@progbits,8
+    .align 8
+    .quad 0x1111111111111111
+    .quad 0x2222222222222222
+.Lanchor:
+    .quad 0x3333333333333333
+    .quad 0x4444444444444444
+    .section .data.rel.ro,"aw",@progbits
+    .align 8
+    .globl neg_addend_ref
+neg_addend_ref:
+    .quad .Lanchor - 5
+ASM
+cc -c -o "$MERGE_O" "$MERGE_S" || { echo "FAIL: merge-negative repro does not assemble"; FAILED=1; }
+NEG_OUT="$ROOT/build/aulink-merge-negative.elf"
+NEG_LOG="$ROOT/build/aulink-merge-negative.log"
+if "$AULINK" -T lib/libc/user.ld -o "$NEG_OUT" $OBJS "$MERGE_O" 2>"$NEG_LOG"; then
+    echo "PASS: negative merge addend (symbol-anchored element) links clean"
+else
+    echo "FAIL: aulink rejected a symbol-anchored negative merge addend:"
+    sed 's/^/      /' "$NEG_LOG"
+    FAILED=1
+fi
+if grep -Fq "out of range" "$NEG_LOG"; then
+    echo "FAIL: merge element lookup went out of range on sym+(-5)"
+    FAILED=1
+else
+    echo "PASS: no out-of-range merge lookups"
+fi
+
 echo
 if [ "$FAILED" -eq 0 ]; then echo "=== ALL AULINK PARITY TESTS PASSED ==="; exit 0; fi
 echo "=== AULINK PARITY TESTS FAILED ==="; exit 1

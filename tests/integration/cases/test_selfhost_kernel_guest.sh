@@ -46,7 +46,7 @@ il_section "self-host kernel (SH5d): build in AuraLite, extract FAT ELF, boot it
 
 # The build itself uses /tmp: the stock FAT formatter intentionally creates a
 # small 4 MiB volume, enough for the final ~1 MiB ELF but not a full object
-# directory.  /tmp has 256 slots, and this job has 127 C + 9 asm objects plus
+# directory.  /tmp has 256 slots, and this job has 135 C + 9 asm objects plus
 # fewer than 20 tools/generated files.  Only the completed kernel crosses the
 # durability boundary, exactly what this phase gates.
 DISK="$IL_BUILD/selfhost-sh5d-fat.img"
@@ -79,8 +79,13 @@ mapfile -t ASM_SRCS < <(
 )
 C_COUNT=${#C_SRCS[@]}
 ASM_COUNT=${#ASM_SRCS[@]}
-if [ "$C_COUNT" -ne 127 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 127 / 9)${C_RESET}"
+# RESIDUE2 CI fix (run 2): 127 -> 135, same drift as the sh5c unit gate --
+# the RESIDUE2 device phases added four kernel C sources (path.c, e1000e.c,
+# vmxnet3.c, wifi_virt.c) on top of a count that had already reached 131 at
+# the series' base.  CI run 92442558788 reddened here with "source closure
+# drifted: 135 C, 9 asm (expected 127 / 9)".  The assertion stays exact.
+if [ "$C_COUNT" -ne 135 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 135 / 9)${C_RESET}"
     exit 2
 fi
 
@@ -154,6 +159,12 @@ done
 # aulink mode: one short command replaces an impossible 135-argument line.
 il_send_prompt "run /tmp/sh5d/aulink -T /src/kernel.ld -o /fat/KERNEL.ELF /tmp/sh5d/cobj /apps/tcc/libtcc1.a /tmp/sh5d/aobj"
 il_send_prompt "stat /fat/KERNEL.ELF"
+# RESIDUE2 CI fix (run 92442558788): the aulink write lands in the kernel
+# buffer cache; the periodic writeback lags a ~1.4 MB ELF, so the host-side
+# mcopy below found an image whose FAT root had no KERNEL.ELF yet (the
+# stat receipt only proves the GUEST sees its own cached data).  sync
+# (SYS_SYNC: bc_flush_all) makes the extraction deterministic.
+il_send_prompt "sync"
 il_send_prompt "exit"
 
 echo "[selfhost] SH5d dispatch: $C_COUNT C + $ASM_COUNT asm sources through prompt-aware guest serial"

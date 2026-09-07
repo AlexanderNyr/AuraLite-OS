@@ -819,6 +819,13 @@ int fsync(int fd) {
     return (int)syscall_ret(syscall(74, (uint64_t)fd, 0, 0, 0, 0, 0));
 }
 
+/* RESIDUE2 CI: sync — flush the whole shared buffer cache so a volume
+ * the kernel mutated is fully persisted for host-side e2fsck.  POSIX
+ * sync(2) is void: errors are asynchronous and unreportable. */
+void sync(void) {
+    (void)syscall_ret(syscall(SYS_SYNC, 0, 0, 0, 0, 0, 0));
+}
+
 /* A6: msync — write a shared file mapping back through the page cache. */
 int msync(void *addr, size_t length, int flags) {
     return (int)syscall_ret(syscall(26, (uint64_t)addr, (uint64_t)length,

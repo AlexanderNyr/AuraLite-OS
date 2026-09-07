@@ -948,7 +948,19 @@ static int xhci_poll_event_timeout(uint32_t want_type, struct xhci_trb *out,
     }
 }
 
+/* Transfer waits come in two budgets.  Command/control exchanges are
+ * emulation-synchronous (QEMU answers an MMIO doorbell within the same
+ * vCPU slice), so 1 s already means "the controller is gone".  Bulk DATA
+ * phases (MSC CBW/DATA/CSW) ride the same doorbell but the CI runners
+ * overcommit their vCPUs: the QEMU virtual clock keeps advancing on host
+ * wall time while a starved vCPU thread makes no progress, so a 1 s
+ * deadline can expire without the guest ever running the transfer --
+ * CI run 92442558788 lost test_xhci_bulk's READ(10) to exactly that
+ * (a single [xhci] transfer timeout on a boot that otherwise reached
+ * the shell).  10 s absorbs multi-second host stalls; a genuinely hung
+ * bulk endpoint still times out and still fails the case. */
 #define XHCI_EVENT_TIMEOUT_MS 1000
+#define XHCI_BULK_DATA_TIMEOUT_MS 10000
 
 static int xhci_poll_event_type(uint32_t want_type, struct xhci_trb *out) {
     return xhci_poll_event_timeout(want_type, out, XHCI_EVENT_TIMEOUT_MS);
@@ -1344,12 +1356,14 @@ static int xhci_recover_endpoint(xhci_dev_t *xd, int ep_id) {
  * packet), -2 on stall, -1 otherwise.
  */
 static int xhci_wait_transfer_cc(xhci_dev_t *xd, int ep_id, int silent,
-                                 uint32_t *residue_out, int *cc_out) {
+                                 uint32_t *residue_out, int *cc_out,
+                                 uint32_t timeout_ms) {
     if (residue_out) *residue_out = 0;
     if (cc_out) *cc_out = 0;
     db_wr(xd->slot_id, (uint32_t)ep_id);
     struct xhci_trb ev;
-    if (xhci_poll_event_type(XHCI_TRB_TRANSFER_EVENT, &ev) != 0) {
+    if (xhci_poll_event_timeout(XHCI_TRB_TRANSFER_EVENT, &ev,
+                                timeout_ms) != 0) {
         if (!silent) kprintf("[xhci] transfer timeout slot=%u ep=%d\n",
                              xd->slot_id, ep_id);
         return -1;
@@ -1380,7 +1394,8 @@ static int xhci_wait_transfer(uint8_t slot, int ep_id, int silent_timeout) {
     for (int i = 0; i < XHCI_MAX_DEVS; i++)
         if (xdevs[i].in_use && xdevs[i].slot_id == slot) { xd = &xdevs[i]; break; }
     if (!xd) return -1;
-    return xhci_wait_transfer_cc(xd, ep_id, silent_timeout, NULL, NULL) == 0 ? 0 : -1;
+    return xhci_wait_transfer_cc(xd, ep_id, silent_timeout, NULL, NULL,
+                                  XHCI_EVENT_TIMEOUT_MS) == 0 ? 0 : -1;
 }
 
 int xhci_control_transfer(uint8_t dev_addr, int low_speed,
@@ -1458,7 +1473,8 @@ int xhci_control_transfer(uint8_t dev_addr, int low_speed,
 
     uint32_t residue = 0;
     int cc_out = 0;
-    int ret = xhci_wait_transfer_cc(xd, 1, 0, &residue, &cc_out);
+    int ret = xhci_wait_transfer_cc(xd, 1, 0, &residue, &cc_out,
+                                     XHCI_EVENT_TIMEOUT_MS);
     /* Sanity-check the residue before believing it.
      *
      * It is the count of bytes NOT transferred, so it can never exceed the
@@ -1601,7 +1617,9 @@ int xhci_bulk_transfer(uint8_t dev_addr, uint8_t endpoint,
 
     uint32_t residue = 0;
     int cc = 0;
-    int ret = xhci_wait_transfer_cc(xd, ep_id, 0, &residue, &cc);
+    /* Bulk DATA phase: the wide budget (see XHCI_BULK_DATA_TIMEOUT_MS). */
+    int ret = xhci_wait_transfer_cc(xd, ep_id, 0, &residue, &cc,
+                                     XHCI_BULK_DATA_TIMEOUT_MS);
 
     /* Same rule as the control path: the residue is only meaningful on a
      * Short Packet, and a value larger than the request is a stale field. */

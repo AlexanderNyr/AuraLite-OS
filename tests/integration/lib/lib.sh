@@ -23,6 +23,8 @@
 #   il_send_prompt "<text>"            — queue text for prompt-aware serial
 #                                        (call BEFORE il_run_qemu).
 #   il_send_delay <secs>               — queue a sleep between commands.
+#   il_send_wait <fixed-str> [secs]    — queue a content gate: hold further
+#                                        lines until the string hits the log.
 #   il_assert_grep <log> "<pattern>" "<human description>"
 #   il_assert_no_grep <log> "<pattern>" "<human description>"
 #   il_assert_count <log> "<pattern>" <min>  — at least N matches.
@@ -141,6 +143,17 @@ il_send_delay() {
     # Emit a literal sleep marker. We turn it into a real sleep at run time.
     IL_INPUT_QUEUE+=$'\x1b__SLEEP__'"$1"$'\n'
 }
+# RESIDUE2 CI fix: content-gated wait.  Emits a marker the feeder turns
+# into "poll the live serial log until this FIXED string shows up (at
+# most N seconds)".  Use this instead of a guessed il_send_delay when
+# the guest prints a receipt for what you are waiting on — under a
+# loaded CI runner the constant sleep is either wasted time (too long)
+# or a race (too short); CI run 92244125363 lost test_stopped's whole
+# Ctrl+Z leg to a 25 s guess that local hardware met in 18 s.
+il_send_wait() {
+    local pat="$1" secs="${2:-60}"
+    IL_INPUT_QUEUE+=$'\x1b__WAIT__'"$secs"$'\x1f'"$pat"$'\n'
+}
 
 # Internal: feed the queue into a process, honouring sleep markers.
 #
@@ -159,6 +172,19 @@ il_send_delay() {
 # Capped per line (15 s) so a command that legitimately never returns
 # to the prompt (GUI apps, `exit`) degrades to exactly the legacy
 # behaviour.  IL_FEED_SYNC=0 restores the old driver wholesale.
+#
+# RESIDUE2 CI fix (run 92244125363): two hardening changes.
+# (1) A broken output pipe (QEMU died or was killed by the budget)
+#     aborts the feed loop immediately.  Before, every remaining
+#     queued line first burned its full 15 s gate cap and then
+#     printed "write error: Broken pipe" — test_shell_all spent 164 s
+#     feeding a dead guest after its 50 s budget expired, and the
+#     shard looked like an assertion failure instead of a budget one.
+# (2) il_send_wait() content markers: a case can wait for a RECEIPT
+#     in the serial log (fixed string) instead of guessing seconds —
+#     the same principle as the prompt gate, for flows the prompt
+#     cannot pace (a foreground Ctrl+Z handshake, a long child that
+#     prints progress markers).
 _il_prompt_count() {
     local n
     n=$(grep -ac -- "auralite#" "$1" 2>/dev/null) || n=0
@@ -194,6 +220,20 @@ _il_feed_queue() {
         if [[ "$line" == *$'\x1b__SLEEP__'* ]]; then
             local secs="${line#*$'\x1b__SLEEP__'}"
             sleep "$secs"
+        elif [[ "$line" == *$'\x1b__WAIT__'* ]]; then
+            # Content gate: poll the live serial log until the fixed
+            # string appears (or the per-marker cap expires).  il_send_wait
+            # emits these; see its comment.
+            local wmark="${line#*$'\x1b__WAIT__'}"
+            local wsecs="${wmark%%$'\x1f'*}"
+            local wpat="${wmark#*$'\x1f'}"
+            local seen=0
+            for _ in $(seq 1 $(( wsecs * 10 ))); do
+                if grep -Fq -- "$wpat" "$log" 2>/dev/null; then seen=1; break; fi
+                sleep 0.1
+            done
+            [ "$seen" -eq 1 ] || printf 'il_send_wait: pattern not seen within %ss: %s\n' \
+                "$wsecs" "$wpat" >&2
         else
             if [ "$synced" -eq 1 ]; then
                 # Wait for a prompt NEWER than the last one we fed
@@ -205,7 +245,11 @@ _il_feed_queue() {
                 done
                 base=$(_il_prompt_count "$log")
             fi
-            printf '%s\n' "$line"
+            if ! printf '%s\n' "$line" 2>/dev/null; then
+                printf 'il_feed: output pipe closed (guest gone) — dropping %d queued line(s)\n' \
+                    "$(grep -c '' <<< "$IL_INPUT_QUEUE")" >&2
+                break
+            fi
             # Small per-line gap: AuraLite's serial input is polling-based,
             # so we mustn't blast characters faster than it consumes them.
             sleep 0.20

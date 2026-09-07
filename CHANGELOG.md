@@ -2,6 +2,80 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI fix — third wave] 2026-09-07 — run 92442558788: five red jobs, five roots
+
+The second wave's patch left eight verified fixes sitting in the
+delivery queue (they are below, marked "queued"); the run also
+surfaced three fresh roots.  Every fix is proven by local
+reproduction before and a green rerun after.
+
+- **aulink merge addend (unit job, queued from run 2).** A relocation
+  naming a LOCAL symbol inside a merge section can carry a negative
+  addend (clang 18 emits `sym + (-5)` for a constant-pool element);
+  the element lookup used the raw addend instead of
+  `sym->value + addend`, so `make test-unit`'s sh5b layout gate died
+  with "merge addend 0xfffffffffffffffb out of range in .rodata.cst4".
+  Reproduced EXACTLY by building the kernel with Ubuntu noble's
+  clang 18.1.3 (Debian's 18.1.8 does not emit the shape); the fixed
+  aulink links the same objects clean.  test_aulink.sh gains the
+  synthetic regression (a .cst8 pool, anchor at offset 16, a
+  `.quad anchor-5` reference).
+- **Feeder v2 (queued from run 2).** lib/lib.sh: a broken output
+  pipe aborts the feed loop (before, every queued line burned its
+  full 15 s gate cap against a dead guest and printed "write error:
+  Broken pipe" — run 3's test_shell_all spent its drain there), and
+  il_send_wait() content gates wait for a RECEIPT string instead of
+  guessed seconds.  test_stopped.sh — already delivered — CALLS
+  il_send_wait; without this lib it ran with six "command not found"
+  lines and passed vacuously (run 3's core shard log shows them).
+- **test_shell_all budget 50 s → 180 s (queued from run 2).** The
+  50 s budget killed QEMU mid-queue on a ~40 s CI boot; run 3 lost
+  the same four mkdir/touch assertions to the same 50 s.
+- **test_gui brightness gate (re-diagnosed).** The run-2 theory (a
+  VNC capture race) was wrong: on the BIOS lane the loader sets no
+  VBE mode, fb.c falls back to VGA text, and the GUI composes into
+  off-screen backing buffers — an all-black VNC frame is CORRECT
+  there, so the brightness assertion could never pass.  It is now
+  conditioned on the guest's own "no linear framebuffer" boot line
+  (the honest-skip precedent: test_gui_dirty_uefi.sh); LFB boots
+  keep the strict check with the recapture retry.  Local runs had
+  been "green" only because vncdotool was absent (soft path) — with
+  it installed, the failure reproduced immediately.
+- **test_posix2024_conf on the prompt driver (queued from run 2).**
+  The 320 s blind sleep is replaced by il_send_prompt pacing (the
+  case now finishes in what the suite actually takes, not 320 s).
+- **test_usb_hub RES-01 refinement (queued from run 2).** Tolerates
+  exactly the recovered hub-descriptor retry, not any "[hub] failed".
+- **SH5d/SH8 source-count gates 127 → 135.** The same drift the sh5c
+  unit gate had: test_selfhost_kernel_guest refused to run ("source
+  closure drifted: 135 C, 9 asm (expected 127 / 9)") and
+  gen_kernel_build.sh refused to emit the SH8 build script, so BOTH
+  closure loops failed downstream ("loop 1/2 PASS" missing, "ISO
+  written in BOTH loops (got 0)").
+- **test_selfhost_kernel_guest sync.** The aulink-written
+  /fat/KERNEL.ELF sat in the kernel buffer cache; the host-side
+  mcopy found no file (the stat receipt only proved the guest sees
+  its own cached data).  The flow now sends `sync` (SYS_SYNC:
+  bc_flush_all) before the first boot exits; 26/26 local, the
+  guest-built kernel boots.
+- **sync(2) userland (queued from run 2).** unistd.h/libc.c gain the
+  wrapper for the SYS_SYNC syscall the kernel side already carries,
+  and the shell gains the `sync` command the ext4 interop harness
+  ends its mutation passes with.
+- **xhci bulk timeout 1 s → 10 s (data phases only).** CI runners
+  overcommit their vCPUs; the QEMU virtual clock advances on host
+  wall time while a starved vCPU makes no progress, so a 1 s
+  deadline can expire without the transfer ever running — run 3's
+  test_xhci_bulk lost READ(10) to exactly that.  10 s absorbs
+  multi-second host stalls; a genuinely hung bulk endpoint still
+  times out and still fails the case.
+
+Local verification: sh5b/unit EXIT 0 on noble clang 18.1.3 objects,
+selfhost-kernel-tcc 19/19, kernel_guest 26/26 (both boots),
+closure 15/15 (both loops), shell_all 16/16, gui 9/9 (vncdotool
+installed), posix2024 95/95, stopped 17/17 (gates engaged, zero
+"command not found"), usb_hub 7/7, xhci_bulk 8/8 twice, ext4 13/13.
+
 ## [CI fix — second wave] 2026-09-06 — all four red roots closed
 
 Four roots behind the red jobs of CI run 92244125363 (the first wave,

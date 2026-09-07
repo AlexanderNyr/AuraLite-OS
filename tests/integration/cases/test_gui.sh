@@ -28,7 +28,7 @@ VNC_PORT=$((5900 + VNC_DISPLAY))
 ( sleep 12; printf 'run /glaunch\n' ) > /tmp/gui_input.$$.txt &
 INPUT_PID=$!
 
-( timeout 30 qemu-system-x86_64 \
+( timeout 90 qemu-system-x86_64 \
     -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" -m 512M -smp 2 \
     -vnc "127.0.0.1:$VNC_DISPLAY" \
     -serial file:"$LOG" \
@@ -59,13 +59,36 @@ done
 
 # Visual checks.
 if command -v vncdotool >/dev/null 2>&1; then
-    sleep 5
     SHOT1="$SHOT_DIR/01_desktop.png"
-    vncdotool -s "127.0.0.1::$VNC_PORT" capture "$SHOT1" >/dev/null 2>&1 || true
+    # RESIDUE2 CI fix (run 92442558788): the brightness gate only has a
+    # subject on boots with a linear framebuffer.  On the BIOS lane the
+    # loader sets no VBE mode, fb.c falls back to VGA text, and the GUI
+    # composes into window backing buffers that never reach the physical
+    # screen (fb.c's own comment; the honest-skip precedent is
+    # test_gui_dirty_uefi.sh's "BIOS lanes have no linear framebuffer").
+    # CI run 92442558788 failed "too dark (mean=0)" on a boot whose [gui]
+    # self-test PASSed, and local reproduction with vncdotool showed the
+    # same black frame on every capture -- an assert that could never
+    # pass on this lane.  The run-92244125363 recapture retry below stays
+    # for the LFB lane, where it absorbs the first-VNC-update race.
+    NO_LFB=0
+    grep -q "no linear framebuffer" "$LOG" 2>/dev/null && NO_LFB=1
+    BRIGHT=0
+    for attempt in 1 2 3 4 5 6; do
+        sleep 5
+        vncdotool -s "127.0.0.1::$VNC_PORT" capture "$SHOT1" >/dev/null 2>&1 || true
+        if [ -s "$SHOT1" ]; then
+            BRIGHT=$(python3 -c "from PIL import Image; im=Image.open('$SHOT1').convert('L'); px=list(im.getdata()); print(int(sum(px)/len(px)))" 2>/dev/null || echo 0)
+            { [ "${BRIGHT:-0}" -gt 10 ] || [ "$NO_LFB" -eq 1 ]; } && break
+        fi
+    done
     if [ -s "$SHOT1" ]; then
-        il_pass "captured initial desktop screenshot"
-        BRIGHT=$(python3 -c "from PIL import Image; im=Image.open('$SHOT1').convert('L'); px=list(im.getdata()); print(int(sum(px)/len(px)))" 2>/dev/null || echo 0)
-        if [ "${BRIGHT:-0}" -gt 10 ]; then
+        IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+        il_pass "captured initial desktop screenshot (attempt $attempt, mean=$BRIGHT)"
+        IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+        if [ "$NO_LFB" -eq 1 ]; then
+            il_pass "brightness gate skipped (BIOS lane: no linear framebuffer; GUI composes off-screen -- the [gui] PASS self-test above is the content gate)"
+        elif [ "${BRIGHT:-0}" -gt 10 ]; then
             il_pass "desktop has non-black pixels (mean=$BRIGHT)"
         else
             il_fail "desktop screenshot is too dark (mean=$BRIGHT)"
@@ -74,8 +97,10 @@ if command -v vncdotool >/dev/null 2>&1; then
         SHOT2="$SHOT_DIR/02_with_launcher.png"
         vncdotool -s "127.0.0.1::$VNC_PORT" capture "$SHOT2" >/dev/null 2>&1 || true
         if [ -s "$SHOT2" ]; then
+            IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
             il_pass "captured post-launcher screenshot"
             DIFF=$(python3 -c "from PIL import Image, ImageChops; a=Image.open('$SHOT1'); b=Image.open('$SHOT2'); print(ImageChops.difference(a.convert('RGB'),b.convert('RGB')).getbbox() is not None)" 2>/dev/null || echo False)
+            IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
             if [ "$DIFF" = "True" ]; then
                 il_pass "launcher render altered the framebuffer"
             else

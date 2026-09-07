@@ -714,9 +714,21 @@ static void apply_relocations(int collect_only){
                         /* PC-relative relocations carry the standard -4
                          * bias (disp32 is measured from the end of the
                          * instruction): the element offset is addend+4.
-                         * Absolute ones (64/32/32S) use the addend as-is. */
+                         * Absolute ones (64/32/32S) use the addend as-is.
+                         * RESIDUE2 CI fix: the offset is SYMBOL-relative —
+                         * when the relocation names a local symbol inside
+                         * the merge section (gcc/clang constant-pool
+                         * anchors do this: symbol + (-5) for the element
+                         * five bytes earlier), the element offset is
+                         * sym->value+addend, not the raw addend.  Against
+                         * the merge SECTION symbol (st_value 0) the two
+                         * formulas coincide.  CI run 92244125363 failed
+                         * with "merge addend 0xfffffffffffffffb out of
+                         * range in .rodata.cst4" — a negative addend that
+                         * is perfectly valid once the symbol's own value
+                         * is folded in. */
                         int pc=(type==R_X86_64_PC32||type==R_X86_64_PLT32);
-                        int64_t want=(int64_t)addend+(pc?4:0);
+                        int64_t want=(int64_t)sym->value+(int64_t)addend+(pc?4:0);
                         int lo=0,hi=msym->mcount-1,found=-1;
                         while(lo<=hi){int mid=(lo+hi)/2;
                             if(want>=(int64_t)msym->morig[mid]&&want<(int64_t)(msym->morig[mid]+msym->mlen[mid])){found=mid;break;}
@@ -726,7 +738,7 @@ static void apply_relocations(int collect_only){
                             S=out_secs[pool->out_idx].addr+pool->out_off;
                             addend=(int64_t)msym->mpool[found]-(pc?4:0);
                         } else {
-                            fprintf(stderr,"aulink: merge addend 0x%llx out of range in %s\n",(unsigned long long)addend,msym->name); errors++;
+                            fprintf(stderr,"aulink: merge element 0x%llx (sym 0x%llx + addend 0x%llx) out of range in %s\n",(unsigned long long)want,(unsigned long long)sym->value,(unsigned long long)addend,msym->name); errors++;
                         }
                     }
                 }

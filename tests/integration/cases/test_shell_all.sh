@@ -100,7 +100,11 @@ il_send_delay 1
 
 il_send "exit"
 
-il_run_qemu "$LOG" 50
+# RESIDUE2 CI fix (run 92244125363): 50 s met LOCAL timings; on a loaded
+# CI runner boot alone takes ~40 s, so the budget killed QEMU mid-queue
+# ("write error: Broken pipe" x10) and the tail commands were lost.
+# 180 s covers boot + the full 30-command surface with the prompt gate.
+il_run_qemu "$LOG" 180
 
 il_assert_grep "$LOG" "(AuraLite|x86_64)"           "uname output"
 il_assert_grep "$LOG" "^/$|/"                         "pwd output"

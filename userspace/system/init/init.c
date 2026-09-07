@@ -683,6 +683,7 @@ static void cmd_help(void) {
     puts("  mv <a> <b>  - rename a file or directory");
     puts("  touch <file>- create an empty file");
     puts("  stat <path> - show file metadata");
+    puts("  sync        - flush all filesystems to disk");
     puts("  apm [cmd]   - AuraLite Package Manager");
     puts("  kbd [name]  - show/set keyboard layout (us, de)");
     puts("  help        - show this help");
@@ -1186,6 +1187,16 @@ static void cmd_fsync(const char *path) {
     fflush(stdout);
 }
 
+/* RESIDUE2 CI: sync — flush the whole shared buffer cache (SYS_SYNC),
+ * the POSIX-shaped counterpart of the per-file fsync above.  The ext4
+ * interop harness ends its mutation passes with `sync` so the host can
+ * e2fsck a fully persisted volume. */
+static void cmd_sync(void) {
+    sync();
+    puts("sync: all filesystems flushed");
+    fflush(stdout);
+}
+
 /* F4b shell surface for btrfs: truncate + internal CoW/CRC self-test. */
 static void cmd_truncate(int argc, char **argv) {
     if (argc < 3) { puts("usage: truncate <path> <new-size>"); return; }
@@ -1479,6 +1490,8 @@ static int sh_run_command(int argc)
         cmd_settimes(argc, cmd_argv);
     } else if (strcmp(cmd, "fsync") == 0) {
         cmd_fsync(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "sync") == 0) {
+        cmd_sync();
     } else if (strcmp(cmd, "truncate") == 0) {
         cmd_truncate(argc, cmd_argv);
     } else if (strcmp(cmd, "btrfsck") == 0) {

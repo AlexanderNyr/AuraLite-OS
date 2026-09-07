@@ -126,3 +126,24 @@ Same commit also syncs the sh5c unit gate's kernel C-file count
 so the gate skips there), moved with the run's fix because any local
 test-unit with the selfhost deps present was red; the assertion stays
 exact (every C source on the kernel link line must compile).
+
+RESIDUE2 CI fix (third wave, 2026-09-07, run 92442558788): five red
+jobs, five roots -- three fresh, two of them queued fixes the second
+wave's patch failed to carry (audited this wave by diffing the
+worktree against fefccf6 file-by-file; everything found is in this
+commit). aulink: symbol-relative merge element offsets (negative
+addends against local anchors) -- reproduced on Ubuntu noble clang
+18.1.3 exactly, regression-tested in test_aulink.sh. feeder v2:
+EPIPE abort + il_send_wait content gates (test_stopped, already
+delivered, called the missing function and passed vacuously in run
+3's core shard). shell_all 180 s. gui: the brightness gate is
+LFB-conditioned (BIOS text lane is honestly skipped -- fb.c's own
+comment; the run-2 "capture race" theory was wrong, reproduced
+black-on-every-capture with vncdotool installed locally). posix2024
+on the prompt driver. usb_hub RES-01 refinement. SH5d/SH8 counts
+127 -> 135 (the sh5c drift class). kernel_guest sends sync before
+the host-side mcopy (buffer-cache flush; 26/26). sync(2) userland
+(wrapper + shell command; kernel side shipped in wave 2). xhci
+bulk data-phase timeout 1 s -> 10 s (vCPU starvation vs virtual
+clock skew on overcommitted runners). No ledger rows opened or
+closed; baseline unchanged.

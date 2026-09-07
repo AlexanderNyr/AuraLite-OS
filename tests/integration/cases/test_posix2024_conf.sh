@@ -31,12 +31,17 @@ LOG="$IL_LOGDIR/posix2024_conf.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
-il_send_delay 7
-il_send "run conformtest"
-il_send_delay 320
-il_send "exit"
+# RESIDUE2 CI fix (run 92244125363): the conformtest leg was driven by
+# a literal 320 s sleep, and the whole case died at its 480 s budget on
+# a loaded runner (boot + gate + 320 + suite).  The prompt driver
+# (il_run_qemu_prompt) paces by the guest itself: it types the next
+# command only after the previous one RETURNED TO THE PROMPT with exit
+# code 0 — no guessed seconds anywhere, and the full budget is spendable
+# on the suite itself.
+il_send_prompt "run conformtest"
+il_send_prompt "exit"
 
-il_run_qemu "$LOG" 480
+il_run_qemu_prompt "$LOG" 480
 
 # ---- AT-family on tmpfs ----
 il_assert_grep_fixed "$LOG" "CONFORMTEST PASS at-tmpfs: mkdir" \

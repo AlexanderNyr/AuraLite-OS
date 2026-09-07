@@ -71,6 +71,7 @@ typedef struct {
 #define SYS_BTRFS_SELFTEST 603   /* non-standard: btrfs CoW/CRC self-test (F4b) */
 #define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 device-IRQ-
                                   wakes-hlt-ed-AP receipt (kernel selftest) */
+#define SYS_SYNC           611   /* non-standard: whole-cache flush (RESIDUE2 CI) */
 #define SYS_UTIMENSAT      280   /* utimensat(2)/futimens(2) */
 
 /* File-descriptor extensions. */
@@ -333,6 +334,7 @@ void*   mmap(void *addr, size_t length, int prot, int flags, int fd, uint64_t of
 int     munmap(void *addr, size_t length);
 int     msync(void *addr, size_t length, int flags);   /* A6 */
 int     fsync(int fd);                                 /* M9 */
+void    sync(void);                                   /* RESIDUE2 CI: SYS_SYNC */
 /* M4: demand-paged and shared VMAs */
 int     madvise(void *addr, size_t length, int advice);
 int     mincore(void *addr, size_t length, unsigned char *vec);
