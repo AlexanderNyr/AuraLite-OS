@@ -155,6 +155,19 @@ int diskfs_init(void) {
         return -EIO;
     }
     if (sb.magic != DISKFS_MAGIC || sb.version != DISKFS_VERSION) {
+        /* OTA_PLAN O1: a partitioned disk is never an AUFS scratch disk.
+         * diskfs's superblock lives at a FIXED LBA 2 -- on the hybrid
+         * boot image that is inside the GPT entry array, and formatting
+         * there destroyed the partition table before anything else could
+         * even look at it (reproduced on the baseline tree: booting the
+         * dual image from AHCI printed "[diskfs] formatting tiny AUFS at
+         * LBA 2" and clobbered the GPT).  Table-less scratch disks keep
+         * the auto-format contract; table-bearing disks refuse loudly. */
+        if (blkdev_partition_kind(disk_dev) != BLKDEV_PART_NONE) {
+            kprintf("[diskfs] partitioned disk is not an AUFS scratch disk; "
+                    "refusing to format\n");
+            return -1;
+        }
         if (format_diskfs() != 0) {
             kprintf("[diskfs] format failed\n");
             return -1;

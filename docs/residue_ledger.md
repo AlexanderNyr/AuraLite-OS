@@ -164,3 +164,18 @@ actionable signals; the five EINTR gates (select.c, time.c, sysvipc.c
 x3) use the predicate; test_select_stack.c covers both gate sides.
 posix2024_conf 12/12 consecutive green at 95/95. No ledger rows opened
 or closed; baseline unchanged.
+
+
+OTA_PLAN O0 (2026-09-07): the OTA feature plan lands as
+`docs/plans/OTA_PLAN.md` with 6 marker lines (its named-parking section 2
+plus the close-out checklist line); the baseline gains the `OTA_PLAN.md 6`
+row in the same commit. No new debt rows: the plan defers its ledger
+coverage rows to its O5 close-out, exactly like FSFULL deferred to F7.
+
+OTA_PLAN O1 (2026-09-07): boot-volume correctness landed — partition-aware
+FAT32 mount (GPT, then MBR, then the unchanged raw-LBA-64 scratch leg),
+plus the same partition-table respect in diskfs and the AHCI self-test
+(non-destructive DMA verify on partitioned disks). No new debt rows and no
+marker drift: `OTA_PLAN.md` stays at 6, the new `test_ota_bootvol.sh`
+carries none, and the existing suites (kernel_guest, fat32_full, ahci
+matrix incl. its q35 lane) stay green unmodified.

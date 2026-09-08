@@ -574,14 +574,45 @@ void ahci_self_test(void) {
 
     /* Write/read a scratch sector to verify DMA write as well. Sector 1 is
      * reserved for the AHCI self-test in the VM test disk created by
-     * tools/run_qemu.sh. */
+     * tools/run_qemu.sh.
+     *
+     * OTA_PLAN O1: that reservation only holds on a table-less scratch
+     * disk.  On the hybrid boot image LBA 1 is the GPT header, and this
+     * write destroyed it during boot (measured: booting the dual image
+     * from AHCI left "AURALAHCI-WRITE" where "EFI PART" used to be, so
+     * every later partition probe degraded to MBR -- and a q35 lane that
+     * puts the boot image itself on an AHCI port has been silently
+     * trashing its own boot disk's table on every run).  A partitioned
+     * disk still gets its DMA write path verified, but NON-destructively:
+     * save the sector, write the pattern, read it back, restore. */
+    uint8_t gpt_hdr[512];
+    int disk_is_partitioned = 0;
+    if (ahci_read(port, 1, 1, gpt_hdr) == 0 &&
+        memcmp(gpt_hdr, "EFI PART", 8) == 0)
+        disk_is_partitioned = 1;
+    if (has_sig) {
+        for (int e = 0; e < 4 && !disk_is_partitioned; e++)
+            if (mbr[0x1BE + e * 16 + 4] != 0)
+                disk_is_partitioned = 1;
+    }
+
     static uint8_t wbuf[512];
     static uint8_t rbuf[512];
+    static uint8_t saved[512];
     memset(wbuf, 0, sizeof(wbuf));
     memcpy(wbuf, "AURALAHCI-WRITE", 15);
     wbuf[510] = 0x55;
     wbuf[511] = 0xAA;
-    kprintf("[ahci] self-test: writing scratch sector 1...\n");
+    if (disk_is_partitioned) {
+        kprintf("[ahci] self-test: non-destructive write verify on sector 1 "
+                "(disk carries a partition table)\n");
+        if (ahci_read(port, 1, 1, saved) != 0) {
+            kprintf("[ahci] FAIL: SATA save sector 1 failed\n");
+            return;
+        }
+    } else {
+        kprintf("[ahci] self-test: writing scratch sector 1...\n");
+    }
     if (ahci_write(port, 1, 1, wbuf) != 0) {
         kprintf("[ahci] FAIL: SATA write sector 1 failed\n");
         return;
@@ -594,6 +625,21 @@ void ahci_self_test(void) {
     if (memcmp(wbuf, rbuf, sizeof(wbuf)) != 0) {
         kprintf("[ahci] FAIL: SATA write/readback mismatch\n");
         return;
+    }
+    if (disk_is_partitioned) {
+        /* Restore what we borrowed and prove it went back in.  A silent
+         * restore failure would mean the disk's GPT header is left
+         * trashed -- that deserves a loud FAIL, not a shrug. */
+        if (ahci_write(port, 1, 1, saved) != 0) {
+            kprintf("[ahci] FAIL: SATA restore sector 1 failed\n");
+            return;
+        }
+        memset(rbuf, 0, sizeof(rbuf));
+        if (ahci_read(port, 1, 1, rbuf) != 0 ||
+            memcmp(saved, rbuf, sizeof(saved)) != 0) {
+            kprintf("[ahci] FAIL: SATA restore verify mismatch\n");
+            return;
+        }
     }
     kprintf("[ahci] PASS: SATA read/write DMA works\n");
 }

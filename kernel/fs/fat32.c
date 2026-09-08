@@ -1078,12 +1078,122 @@ static int format_default(void) {
 }
 
 /* Parse the BPB at LBA 64 (or format on absence/mismatch). */
+/* OTA_PLAN O1: partition-aware base-LBA discovery.
+ *
+ * The stock behaviour mounts a FIXED LBA 64 of blkdev 0.  That is the
+ * mature-slot contract for the table-less scratch disks the test suite
+ * formats on purpose (il_make_disk shape: 55AA, zero partition entries,
+ * zeros at LBA 64) -- and it is actively destructive on the disk we
+ * actually boot from: the hybrid BIOS/UEFI image carries its ESP (the
+ * FAT32 volume with KERNEL.ELF) at LBA 256, so LBA 64 lands inside the
+ * GPT array / stage2 / ESP zone, looks "empty", and the old code
+ * FORMATTED it (reproduced by booting the image from AHCI on the
+ * baseline tree: "[fat32] formatting default FAT32 volume at LBA 64"
+ * on the boot disk, snapshot hiding the damage from the host).
+ *
+ * find_fat_base() therefore looks at the disk's own partition tables
+ * first: GPT (header at LBA 1) then non-protective MBR entries.  The
+ * first entry whose start LBA carries FAT32 magic wins; a table-bearing
+ * disk with no FAT32 volume anywhere REFUSES (a partitioned disk is
+ * never scratch -- no empty-looking area inside it may be formatted).
+ * A disk with no table at all keeps the legacy raw-LBA-64 semantics,
+ * including the auto-format the selfhost SH5d flow depends on. */
+static int fat32_magic_at(uint32_t lba) {
+    static uint8_t probe[512];   /* private: must not clobber `scratch`,
+                                  * which the callers are iterating over */
+    if (lba == 0) return 0;
+    if (read_sect_abs(lba, probe) != 0) return 0;
+    return probe[510] == 0x55 && probe[511] == 0xAA &&
+           memcmp(probe + 82, "FAT32", 5) == 0;
+}
+
+/* Returns 1 with *out_lba / *out_via set when a FAT32 partition was found,
+ * 0 when the disk carries no partition table (*out_lba = raw default),
+ * -1 when a table exists but holds no FAT32 volume (mount must refuse).
+ *
+ * Table detection is blkdev_partition_kind() -- the canonical probe, so
+ * fat32 and every other slot-0 consumer agree on what "this disk is
+ * partitioned" means (a bare 55AA with zero entries is the scratch-disk
+ * shape, NOT a table). */
+static int find_fat_base(uint32_t *out_lba, const char **out_via) {
+    int kind = blkdev_partition_kind(fs.bdev);
+    if (kind == BLKDEV_PART_NONE) {
+        *out_lba = FAT_DEFAULT_BASE_LBA; *out_via = "raw";
+        return 0;
+    }
+
+    /* GPT: walk the entry array (header fields at LBA 1; the kind probe
+     * already confirmed the "EFI PART" signature).  Entries live in
+     * contiguous sectors; the first 32 cover any realistic ESP layout,
+     * and the sector is re-read only when the walk crosses into the next
+     * one (last_sect 0 is never a valid entry LBA). */
+    if (kind == BLKDEV_PART_GPT && read_sect_abs(1, scratch) == 0) {
+        uint32_t entry_lba  = rd32(scratch + 72);   /* low 32 of PartitionEntryLBA */
+        uint32_t entry_cnt  = rd32(scratch + 80);
+        uint32_t entry_size = rd32(scratch + 84);
+        if (entry_size >= 128 && entry_size <= 512 && entry_cnt <= 1024) {
+            uint32_t max_entries = entry_cnt < 32 ? entry_cnt : 32;
+            uint32_t last_sect = 0;
+            for (uint32_t i = 0; i < max_entries; i++) {
+                uint32_t off  = i * entry_size;
+                uint32_t sect = entry_lba + off / 512;
+                if (sect != last_sect) {
+                    if (read_sect_abs(sect, scratch) != 0) break;
+                    last_sect = sect;
+                }
+                const uint8_t *e = scratch + (off % 512);
+                int type_is_zero = memcmp(e, "\x00\x00\x00\x00\x00\x00\x00\x00"
+                                               "\x00\x00\x00\x00\x00\x00\x00\x00", 16) == 0;
+                if (type_is_zero) continue;
+                uint32_t first = rd32(e + 32);   /* low 32 of FirstLBA */
+                if (fat32_magic_at(first)) {
+                    *out_lba = first; *out_via = "GPT";
+                    return 1;
+                }
+            }
+        }
+    }
+
+    /* MBR entries (a hybrid GPT+MBR image is found by either leg): the
+     * 0xEE protective entry points at the GPT header, never at a FAT
+     * volume, so it is skipped explicitly. */
+    if (read_sect_abs(0, scratch) == 0 &&
+        scratch[510] == 0x55 && scratch[511] == 0xAA) {
+        for (int i = 0; i < 4; i++) {
+            const uint8_t *e = scratch + 446 + 16 * i;
+            if (e[4] == 0x00 || e[4] == 0xEE) continue;
+            if (rd32(e + 8) == 0) continue;
+            if (fat32_magic_at(rd32(e + 8))) {
+                *out_lba = rd32(e + 8); *out_via = "MBR";
+                return 1;
+            }
+        }
+    }
+
+    return -1;   /* table-bearing disk, no FAT32 volume anywhere */
+}
+
 static int parse_or_format(void) {
-    fs.base_lba = FAT_DEFAULT_BASE_LBA;
+    const char *via = "raw";
+    uint32_t base = FAT_DEFAULT_BASE_LBA;
+    int found = find_fat_base(&base, &via);
+    if (found < 0) {
+        kprintf("[fat32] partitioned disk has no FAT32 volume; "
+                "not formatting a partitioned disk\n");
+        return -1;
+    }
+    fs.base_lba = base;
+    if (found) {
+        kprintf("[fat32] found FAT32 partition at LBA %u (via %s)\n",
+                base, via);
+    }
     if (read_sect_abs(fs.base_lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     int looks_fat = (scratch[510]==0x55 && scratch[511]==0xAA &&
                      memcmp(scratch + 82, "FAT32", 5) == 0);
     if (!looks_fat) {
+        /* Only the table-less raw leg may ever format (see find_fat_base):
+         * a partition that was found above always carries FAT32 magic. */
+        if (found) return -1;
         if (format_default() != 0) return -1;
         if (read_sect_abs(fs.base_lba, scratch) != 0) return -EIO;   /* RESIDUE2 T1 */
     }
