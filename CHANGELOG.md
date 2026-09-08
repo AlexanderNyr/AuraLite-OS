@@ -2,6 +2,33 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OTA O5 — CI wiring and close-out] 2026-09-08 — the update flow is a first-class, machine-checked citizen
+
+The final OTA phase registers the flow in CI and locks the plan to the
+tree; the series (O0–O5) is COMPLETE.
+
+- **The `ota` CI shard.** The four harnesses (bootvol, reboot, fallback,
+  apply) are registered in `run_all.sh` and run as their OWN shard —
+  not the first draft's `net` placement: two of them never touch the
+  network and ~19 min of multi-boot cases would stretch the net shard's
+  wall-clock (the fsfull/F7 precedent).  `--check-groups` proves the
+  partition; `test_ota_apply` joined the slow-case list.
+- **`tools/check_ota_claims.py`.** The plan cannot drift from the tree:
+  COMPLETE status, all five phase sections, and every ✅ phase pinned to
+  its artefacts AND its greppable receipts — 26 pins, from the
+  partition-aware mount line to the stage2 fallback string to the
+  `[ota] sha256 MISMATCH` receipt to the shard registration itself.
+  Three planted violations must be caught (the usual negative control).
+  Wired into the workflow's claim-check step and `make test-unit`.
+- **Docs.** `docs/status.md` (partition-aware FAT32, SYS_REBOOT,
+  `/apps/ota`), `README.md` (stable-features bullet + program table),
+  `TODO.md` (a full OTA section: four landed rows, the parked items as
+  open rows), and the ledger close-out restating every parked item with
+  its plan-§2 reason.
+- Local gates on the patched tree (noble clang 18.1.3): check-groups
+  green, the `ota` shard green end to end (11/11, 11/11, 17/17, 20/20),
+  `make test-unit` EXIT 0 with the new checker, residue ratchet OK.
+
 ## [OTA O4 — the update tool] 2026-09-08 — check → download → verify → swap → sync → reboot, end to end
 
 The fourth OTA phase delivers the tool itself and, with it, the plan's

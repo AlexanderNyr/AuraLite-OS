@@ -49,6 +49,15 @@ additional post-phase extensions.
   TCP-over-IPv6, AAAA family choice and dual-stack pick (RINET2 Y3);
   HTTPS-over-IPv6 (Y4, ledger RES-26 closed).  `ping6` answers end-to-end
   in CI.
+- OTA self-update (OTA_PLAN O0–O5 complete): the kernel sees the volume it
+  booted from (partition-aware FAT32 via GPT/MBR), `reboot` +
+  `AURALITE_VERSION` build identity, a stage2 `KERNEL.OLD` fallback so a
+  corrupt kernel cannot brick the boot, and the `ota` tool — `check` /
+  `apply` / `rollback` / `status` — which streams a new kernel over the
+  network into `/fat/KERNEL.NEW` (4 KiB chunks, sha256 verified against
+  the manifest), swaps the A/B slots and syncs. The CI gate boots 0.0.1,
+  installs a 0.0.2-ota kernel over HTTP, reboots into it and rolls back:
+  three boots in one serial log (`ota` shard).
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
   kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
@@ -741,6 +750,7 @@ exist, but `calc`, `run calc` and `/apps/calc` all work. See
 | `/apps/editor` | Simple line editor. |
 | `/apps/clock` | Clock/uptime demo. |
 | `/apps/http` | HTTP/1.1 + HTTPS client (libahttp over libatls, chain validation against `/etc/ssl/roots.pem`). |
+| `/apps/ota` | OTA update tool: `check`/`apply`/`rollback`/`status`; streams, verifies (sha256) and A/B-swaps the kernel on `/fat`. |
 | `/apps/trustinfo` | Shows the shipped trust-store roots and their not-after expiry (X8; see `docs/trust_store.md`). |
 | `/apps/browser` | Text web browser with simple HTML rendering. |
 | `/apps/gcalc` | Graphical calculator. |

@@ -210,3 +210,28 @@ third connect of one boot met SLIRP's FIN-ACK; ports now come from a
 monotonic wheel. No new debt rows and no marker drift: OTA_PLAN.md stays
 at 6 (two Result phrasings reworded to stay inside the pin), and the new
 test_ota_apply.sh / test_ota_manifest.c carry no markers.
+
+OTA_PLAN O5 (2026-09-08, close-out): the OTA series is COMPLETE (O0-O5).
+The four harnesses run as their own `ota` CI shard; tools/check_ota_claims.py
+pins every done phase to its artefacts and greppable receipts (negative
+control included) in the workflow's claim-check step and make test-unit;
+docs/status.md, README.md and TODO.md carry the feature rows. The plan's
+parked items, restated with their section-2 reasons:
+- Streaming TLS payload downloads — needs an incremental ahttp API; the
+  manifest sha256 already buys integrity and the manifest itself can be
+  HTTPS (today https:// payload URLs are refused with a clear message).
+- Signed manifests — atls carries ECDSA/RSA; pinned-key verification is
+  clean work once the flow exists, but it adds key management this plan
+  did not need to be honest about.
+- initrd / userspace image updates — the manifest format gains an
+  artifacts= list later; kernel-first is where the risk and payoff are.
+- Boot-success watchdog (stage2 consulting a boot-attempt counter for
+  auto-rollback of a kernel that faults mid-boot) — stage2 can read
+  files, so it is possible; the A/B fallback plus `ota rollback` covers
+  the corrupt/unloadable class first.
+- Delta updates, and a real statvfs(3) (today's is a hardcoded stub;
+  ota guards with a size sanity bound + write-time ENOSPC abort).
+No new debt rows and no marker drift: OTA_PLAN.md stays at 6 and
+TODO.md stays at 7 — the parked items above are restated in TODO.md as
+bullets, not open boxes, because this file's open boxes are owned by
+RESIDUE2 phases (pinned by tools/check_residue2_claims.py).

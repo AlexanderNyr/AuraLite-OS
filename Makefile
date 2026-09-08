@@ -2972,6 +2972,13 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@python3 tools/check_fsfull_claims.py || exit 1
 	@python3 tools/check_fsfull_claims.py --selftest || exit 1
 
+# OTA_PLAN O5: the update plan cannot drift from the tree either.  Every
+# done phase is pinned to its artefacts AND its greppable receipts (the
+# harness lines the gates assert on), with the usual negative control.
+	@echo "[unit] running tools/check_ota_claims.py"
+	@python3 tools/check_ota_claims.py || exit 1
+	@python3 tools/check_ota_claims.py --selftest || exit 1
+
 # GL2_PLAN.md L0: tools/check_gl2_claims.py cannot drift from the tree.
 # Opener facts are pinned as live greps; later phases move the pins in the
 # same commit.  Negative control as usual (a checker that never fails

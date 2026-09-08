@@ -713,6 +713,22 @@ build when a box and the plan disagree.
 
 ## Future Enhancements
 
+### OTA self-update (OTA_PLAN.md — O0–O5 complete)
+
+- [x] Partition-aware boot volume: GPT/MBR-aware FAT32 mount, no formatter may touch a partitioned disk (fat32/diskfs/AHCI self-test all gated; `test_ota_bootvol.sh`).
+- [x] `SYS_REBOOT` (612) + `reboot` shell command + `AURALITE_VERSION` as one build knob across all identity prints (`test_ota_reboot.sh`).
+- [x] Stage2 A/B fallback: an unloadable `KERNEL.ELF` degrades to `KERNEL.OLD`, one bounded retry (`test_ota_fallback.sh`).
+- [x] The `ota` tool (check/apply/rollback/status): streamed 4 KiB-chunk download, on-the-fly sha256, rename-based A/B swap, sync; NIST-vector unit tests and the three-boot exit gate (`test_ota_apply.sh`, `ota` CI shard).
+Parked with reasons (OTA_PLAN §2; the open boxes in this file are owned
+by RESIDUE2 phases by convention — the residue2 checker pins that — so
+the parked OTA items stay bullets, not boxes):
+
+- **Streaming TLS payload downloads** — needs an incremental ahttp API; today https:// payload URLs are refused with a clear message, and the manifest itself may be HTTPS.
+- **Signed manifests** — ECDSA/RSA pinned-key verification; atls already carries the primitives.
+- **initrd / userspace image updates** — the manifest format gains an `artifacts=` list later.
+- **Boot-success watchdog** — stage2 consulting a boot-attempt counter for auto-rollback of a kernel that faults mid-boot.
+- **Delta updates, and a real `statvfs(3)`** — today's is a hardcoded stub; `ota` guards with a size sanity bound + write-time ENOSPC abort instead.
+
 ### Memory management
 
 - [x] Strict per-segment user ELF permissions and NX for user data/stack.

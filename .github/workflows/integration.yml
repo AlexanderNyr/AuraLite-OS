@@ -125,6 +125,14 @@ jobs:
       # 27 cases behind tests/integration/cases/ -- a fifth of the suite,
       # including phase gates, that CI never ran while reporting all green.
       # Disagreement in either direction now fails the build.
+      # OTA_PLAN O5: the update plan cannot drift from the tree.  Every
+      # ✅ phase is pinned to its gate artefacts (harnesses, receipts,
+      # unit tests, docs rows), with the usual negative control.
+      - name: OTA plan claim check
+        run: |
+          python3 tools/check_ota_claims.py --check
+          python3 tools/check_ota_claims.py --selftest
+
       - name: Integration case registry check
         run: python3 tools/check_test_registry.py --check
 
@@ -242,7 +250,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img, fsfull]
+        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img, fsfull, ota]
     steps:
       - uses: actions/checkout@v4
 

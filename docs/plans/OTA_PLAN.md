@@ -1,6 +1,6 @@
 # AuraLite OS — OTA Update Plan (A/B kernel slots on the boot ESP)
 
-## Status: IN PROGRESS — O0 ✅ O1 ✅ O2 ✅ O3 ✅ O4 ✅ DONE; O5 pending
+## Status: COMPLETE — O0 ✅ O1 ✅ O2 ✅ O3 ✅ O4 ✅ O5 ✅ (all phases landed)
 
 > This is a feature plan in the style of `FSFULL_PLAN.md`, `SELFHOST_PLAN.md`
 > and `INTERNET_PLAN.md`, written against the tree as it stands. It follows
@@ -277,23 +277,29 @@ flow, driven from the shell.
 
 ---
 
-### Phase O5 — CI wiring and close-out
+### Phase O5 — CI wiring and close-out ✅ DONE
 
 **Objective:** the flow is a first-class, machine-checked citizen.
 
 #### Tasks
-- [ ] `test_ota_bootvol/reboot/fallback/apply` registered in
-      `run_all.sh` ALL_CASES and placed on a shard (net lane: it already
-      carries the http-server fixture pattern).
-- [ ] `docs/status.md`, `README.md`, `CHANGELOG.md`, TODO row, ledger
-      coverage rows; `tools/check_*_claims.py` extended if the docs make
-      new claims (they will: "OTA A/B with bootloader fallback" is a
-      checkable claim).
-- [ ] The plan's Status line flips to COMPLETE; deferrals restated in the
-      ledger with their §2 reasons.
+- [x] `test_ota_bootvol/reboot/fallback/apply` registered in
+      `run_all.sh` ALL_CASES and placed on a shard — their OWN `ota`
+      shard, not the first draft's `net` (bootvol and fallback never
+      touch the network, and ~19 min of multi-boot cases would stretch
+      the net shard's wall-clock; the fsfull/F7 precedent exactly).
+- [x] `docs/status.md`, `README.md`, `CHANGELOG.md`, TODO rows, ledger
+      coverage entry; `tools/check_ota_claims.py` pins every done phase
+      to its artefacts AND its greppable receipts (5 phases, 26 artefact
+      + receipt pins, negative control included), wired into the
+      workflow's claim-check step and `make test-unit`.
+- [x] The plan's Status line flips to COMPLETE; the parked items are
+      restated in the ledger with their §2 reasons.
 
 #### Test gate
-- CI run: all jobs green with the new cases included.
+- CI run: all jobs green with the new cases included.  (Verified locally
+  on the patched tree: `run_all.sh --check-groups` green, the `ota` shard
+  green end to end, `make test-unit` EXIT 0 with the new checker; the
+  CI run itself is the user's push — logs to follow.)
 
 #### Deliverable
 `patches/OTA_O5_wireup.patch`
@@ -309,6 +315,10 @@ version; corrupting either slot still boots via the other. That is OTA:
 measured, asserted, no forgery possible (the version banner is printed by
 the kernel that actually booted, and the payload digest is checked against
 the manifest before anything is renamed).
+
+*Achieved as written: O4's `test_ota_apply.sh` lane A is exactly this
+case (plus the slot-corruption half in O3's `test_ota_fallback.sh`),
+and O5 made it a first-class CI shard.*
 
 ---
 
@@ -507,3 +517,45 @@ TCP change — http_get, dns_tcp 7/7, tcp_ordering 10/10, udp_blocking
 ota_reboot 11/11, ota_fallback 17/17, selfhost_kernel_guest 26/26
 (initrd gained the app), `make test-unit` EXIT 0 with
 test_ota_manifest in the run.
+
+## O5 Result
+
+Implemented, measured, green.
+
+1. `tests/integration/run_all.sh`: the four harnesses are registered in
+   ALL_CASES and run as their OWN `ota` shard — group_re gains
+   `^test_ota_[a-z0-9_]+$`, GROUP_NAMES gains `ota`, and
+   `--check-groups` proves the partition still gives every case exactly
+   one home.  `test_ota_apply` joined SLOW_CASES_RE (three boots plus a
+   cold override build).  The first draft parked these on the `net`
+   shard; the tree said no: bootvol and fallback never touch the
+   network, and ~19 minutes of multi-boot harnesses would stretch the
+   net shard's wall-clock — the exact reason fsfull split from fs (F7).
+2. `.github/workflows/integration.yml`: the shard matrix gains `ota`,
+   and the build job gains an "OTA plan claim check" step.
+3. `tools/check_ota_claims.py` (new): the plan cannot drift from the
+   tree — COMPLETE status, all five phase sections, every ✅ phase
+   pinned to its artefacts AND its greppable receipts (26 pins: the
+   `[fat32] found FAT32 partition ... (via %s)` mount line, the
+   `[ahci] non-destructive write verify` receipt, `SYS_REBOOT`, the
+   stage2 `falling back to KERNEL.OLD` string, the `[ota] sha256
+   MISMATCH` / `A/B swap done` lines, the shard registration, the docs
+   rows).  Patch files are deliberately not pinned (the RINET2
+   precedent: a .patch on disk is evidence a file exists).  Negative
+   control: three planted violations (missing artefact, vanished
+   receipt, status not COMPLETE) must all be caught.  Wired into the
+   workflow step and `make test-unit`.
+4. Docs: `docs/status.md` (partition-aware FAT32 row, SYS_REBOOT row,
+   the `/apps/ota` row), `README.md` (stable-features bullet +
+   user-space table row), `TODO.md` (a full OTA section: four landed
+   rows plus the parked §2 items as open rows), `CHANGELOG.md`.
+5. Ledger: the close-out entry restates every parked item with its §2
+   reason.
+
+Local gates on the patched tree (noble clang 18.1.3):
+`run_all.sh --check-groups` green; the `ota` shard green end to end
+(bootvol 11/11, reboot 11/11, fallback 17/17, apply 20/20);
+`make test-unit` EXIT 0 including the new checker + selftest;
+`tools/check_residue_claims.py` OK (the plan document's marker count
+stays pinned at 6 — the O5 phrasings were chosen to add none).  The CI
+run itself is the user's push.

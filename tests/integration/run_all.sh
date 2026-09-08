@@ -126,6 +126,15 @@ ALL_CASES=(
     test_fscheck
     test_bc_writeback
     test_ahci_matrix
+    # OTA_PLAN O5: the update flow as four self-contained multi-boot
+    # harnesses (boot-volume safety, reboot+identity, stage2 fallback,
+    # apply/rollback over the network).  They run as their own `ota`
+    # shard -- the fsfull precedent: multi-boot cases must not stretch
+    # another shard's wall-clock.  test_ota_apply is on SLOW_CASES_RE.
+    test_ota_bootvol
+    test_ota_reboot
+    test_ota_fallback
+    test_ota_apply
     # F7 (FSFULL_PLAN.md): the five real on-disk filesystems each have a
     # self-contained harness under tests/<fs>/; these thin wrappers register
     # them with the shard runner.  Each builds its own disks, so there is no
@@ -264,7 +273,7 @@ ALL_CASES=(
 # is even slower: it runs the whole closure twice plus the QEMU idle that waits
 # out the closure's fixed budget, so it is the case "--fast" must never carry.
 # --fast skips both exactly like the other correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$'
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #
@@ -279,7 +288,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 # refuses to run rather than silently dropping out of CI — the
 # AUDIT_A0 disease (27 cases on disk that CI never ran) does not get a
 # second chapter.
-GROUP_NAMES="core posix fs usb net gui selfhost-script selfhost-closure selfhost-img fsfull"
+GROUP_NAMES="core posix fs usb net gui selfhost-script selfhost-closure selfhost-img fsfull ota"
 group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
@@ -290,6 +299,12 @@ group_re() {
         # `fs` group so the multi-boot harnesses (each is several QEMU
         # boots) do not stretch the plain filesystem shard's wall-clock.
         fsfull) echo '^test_(ext4|f2fs|btrfs|exfat|ntfs)$' ;;
+        # OTA_PLAN O5: the update flow's four harnesses.  A shard of its
+        # own (not the plan's first-draft `net` placement): bootvol and
+        # fallback never touch the network, and ~19 min of multi-boot
+        # cases would stretch the net shard's wall-clock -- the exact
+        # reason fsfull split from fs (F7).
+        ota)   echo '^test_ota_[a-z0-9_]+$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
         gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+)$' ;;
