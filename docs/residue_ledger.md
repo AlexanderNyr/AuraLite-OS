@@ -189,3 +189,13 @@ gfx banner). No new debt rows and no marker drift: `OTA_PLAN.md` stays at
 (syscalls, shell_commands, boot_to_shell, selfhost_kernel_guest,
 ota_bootvol) stay green unmodified — the guest tcc build rides the
 #ifndef fallback identity.
+
+OTA_PLAN O3 (2026-09-08): the stage2 KERNEL.OLD fallback landed — one
+bounded retry on any KERNEL.ELF load failure (missing/unreadable/bad
+ELF), receipts on both sides, happy path unchanged, 32-bit leg
+untouched, 6656/64512 B inside the 126-sector budget. The pass also
+fixed the O2-shipped parity break (procfs.c pulling kernel.h's
+ARCH_X86_64 #error into the rv64/a64/i386 syntax lanes; the version
+macro moved to the arch-free kernel/version.h, parity back to 25/25).
+No new debt rows and no marker drift: OTA_PLAN.md stays at 6, the new
+test_ota_fallback.sh carries none.

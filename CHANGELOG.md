@@ -2,6 +2,38 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OTA O3 — bootloader fallback] 2026-09-08 — a corrupt KERNEL.ELF can no longer brick the boot
+
+The third OTA phase gives stage 2 its half of the anti-brick promise:
+an unloadable kernel image degrades to the OLD slot instead of halting.
+
+- **The fallback (`boot/bios/stage2/stage2_start.asm`).** Every failure
+  exit of the 64-bit KERNEL.ELF leg — not found, unreadable (a superset
+  of the plan's two named triggers: same hazard), or rejected by the ELF
+  parser — prints its specific receipt, then
+  `[BL4] KERNEL.ELF unloadable -- falling back to KERNEL.OLD` and tries
+  `KERNEL.OLD` exactly ONCE: same staging buffer, same `elf_load`;
+  success rejoins the normal flow (initrd, page tables, long mode — a
+  fallback boot is a normal boot), failure prints
+  `[BL4] KERNEL.OLD missing or unloadable; halting` and takes the
+  existing halt.  The happy path prints nothing new; the 32-bit
+  KERNEL32.ELF leg is unchanged.  stage2.bin: 6144 → 6656 B of the
+  126-sector (64512 B) budget.
+- **Gate.** `tests/integration/cases/test_ota_fallback.sh` (17
+  assertions, 3 lanes; the ESP offset is parsed from the image's own
+  MBR, not hardcoded): garbage KERNEL.ELF + real KERNEL.OLD boots all
+  the way to an answered `uname`; garbage with no OLD slot halts loudly
+  with the kernel provably never running; the untouched image never
+  prints the fallback line.  All six boot smokes stay green (incl.
+  bl4_fat_smoke, which deliberately stages a non-ELF file), plus
+  ota_bootvol 11/11, ota_reboot 11/11, boot_to_shell 17/17,
+  `make test-unit` EXIT 0.
+- **O2 defect caught and fixed.** procfs.c's `/proc/version` change had
+  pulled in `kernel/kernel.h`, whose `#error` without ARCH_X86_64 broke
+  the parity lanes' syntax check of kernel/fs as rv64/aarch64/i386
+  (24/25 on all three).  The version macro now lives in the arch-free
+  `kernel/version.h`; `check_parity_claims.py` is back to 25/25.
+
 ## [OTA O2 — reboot and identity] 2026-09-08 — SYS_REBOOT, the `reboot` command, one version knob for every identity print
 
 The second OTA phase gives the OS the two primitives the update flow

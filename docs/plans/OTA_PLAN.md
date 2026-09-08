@@ -1,6 +1,6 @@
 # AuraLite OS — OTA Update Plan (A/B kernel slots on the boot ESP)
 
-## Status: IN PROGRESS — O0 ✅ O1 ✅ O2 ✅ DONE; O3–O5 pending
+## Status: IN PROGRESS — O0 ✅ O1 ✅ O2 ✅ O3 ✅ DONE; O4–O5 pending
 
 > This is a feature plan in the style of `FSFULL_PLAN.md`, `SELFHOST_PLAN.md`
 > and `INTERNET_PLAN.md`, written against the tree as it stands. It follows
@@ -206,27 +206,29 @@ distinct version string.
 
 ---
 
-### Phase O3 — Stage 2 A/B fallback
+### Phase O3 — Stage 2 A/B fallback ✅ DONE
 
 **Objective:** an unloadable or missing KERNEL.ELF degrades to KERNEL.OLD
 instead of halting.
 
 #### Tasks
-- [ ] stage2_start.asm: on `fat_find(KERNEL.ELF)` miss **or** `elf_load`
+- [x] stage2_start.asm: on `fat_find(KERNEL.ELF)` miss **or** `elf_load`
       failure, `fat_find(KERNEL.OLD)` → `fat_load` → `elf_load`, with the
       receipt `[BL4] KERNEL.ELF unloadable -- falling back to KERNEL.OLD`
       (and the happy path unchanged, zero new output).
-- [ ] The fallback is bounded: one retry, no loop; both failing keeps the
+- [x] The fallback is bounded: one retry, no loop; both failing keeps the
       existing loud halt.
-- [ ] Stage 2 stays within the 126-sector budget (currently 6144/64512 B).
+- [x] Stage 2 stays within the 126-sector budget (6144 → 6656 of 64512 B).
 
 #### Test gate
 - `test_ota_fallback.sh`: a host-mtools-doctored copy of the dual image
   with KERNEL.ELF replaced by garbage boots via the OLD slot (receipt +
   shell reached); an untouched image never prints the fallback line.
 
+**Result:** implemented and green — see the O3 Result section at the bottom.
+
 #### Deliverable
-`patches/OTA_O3_fallback.patch`
+`patches/OTA_O3_fallback.patch` ✅
 
 ---
 
@@ -396,3 +398,46 @@ Regressions green (noble clang 18.1.3): syscalls 4/4, shell_commands
 9/9, boot_to_shell 17/17, selfhost_kernel_guest 26/26 (guest tcc build
 unaffected — fallback identity), ota_bootvol 11/11, `make test-unit`
 EXIT 0.
+
+## O3 Result
+
+Implemented, measured, green.
+
+`boot/bios/stage2/stage2_start.asm`: every failure exit of the 64-bit
+KERNEL.ELF leg — `fat_find` miss, `fat_load` failure (a superset of the
+plan's two named triggers: an unreadable ELF slot is the same hazard as
+an unparseable one), or `elf_load` rejection — now prints its specific
+receipt and enters `.k_fallback`: exactly ONE retry, no loop, via
+`KERNEL  OLD` (11-byte 8.3), staged at the same 0x00200000 buffer and
+parsed by the same `elf_load`.  Success rejoins the normal flow at
+`.elf_parsed` (initrd, page tables, long mode are shared — a fallback
+boot IS a normal boot); failure prints
+`[BL4] KERNEL.OLD missing or unloadable; halting` and takes the existing
+halt path.  The happy path prints exactly what it always printed (zero
+new output), and the 32-bit KERNEL32.ELF leg is byte-for-byte unchanged
+(a missing KERNEL32.ELF remains the I0 refusal, not a fallback case).
+The plan's receipt line is verbatim:
+`[BL4] KERNEL.ELF unloadable -- falling back to KERNEL.OLD`.
+Budget: stage2.bin 6144 → 6656 B of the 64512 B (126-sector) cap.
+
+Gate `tests/integration/cases/test_ota_fallback.sh` (17 assertions, 3
+lanes; the ESP byte offset is parsed from the image's own MBR entry 0,
+not hardcoded): (A) garbage KERNEL.ELF + real KERNEL.OLD → find/parse
+receipts, the fallback line, kernel.old located/loaded, PT_LOAD copied,
+userspace reached, `uname` answered; (B) garbage with no OLD slot →
+both failure receipts, the loud halt, and the kernel provably never
+runs; (C) untouched image → the fallback line never prints and the
+normal receipts stand.  Regressions green (noble clang 18.1.3): all six
+boot smokes (bl3_stage2, bl4_boot, bl4_elf, bl4_fat, bl5_iso, bl7_dual)
+— bl4_fat_smoke deliberately stages a non-ELF file and still passes:
+it asserts find/load plus its memory dump, neither of which the
+fallback touches; ota_bootvol 11/11, ota_reboot 11/11,
+boot_to_shell 17/17, `make test-unit` EXIT 0.
+
+The O3 pass also caught and fixed a defect the O2 patch had shipped:
+procfs.c's `/proc/version` identity pulled in `kernel/kernel.h`, whose
+`#error` without ARCH_X86_64 broke the parity lanes' syntax check of
+kernel/fs as rv64/aarch64/i386 (24/25 on all three; invisible to the
+O2 session's own gates).  The version macro now lives in the arch-free
+`kernel/version.h` (kernel.h includes it; procfs.c includes it
+directly); `check_parity_claims.py` is back to 25/25 on every lane.

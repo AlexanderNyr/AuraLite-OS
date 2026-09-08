@@ -291,7 +291,13 @@ stage2_entry:
     mov  si, name_kernel32
 .kname_done:
     call fat_find
-    jc   .fat_no_kernel
+    jnc  .k_found
+    cmp  byte [lm_absent], 0
+    jne  .fat_no_kernel            ; 32-bit path: the I0 refusal, unchanged
+    mov  si, msg_fat_no_kernel     ; 64-bit slot miss: name it, then ...
+    call log16_puts
+    jmp  .k_fallback               ; ... ONE bounded retry via KERNEL.OLD (OTA O3)
+.k_found:
     mov  si, msg_fat_found
     call log16_puts
 
@@ -305,7 +311,13 @@ stage2_entry:
     mov  edx, [fat_result_size]
     mov  edi, 0x00200000
     call fat_load
-    jc   .fat_load_fail
+    jnc  .k_staged
+    mov  si, msg_fat_load_fail
+    call log16_puts
+    cmp  byte [lm_absent], 0
+    je   .k_fallback               ; 64-bit slot: retry via KERNEL.OLD (OTA O3)
+    jmp  .fat_done                 ; 32-bit path: existing halt
+.k_staged:
     mov  si, msg_fat_load_ok
     call log16_puts
 
@@ -407,7 +419,9 @@ stage2_entry:
 .elf_fail:
     mov  si, msg_elf_fail
     call log16_puts
-    jmp  .fat_done
+    cmp  byte [lm_absent], 0
+    je   .k_fallback               ; 64-bit KERNEL.ELF unloadable: retry (OTA O3)
+    jmp  .fat_done                 ; 32-bit ELF32 failure: existing halt
 .fat_no_kernel:
     ; On the 32-bit path a missing KERNEL32.ELF is the I0 refusal case:
     ; the CPU cannot run the 64-bit kernel and the partition carries no
@@ -424,6 +438,43 @@ stage2_entry:
     jmp  .no_k32_hang
 .fat_no_kernel64:
     mov  si, msg_fat_no_kernel
+    call log16_puts
+    jmp  .fat_done
+
+; ---- OTA_PLAN O3: the OLD-slot fallback ----------------------------------
+; Only the 64-bit KERNEL.ELF leg can land here (every entry point tests
+; lm_absent first): the slot's file is missing, unreadable, or not a
+; loadable ELF -- exactly the corrupt-update shapes an interrupted
+; `ota apply` can leave behind.  Exactly ONE retry, no loop: locate
+; KERNEL.OLD, stage it at the same 0x00200000 buffer, parse it with the
+; same elf_load.  Any failure here is terminal (the loud halt below);
+; success rejoins the normal flow at .elf_parsed -- initrd, page tables,
+; long mode are shared, so a fallback boot is a normal boot.
+.k_fallback:
+    mov  si, msg_k_old_fallback
+    call log16_puts
+    mov  si, name_kernel_old
+    call fat_find
+    jc   .k_old_gone
+    mov  si, msg_k_old_found
+    call log16_puts
+    mov  eax, [fat_result_cluster]
+    mov  edx, [fat_result_size]
+    mov  edi, 0x00200000
+    call fat_load
+    jc   .k_old_gone
+    mov  si, msg_k_old_load_ok
+    call log16_puts
+    mov  eax, 0x00200000
+    mov  edx, [fat_result_size]
+    call elf_load
+    jc   .k_old_gone
+    mov  si, msg_elf_ok
+    call log16_puts
+    jmp  .elf_parsed
+
+.k_old_gone:
+    mov  si, msg_k_old_gone
     call log16_puts
     jmp  .fat_done
 .fat_load_fail:
@@ -477,11 +528,19 @@ msg_pt_ok:       db "[BL4] page tables built at 0x01000000", 0x0D, 0x0A, 0
 msg_lm_go:       db "[BL4] entering long mode; jumping to kernel _start", 0x0D, 0x0A, 0
 msg_fat_no_kernel: db "[BL4] kernel.elf NOT FOUND", 0x0D, 0x0A, 0
 msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
+; OTA_PLAN O3: the OLD-slot receipts.  The fallback line is the one the
+; plan names; the rest mirror the kernel.elf trio so a fallback boot is
+; as readable in the log as a normal one.
+msg_k_old_fallback: db "[BL4] KERNEL.ELF unloadable -- falling back to KERNEL.OLD", 0x0D, 0x0A, 0
+msg_k_old_found:    db "[BL4] kernel.old located", 0x0D, 0x0A, 0
+msg_k_old_load_ok:  db "[BL4] kernel.old loaded to 0x00200000", 0x0D, 0x0A, 0
+msg_k_old_gone:     db "[BL4] KERNEL.OLD missing or unloadable; halting", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
 
 ; File names in 8.3 uppercase, space-padded, 11 bytes exact.
-name_kernel:   db "KERNEL  ELF"
-name_kernel32: db "KERNEL32ELF"
+name_kernel:     db "KERNEL  ELF"
+name_kernel_old: db "KERNEL  OLD"   ; OTA O3: the fallback slot (8.3, 11 bytes)
+name_kernel32:   db "KERNEL32ELF"
 name_initrd:   db "INITRD  TAR"
 
 boot_drive: db 0

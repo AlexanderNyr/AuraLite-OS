@@ -6,7 +6,7 @@
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/kernel.h"   /* AURALITE_VERSION: /proc/version identity (OTA O2) */
+#include "kernel/version.h"  /* AURALITE_VERSION for /proc/version (OTA O2; arch-free: the parity lanes compile this file as rv64/a64/i386) */
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/thread.h"
