@@ -59,6 +59,14 @@ ifeq ($(KEYMAP),de)
 CFLAGS      += -DKEYBOARD_DEFAULT_LAYOUT=keymap_de
 endif
 
+# OTA_PLAN O2: overridable version identity.  The same define reaches the
+# kernel (kernel.c's boot receipt) and userspace (init's banner, `uname`),
+# so one build knob moves every version print together.  Usage:
+#   make iso AURALITE_VERSION=0.0.2-ota
+AURALITE_VERSION ?= 0.0.1
+VERSION_DEFINE    := -DAURALITE_VERSION='"$(AURALITE_VERSION)"'
+CFLAGS           += $(VERSION_DEFINE)
+
 # OPT_O2 (OPT_PLAN.md): build-default boot self-test intensity.  This is
 # what real hardware (no fw_cfg) gets; a QEMU boot can override it at run
 # time with -fw_cfg name=opt/auralite.selftest,string=full|fast|off, which
@@ -814,6 +822,9 @@ USER_BIN_H   := $(BUILD_DIR)/init_bin.h
 USER_CFLAGS  := -D__AURALITE__ -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
                 -O2 -Wall -Wextra -Werror -I . -I lib/libc/include \
                 -ffunction-sections -fdata-sections
+# OTA_PLAN O2: the version define reaches userspace too (init's banner,
+# `uname`); see the AURALITE_VERSION block near the top of this file.
+USER_CFLAGS  += $(VERSION_DEFINE)
 # OPT_O8: user ELFs get section GC too -- the whole libc archive is
 # linked --whole-archive into every program, so unreferenced libc code
 # was shipped in every initrd binary until now (measured: init.elf

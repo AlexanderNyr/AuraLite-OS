@@ -179,3 +179,13 @@ plus the same partition-table respect in diskfs and the AHCI self-test
 marker drift: `OTA_PLAN.md` stays at 6, the new `test_ota_bootvol.sh`
 carries none, and the existing suites (kernel_guest, fat32_full, ahci
 matrix incl. its q35 lane) stay green unmodified.
+
+OTA_PLAN O2 (2026-09-08): reboot and identity landed — SYS_REBOOT (612,
+flush + 8042 pulse, loud-halt fallback), the `reboot` shell command, and
+AURALITE_VERSION as one build knob across kernel and userspace (five
+identity prints unified: boot receipt, shell banner, uname, /proc/version,
+gfx banner). No new debt rows and no marker drift: `OTA_PLAN.md` stays at
+6, the new `test_ota_reboot.sh` carries none, and the touched suites
+(syscalls, shell_commands, boot_to_shell, selfhost_kernel_guest,
+ota_bootvol) stay green unmodified — the guest tcc build rides the
+#ifndef fallback identity.

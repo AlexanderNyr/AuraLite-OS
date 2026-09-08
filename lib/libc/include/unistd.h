@@ -72,6 +72,7 @@ typedef struct {
 #define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 device-IRQ-
                                   wakes-hlt-ed-AP receipt (kernel selftest) */
 #define SYS_SYNC           611   /* non-standard: whole-cache flush (RESIDUE2 CI) */
+#define SYS_REBOOT         612   /* non-standard: flush + 8042 reset pulse (OTA O2) */
 #define SYS_UTIMENSAT      280   /* utimensat(2)/futimens(2) */
 
 /* File-descriptor extensions. */
@@ -335,6 +336,7 @@ int     munmap(void *addr, size_t length);
 int     msync(void *addr, size_t length, int flags);   /* A6 */
 int     fsync(int fd);                                 /* M9 */
 void    sync(void);                                   /* RESIDUE2 CI: SYS_SYNC */
+void    reboot(void);                                 /* OTA O2: SYS_REBOOT */
 /* M4: demand-paged and shared VMAs */
 int     madvise(void *addr, size_t length, int advice);
 int     mincore(void *addr, size_t length, unsigned char *vec);

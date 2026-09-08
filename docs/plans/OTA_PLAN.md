@@ -1,6 +1,6 @@
 # AuraLite OS — OTA Update Plan (A/B kernel slots on the boot ESP)
 
-## Status: IN PROGRESS — O0 ✅ DONE (this document); O1 ✅ DONE; O2–O5 pending
+## Status: IN PROGRESS — O0 ✅ O1 ✅ O2 ✅ DONE; O3–O5 pending
 
 > This is a feature plan in the style of `FSFULL_PLAN.md`, `SELFHOST_PLAN.md`
 > and `INTERNET_PLAN.md`, written against the tree as it stands. It follows
@@ -175,22 +175,22 @@ format inside a partitioned disk.
 
 ---
 
-### Phase O2 — Reboot and identity
+### Phase O2 — Reboot and identity ✅ DONE
 
 **Objective:** the OS can restart itself, and a kernel build can carry a
 distinct version string.
 
 #### Tasks
-- [ ] `SYS_REBOOT` (612): 8042 pulse (`outb(0x64, 0xFE)`) with a
+- [x] `SYS_REBOOT` (612): 8042 pulse (`outb(0x64, 0xFE)`) with a
       documented QEMU interaction — under `-no-reboot` QEMU exits (clean
       test teardown), without it the machine resets and boots again on the
       same snapshot overlay (the OTA flow's second boot).
-- [ ] `reboot` shell command (init.c command table) with a receipt line.
-- [ ] `AURALITE_VERSION` becomes overridable (`#ifndef` in kernel.h) and
+- [x] `reboot` shell command (init.c command table) with a receipt line.
+- [x] `AURALITE_VERSION` becomes overridable (`#ifndef` in kernel.h) and
       the Makefile passes `-DAURALITE_VERSION='"$(AURALITE_VERSION)"'`;
       init.c's hardcoded banner reads the same macro instead of its own
       literal.
-- [ ] A version-override build (`make kernel AURALITE_VERSION=0.0.2-ota`)
+- [x] A version-override build (`make iso AURALITE_VERSION=0.0.2-ota`)
       boots and prints the distinct banner — this is the O4 proof vehicle.
 
 #### Test gate
@@ -199,8 +199,10 @@ distinct version string.
   overlay persists within the process); second boot reaches the shell.
 - `make test-unit` + existing suite green.
 
+**Result:** implemented and green — see the O2 Result section at the bottom.
+
 #### Deliverable
-`patches/OTA_O2_reboot.patch`
+`patches/OTA_O2_reboot.patch` ✅
 
 ---
 
@@ -350,3 +352,47 @@ passes with its boot disk's table intact), ahci_large_read 8/8,
 fsformat_knob green, `make test-unit` EXIT 0 with the baseline and
 ledger moved same-commit (the plan doc itself carries 6 marker lines;
 O1 added none).
+
+## O2 Result
+
+Implemented, measured, green.
+
+1. `SYS_REBOOT` (612) in `kernel/arch/x86_64/syscall.c`: flush
+   filesystems first (`fs_cache_sync`), receipts
+   `[reboot] SYS_REBOOT: flushing filesystems` and
+   `[reboot] pulsing 8042 reset`, then `outb(0x64, 0xFE)`.  Measured QEMU
+   behaviour, now relied upon by the gate: WITHOUT `-no-reboot` the machine
+   resets onto the same in-process snapshot overlay, so one serial log
+   carries both boots; a pulse that a platform ignores ends in a loud
+   halt (never a silent return).
+2. `reboot` shell command (`userspace/system/init/init.c`): `reboot()` in
+   libc (`SYS_REBOOT` wrapper beside `sync()`), command-table entry, help
+   line, and a "the machine did not reset" line that is only reachable
+   if the reset failed.
+3. `AURALITE_VERSION` is one build knob: `make iso
+   AURALITE_VERSION=0.0.2-ota` passes `-DAURALITE_VERSION='"..."'` to
+   every kernel AND userspace compile (`CFLAGS` + `USER_CFLAGS`); the
+   `#ifndef` fallbacks (kernel.h, init.c, utsname.c) keep non-Makefile
+   compiles — including the guest tcc selfhost build, whose `uname`
+   assertion still greps the stock string — on the stock identity.
+   Implementation found three identity prints beyond the plan's named
+   two: `/proc/version` (procfs.c), the graphics-mode banner (kernel.c)
+   and `uname(2)`'s release field (utsname.c); all read the macro now,
+   so an override build is coherent end to end (kernel receipt, shell
+   banner, `uname`, `/proc/version`, gfx banner — all five).
+   Stale-object trap, recorded for O4: object files do not depend on the
+   Makefile, so an override on a warm tree can silently keep stock
+   objects — the gate builds its override image COLD in a throwaway
+   BUILD_DIR.
+
+Gate `tests/integration/cases/test_ota_reboot.sh` (11 assertions, 2
+lanes): lane A boots the dual image from AHCI WITHOUT `-no-reboot`, runs
+`reboot`, and the SAME log shows two kernel identity receipts, two
+"Hello" banners, two ESP-via-GPT mounts (the O1 invariant holds across
+the reset) and an answered `uname`; lane B cold-builds
+`AURALITE_VERSION=0.0.2-ota` and asserts all three greppable prints
+carry the override with no stale stock-version line anywhere.
+Regressions green (noble clang 18.1.3): syscalls 4/4, shell_commands
+9/9, boot_to_shell 17/17, selfhost_kernel_guest 26/26 (guest tcc build
+unaffected — fallback identity), ota_bootvol 11/11, `make test-unit`
+EXIT 0.

@@ -2,6 +2,74 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OTA O2 — reboot and identity] 2026-09-08 — SYS_REBOOT, the `reboot` command, one version knob for every identity print
+
+The second OTA phase gives the OS the two primitives the update flow
+needs: the machine can restart itself on command, and a kernel build can
+carry a distinct version string (the O5 exit gate boots an
+otherwise-versioned kernel and reads the new version back).
+
+- **`SYS_REBOOT` (612).** `kernel/arch/x86_64/syscall.c`: filesystems are
+  flushed first (`fs_cache_sync`), receipts `[reboot] SYS_REBOOT:
+  flushing filesystems` / `[reboot] pulsing 8042 reset`, then the 8042
+  pulse `outb(0x64, 0xFE)`.  Without `-no-reboot` QEMU resets onto the
+  same in-process snapshot overlay, so one serial log carries both
+  boots — the OTA second-boot leg.  An ignored pulse ends in a loud halt,
+  never a silent return.  libc gains `reboot()` beside `sync()`, and the
+  shell gains the `reboot` command (table entry + help line).
+- **`AURALITE_VERSION` is a build knob.** `make iso
+  AURALITE_VERSION=0.0.2-ota` passes the define to every kernel and
+  userspace compile; `#ifndef` fallbacks keep non-Makefile compiles
+  (including the guest tcc selfhost build) on the stock identity.  The
+  implementation found and unified three hardcoded identity prints
+  beyond the plan's named two: `/proc/version`, the graphics-mode banner
+  and `uname(2)`'s release field — an override build is coherent in all
+  five places (kernel receipt, shell banner, `uname`, `/proc/version`,
+  gfx banner).
+- **Gate.** `tests/integration/cases/test_ota_reboot.sh` (11 assertions):
+  a no-`-no-reboot` boot whose single log shows BOTH boots (identity
+  receipts ×2, ESP mounted via GPT ×2 — the O1 invariant survives the
+  reset — and an answered `uname`), plus a cold override build that
+  prints `0.0.2-ota` everywhere with no stale stock-version line.
+  Cold matters: objects do not depend on the Makefile, so a warm-tree
+  override can silently keep stock objects.
+- Regressions green (noble clang 18.1.3): syscalls, shell_commands,
+  boot_to_shell, selfhost_kernel_guest 26/26, ota_bootvol 11/11,
+  `make test-unit` EXIT 0.
+
+## [OTA O1 — boot volume] 2026-09-07 — the OS stops formatting its own boot disk (landed in dfe2c66)
+
+The first OTA phase fixed a real destroy-the-boot-disk hazard: three
+blind writers treated fixed LBAs of the first AHCI disk as scratch, and
+booting the hybrid image from AHCI let all three hit the boot disk's own
+partition structures during a single boot (measured on the baseline
+tree; `snapshot=on` hid the damage from the host).
+
+- **fat32 (`find_fat_base`).** Mount consults the disk's own tables via
+  the canonical `blkdev_partition_kind()` probe: GPT entries first, then
+  non-protective MBR entries; the first entry whose start LBA carries
+  FAT32 magic mounts as the volume (`[fat32] found FAT32 partition at
+  LBA 256 (via GPT)` on the dual image).  A table-bearing disk with no
+  FAT32 volume refuses loudly; a table-less disk keeps the raw-LBA-64
+  scratch semantics (the selfhost SH5d contract) to the byte.
+- **diskfs.** The tiny-AUFS auto-format at LBA 2 sat inside the dual
+  image's GPT entry array and wiped it before fat32 ever looked; it now
+  refuses on partitioned disks.
+- **AHCI self-test.** Its scratch write stamped `AURALAHCI-WRITE` over
+  the GPT header itself (LBA 1) — and the q35 matrix lane puts the boot
+  image on an AHCI port, so that lane was trashing its own boot disk's
+  table on every run, invisibly.  The DMA write path is still verified
+  on every disk, but non-destructively on partitioned ones
+  (save/write/readback/restore/verify); the PASS receipt every lane
+  greps for is unchanged.
+- **Gate.** `tests/integration/cases/test_ota_bootvol.sh` (11
+  assertions, 3 lanes): real dual image booted from AHCI as the only
+  disk mounts its ESP, lists `KERNEL.ELF`, zero `formatting` lines; a
+  table-bearing no-FAT disk refuses; a table-less scratch disk still
+  auto-formats at LBA 64.  Regressions green: selfhost_kernel_guest
+  26/26, fat32_full, ahci matrix (incl. q35) 17/17, fsformat_knob,
+  `make test-unit` EXIT 0.
+
 ## [CI fix — fourth wave] 2026-09-07 — run 92482275773: one red job, one kernel race
 
 14 of 15 jobs green; the posix shard's test_posix2024_conf lost exactly

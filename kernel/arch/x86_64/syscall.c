@@ -43,6 +43,7 @@
 #include "kernel/mm/shmem.h"
 #include "kernel/mm/page_cache.h"
 #include "kernel/fs/buffer_cache.h"  /* SYS_SYNC: bc_flush_all / fs_cache_sync */
+#include "kernel/arch/x86_64/portio.h"   /* SYS_REBOOT: 8042 reset pulse (OTA O2) */
 
 /* P10 types */
 typedef struct {
@@ -202,6 +203,7 @@ typedef struct {
 #define SYS_BTRFS_SELFTEST 603   /* non-standard: btrfs CoW/CRC self-test (F4b) */
 #define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 receipt */
 #define SYS_SYNC           611   /* non-standard: whole-cache flush (bc_flush_all) */
+#define SYS_REBOOT         612   /* non-standard: flush + 8042 reset pulse (OTA O2) */
 #define SYS_WAITID         247   /* Linux x86-64 number (RESIDUE2 T1) */
 #define SYS_GETPPID        110   /* Linux x86-64 number (RESIDUE2 T1) */
 
@@ -1155,6 +1157,30 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * happened to push out. */
         fs_cache_sync(NULL);
         return 0;
+    }
+    case SYS_REBOOT: {
+        /* OTA_PLAN O2: reboot(2)-shaped reset for the OTA flow.  Order
+         * matters: the filesystems are flushed FIRST (an update
+         * installed on /fat must be on disk before the machine resets),
+         * then the 8042 keyboard-controller pulse resets the CPU.
+         *
+         * QEMU interaction, measured and relied upon by
+         * test_ota_reboot.sh: with -no-reboot QEMU treats the reset as
+         * a clean exit; WITHOUT it the machine reboots on the same
+         * in-process snapshot overlay, so one serial log carries both
+         * boots — that second boot is exactly the OTA flow's "boot the
+         * kernel I just installed" leg. */
+        kprintf("[reboot] SYS_REBOOT: flushing filesystems\n");
+        fs_cache_sync(NULL);
+        kprintf("[reboot] pulsing 8042 reset\n");
+        /* Let the serial TX drain before the wire is cut. */
+        for (volatile int i = 0; i < 2000000; i++) __asm__ volatile ("pause");
+        outb(0x64, 0xFE);
+        /* A platform that ignores the pulse must not limp on as if the
+         * caller's "the machine is going down" contract had been met. */
+        kprintf("[reboot] 8042 pulse ignored; halting\n");
+        __asm__ volatile ("cli");
+        for (;;) __asm__ volatile ("hlt");
     }
     case SYS_CLOSE:
         return (uint64_t)vfs_errno(vfs_close((int)a1), EBADF);

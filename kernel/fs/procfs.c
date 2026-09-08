@@ -6,6 +6,7 @@
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/kernel.h"   /* AURALITE_VERSION: /proc/version identity (OTA O2) */
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/thread.h"
@@ -330,7 +331,10 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                         "cores\t\t: %u\n",
                         (unsigned)smp_get_cpu_count());
     } else if (vn->inode_id == 4) {
-        len = ksnprintf(text, sizeof(text), "AuraLite OS v0.0.1 (x86_64) #1 SMP\n");
+        /* OTA O2: reads the (overridable) build identity, like the boot
+         * receipt and the shell banner. */
+        len = ksnprintf(text, sizeof(text),
+                        "AuraLite OS v%s (x86_64) #1 SMP\n", AURALITE_VERSION);
     } else if (vn->inode_id == 5) {
         /* Linux-style jiffie counters: user/nice/system/idle, in PIT ticks.
          * AuraLite doesn't distinguish user/nice/system time yet, so all

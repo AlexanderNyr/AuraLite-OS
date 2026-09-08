@@ -826,6 +826,15 @@ void sync(void) {
     (void)syscall_ret(syscall(SYS_SYNC, 0, 0, 0, 0, 0, 0));
 }
 
+/* OTA_PLAN O2: reboot — flush every filesystem, then reset the machine
+ * (SYS_REBOOT: kernel-side fs_cache_sync + 8042 pulse).  Like sync(2),
+ * the call's failure mode is asynchronous: it only returns if the kernel
+ * could not reset at all, and the caller's next step is on whatever the
+ * bootloader does next — here, a fresh boot on the same disk. */
+void reboot(void) {
+    (void)syscall_ret(syscall(SYS_REBOOT, 0, 0, 0, 0, 0, 0));
+}
+
 /* A6: msync — write a shared file mapping back through the page cache. */
 int msync(void *addr, size_t length, int flags) {
     return (int)syscall_ret(syscall(26, (uint64_t)addr, (uint64_t)length,

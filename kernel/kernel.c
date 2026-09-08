@@ -651,7 +651,13 @@ void kmain(boot_info_t *boot_info) {
     /* Boot screen. */
     gfx_clear(GFX_DARKBLUE);
     gfx_fill_rect(0, 0, gfx_get_width(), 40, GFX_BLUE);
-    gfx_draw_string(16, 16, "AuraLite OS v0.0.1 — Graphics Mode", GFX_WHITE);
+    /* OTA O2: same overridable identity as every other version print. */
+    {
+        static char gfx_banner[64];
+        ksnprintf(gfx_banner, sizeof(gfx_banner),
+                  "AuraLite OS v%s — Graphics Mode", AURALITE_VERSION);
+        gfx_draw_string(16, 16, gfx_banner, GFX_WHITE);
+    }
     uint32_t box_w = 80, box_h = 60, gap = 16;
     color_t colours[] = {GFX_RED, GFX_GREEN, GFX_YELLOW, GFX_CYAN, GFX_MAGENTA};
     for (int i = 0; i < 5; i++) {

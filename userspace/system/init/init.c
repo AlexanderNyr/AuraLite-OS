@@ -29,6 +29,14 @@
 #include "sh_parse.h"
 #include "time.h"   /* struct timespec for cmd_settimes */
 
+/* OTA_PLAN O2: the shell banner and `uname` print the BUILD's version
+ * identity.  The Makefile passes -DAURALITE_VERSION='"x.y.z"' down to
+ * every userspace compile (make iso AURALITE_VERSION=0.0.2-ota); this
+ * fallback keeps non-Makefile compiles working with the stock value. */
+#ifndef AURALITE_VERSION
+#define AURALITE_VERSION "0.0.1"
+#endif
+
 /* SELFHOST SH2: INPUT_MAX 256 -> 512 and MAX_ARGS 8 -> 32 so the guest
  * toolchain's link lines fit (a tcc link of the userland names crt0,
  * libc, malloc, env, string/stdlib extras, the app and libtcc1.a --
@@ -639,7 +647,7 @@ static void cmd_pwd(void) {
 }
 
 static void cmd_uname(void) {
-    puts("AuraLite OS 0.0.1 x86_64");
+    printf("AuraLite OS %s x86_64\n", AURALITE_VERSION);
     fflush(stdout);
 }
 
@@ -684,6 +692,7 @@ static void cmd_help(void) {
     puts("  touch <file>- create an empty file");
     puts("  stat <path> - show file metadata");
     puts("  sync        - flush all filesystems to disk");
+    puts("  reboot      - flush and reset the machine");
     puts("  apm [cmd]   - AuraLite Package Manager");
     puts("  kbd [name]  - show/set keyboard layout (us, de)");
     puts("  help        - show this help");
@@ -1197,6 +1206,20 @@ static void cmd_sync(void) {
     fflush(stdout);
 }
 
+/* OTA_PLAN O2: reboot — flush every filesystem and reset the machine
+ * (SYS_REBOOT).  The kernel prints the "[reboot] ..." receipts on the
+ * serial console; without -no-reboot QEMU restarts on the same in-process
+ * snapshot overlay, so a single serial log carries BOTH boots — the
+ * second-boot half is the OTA flow's proof shape. */
+static void cmd_reboot(void) {
+    puts("reboot: flushing filesystems and resetting the machine");
+    fflush(stdout);
+    reboot();
+    /* Only reachable if the kernel could not reset at all. */
+    puts("reboot: the machine did not reset");
+    fflush(stdout);
+}
+
 /* F4b shell surface for btrfs: truncate + internal CoW/CRC self-test. */
 static void cmd_truncate(int argc, char **argv) {
     if (argc < 3) { puts("usage: truncate <path> <new-size>"); return; }
@@ -1492,6 +1515,8 @@ static int sh_run_command(int argc)
         cmd_fsync(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "sync") == 0) {
         cmd_sync();
+    } else if (strcmp(cmd, "reboot") == 0) {
+        cmd_reboot();
     } else if (strcmp(cmd, "truncate") == 0) {
         cmd_truncate(argc, cmd_argv);
     } else if (strcmp(cmd, "btrfsck") == 0) {
@@ -2590,7 +2615,7 @@ int main(void) {
 
     printf("\n");
     printf("==============================================\n");
-    printf("   AuraLite OS v0.0.1 — Interactive Shell     \n");
+    printf("   AuraLite OS v%s — Interactive Shell     \n", AURALITE_VERSION);
     printf("   Type 'help' for available commands         \n");
     printf("==============================================\n");
     printf("\n");
