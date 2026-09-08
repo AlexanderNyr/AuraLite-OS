@@ -199,3 +199,14 @@ ARCH_X86_64 #error into the rv64/a64/i386 syntax lanes; the version
 macro moved to the arch-free kernel/version.h, parity back to 25/25).
 No new debt rows and no marker drift: OTA_PLAN.md stays at 6, the new
 test_ota_fallback.sh carries none.
+
+OTA_PLAN O4 (2026-09-08): the ota tool landed — check/apply/rollback/status
+with a streamed 4 KiB-chunk payload download into /fat/KERNEL.NEW, on-the-fly
+sha256 via libatls, rename-based A/B swap and rollback, plus the plan's
+whole-flow exit gate (three boots in one log: 0.0.1 -> applied 0.0.2-ota ->
+rolled-back 0.0.1). The flow also found and fixed a real kernel TCP defect:
+timer-derived ephemeral ports reused a port within a tick window and the
+third connect of one boot met SLIRP's FIN-ACK; ports now come from a
+monotonic wheel. No new debt rows and no marker drift: OTA_PLAN.md stays
+at 6 (two Result phrasings reworded to stay inside the pin), and the new
+test_ota_apply.sh / test_ota_manifest.c carry no markers.

@@ -1,6 +1,6 @@
 # AuraLite OS — OTA Update Plan (A/B kernel slots on the boot ESP)
 
-## Status: IN PROGRESS — O0 ✅ O1 ✅ O2 ✅ O3 ✅ DONE; O4–O5 pending
+## Status: IN PROGRESS — O0 ✅ O1 ✅ O2 ✅ O3 ✅ O4 ✅ DONE; O5 pending
 
 > This is a feature plan in the style of `FSFULL_PLAN.md`, `SELFHOST_PLAN.md`
 > and `INTERNET_PLAN.md`, written against the tree as it stands. It follows
@@ -232,13 +232,13 @@ instead of halting.
 
 ---
 
-### Phase O4 — The `ota` tool and `sha256sum`
+### Phase O4 — The `ota` tool and `sha256sum` ✅ DONE
 
 **Objective:** the full check → download → verify → swap → sync → reboot
 flow, driven from the shell.
 
 #### Tasks
-- [ ] `userspace/apps/ota/ota.c` (linked against libahttp + libatls):
+- [x] `userspace/apps/ota/ota.c` (linked against libahttp + libatls):
   - `ota check <manifest-url>` — fetch via ahttp (HTTPS-capable), parse
     the line-based manifest (`version=`, `url=`, `size=`, `sha256=`),
     print the plan; refuse on missing fields or size > free ESP space.
@@ -253,10 +253,12 @@ flow, driven from the shell.
     `[ota] synced; reboot to activate`).
   - `ota rollback` — swap OLD/ELF back, `sync()`.
   - `ota status` — size + sha256 of the active and (if present) OLD slot.
-- [ ] `sha256sum` app (the main image's userspace has none; atls provides
-  the primitive) — useful beyond OTA and the honest way the test verifies
-  files on the guest.
-- [ ] Manifest parser + digest verify as **unit tests** with NIST vectors
+- [x] `sha256sum` app — ALREADY IN THE TREE: the O0 survey was wrong, the
+  selfhost SH7a tool (tools/selfhost/sha256sum.c, shipped as /bin/sha256sum)
+  exists and is host-tested; the O4 rehearsal cross-checked its in-guest
+  digest of /fat/KERNEL.ELF against the host mtools extraction — identical.
+  No second implementation was added (one implementation, tested once).
+- [x] Manifest parser + digest verify as **unit tests** with NIST vectors
   (`tests/unit/test_ota_manifest.c`).
 
 #### Test gate
@@ -268,8 +270,10 @@ flow, driven from the shell.
 - Negative lane: a tampered sha256 in the manifest aborts with
   `[ota] sha256 MISMATCH` and leaves KERNEL.ELF untouched.
 
+**Result:** implemented and green — see the O4 Result section at the bottom.
+
 #### Deliverable
-`patches/OTA_O4_ota_app.patch`
+`patches/OTA_O4_ota_app.patch` ✅
 
 ---
 
@@ -441,3 +445,65 @@ kernel/fs as rv64/aarch64/i386 (24/25 on all three; invisible to the
 O2 session's own gates).  The version macro now lives in the arch-free
 `kernel/version.h` (kernel.h includes it; procfs.c includes it
 directly); `check_parity_claims.py` is back to 25/25 on every lane.
+
+## O4 Result
+
+Implemented, measured, green — including the plan's whole-flow exit gate
+(boot 0.0.1 -> `ota apply` -> reboot into the downloaded 0.0.2-ota ->
+`ota rollback` -> reboot into 0.0.1, one serial log, every step receipted).
+
+1. `userspace/apps/ota/` — `ota.c` (the tool) + `ota_manifest.c/.h` (the
+   parser, one translation unit shared with the host unit test).
+   check/apply/rollback/status, receipts exactly as the plan names them.
+   Two transports by design: the manifest via libahttp (HTTPS-capable,
+   a few hundred bytes), the payload via a minimal in-app HTTP GET that
+   streams 4 KiB chunks straight into /fat/KERNEL.NEW with
+   atls_sha256_update on the fly — the 2.9 MiB kernel never exists in
+   memory as a whole (AHTTP_MAX_BODY is 1 MiB; buffering would be the
+   wrong design even without the cap).  https:// payloads are refused
+   with a clear message (streaming TLS stays parked, §2).
+   Free-space honesty: statvfs(3) in this tree is a hardcoded stub
+   (q10_stubs.c), so "size > free ESP" cannot be queried honestly; the
+   guard is a sanity bound (64 KiB..32 MiB) plus a write-time abort
+   that unlinks the partial KERNEL.NEW and leaves KERNEL.ELF untouched.
+   A real statvfs stays parked (§2's spirit: named, with a reason).
+2. `sha256sum`: the O0 survey was wrong — the tool already exists
+   (selfhost SH7a, /bin/sha256sum).  Verified in-guest against the host
+   extraction; no duplicate added.
+3. `tests/unit/test_ota_manifest.c` (host, links the real libatls):
+   NIST FIPS 180-4 vectors including the million-'a' digest computed by
+   4 KiB-chunk streaming (exactly the apply shape), the hex helpers, and
+   18 parser cases (every missing/malformed field, CRLF/blank/unknown
+   keys, overlong values refused not truncated).
+4. **Kernel defect found and fixed by the flow**: `tcp_open` derived
+   ephemeral ports from the timer (`40000 + (ticks+h*17) & 0x3FF`), so
+   connections made in the same tick window reused ports while SLIRP
+   still held the old 4-tuple — the third connect of one boot (check,
+   apply's manifest, then the payload stream) received FIN-ACK to its
+   SYN and died.  Ports now come from a monotonic wheel (40000..64999,
+   wraps only after 25k connects).  Documented companion behaviour (no
+   kernel change): tcp_recv returns 0 on a ~1 s no-segment wait — a
+   soft timeout, not a dead connection; during heavy buffer-cache
+   writeback SLIRP's retransmit backoff exceeds it, so the payload
+   reader retries on 0 with a silence budget (~60 s) instead of
+   aborting a healthy transfer at half its bytes (the un-retried reader
+   died at 1406880/2913360 — measured).
+5. Gate `tests/integration/cases/test_ota_apply.sh` (20 assertions):
+   lane A is the exit-quality gate — a cold `AURALITE_VERSION=0.0.2-ota`
+   kernel built in a throwaway BUILD_DIR, served by the python fixture,
+   downloaded, verified, swapped, synced; three boots in ONE log with a
+   line-order assertion (0.0.1 -> 0.0.2-ota -> 0.0.1), stage2 never
+   needing its fallback, no formatter in any boot.  Lane B: tampered
+   sha256 -> MISMATCH + abort, no swap, no OLD slot ever created, and
+   the active KERNEL.ELF digest byte-identical before and after.
+   Fixture hygiene (measured): the server subshell must `exec` python
+   (a killed wrapper leaves an orphan serving a deleted doc root — the
+   stale-server 404 failure mode), plus a pkill sweep and a pre-flight
+   manifest fetch before any guest boots.
+
+Regressions green (noble clang 18.1.3): the network suites around the
+TCP change — http_get, dns_tcp 7/7, tcp_ordering 10/10, udp_blocking
+9/9, tcp6 4/4, realweb_rustlang 10/10 — plus ota_bootvol 11/11,
+ota_reboot 11/11, ota_fallback 17/17, selfhost_kernel_guest 26/26
+(initrd gained the app), `make test-unit` EXIT 0 with
+test_ota_manifest in the run.

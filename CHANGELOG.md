@@ -2,6 +2,49 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [OTA O4 — the update tool] 2026-09-08 — check → download → verify → swap → sync → reboot, end to end
+
+The fourth OTA phase delivers the tool itself and, with it, the plan's
+whole-flow exit gate: a guest running 0.0.1 downloads a 0.0.2-ota
+kernel over the network, installs it on the volume it booted from,
+reboots into it, and rolls back — one serial log, every step receipted.
+
+- **`ota` (userspace/apps/ota/).** check/apply/rollback/status.  The
+  manifest (a few hundred bytes, `version=`/`url=`/`size=`/`sha256=`)
+  goes through libahttp; the ~2.9 MiB payload is downloaded by a
+  minimal in-app HTTP GET that streams 4 KiB chunks straight into
+  /fat/KERNEL.NEW and hashes them on the fly (nothing ever buffers the
+  whole kernel; AHTTP_MAX_BODY is 1 MiB and buffering would be the
+  wrong design regardless).  Digest mismatch → `[ota] sha256 MISMATCH`,
+  abort, KERNEL.NEW unlinked, KERNEL.ELF untouched.  Apply swaps
+  ELF→OLD, NEW→ELF, syncs; rollback promotes OLD back.  Free-space
+  honesty: statvfs(3) is a hardcoded stub in this tree, so the guard is
+  a sanity bound plus a write-time abort, not a fake free-space query.
+- **Kernel TCP fix found by the flow.** `tcp_open` derived ephemeral
+  ports from the timer, so connections made in the same tick window
+  reused a port while SLIRP still held the old 4-tuple — the third
+  connect of one boot received FIN-ACK to its SYN and died (measured).
+  Ports now come from a monotonic wheel (40000..64999).  Companion
+  behaviour documented: tcp_recv's 0-return is a ~1 s soft timeout, not
+  a dead connection — the payload reader retries with a silence budget
+  (the un-retried reader died at 1406880 of 2913360 bytes while
+  SLIRP's retransmit backoff outlasted a buffer-cache writeback storm).
+- **`sha256sum`**: the plan claimed the image had none — the survey was
+  wrong (selfhost SH7a ships /bin/sha256sum).  Verified in-guest against
+  the host mtools extraction; no duplicate added.
+- **Unit gate.** `tests/unit/test_ota_manifest.c` (host, links the real
+  libatls): NIST FIPS 180-4 vectors incl. the million-'a' digest via
+  4 KiB-chunk streaming, the hex helpers, and 18 parser cases.
+- **Integration gate.** `test_ota_apply.sh` (20 assertions): the
+  three-boot exit-quality lane with a version-order assertion
+  (0.0.1 → 0.0.2-ota → 0.0.1), stage2 never needing its O3 fallback,
+  no formatter in any boot; the negative lane proves a tampered digest
+  changes nothing (active KERNEL.ELF byte-identical before and after).
+- Regressions green (noble clang 18.1.3): http_get, dns_tcp 7/7,
+  tcp_ordering 10/10, udp_blocking 9/9, tcp6 4/4, realweb_rustlang
+  10/10, ota_bootvol 11/11, ota_reboot 11/11, ota_fallback 17/17,
+  selfhost_kernel_guest 26/26, `make test-unit` EXIT 0.
+
 ## [OTA O3 — bootloader fallback] 2026-09-08 — a corrupt KERNEL.ELF can no longer brick the boot
 
 The third OTA phase gives stage 2 its half of the anti-brick promise:

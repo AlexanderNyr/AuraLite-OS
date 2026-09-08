@@ -712,9 +712,19 @@ tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port) {
             return -EHOSTUNREACH;
         }
     }
-    /* Mix in handle to avoid two simultaneous connects landing on the same
-     * ephemeral port when the timer hasn't advanced. */
-    conn_src_port = 40000 + (uint16_t)((timer_get_ticks() + h * 17) & 0x3FF);
+    /* OTA O4: ephemeral ports come from a monotonic wheel, not the timer.
+     * The old timer-derived scheme repeats a port across connections made
+     * within the same tick window, and SLIRP keeps a closed connection's
+     * 4-tuple alive long enough that a fresh SYN with a reused source
+     * port maps onto the dying socket and meets a FIN-ACK instead of a
+     * SYN-ACK (measured: the third connect in one boot — check, then
+     * apply's manifest, then the payload stream — died exactly here).
+     * The wheel spans 40000..64999 and only wraps after 25k connects. */
+    {
+        static uint16_t next_ephemeral = 40000;
+        conn_src_port = next_ephemeral;
+        if (next_ephemeral++ >= 64999) next_ephemeral = 40000;
+    }
     conn_seq = 0x1000 + (uint32_t)h * 0x100;
     conn_ack = 0;
     conn_state = TCP_SYN_SENT;
