@@ -2,6 +2,42 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI fix — post-OTA] 2026-09-08 — run 92815985778: the one red job, an event-matching root
+
+The O5 run is the series' close-out: 15 of 16 jobs green, the new `ota`
+shard green across all four harnesses, `check_ota_claims` OK — O0–O5
+stand confirmed by CI.  The single red was `test_usb_xhci`, and it is
+not an OTA regression (`git diff e927a76..5a6e4df -- drivers/usb/` is
+empty): it is a pre-existing flake, reproduced locally at roughly one
+boot in eight before the fix below ever touched the tree.
+
+- **xHCI: a blocking wait matched Transfer Events by TYPE alone.**
+  `xhci_wait_transfer_cc()` polled "the first Transfer Event on the
+  ring" — so ANY stale completion satisfied it.  Enumeration can leave
+  a leftover Transfer Event behind (the interrupt path's comment
+  documents the same leftover); the first bulk exchange's CBW wait
+  consumed it and "succeeded" instantly, every later event shifted by
+  one transfer, and each CSW read memcpy()d a bounce buffer that was
+  still zero — the log signature `PASS: ready` → `[msc] bad CSW
+  signature 0x0` ×3 → `FAIL: READ(10) sector 0` (2 of 8 asserts).
+  The keyboard and mouse in the same test never noticed: their
+  interrupt poller already matched events by (slot, ep) for exactly
+  this reason.  New static `xhci_wait_transfer_event()` brings the
+  same discipline to the blocking path — match the event's slot
+  (flags >> 24) and endpoint ((flags >> 16) & 0x1F), take from the
+  parked stash only what is ours, drain the hardware ring parking
+  what is not, and re-scan the stash every iteration (a concurrently
+  polling interrupt endpoint may park OUR completion while we wait).
+  `xhci_wait_transfer_cc()` now calls it instead of the type-only
+  `xhci_poll_event_timeout()`.  No assertion was weakened, no test
+  modified.  Verified: 15/15 `test_usb_xhci` (was 7/8), the whole
+  `usb` shard (21 cases — hub, hid, msc_hotplug, usbfs, isoc,
+  cdc_acm, printer, audio, gui_usb, xhci_*) ALL PASSED, `make iso`
+  EXIT 0 with zero compiler warnings (the whole tree builds under
+  `-Werror`; the only linker notes are the pre-existing ld.lld
+  `.bss`-alignment lines that CI's own green 92815985778 iso job
+  prints as well).
+
 ## [OTA O5 — CI wiring and close-out] 2026-09-08 — the update flow is a first-class, machine-checked citizen
 
 The final OTA phase registers the flow in CI and locks the plan to the

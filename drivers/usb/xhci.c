@@ -1355,6 +1355,75 @@ static int xhci_recover_endpoint(xhci_dev_t *xd, int ep_id) {
  * packet reports its real length.  Returns 0 on success (including a short
  * packet), -2 on stall, -1 otherwise.
  */
+/* OTA-era CI fix (run 92815985778): a blocking transfer wait must match
+ * the event's (slot, endpoint), not just its TYPE.
+ *
+ * The old wait polled "the first Transfer Event on the ring" -- and the
+ * parked stash the same way -- so ANY stale completion satisfied it.
+ * Measured failure (test_usb_xhci, ~1 boot in 8 locally, once in CI):
+ * enumeration leaves a leftover Transfer Event (the interrupt path's
+ * comment below documents the same leftover); the first bulk exchange's
+ * CBW wait consumes it and returns "success" instantly, every later
+ * event shifts by one transfer, and each CSW read memcpy()s a bounce
+ * buffer that is still zero -- "[msc] bad CSW signature 0x0", three
+ * times in a row after "PASS: ready", then
+ * "[msc] FAIL: READ(10) sector 0 failed".  The keyboard and mouse in
+ * the same test never noticed: their interrupt poller already matched
+ * events by (slot, ep) for exactly this reason.
+ *
+ * Same discipline here: take from the parked stash only what is ours,
+ * drain the hardware ring parking what is not, and re-scan the stash
+ * every iteration -- a concurrently polling interrupt endpoint may park
+ * OUR completion while we wait. */
+static int xhci_wait_transfer_event(xhci_dev_t *xd, int ep_id,
+                                    uint32_t timeout_ms,
+                                    struct xhci_trb *out) {
+    uint32_t hz = timer_get_frequency();
+    uint64_t deadline = 0;
+    uint32_t spins = 0;
+    if (hz != 0) {
+        uint64_t ticks = ((uint64_t)timeout_ms * hz + 999) / 1000;
+        if (ticks == 0) ticks = 1;
+        deadline = timer_get_ticks() + ticks;
+    } else {
+        /* Early-boot fallback: xhci_init() runs before the PIT is armed. */
+        spins = timeout_ms * 20000u;
+    }
+
+    for (;;) {
+        /* 1) Anything already parked for exactly this endpoint? */
+        for (int i = 0; i < ev_pending_count; i++) {
+            struct xhci_trb *c = &ev_pending[i];
+            if (trb_type(c) != XHCI_TRB_TRANSFER_EVENT) continue;
+            if ((uint8_t)(c->flags >> 24) != xd->slot_id) continue;
+            if ((int)((c->flags >> 16) & 0x1F) != ep_id) continue;
+            if (out) *out = *c;
+            for (int j = i + 1; j < ev_pending_count; j++)
+                ev_pending[j - 1] = ev_pending[j];
+            ev_pending_count--;
+            return 0;
+        }
+        /* 2) Drain the hardware ring, parking what is not ours. */
+        struct xhci_trb tmp;
+        while (xhci_ev_dequeue(&tmp) == 0) {
+            if (trb_type(&tmp) == XHCI_TRB_TRANSFER_EVENT &&
+                (uint8_t)(tmp.flags >> 24) == xd->slot_id &&
+                (int)((tmp.flags >> 16) & 0x1F) == ep_id) {
+                if (out) *out = tmp;
+                return 0;
+            }
+            xhci_ev_park(&tmp);
+        }
+        if (hz != 0) {
+            if (timer_get_ticks() >= deadline) return -1;
+            __asm__ volatile ("pause" ::: "memory");
+        } else {
+            if (spins-- == 0) return -1;
+            __asm__ volatile ("pause");
+        }
+    }
+}
+
 static int xhci_wait_transfer_cc(xhci_dev_t *xd, int ep_id, int silent,
                                  uint32_t *residue_out, int *cc_out,
                                  uint32_t timeout_ms) {
@@ -1362,8 +1431,7 @@ static int xhci_wait_transfer_cc(xhci_dev_t *xd, int ep_id, int silent,
     if (cc_out) *cc_out = 0;
     db_wr(xd->slot_id, (uint32_t)ep_id);
     struct xhci_trb ev;
-    if (xhci_poll_event_timeout(XHCI_TRB_TRANSFER_EVENT, &ev,
-                                timeout_ms) != 0) {
+    if (xhci_wait_transfer_event(xd, ep_id, timeout_ms, &ev) != 0) {
         if (!silent) kprintf("[xhci] transfer timeout slot=%u ep=%d\n",
                              xd->slot_id, ep_id);
         return -1;

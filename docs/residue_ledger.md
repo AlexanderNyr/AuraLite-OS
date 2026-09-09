@@ -235,3 +235,22 @@ No new debt rows and no marker drift: OTA_PLAN.md stays at 6 and
 TODO.md stays at 7 — the parked items above are restated in TODO.md as
 bullets, not open boxes, because this file's open boxes are owned by
 RESIDUE2 phases (pinned by tools/check_residue2_claims.py).
+
+RESIDUE2 CI fix (post-OTA wave, 2026-09-08, run 92815985778): the O5
+run confirms the OTA series (15/16 green, `ota` shard ALL PASSED,
+check_ota_claims OK); the one red is a pre-existing xHCI flake, not an
+OTA regression (e927a76..5a6e4df touches no driver under
+drivers/usb/). Root: xhci_wait_transfer_cc matched Transfer Events by
+TYPE only, so a leftover enumeration completion satisfied the first
+blocking bulk wait instantly and every later event shifted by one
+transfer -- the CSW read memcpy'd a zero bounce buffer ("bad CSW
+signature 0x0" x3 after "PASS: ready", then "FAIL: READ(10) sector
+0"; ~1 boot in 8 locally, once in CI). Fix: static
+xhci_wait_transfer_event() matching (slot, ep) the way the interrupt
+path always has -- stash take-what-is-ours, ring drain with parking,
+stash re-scan per iteration. No assertion weakened, no test modified,
+no suite touched; 15/15 test_usb_xhci (was 7/8), the whole usb shard
+(21 cases) ALL PASSED, make iso EXIT 0, -Werror clean (zero
+compiler warnings; the ld.lld .bss-alignment linker notes are
+pre-existing -- CI 92815985778 on the BASE commit prints them too). No ledger rows
+opened or closed; baseline unchanged (OTA_PLAN.md 6, TODO.md 7).
