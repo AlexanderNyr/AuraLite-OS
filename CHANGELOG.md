@@ -2,6 +2,23 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [LX L0 — the Linux compatibility plan] 2026-09-09 — running existing Linux applications, a measured ladder
+
+The OS's second personality opens the way mingw `.exe` files already
+run: `docs/plans/LX_COMPAT_PLAN.md` lands, measured against `fb39fe2`.
+The thesis is measurement, not ambition: the syscall *mechanism* is
+already Linux's (register convention, errno values, negative returns,
+~50 exact numbers, CLONE/futex/MAP constants, SA_RESTORER signals,
+auxv keys) — what diverges is the *number map* (custom ranges collide
+with Linux's 80–106 and 500+) and a handful of *structures* (stat,
+sigaction, LISTDIR-vs-getdents64, termios ioctls). So the plan is a
+per-process personality at the dispatch boundary — native processes
+keep the native map — with an application ladder from a static hello
+(busybox ls/cat → busybox ash → glibc dynamic sh → unmodified lua) and
+six phases (L0–L5), each with a test gate and its own CI case.  The
+marker baseline gains the plan's row in the same commit (OTA O0's
+precedent); ledger coverage registers at L5.
+
 ## [CI fix — post-OTA] 2026-09-08 — run 92815985778: the one red job, an event-matching root
 
 The O5 run is the series' close-out: 15 of 16 jobs green, the new `ota`
