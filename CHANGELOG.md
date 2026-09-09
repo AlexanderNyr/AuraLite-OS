@@ -2,6 +2,34 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [LX L1 — personality v1] 2026-09-09 — an unmodified static Linux binary runs
+
+The ladder's first rung is green: `lxrun /linux/tests/hello` — and a
+direct `/linux/tests/hello` — boots glibc's static startup, prints the
+binary's own line through the translated write(2), and exits 0 through
+the lx-only exit_group arm.  The personality is a per-TCB flag selected
+by the /linux path prefix at every exec (spawn and shell paths both
+derived), inherited by fork/clone; native processes are untouched —
+the number map is the only door.  `kernel/lx/` holds the map (each row
+measured against both tables; colliding numbers stay unmapped on
+purpose) and it is host-unit-tested (`test_lx_translate`).  Getting
+hello across the line fixed three real kernel defects, each reproduced
+first: the SYSCALL epilogue clobbered the six argument registers
+(Linux preserves them; glibc's inline syscall sequences reload the
+number from RSI — brk arrived as nr 1), the native brk rounds its
+return up a page (glibc's sbrk demands the exact address; the lx arm
+returns it verbatim), and the ELF loader mapped PT_LOAD pages without
+VMA descriptors (mprotect refused glibc's RELRO pass; elf_load now
+records per-segment VMAs with p_flags protections, as Linux does).
+Plus: set_tid_address is nr 218, not 96 (the gate caught the swap);
+the execve reader sizes its buffer from the vnode (static glibc is
+754 KiB; the old fixed 256 KiB could not load it); new lx arms for
+uname (sysname "Linux"), set_robust_list (accept-and-store),
+prlimit64 (RLIM_INFINITY — nothing enforces rlimits today), and
+readlinkat (-ENOENT, the honest no-procfs answer).  CI gains the `lx`
+shard with a presence-assert on the staged payload (the w32
+precedent), and test_lx_hello is its first case.
+
 ## [LX L0 — the Linux compatibility plan] 2026-09-09 — running existing Linux applications, a measured ladder
 
 The OS's second personality opens the way mingw `.exe` files already

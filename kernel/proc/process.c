@@ -17,6 +17,7 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/syscall.h"
+#include "kernel/lx/lx.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
@@ -506,6 +507,8 @@ int64_t do_fork(void) {
         vfs_fork_inherit(child->fd_table, parent->fd_table,
                          child->cloexec, parent->cloexec);
         child->brk = parent->brk;
+        child->persona = parent->persona;   /* LX_COMPAT L1: the number
+                                             * map is process identity */
         child->mmap_next = parent->mmap_next;
         child->vma_list = NULL;
 
@@ -651,8 +654,24 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
         }
     }
 
-    /* Read the entire file. For simplicity, assume it fits in 256 KiB. */
-    uint8_t *buf = kmalloc(256 * 1024);
+    /* Read the entire file.  The old fixed 256 KiB buffer held every
+     * native binary (they are -nostdlib small), but a statically linked
+     * Linux glibc program — the LX_COMPAT ladder's first rung — is
+     * ~800 KiB before stripping, and busybox is bigger still.  Size the
+     * buffer from the vnode when the size is known, capped at 8 MiB
+     * (nothing on the ladder approaches it; the cap keeps a corrupt
+     * size field from exhausting the kheap).  Unknown size (0) keeps
+     * the 256 KiB floor. */
+    uint64_t img_size = vn ? vn->size : 0;
+    if (img_size > 8 * 1024 * 1024) {
+        kprintf("[proc] execve: '%s' too large (%llu bytes)\n",
+                path, (unsigned long long)img_size);
+        vfs_close(fd);
+        exec_args_free(ea); kfree(ea);
+        return -EINVAL;
+    }
+    uint64_t buf_cap = img_size > (256 * 1024) ? img_size : (256 * 1024);
+    uint8_t *buf = kmalloc(buf_cap);
     if (!buf) {
         vfs_close(fd);
         exec_args_free(ea); kfree(ea);
@@ -660,7 +679,7 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
     }
     int64_t total = 0;
     int64_t n;
-    while ((n = vfs_read(fd, buf + total, (256 * 1024) - total)) > 0) {
+    while ((n = vfs_read(fd, buf + total, buf_cap - total)) > 0) {
         total += n;
     }
     vfs_close(fd);
@@ -774,6 +793,14 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
     if (cur) {
         cur->pml4_phys = new_pml4;
         cur->mmap_next = 0;
+        /* LX_COMPAT L1: select the NEW image's personality — an exec
+         * from the /linux subtree speaks the Linux number map, anything
+         * else speaks native.  Re-derived on every execve, so a re-exec
+         * out of the prefix returns to native and a nested /linux exec
+         * inside a shell script stays lx.  This runs after the point of
+         * no return (the old address space is gone), which is where
+         * every other per-image TCB update lives. */
+        cur->persona = lx_path_is_lx(path) ? PERSONA_LX : PERSONA_NATIVE;
     }
     if (old_pml4 && old_pml4 != new_pml4) {
         (void)paging_free_address_space(old_pml4);
@@ -1011,6 +1038,13 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     child->pml4_phys = new_pml4;
     child->vma_list = NULL;
     child->parent = sched_current();
+    /* LX_COMPAT L1: spawn loads the ELF through its own path (below),
+     * not through execve_image(), so the /linux prefix rule must be
+     * applied HERE too — the shell spawns commands, and a direct
+     * "/linux/tests/hello" must land in the lx map exactly like an
+     * lxrun execve does.  spawn_thread's own execve_image fallback
+     * re-derives it anyway (same rule, same path). */
+    child->persona = lx_path_is_lx(path) ? PERSONA_LX : PERSONA_NATIVE;
     /* The spawned child joins the spawner's process group / session and shares
      * its controlling terminal (so a foreground spawn is killable by Ctrl+C). */
     if (child->parent) {

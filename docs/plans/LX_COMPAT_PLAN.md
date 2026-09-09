@@ -1,6 +1,6 @@
 # AuraLite OS — Linux Application Compatibility Plan (the `lx` personality)
 
-## Status: OPEN — L0 ✅ L1 ⬜ L2 ⬜ L3 ⬜ L4 ⬜ L5 ⬜
+## Status: OPEN — L0 ✅ L1 ✅ L2 ⬜ L3 ⬜ L4 ⬜ L5 ⬜
 
 > This is a feature plan in the style of `FSFULL_PLAN.md` and `OTA_PLAN.md`,
 > written against the tree as it stands. It follows the same structure:
@@ -244,7 +244,36 @@ stack end-to-end without inventing an X server (§2).
 
 `docs/plans/LX_COMPAT_PLAN.md` + the `tools/residue_baseline.txt` row.
 
-### Phase L1 — Personality v1: a static hello runs
+### Phase L1 — Personality v1: a static hello runs ✅ DONE
+
+> **Result (measured on the gate, TCG):** `lxrun /linux/tests/hello` AND
+> the direct `/linux/tests/hello` both print the binary's own line and
+> exit 0; `test_lx_hello` PASSES through the harness; the only unmapped
+> Linux nr in hello's whole run is 334 (rseq — glibc falls back, by
+> design).  Getting there surfaced and fixed three real kernel facts,
+> each measured before the fix:
+> 1. **The SYSCALL path clobbered the argument registers.**  The Linux
+>    contract preserves everything except RAX/RCX/R11; our SYSRET
+>    epilogue restored only the callee-saved set, so glibc's raw inline
+>    syscall sequence (which reloads the syscall NUMBER from RSI kept
+>    live across the previous call) issued `brk` as nr 1 with RSI=1.
+>    The epilogue now keeps the six argument registers on the kernel
+>    stack until SYSRET — strictly more preservation; native binaries
+>    never noticed because their libc wrappers treat syscalls like
+>    clobbering C calls.
+> 2. **The native brk rounds its return up to a page.**  glibc's sbrk
+>    requires brk(addr) == addr verbatim; the lx map routes brk to a
+>    dedicated arm with Linux's exact return contract.
+> 3. **The ELF loader mapped pages without describing them.**  mprotect
+>    refuses ranges its VMA walk cannot cover, and glibc's RELRO pass
+>    died with "cannot apply additional memory protection after
+>    relocation".  elf_load() now records a VMA (with p_flags
+>    protections) per PT_LOAD — what Linux does; nothing native ever
+>    called mprotect on its own image.
+> Also measured into the tree: set_tid_address is nr **218** on x86-64
+> (the first draft said 96 — which is gettimeofday; the gate caught it),
+> and the execve reader's fixed 256 KiB buffer could not hold a static
+> glibc image (754 KiB) — it now sizes from the vnode, capped at 8 MiB.
 
 #### Tasks
 

@@ -157,6 +157,8 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
     for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];
     child->sig_mask = parent->sig_mask;
     child->brk = parent->brk;
+    child->persona = parent->persona;   /* LX_COMPAT L1: threads inherit
+                                         * the process's number map */
     child->mmap_next = parent->mmap_next;
     for (int i = 0; i < VFS_PATH_MAX && parent->cwd[i]; i++) child->cwd[i] = parent->cwd[i];
 

@@ -938,6 +938,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gusb.elf \
              $(USER_BUILD)/gclip.elf \
              $(USER_BUILD)/gbrowser.elf \
+             $(USER_BUILD)/lxrun.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
              $(USER_BUILD)/fifolinktest.elf $(USER_BUILD)/stackguard.elf \
@@ -1281,6 +1282,13 @@ $(USER_BUILD)/siginfotest.o: userspace/tests/siginfotest/siginfotest.c $(USER_CF
 
 # M5 (MATURITY_PLAN.md): auxiliary-vector (getauxval) test.
 $(USER_BUILD)/auxvtest.o: userspace/tests/auxvtest/auxvtest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+# LX_COMPAT L1: the lx personality's front door -- a native console
+# program whose only job is execve(argv[1]), so the /linux path-prefix
+# rule (not this binary) selects the personality.
+$(USER_BUILD)/lxrun.o: userspace/apps/lxrun/lxrun.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2343,6 +2351,38 @@ $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE): $(W32_MINGW_STAMP)
 	@: > $@
 endif
 
+# LX_COMPAT L1: the unmodified Linux guest example.  Built with the
+# HOST's own gcc against the host's glibc, -static: the whole point is
+# that it is an ordinary Linux x86-64 binary no AuraLite toolchain
+# touched.  Like the mingw examples above, the OS build must never
+# REQUIRE a linux toolchain (the i386/rv64 tenant builds share this
+# Makefile) -- absent gcc leaves a zero-byte placeholder and a loud
+# skip, and CI asserts the payload's presence the same way it does for
+# w32hello.exe rather than discovering a vacuous gate later.
+LX_HOST_CC := $(shell command -v gcc 2>/dev/null)
+LX_HELLO_BIN := $(BUILD_DIR)/user/lx_hello
+LX_HOST_STAMP := $(BUILD_DIR)/user/.lxhost-$(if $(LX_HOST_CC),present,absent)
+
+$(LX_HOST_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(BUILD_DIR)/user/.lxhost-present $(BUILD_DIR)/user/.lxhost-absent
+	@touch $@
+
+ifneq ($(LX_HOST_CC),)
+$(LX_HELLO_BIN): lx/tests/hello.c $(LX_HOST_STAMP)
+	@mkdir -p $(dir $@)
+	$(LX_HOST_CC) -static -O2 -Wall -Wextra $< -o $@
+	@echo "  [lx] $@ (static Linux glibc example)"
+else
+$(LX_HELLO_BIN): $(LX_HOST_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [lx] skipping the Linux example (no host gcc for -static)"
+	@: > $@
+endif
+
+.PHONY: lx-tests
+lx-tests: $(LX_HELLO_BIN)
+
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
 $(PETEST_RELOC_EXE): $(BUILD_DIR)/user/petest.obj
@@ -2383,7 +2423,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2408,6 +2448,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # PATH as /bin/mkiso so `sh build.sh iso` can build the image with no host
 # mformat/mcopy/python in the loop.
 	@strip -s $(USER_BUILD)/mkiso.elf -o $(INITRD_DIR)/bin/mkiso
+	@strip -s $(USER_BUILD)/lxrun.elf -o $(INITRD_DIR)/bin/lxrun
 	@for p in apm play sysinfo; do \
 	    strip -s $(USER_BUILD)/$$p.elf -o $(INITRD_DIR)/bin/$$p; done
 	@for p in $(INITRD_APPS); do \
@@ -2552,6 +2593,12 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	    cp $(W32_EXAMPLE_EXE) $(INITRD_DIR)/tests/w32hello.exe; fi
 	@if [ -s $(W32_UNSUP_EXE) ]; then \
 	    cp $(W32_UNSUP_EXE) $(INITRD_DIR)/tests/w32unsup.exe; fi
+# LX_COMPAT L1: the /linux subtree is the personality's namespace --
+# stage the host-built static hello under it so the prefix rule and the
+# gate case exercise a real Linux binary.
+	@if [ -s $(LX_HELLO_BIN) ]; then \
+	    mkdir -p $(INITRD_DIR)/linux/tests; \
+	    cp $(LX_HELLO_BIN) $(INITRD_DIR)/linux/tests/hello; fi
 # W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
 	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
 	         $(INITRD_DIR)/tests/fwddll.dll
@@ -2648,6 +2695,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_progpath \
                 $(BUILD_DIR)/test_apkg \
                 $(BUILD_DIR)/test_printf_fmt \
+                $(BUILD_DIR)/test_lx_translate \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
@@ -3515,6 +3563,12 @@ $(BUILD_DIR)/test_rtl8139_ring: tests/unit/test_rtl8139_ring.c \
 $(BUILD_DIR)/test_stack_guard: tests/unit/test_stack_guard.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+$(BUILD_DIR)/test_lx_translate: tests/unit/test_lx_translate.c kernel/lx/lx_translate.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	  tests/unit/test_lx_translate.c kernel/lx/lx_translate.c -o $@
+	@echo "[unit] built test_lx_translate (LX_COMPAT L1)"
 
 $(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c kernel/fs/select.c
 	@mkdir -p $(BUILD_DIR)

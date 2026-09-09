@@ -10,6 +10,9 @@
 #include "kernel/proc/usercopy.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/mm/pmm.h"
+#include "kernel/mm/vma.h"
+#include "kernel/proc/scheduler.h"
+#include "kernel/proc/thread.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/boot_info.h"
@@ -30,8 +33,11 @@ static int add_overflow_u64(uint64_t a, uint64_t b, uint64_t *out) {
     return 0;
 }
 
-static uint64_t align_up_page(uint64_t v) {
-    return (v + PAGE_MASK) & ~PAGE_MASK;
+static uint64_t align_up_page(uint64_t v) {    return (v + PAGE_MASK) & ~PAGE_MASK;
+}
+
+static uint64_t align_down_page(uint64_t v) {
+    return v & ~PAGE_MASK;
 }
 
 static int validate_elf(const struct elf64_ehdr *eh, uint64_t size) {
@@ -268,6 +274,30 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
             if (phdrs[i].p_memsz) {
                 uint64_t end = align_up_page(phdrs[i].p_vaddr + phdrs[i].p_memsz);
                 if (end > highest_end) highest_end = end;
+                /* LX_COMPAT L1: also DESCRIBE the segment in the owning
+                 * thread's VMA list, with the p_flags protections.  The
+                 * pages are already present (load_segment copied them),
+                 * so nothing ever faults here -- but mprotect() refuses
+                 * any range its VMA walk cannot cover, and glibc's
+                 * static startup turns the RELRO region read-only with
+                 * mprotect() after relocation ("cannot apply additional
+                 * memory protection after relocation" was this, the
+                 * loader mapping pages without describing them).  Native
+                 * binaries never noticed: nothing native calls mprotect
+                 * on its own image.  ANON rather than FILE: there is no
+                 * ofd to read from, the bytes are already in place. */
+                tcb_t *owner = sched_current();
+                if (owner) {
+                    uint32_t vflags = VMA_ANON;
+                    if (phdrs[i].p_flags & PF_R) vflags |= VMA_READ;
+                    if (phdrs[i].p_flags & PF_W) vflags |= VMA_WRITE;
+                    if (phdrs[i].p_flags & PF_X) vflags |= VMA_EXEC;
+                    uint64_t vf = spinlock_acquire_irqsave(&owner->vma_lock);
+                    (void)vma_insert(&owner->vma_list,
+                                     align_down_page(phdrs[i].p_vaddr),
+                                     end, vflags, NULL, 0);
+                    spinlock_release_irqrestore(&owner->vma_lock, vf);
+                }
             }
             /* Fallback AT_PHDR: the PT_LOAD whose file range covers e_phoff
              * maps the header table. p_vaddr + (e_phoff - p_offset). */

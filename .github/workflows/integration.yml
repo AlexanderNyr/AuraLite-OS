@@ -164,6 +164,20 @@ jobs:
           fi
           tar tf build/initrd.tar | grep -E 'w32hello|w32unsup|testdll'
 
+      # LX_COMPAT L1: the same vacuous-gate discipline for the Linux
+      # personality -- the host gcc is always present on the runner, but
+      # a silent Makefile regression would stage nothing and the lx
+      # shard would "pass" while testing an empty prefix.
+      - name: Linux personality -- hello is in the image
+        run: |
+          if ! tar tf build/initrd.tar | grep -q './linux/tests/hello'; then
+            echo "linux/tests/hello missing from the initrd: the static"
+            echo "Linux example was not built, so test_lx_hello would"
+            echo "fail on a missing file instead of testing the lx map."
+            exit 1
+          fi
+          tar tf build/initrd.tar | grep -E './linux/tests/hello|./bin/lxrun'
+
       - name: BL2 -- MBR sanity + boot handoff
         run: bash tests/integration/bl2_mbr_smoke.sh
 
@@ -250,7 +264,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img, fsfull, ota]
+        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img, fsfull, ota, lx]
     steps:
       - uses: actions/checkout@v4
 

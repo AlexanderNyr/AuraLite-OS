@@ -12,6 +12,7 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/lx/lx.h"
 #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
 #include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
 #include "kernel/arch/x86_64/apwake.h"  /* SYS_IRQ_AP_WAKE: RES-16 receipt */
@@ -926,6 +927,25 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         }
     }
 
+    /* LX_COMPAT L1: a process flagged PERSONA_LX speaks the Linux x86-64
+     * number map.  Translate HERE — after the restart bookkeeping above
+     * (so a restarted call keeps its ORIGINAL number and this same
+     * translation runs again, symmetrically) and before the switch (which
+     * only ever sees native numbers and LX_ARM_* pseudo-numbers).
+     *
+     * Invariant, on purpose: every restartable call mapped today is an
+     * IDENTITY row (read 0, nanosleep 35, ...), so is_restartable()'s
+     * native-number match works on the original number too.  The first
+     * non-identity restartable mapping (e.g. futex 202 -> 530, L4) must
+     * teach the restart path about the persona as well.
+     *
+     * Native processes are untouched: persona is the only door, and the
+     * colliding native numbers keep their native arms. */
+    uint64_t orig_num = num;
+    if (cur && cur->persona == PERSONA_LX) {
+        num = lx_translate((uint32_t)num);
+    }
+
     switch (num) {
     case SYS_WRITE: {
         /* a1 = fd, a2 = buffer, a3 = length. fd 1/2 go to console; fd >= 3
@@ -1187,6 +1207,115 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
     case SYS_EXIT:
         thread_exit_with_code((int)a1);
         return 0;   /* unreachable */
+    /* ---- LX_COMPAT L1: lx-only arms (Linux nr, no native arm) -------- */
+    case LX_ARM_BRK: {
+        /* Linux brk semantics, EXACTLY: brk(addr) returns addr on
+         * success and the current break on failure — no rounding.  The
+         * native arm rounds the break up to a page boundary, which its
+         * native consumers accept, but glibc's sbrk() hard-fails any
+         * brk whose return differs from its argument, and the static
+         * startup's very first sbrk (the TLS block) dies with "Cannot
+         * allocate TLS block" — measured on the L1 gate.  Shrinking
+         * within the current page just moves the pointer (pages stay
+         * mapped; Linux would free them — no L1 ladder app shrinks);
+         * shrinking below the page floor fails like Linux. */
+        tcb_t *bcur = sched_current();
+        if (!bcur) return (uint64_t)-ENOMEM;
+        if (a1 == 0) return bcur->brk;              /* query */
+        if (a1 < (bcur->brk & ~4095ULL)) return bcur->brk;  /* real shrink */
+        if (a1 >= USER_BRK_MAX) return bcur->brk;
+        uint64_t old_end = (bcur->brk + 4095ULL) & ~4095ULL;
+        uint64_t new_end = (a1 + 4095ULL) & ~4095ULL;
+        uint64_t hhdm = boot_get_hhdm_offset();
+        for (uint64_t v = old_end; v < new_end; v += 4096ULL) {
+            if (paging_get_phys(v) == 0) {
+                uint64_t phys = pmm_alloc_frame();
+                if (!phys) return bcur->brk;
+                memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
+                paging_map(v, phys,
+                           PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
+                           PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
+            }
+        }
+        bcur->brk = a1;
+        return bcur->brk;                           /* == a1, verbatim */
+    }
+    case LX_ARM_EXIT_GROUP:
+        /* Linux exit_group terminates every thread in the group.  The L1
+         * ladder is single-threaded, so the exit path is the same one
+         * SYS_EXIT takes; the thread-group walk arrives with L4's
+         * pthread work (and is measured then). */
+        thread_exit_with_code((int)a1);
+        return 0;   /* unreachable */
+    case LX_ARM_SET_TID_ADDRESS: {
+        /* Linux set_tid_address(tidptr): record the address the kernel
+         * clears + futex-wakes on this thread's exit (glibc's first
+         * startup call).  The CLONE_CHILD_CLEARTID exit path already
+         * honours clear_tid_addr; the return is the caller's TID. */
+        if (cur) cur->clear_tid_addr = a1;
+        return cur ? (uint64_t)cur->id : 0;
+    }
+    case LX_ARM_GETTID:
+        return cur ? (uint64_t)cur->id : 0;
+    case LX_ARM_SET_ROBUST_LIST: {
+        /* Linux set_robust_list(head, len): glibc registers its futex
+         * robust-list head at startup.  Accept and store (the L1 ladder
+         * is single-threaded; walking the list at thread exit is the L4
+         * pthread phase's measured work, and is not claimed here). */
+        if (cur) {
+            cur->robust_list_head = a1;
+            cur->robust_list_len  = a2;
+        }
+        return 0;
+    }
+    case LX_ARM_PRLIMIT64: {
+        /* Linux prlimit64(pid, resource, new_rlimit, old_rlimit): glibc
+         * queries RLIMIT_STACK at startup.  The honest answer for this
+         * kernel is "no limits enforced" — RLIM_INFINITY for every
+         * resource, both fields, because nothing in the tree enforces
+         * an rlimit today (the stack's real boundary is its guard
+         * pages, not a limit).  new_rlimit (a3) is refused: we have no
+         * limits to SET.  Only pid 0 / self is answerable. */
+        int64_t pid = (int64_t)a1;
+        if (pid != 0 && cur && (uint64_t)pid != cur->id)
+            return (uint64_t)-EPERM;
+        if (a3 != 0) return (uint64_t)-EPERM;    /* setting: refused */
+        if (a4 == 0) return 0;
+        struct lx_rlimit { uint64_t cur; uint64_t max; };
+        struct lx_rlimit rl = { ~0ULL, ~0ULL };   /* RLIM_INFINITY */
+        if (copy_to_user((void *)(uintptr_t)a4, &rl, sizeof(rl)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case LX_ARM_READLINKAT: {
+        /* Linux readlinkat(dirfd, path, buf, bufsz): glibc's startup
+         * probes /proc/self/exe.  There is no procfs symlink today, so
+         * the honest answer is ENOENT — exactly what Linux itself
+         * returns for that path with procfs unmounted, and glibc
+         * tolerates it (measured: startup continued past it). */
+        return (uint64_t)-ENOENT;
+    }
+    case LX_ARM_UNAME: {
+        /* Linux uname(2) fills struct utsname: six 65-byte fields.
+         * sysname MUST read "Linux" — a binary's runtime checks key on
+         * it, not on honesty; the other fields say who we actually
+         * are. */
+        struct lx_utsname {
+            char sysname[65]; char nodename[65]; char release[65];
+            char version[65]; char machine[65]; char domainname[65];
+        };
+#ifndef AURALITE_VERSION
+#define AURALITE_VERSION "0.0.1"
+#endif
+        static const struct lx_utsname u = {
+            "Linux", "auralite", AURALITE_VERSION,
+            "#1 SMP AuraLite (lx personality)", "x86_64", "(none)",
+        };
+        if (!a1) return (uint64_t)-EINVAL;
+        if (copy_to_user((void *)(uintptr_t)a1, &u, sizeof(u)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
     case SYS_GETPID: {
         tcb_t *cur = sched_current();
         return cur ? cur->id : 0;
@@ -2622,7 +2751,14 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         return (uint64_t)sysv_msgctl((int)a1, (int)a2, a3);
 
     default:
-        kprintf("[syscall] unknown syscall %llu\n", (unsigned long long)num);
+        /* For an lx process num is LX_UNMAPPED here — print the Linux
+         * number the caller actually issued (the whole point of the
+         * loud default is naming the missing call). */
+        kprintf("[syscall] unknown syscall %llu%s\n",
+                (unsigned long long)
+                    ((cur && cur->persona == PERSONA_LX) ? orig_num : num),
+                (cur && cur->persona == PERSONA_LX)
+                    ? " (lx map: Linux nr unmapped)" : "");
         return (uint64_t)-ENOSYS;   /* reserved for unimplemented syscall nrs */
     }
 }

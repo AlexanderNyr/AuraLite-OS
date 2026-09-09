@@ -97,7 +97,10 @@ RECEIPTS = [
     ("O5", "tests/integration/run_all.sh", "test_ota_apply"),
     ("O5", "tests/integration/run_all.sh", "ota)   echo '^test_ota_"),
     ("O5", ".github/workflows/integration.yml", "check_ota_claims.py"),
-    ("O5", ".github/workflows/integration.yml", "fsfull, ota]"),
+    # LX_COMPAT L1 widened the matrix line to "fsfull, ota, lx]" -- the
+    # shard-registration receipt this pin proves is the ota group's
+    # presence, which the widened line still carries.
+    ("O5", ".github/workflows/integration.yml", "fsfull, ota"),
     ("O5", "docs/status.md", "ota"),
     ("O5", "README.md", "/apps/ota"),
     ("O5", "TODO.md", "OTA"),

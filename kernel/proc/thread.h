@@ -158,6 +158,22 @@ typedef struct tcb {
     int       is_pthread;          /* 1 = userspace thread */
     uint64_t clear_tid_addr;      /* *ctid = 0 + futex_wake on exit */
 
+    /* ---- LX_COMPAT L1: process personality ----
+     * Which syscall NUMBER MAP this process speaks.  PERSONA_NATIVE (0)
+     * is the AuraLite map and the default; PERSONA_LX (1) is the Linux
+     * x86-64 map, selected by the /linux/ exec path-prefix rule and
+     * translated at the top of syscall_dispatch() (kernel/lx/).  Copied
+     * by fork/clone with the rest of the process state; reselected on
+     * every execve by the path of the NEW image. */
+    uint8_t   persona;
+#define PERSONA_NATIVE 0u
+#define PERSONA_LX     1u
+    /* LX_COMPAT L1: the robust-list head glibc registers at startup
+     * (set_robust_list).  Stored, not walked — the exit-time futex
+     * walk is L4's pthread business. */
+    uint64_t  robust_list_head;
+    uint64_t  robust_list_len;
+
     /* ---- P10: working directory ---- */
     char cwd[VFS_PATH_MAX];
 

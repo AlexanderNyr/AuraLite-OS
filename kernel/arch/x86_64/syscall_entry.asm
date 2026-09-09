@@ -131,20 +131,22 @@ syscall_entry:
     cld
     call syscall_dispatch
 
-    add  rsp, 8            ; drop a6 stack slot
-    add  rsp, 7*8          ; drop the 7 pushed sources
-
-    ; Refresh THIS cpu's per-CPU syscall slots from this thread's TCB (the
-    ; thread may have been preempted mid-syscall and resumed HERE after
-    ; another CPU ran its own syscalls).  IMPORTANT: preserve user
-    ; callee-saved registers such as R12.
-    ; RESIDUE2 T1 (stub-alignment box): after the 64-byte teardown above RSP
-    ; is 16-byte aligned; the bare `push r12` flipped it to 8 mod 16, so BOTH
-    ; C calls below entered their callees with a misaligned stack.  Every
-    ; frame below then inherits the skew and build_handler_frame()'s
-    ; `aligned(16)` signal frame lands 8-off -> `fxsave` #GPs on the first
-    ; cross-process signal delivery.  Pad the window so the SysV pre-call
-    ; alignment (RSP % 16 == 0) holds at both calls.
+    ; LX_COMPAT L1: the Linux syscall contract preserves EVERY register
+    ; except RAX, RCX and R11.  glibc's raw inline syscall sequences
+    ; depend on it: _dl_early_allocate computes brk(0)+size into RDI,
+    ; reloads the syscall NUMBER from RSI, and assumes both survived
+    ; the PREVIOUS syscall -- our C dispatch clobbered RSI (measured on
+    ; the L1 gate: brk(12) arrived as nr=1 with RSI=1, and the TLS
+    ; setup died with "Cannot allocate TLS block").  Native binaries
+    ; never noticed: their libc wrappers treat a syscall like a normal
+    ; clobbering C call.  So the six argument registers saved at entry
+    ; are kept on the kernel stack until SYSRET and restored here --
+    ; strictly more preservation, no native semantics change.
+    ; Stack after dispatch: [rsp]=a6, [rsp+8]=num, +16=rdi, +24=rsi,
+    ; +32=rdx, +40=r10, +48=r8, +56=r9; RSP is 0 mod 16.
+    ; (RESIDUE2 T1 alignment box: the push+sub window keeps the SysV
+    ; pre-call alignment at both C calls below -- a bare push flipped it
+    ; and fxsave #GP'd on the first cross-process signal delivery.)
     push r12
     sub  rsp, 8
     mov  r12, rax
@@ -153,12 +155,24 @@ syscall_entry:
     ; Signal delivery slow path: if a signal is pending, syscall_check_signals
     ; builds a handler frame and returns to user via IRETQ (never returns here).
     ; It takes the syscall return value (saved in r12) as its argument.
+    ; (The handler frame's argument-register image is the L3 signal-frame
+    ; phase's business, not this path's.)
     mov  rdi, r12
     call syscall_check_signals
 
     add  rsp, 8
     mov  rax, r12
     pop  r12
+
+    ; Drop the a6 slot and the saved NUMBER (RAX carries the return
+    ; value now), then give the user back its argument registers.
+    add  rsp, 16
+    pop  rdi
+    pop  rsi
+    pop  rdx
+    pop  r10
+    pop  r8
+    pop  r9
 
     mov rcx, [gs:CL_SYS_RIP]
     mov r11, [gs:CL_SYS_RFLAGS]
