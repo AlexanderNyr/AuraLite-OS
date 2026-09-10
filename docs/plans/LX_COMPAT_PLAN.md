@@ -1,6 +1,6 @@
 # AuraLite OS — Linux Application Compatibility Plan (the `lx` personality)
 
-## Status: OPEN — L0 ✅ L1 ✅ L2 ⬜ L3 ⬜ L4 ⬜ L5 ⬜
+## Status: OPEN — L0 ✅ L1 ✅ L2 ✅ L3 ✅ L4 ⬜ L5 ⬜
 
 > This is a feature plan in the style of `FSFULL_PLAN.md` and `OTA_PLAN.md`,
 > written against the tree as it stands. It follows the same structure:
@@ -434,7 +434,96 @@ layout untouched — the marshal is behind the personality).
 
 marshal layer + getdents64 + busybox case + patch.
 
-### Phase L3 — Process plumbing: a shell runs scripts
+### Phase L3 — Process plumbing: a shell runs scripts ✅ DONE (2026-09-10)
+
+*Measured first, mapped second*, same discipline as L2: the gate's exact
+busybox ash (upstream 1.35.0 static musl) was straced on the host to
+learn the shell's syscall vocabulary before a line of kernel code moved.
+Two host facts shaped the phase: musl's `fork()` IS `clone(SIGCHLD, 0)`
+(so the personality must route clone, not just fork), and ash's `wait`
+builtin never blocks in `wait4` — it does `wait4(-1, WNOHANG)`, then
+`rt_sigprocmask(SIG_SETMASK, all)`, then `rt_sigsuspend(empty)` waiting
+for SIGCHLD, then reaps (busybox `waitproc()` in shell/ash.c).
+
+#### What shipped
+
+* `kernel/lx/lx_sig.h` — the Linux x86-64 signal structures as a
+  freestanding header (only `<stdint.h>`, so the same source compiles
+  into the host unit test): `kernel_sigaction` (32 B), `sigcontext_64`
+  (256 B), `ucontext` (936 B), `siginfo` (128 B), `rt_sigframe`
+  (1072 B).  Every size/offset is host-pinned by `test_lx_sig.c`.
+* lx-only arms: `LX_ARM_SIGACTION`(13), `LX_ARM_SIGRETURN`(15),
+  `LX_ARM_SIGPROCMASK`(14), `LX_ARM_CLONE`(56) — all four are native
+  numbers too, so the trap is real; they are lx-only because the native
+  arms speak native layouts.
+* `lx_translate.c`: the four lx-only rows above; identity rows measured
+  in-guest (pipe 22, getpid 39, fork 57, execve 59, wait4 61, kill 62,
+  getppid 110, rt_sigsuspend 130, pipe2 293); alias `access 21→513`
+  (native SYS_ACCESS lives at 513).
+* `signal.c`: `do_sigaction_kernel` split out as the user-copy-free core;
+  `lx_do_sigaction` marshals Linux's 32-byte `kernel_sigaction` into the
+  native `struct sigaction` and back (SA_RESTORER kept, restorer stored);
+  `lx_do_sigprocmask` reads/writes the 8-byte kernel `sigset_t` both
+  ways; `build_handler_frame_lx` lays out the `rt_sigframe` at
+  RSP%16==8 with pretcode == sa_restorer, ucontext at +8, siginfo at
+  +944, and enters the handler `rdi=signo` (+ rsi/rsp/rdx for
+  SA_SIGINFO); `lx_do_sigreturn` rebuilds the regs from
+  uc_mcontext/uc_sigmask.
+* Dispatcher: SIGACTION/SIGPROCMASK/SIGRETURN/CLONE arms; SIGRETURN
+  returns through the IRETQ slow path exactly like native SIGRETURN;
+  the wait4 legacy 1-arg reinterpretation is skipped for lx processes
+  (a Linux wait4(pid, wstatus, options, rusage) with a high pid would
+  otherwise be misread as a status pointer).
+* `CLONE_*` flags moved to `kernel/proc/clone_decls.h` (single source
+  for clone.c and the lx arm): lx clone routes `CLONE_VM|CLONE_THREAD`
+  → `do_clone`, no `CLONE_VM` → `do_fork`, else `-ENOSYS` (vfork-class
+  stays off the ladder).
+* Makefile: stages `lx/tests/ash_script.sh` at `/linux/tests` and
+  hard-links `/linux/bin/{cat,ls,sleep}` to the staged busybox (this
+  build has SH_STANDALONE off, so ash execs applets through PATH).
+* Tests: `test_lx_sig.c` (host pin of every lx_sig.h layout), updated
+  `test_lx_translate.c` rows, and the `test_lx_shell.sh` integration
+  gate (registered in run_all.sh).
+
+#### Result (measured on the gate, TCG)
+
+`test_lx_shell` PASSES 9/9.  Both invocations (`lxrun /linux/bin/busybox
+ash /linux/tests/ash_script.sh` and the binfmt_script re-exec
+`lxrun /linux/tests/ash_script.sh`) print `LX3-ECHO-OK` (pipeline:
+fork + pipe + wait4 + SIGCHLD), `LX3-LS-OK` (getdents64 + stat +
+redirection), `LX3-BGJOB-OK` (`sleep 0 &` + `wait`: SIGCHLD →
+sigsuspend → wait4(WNOHANG) reap), `LX3-TRAP-OK` (trap INT + kill -$$
+round-trip through the Linux frame and rt_sigreturn), and exit 7
+(`LX3-NOTREACHED` never prints).  The `exited (code=7)` receipt proves
+both the signal round-trip and the exit-status propagation.
+
+The native regression is unchanged: `test_signals` 9/9, `test_jobcontrol`
+14/14, `test_stopped` 17/17 (the frame layout fork is per-personality;
+the native `signal_frame` and the `do_sigsuspend` core are untouched).
+
+Getting there surfaced and fixed a kernel bug, measured before the fix:
+**`lx_do_sigprocmask` wrote the NEW mask into `oldset`.**  POSIX says
+`oldset` carries the mask from before the call; the native
+`do_sigprocmask` snapshots first.  busybox ash's `sigprocmask2()` aliases
+`set == old` (`sigprocmask(how, set, oset)` with `oset = set`), and its
+`waitproc()` is `sigfillset(&oldmask); sigprocmask2(SIG_SETMASK,
+&oldmask); sigsuspend(&oldmask)` — so the shell suspended with the
+all-blocked mask still in `oldmask` and SIGCHLD never woke it (the
+`LX3-BGJOB-OK` hang).  The fix restores the snapshot-first ordering.
+
+#### Deviations from the task list (honest, measured)
+
+* FPU state is not saved/restored across an lx signal (the ladder apps
+  are terminal programs that never touch the FPU; the native path keeps
+  its fxsave/fxrstor).  Documented in lx_sig.h.
+* The siginfo marshal fills the common prefix plus the payload the
+  ladder reads (si_pid/si_uid for SI_USER, si_addr for a fault); the
+  full per-signal payload table is not needed until an app parses it.
+* SIGCHLD and SIGINT round-trips are exercised by the gate; SIGQUIT and
+  the SIGTSTP + WUNTRACED stop round-trip are not — non-interactive ash
+  never issues them (the native stop/continue mechanism is covered by
+  `test_stopped`).  waitid(247) is unchanged (ash uses wait4); the
+  status-word encoding is asserted through wait4's WNOHANG path.
 
 #### Tasks
 
@@ -457,8 +546,10 @@ marshal layer + getdents64 + busybox case + patch.
 
 #### Test gate
 
-`test_lx_shell` green; `core` shard's signal cases unchanged (native
-frame untouched — the layout fork is per-personality).
+`test_lx_shell` green (9/9: pipeline, ls+redirect, background `wait`,
+INT trap, exit-7 status, ×2 invocations); `core` shard's signal cases
+unchanged (`test_signals`/`test_jobcontrol`/`test_stopped` re-run green
+— native frame untouched, the layout fork is per-personality).
 
 #### Deliverable
 
@@ -554,7 +645,7 @@ lua case + checker + shard + docs + patch; plan COMPLETE.
 
 - [ ] L1: `lxrun /linux/tests/hello` prints and exits 0 in CI
 - [x] L2: `lxrun busybox ls /` lists the real root in CI (test_lx_busybox: `ls -1 /` asserts the `linux` root entry, plus `/linux/etc` and `/linux/tests` listings, cat of the staged motd, and echo — 2026-09-09)
-- [ ] L3: scripted busybox ash passes its pipeline/job-control receipts in CI
+- [x] L3: scripted busybox ash passes its pipeline/job-control receipts in CI (test_lx_shell: 9/9, both invocations, exit-7 status — 2026-09-10)
 - [ ] L4: glibc `sh -c 'echo ok'` runs in CI
 - [ ] L5: unmodified lua passes its scripted program in CI
 - [ ] L5: `tools/check_lx_claims.py` green in test-unit, negative control included

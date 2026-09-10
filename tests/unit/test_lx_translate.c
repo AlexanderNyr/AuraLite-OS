@@ -54,7 +54,10 @@ int main(void) {
     expect(9,   9,   "mmap (glibc static startup: TLS block)");
     expect(10,  10,  "mprotect (RELRO)");
     expect(11,  11,  "munmap (musl mallocng releases with it)");
-    expect(14,  14,  "rt_sigprocmask (32-bit mask caveat is documented)");
+    /* rt_sigprocmask(14) is NOT an identity row since L3: ash passes a
+     * non-NULL oldset and the native arm writes only its 32-bit sigset_t —
+     * the lx arm reads/writes the 8-byte kernel sigset_t instead. */
+    expect(14,  LX_ARM_SIGPROCMASK, "rt_sigprocmask (8-byte kernel sigset_t both ways)");
     expect(16,  16,  "ioctl (TIOCGWINSZ/TCGETS: termios agrees on first 36 bytes)");
     expect(20,  20,  "writev (glibc stdio flush)");
     expect(72,  72,  "fcntl (F_SETFD/F_DUPFD_CLOEXEC: same command numbers)");
@@ -66,6 +69,16 @@ int main(void) {
     expect(228, 228, "clock_gettime (native 228; kernel_timespec == Linux timespec)");
     expect(32,  32,  "dup (native SYS_DUP, same shape)");
     expect(33,  33,  "dup2 (native SYS_DUP2, same argument order)");
+    /* L3 identity rows, measured from a host strace of ash's full run. */
+    expect(22,  22,  "pipe (native SYS_PIPE, same shape)");
+    expect(39,  39,  "getpid (native SYS_GETPID)");
+    expect(57,  57,  "fork (native do_fork IS Linux fork semantics)");
+    expect(59,  59,  "execve (binfmt_script + /linux prefix rule re-apply)");
+    expect(61,  61,  "wait4 (native new-ABI arms are the Linux order; status POSIX-encoded)");
+    expect(62,  62,  "kill (native SYS_KILL)");
+    expect(110, 110, "getppid (native SYS_GETPPID is AT 110 already)");
+    expect(130, 130, "rt_sigsuspend (native SYS_SIGSUSPEND is at 130)");
+    expect(293, 293, "pipe2 (BOTH tables put pipe2 at 293; Linux rseq is 334)");
 
     printf("[lx] lx-only arms\n");
     expect(63,  LX_ARM_UNAME,           "uname");
@@ -81,6 +94,9 @@ int main(void) {
     expect(6,   LX_ARM_LSTAT,           "lstat (native SYS_LSTAT sits AT 6: marshal)");
     expect(217, LX_ARM_GETDENTS64,      "getdents64 (no native arm at 217)");
     expect(262, LX_ARM_NEWFSTATAT,      "newfstatat (native 262 fills vfs_stat: marshal)");
+    expect(13,  LX_ARM_SIGACTION,       "rt_sigaction (native 13 speaks native sigaction: marshal)");
+    expect(15,  LX_ARM_SIGRETURN,       "rt_sigreturn (native 15 parses the native frame: marshal)");
+    expect(56,  LX_ARM_CLONE,           "clone (fork-style -> do_fork, pthread-style -> do_clone)");
 
     printf("[lx] alias rows (same contract, native number)\n");
     expect(102, 500, "getuid -> SYS_GETUID");
@@ -92,18 +108,17 @@ int main(void) {
     expect(80,  541, "chdir -> SYS_CHDIR (NOT native 80/LISTDIR: the L1 collision resolves here)");
     expect(105, 504, "setuid -> SYS_SETUID (busybox re-drops to its own uid)");
     expect(106, 505, "setgid -> SYS_SETGID (same shape)");
+    expect(21,  513, "access -> SYS_ACCESS (musl prefers access on x86-64)");
 
     printf("[lx] collisions stay unmapped (their native arms belong to "
            "native processes)\n");
     expect(81,  LX_UNMAPPED, "fchdir: native 81 is SPAWN (81 is fchdir on x86-64, not chdir)");
-    expect(13,  LX_UNMAPPED, "rt_sigaction: the sigaction/sigframe marshal is L3's first job");
     expect(82,  LX_UNMAPPED, "rename: native 82 is DNS");
     expect(83,  LX_UNMAPPED, "mkdir: native 83 is NET_CONNECT");
     expect(40,  LX_UNMAPPED, "sendfile: busybox's copyfd falls back to read/write on ENOSYS");
-    expect(293, LX_UNMAPPED, "rseq-pipe2 collision zone: native 293 is PIPE2; Linux rseq is 334 (L4)");
     expect(334, LX_UNMAPPED, "rseq: glibc falls back to plain sequences (L4)");
     expect(202, LX_UNMAPPED, "futex: native 530 (L4)");
-    expect(439, LX_UNMAPPED, "faccessat2 (L3)");
+    expect(439, LX_UNMAPPED, "faccessat2 (musl's access uses nr 21 on x86-64; L4 if a ladder app needs it)");
     expect(9999, LX_UNMAPPED, "nowhere");
 
     printf("[lx] the /linux path-prefix rule\n");

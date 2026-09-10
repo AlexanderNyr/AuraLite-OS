@@ -63,6 +63,31 @@
 #define LX_ARM_GETDENTS64       (LX_ARM_BASE + 217u)  /* 217 */
 #define LX_ARM_NEWFSTATAT       (LX_ARM_BASE + 262u)  /* 262 */
 
+/* L3: process plumbing — the signal and clone marshals.  rt_sigaction(13)
+ * and rt_sigreturn(15) look like number matches with the native table
+ * (SYS_SIGACTION=13, SYS_SIGRETURN=15) — and that is exactly why they must
+ * NOT be identity rows: the native arms speak the native struct sigaction
+ * ({handler, u32 mask, flags, restorer}) and the native signal_frame, neither
+ * of which a Linux binary understands.  The lx arms marshal Linux's
+ * kernel_sigaction (32 bytes) and the Linux rt_sigframe (pretcode + ucontext
+ * + siginfo, ~1072 bytes).  See kernel/lx/lx_sig.h for the layouts.
+ *
+ * rt_sigprocmask(14) is NOT an identity row either, despite L2 mapping it as
+ * one: busybox ash (L3's flagship) passes a NON-NULL oldset in several calls,
+ * and the native arm writes only its 32-bit sigset_t (4 bytes) where Linux
+ * writes the 8-byte kernel sigset_t — ash would read garbage in the high
+ * word (signals 33..64).  The lx arm reads/writes the full 8-byte word and
+ * documents that signals above 32 are always clear (AuraLite has NSIG=32).
+ *
+ * clone(56): the native arm only implements the CLONE_THREAD|CLONE_VM
+ * pthread path and answers -ENOSYS for fork-style clone — but musl's fork()
+ * IS clone(SIGCHLD, 0).  The lx arm routes fork-style clone to do_fork() and
+ * pthread-style clone to do_clone(). */
+#define LX_ARM_SIGACTION         (LX_ARM_BASE + 13u)   /*  13 */
+#define LX_ARM_SIGRETURN         (LX_ARM_BASE + 15u)   /*  15 */
+#define LX_ARM_SIGPROCMASK       (LX_ARM_BASE + 14u)   /*  14 */
+#define LX_ARM_CLONE             (LX_ARM_BASE + 56u)   /*  56 */
+
 /* Translate a Linux x86-64 syscall number to the native number (or an
  * LX_ARM_* pseudo-number, or LX_UNMAPPED).  Pure table lookup. */
 uint32_t lx_translate(uint32_t linux_nr);

@@ -19,18 +19,8 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
+#include "kernel/proc/clone_decls.h"   /* CLONE_* flags (single definition) */
 #include <stdint.h>
-
-/* Linux-compatible clone flags (subset used by the pthread runtime). */
-#define CLONE_VM             0x00000100
-#define CLONE_FS             0x00000200
-#define CLONE_FILES          0x00000400
-#define CLONE_SIGHAND        0x00000800
-#define CLONE_THREAD         0x00010000
-#define CLONE_SETTLS         0x00080000
-#define CLONE_PARENT_SETTID  0x00100000
-#define CLONE_CHILD_CLEARTID 0x00200000
-#define CLONE_CHILD_SETTID   0x01000000
 
 /* arch_prctl codes. */
 #define ARCH_SET_FS 0x1002

@@ -15,9 +15,9 @@
  * the dispatcher's loud print, so a ladder application's first run
  * names its missing calls.  Nothing is mapped "because it probably
  * works" — the collisions (81 fchdir vs native SPAWN, 82 rename vs
- * native DNS, 83 mkdir vs native NET_CONNECT, 293/334, ...) stay
- * unmapped until the phase that owns them measures the arm (L3: the
- * rt_sigaction/sigframe marshal; L4: futex bitsets, rseq).  sendfile(40)
+ * native DNS, 83 mkdir vs native NET_CONNECT, 334 rseq, 202 futex, ...)
+ * stay unmapped until the phase that owns them measures the arm
+ * (L4: futex bitsets, rseq).  sendfile(40)
  * is absent on purpose too: busybox's copyfd falls back to a read/write
  * loop on ENOSYS (verified in busybox-1.35.0 libbb/copyfd.c, not
  * assumed), and the loud print in the guest log is the honest receipt.
@@ -55,15 +55,6 @@ static const struct lx_row LX_TABLE[] = {
                     * answers fd-or-negative-errno, Linux's contract */
     { 11,  11 },   /* munmap(addr, len) — native SYS_MUNMAP, same shape;
                     * musl's mallocng unmaps its buffers with it */
-    { 14,  14 },   /* rt_sigprocmask(how, set, old, sigsetsize) — the
-                    * how values match (SIG_BLOCK 0/UNBLOCK 1/SETMASK 2)
-                    * and the native sigset_t is the low 32 bits musl
-                    * passes first (LE).  CAVEAT, measured honest: the
-                    * native mask is 32-bit, musl's is 64-bit — a
-                    * non-NULL oldset gets only its low half written.
-                    * busybox 1.35's whole ls/cat/echo run passes
-                    * oldset == NULL (host strace), so L2 maps it; the
-                    * first caller needing a 64-bit oldset reopens this. */
     { 16,  16 },   /* ioctl(fd, cmd, arg) — native arm dispatches
                     * TCGETS/TCSETS/TCSETSW/TCSETSF/TIOCGWINSZ with
                     * struct termios/winsize; winsize (4x u16) is layout-
@@ -95,6 +86,32 @@ static const struct lx_row LX_TABLE[] = {
                     * on the ENOSYS ("can't duplicate file descriptor")
                     * with the row absent */
 
+    /* -- L3 identity rows, measured from a host strace of ash's whole
+     *    `echo hi | cat; ls / >/dev/null && echo ok` run ------------ */
+    { 22,  22 },   /* pipe(fds[2]) — native SYS_PIPE, same shape       */
+    { 39,  39 },   /* getpid — native SYS_GETPID, same contract         */
+    { 57,  57 },   /* fork — native do_fork IS Linux fork semantics
+                    * (COW address space, inherited fds); musl actually
+                    * calls clone(SIGCHLD,0) — the 56 arm below — but a
+                    * direct fork(57) must work too                    */
+    { 59,  59 },   /* execve — native SYS_EXECVE: path/argv/envp, and
+                    * the kernel's binfmt_script + /linux prefix rule
+                    * both apply on re-exec                             */
+    { 61,  61 },   /* wait4(pid,wstatus,options,rusage) — native "new
+                    * ABI" arms are this exact Linux order; the status
+                    * word is POSIX/Linux-encoded (exit<<8 | sig&0x7f);
+                    * the dispatcher skips its legacy 1-arg
+                    * reinterpretation for PERSONA_LX (see syscall.c)  */
+    { 62,  62 },   /* kill(pid, sig) — native SYS_KILL, same contract  */
+    { 110, 110 },  /* getppid — native SYS_GETPPID is AT 110 already
+                    * (RESIDUE2 T1 picked the Linux number)            */
+    { 130, 130 },  /* rt_sigsuspend(mask) — native SYS_SIGSUSPEND is at
+                    * 130 with the same 32-bit-low mask contract       */
+    { 293, 293 },  /* pipe2(fds, flags) — BOTH tables put pipe2 at 293
+                    * (Linux rseq is 334, not 293; the "293 collision"
+                    * note in early drafts was wrong and L1's gate text
+                    * already measured 334 as the rseq number)         */
+
     /* -- lx-only arms ------------------------------------------------ */
     { 63,  LX_ARM_UNAME },           /* uname: fills struct utsname     */
     { 12,  LX_ARM_BRK },             /* brk: Linux-exact return        */
@@ -109,12 +126,28 @@ static const struct lx_row LX_TABLE[] = {
     { 6,   LX_ARM_LSTAT },           /*   byte layout — marshal (L2)   */
     { 217, LX_ARM_GETDENTS64 },      /* getdents64: no native arm      */
     { 262, LX_ARM_NEWFSTATAT },      /* newfstatat: marshal (L2)       */
+    { 13,  LX_ARM_SIGACTION },       /* rt_sigaction: kernel_sigaction
+                                      *   marshal (L3) — native 13 is
+                                      *   the same number, native      */
+    { 15,  LX_ARM_SIGRETURN },       /* rt_sigreturn: Linux rt_sigframe
+                                      *   parse (L3) — native 15 is the
+                                      *   native signal_frame           */
+    { 14,  LX_ARM_SIGPROCMASK },     /* rt_sigprocmask: 8-byte kernel
+                                      *   sigset_t both ways (L3) — the
+                                      *   native 32-bit arm under-writes
+                                      *   a non-NULL oldset            */
+    { 56,  LX_ARM_CLONE },           /* clone: fork-style -> do_fork,
+                                      *   pthread-style -> do_clone     */
 
     /* -- aliases: same contract, different native number ------------- */
     { 102, 500 },  /* getuid  -> SYS_GETUID  (native 500) */
     { 104, 502 },  /* getgid  -> SYS_GETGID  (native 502) */
     { 107, 501 },  /* geteuid -> SYS_GETEUID (native 501) */
     { 108, 503 },  /* getegid -> SYS_GETEGID (native 503) */
+    { 21,  513 },  /* access(path, mode) -> native SYS_ACCESS (513):
+                    * same F_OK/R_OK/W_OK/X_OK bits, 0 or -EACCES.
+                    * musl prefers the access syscall on x86-64 (it
+                    * exists), so ash's /etc/selinux probes come here   */
     { 318, 319 },  /* getrandom(buf, len, flags) — native 319, same
                     * signature (GRND_NONBLOCK|GRND_RANDOM accepted) */
     { 79,  540 },  /* getcwd(buf, size) — native SYS_GETCWD (540):

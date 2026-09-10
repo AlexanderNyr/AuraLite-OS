@@ -1509,6 +1509,48 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         o->pos = i;
         return (uint64_t)total;
     }
+    case LX_ARM_SIGACTION: {
+        /* LX_COMPAT L3: rt_sigaction(signo, act, old, sigsetsize).  The
+         * marshal (signal.c) converts Linux's 32-byte kernel_sigaction
+         * to the native struct sigaction and back; the 4th argument is
+         * accepted but not checked (musl/glibc always pass 8). */
+        return (uint64_t)lx_do_sigaction((int)a1, (const void *)(uintptr_t)a2,
+                                         (void *)(uintptr_t)a3);
+    }
+    case LX_ARM_SIGPROCMASK: {
+        /* LX_COMPAT L3: rt_sigprocmask(how, set, old, sigsetsize) with the
+         * 8-byte kernel sigset_t read/written both ways (see lx.h). */
+        return (uint64_t)lx_do_sigprocmask((int)a1, (const void *)(uintptr_t)a2,
+                                           (void *)(uintptr_t)a3);
+    }
+    case LX_ARM_SIGRETURN: {
+        /* LX_COMPAT L3: rt_sigreturn — parse the Linux rt_sigframe at the
+         * current user RSP, then return via IRETQ exactly like the native
+         * SYS_SIGRETURN path (the SYSRET non-canonical hazard applies here
+         * too). */
+        struct registers r;
+        memset(&r, 0, sizeof(r));
+        r.rsp = syscall_saved_rsp;    /* == frame_start + 8; uc at rsp */
+        r.cs  = SYSCALL_USER_CS;
+        r.ss  = SYSCALL_USER_SS;
+        lx_do_sigreturn(&r);          /* fills r from uc_mcontext/uc_sigmask */
+        syscall_iret_to_user(&r);     /* noreturn */
+        return 0;                     /* unreachable */
+    }
+    case LX_ARM_CLONE: {
+        /* LX_COMPAT L3: musl's fork() IS clone(SIGCHLD, 0) and its
+         * pthread_create is clone(CLONE_VM|CLONE_THREAD, stack, ...) —
+         * the native do_clone only speaks the pthread path and answers
+         * -ENOSYS to fork-style flags, so the personality routes them:
+         * no CLONE_VM => fork semantics (COW address space, inherited
+         * fds) via do_fork(); CLONE_VM|CLONE_THREAD => do_clone(). */
+        uint64_t flags = a1;
+        if ((flags & CLONE_THREAD) && (flags & CLONE_VM))
+            return (uint64_t)do_clone(a1, a2, a3, a4, a5);
+        if (!(flags & CLONE_VM))
+            return do_fork();
+        return (uint64_t)-ENOSYS;    /* vfork-class: not on the ladder */
+    }
     case SYS_GETPID: {
         tcb_t *cur = sched_current();
         return cur ? cur->id : 0;
@@ -1535,12 +1577,18 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * For backwards compatibility, treat a1 as a pid if it is small
          * (canonical PIDs fit in 32 bits) or negative.  If a1 looks like a
          * userspace pointer (>= 0x1000 and < USER_VADDR_TOP) and a2 == 0 we
-         * fall back to the legacy meaning. */
+         * fall back to the legacy meaning.
+         * LX_COMPAT L3: an lx process always speaks the Linux wait4 ABI
+         * (pid, wstatus, options, rusage); the legacy 1-arg reinterpretation
+         * must never apply — a Linux binary calling wait4(pid, NULL, ...)
+         * with a pid >= 4096 (tids grow) would otherwise be read as a
+         * status pointer. */
         int64_t pid = (int64_t)a1;
         void *user_status = (void *)(uintptr_t)a2;
         int options = (int)a3;
         void *user_rusage = (void *)(uintptr_t)a4;
-        if (a2 == 0 && a1 >= 0x1000 && a1 < 0x0000800000000000ULL) {
+        if (cur && cur->persona != PERSONA_LX &&
+            a2 == 0 && a1 >= 0x1000 && a1 < 0x0000800000000000ULL) {
             /* Legacy wait(status) form: a1 is the status pointer. */
             pid = -1;
             user_status = (void *)(uintptr_t)a1;

@@ -2649,7 +2649,21 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp lx/etc/zz-ls-probe $(INITRD_DIR)/linux/etc/zz-ls-probe
 	@if [ -s $(LX_BUSYBOX_BIN) ]; then \
 	    mkdir -p $(INITRD_DIR)/linux/bin; \
-	    cp $(LX_BUSYBOX_BIN) $(INITRD_DIR)/linux/bin/busybox; fi
+	    cp $(LX_BUSYBOX_BIN) $(INITRD_DIR)/linux/bin/busybox; \
+	    ln -f $(INITRD_DIR)/linux/bin/busybox $(INITRD_DIR)/linux/bin/cat; \
+	    ln -f $(INITRD_DIR)/linux/bin/busybox $(INITRD_DIR)/linux/bin/ls; \
+	    ln -f $(INITRD_DIR)/linux/bin/busybox $(INITRD_DIR)/linux/bin/sleep; fi
+# LX_COMPAT L3: the ash ladder script and its applet hard links.  This
+# busybox build has SH_STANDALONE off (measured: `PATH=/nonexistent ash -c
+# 'cat /x'` answers "not found"), so the shell resolves cat/ls/sleep through
+# PATH and execve's them — the hard links above let ash find them at
+# /linux/bin/NAME, where argv[0]'s basename makes busybox dispatch the
+# applet, and the /linux prefix keeps the personality.  The tar step stores
+# the links as USTAR type-'1' entries sharing the busybox data offset, so the
+# payload does not grow by three busybox copies.  The script is staged
+# unconditionally (a text file like motd); the gate only runs it when
+# busybox is present.
+	@cp lx/tests/ash_script.sh $(INITRD_DIR)/linux/tests/ash_script.sh
 # W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
 	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
 	         $(INITRD_DIR)/tests/fwddll.dll
@@ -2747,6 +2761,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_apkg \
                 $(BUILD_DIR)/test_printf_fmt \
                 $(BUILD_DIR)/test_lx_translate \
+                $(BUILD_DIR)/test_lx_sig \
                 $(BUILD_DIR)/test_pmm $(BUILD_DIR)/test_heap \
                 $(BUILD_DIR)/test_string $(BUILD_DIR)/test_string_ops \
                 $(BUILD_DIR)/test_uart_ring $(BUILD_DIR)/test_tlb_policy \
@@ -3620,6 +3635,14 @@ $(BUILD_DIR)/test_lx_translate: tests/unit/test_lx_translate.c kernel/lx/lx_tran
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	  tests/unit/test_lx_translate.c kernel/lx/lx_translate.c -o $@
 	@echo "[unit] built test_lx_translate (LX_COMPAT L1)"
+
+# LX_COMPAT L3: pin the Linux signal struct layouts (kernel/lx/lx_sig.h)
+# the frame build and parse sides share, so the two halves cannot drift.
+$(BUILD_DIR)/test_lx_sig: tests/unit/test_lx_sig.c kernel/lx/lx_sig.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	  tests/unit/test_lx_sig.c -o $@
+	@echo "[unit] built test_lx_sig (LX_COMPAT L3)"
 
 $(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c kernel/fs/select.c
 	@mkdir -p $(BUILD_DIR)

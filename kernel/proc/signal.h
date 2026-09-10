@@ -221,6 +221,18 @@ int64_t do_sigprocmask(int how, const sigset_t *set, sigset_t *old);
 int64_t do_sigpending(sigset_t *out);
 int64_t do_sigreturn(struct registers *regs);
 
+/* LX_COMPAT L3: the lx-personality arms.  do_sigaction_kernel is the
+ * user-copy-free core do_sigaction() wraps; the lx marshal (rt_sigaction 13,
+ * rt_sigprocmask 14) converts Linux's 32-byte kernel_sigaction / 8-byte
+ * kernel sigset_t to the native shapes and calls it.  lx_do_sigreturn parses
+ * the Linux rt_sigframe (kernel/lx/lx_sig.h) into @regs; the caller then
+ * takes the iret path, exactly like SYS_SIGRETURN. */
+int64_t do_sigaction_kernel(int signo, const struct sigaction *act,
+                            struct sigaction *old);
+int64_t lx_do_sigaction(int signo, const void *act, void *old);
+int64_t lx_do_sigprocmask(int how, const void *set, void *old);
+void    lx_do_sigreturn(struct registers *regs);
+
 /* pause(2): block until any signal is delivered; always returns -EINTR. */
 int64_t do_pause(void);
 /* sigsuspend(2): atomically install @mask, wait for a signal, restore mask. */

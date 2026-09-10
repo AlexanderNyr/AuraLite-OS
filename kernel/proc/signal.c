@@ -26,6 +26,7 @@
 #include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
+#include "kernel/lx/lx_sig.h"    /* LX_COMPAT L3: Linux sigaction/sigframe layouts */
 #include "drivers/timer/pit.h"
 
 #define USER_CS 0x23
@@ -446,8 +447,142 @@ static void stop_current_thread(int signo) {
  * is rewritten to enter the handler and the function returns 1.  On failure
  * (bad user stack) the process is terminated and the function does not return.
  */
+/* LX_COMPAT L3: build a LINUX-shaped rt_sigframe on the user stack for an
+ * lx process's caught signal.  Layout (low -> high):
+ *
+ *   [frame_start]     pretcode (== sa_restorer)   -- ALSO the handler's
+ *   [frame_start+8]   struct lx_ucontext (936)      return address: the
+ *   [.. +944]         struct lx_siginfo  (128)      handler's `ret` pops
+ *                                                    pretcode and lands in
+ *   frame_start % 16 == 8  (SysV: RSP%16==8 at      musl's __restore_rt,
+ *   handler entry), so frame_start == handler_rsp.  which does `mov $15,
+ *                                                    %eax; syscall` with
+ *   rt_sigreturn then sees RSP == frame_start+8,    RSP == frame_start+8,
+ *   reads the ucontext at RSP and the frame at      so the parse side is
+ *   RSP-8 (musl's restorer does not touch RSP).     exactly mirrored.
+ *
+ * The interrupted GPRs go into uc_mcontext (Linux does not save r11 across
+ * a handler), the restore mask into uc_sigmask, and the siginfo gets the
+ * common prefix + SI_USER pid/uid or fault si_addr.  FPU state is NOT
+ * saved/restored across an lx signal — the L3 ladder apps are terminal
+ * programs that never touch the FPU, and the native path keeps its fxsave.
+ */
+static int build_handler_frame_lx(tcb_t *t, int signo, struct registers *regs,
+                                  const siginfo_t *si) {
+    struct sigaction *sa = &t->sig_actions[signo];
+    int want_info = (sa->sa_flags & SA_SIGINFO) && (si != NULL);
+
+    /* Reserve the frame below the red zone, 16-align, then place the
+     * pretcode slot so the handler entry RSP is 8 mod 16. */
+    uint64_t sp = regs->rsp;
+    sp -= 128;                                   /* red zone */
+    sp -= LX_SIGFRAME_SIZE;
+    sp &= ~((uint64_t)15);
+    uint64_t frame_start = sp + 8;               /* %16 == 8 */
+    uint64_t handler_rsp = frame_start;          /* points at pretcode */
+
+    if (!validate_user_range((void *)(uintptr_t)sp,
+                             (frame_start - sp) + LX_SIGFRAME_SIZE, 1)) {
+        kprintf("[signal] lx: bad user stack for signal %d (rsp=%llx)\n",
+                signo, (unsigned long long)regs->rsp);
+        terminate_by_signal(SIGSEGV);            /* no return */
+        return 0;
+    }
+
+    /* musl/glibc set SA_RESTORER and hand us __restore_rt; without a usable
+     * restorer there is nothing to put in pretcode. */
+    uint64_t restorer = (uint64_t)(uintptr_t)sa->sa_restorer;
+    if (!restorer || restorer >= USER_VADDR_TOP) {
+        terminate_by_signal(SIGSEGV);            /* no usable restorer */
+        return 0;
+    }
+
+    /* Assemble the ucontext + siginfo in kernel memory, then copy out. */
+    struct lx_ucontext uc;
+    memset(&uc, 0, sizeof(uc));
+    {
+        struct lx_sigcontext *m = &uc.uc_mcontext;
+        m->r8 = regs->r8;   m->r9  = regs->r9;   m->r10 = regs->r10;
+        m->r11 = regs->r11; m->r12 = regs->r12;  m->r13 = regs->r13;
+        m->r14 = regs->r14; m->r15 = regs->r15;
+        m->rdi = regs->rdi; m->rsi = regs->rsi;  m->rbp = regs->rbp;
+        m->rbx = regs->rbx; m->rdx = regs->rdx;  m->rax = regs->rax;
+        m->rcx = regs->rcx; m->rsp = regs->rsp;
+        m->rip = regs->rip; m->eflags = regs->rflags;
+        m->cs = (uint16_t)regs->cs;
+        m->gs = 0; m->fs = 0;
+    }
+    /* Same suspend-aware restore mask the native frame records. */
+    if (t->sig_suspend_active) {
+        uc.uc_sigmask = (uint64_t)t->sig_suspend_restore;
+        t->sig_suspend_active = 0;
+    } else {
+        uc.uc_sigmask = (uint64_t)t->sig_mask;
+    }
+
+    struct lx_siginfo info;
+    memset(&info, 0, sizeof(info));
+    if (si) {
+        info.si_signo = si->si_signo;
+        info.si_errno = si->si_errno;
+        info.si_code  = si->si_code;
+        uint8_t *payload = ((uint8_t *)&info) + 16;
+        if (si->si_code == SI_USER || si->si_code == SI_KERNEL) {
+            memcpy(payload, &si->si_pid, 4);      /* si_pid */
+            memcpy(payload + 4, &si->si_uid, 4);  /* si_uid */
+        } else {
+            memcpy(payload, &si->si_addr, 8);     /* si_addr */
+        }
+    }
+
+    if (copy_to_user((void *)(uintptr_t)frame_start, &restorer,
+                     sizeof(restorer)) != 0 ||
+        copy_to_user((void *)(uintptr_t)(frame_start + LX_SIGFRAME_UC_OFF),
+                     &uc, sizeof(uc)) != 0 ||
+        copy_to_user((void *)(uintptr_t)(frame_start + LX_SIGFRAME_INFO_OFF),
+                     &info, sizeof(info)) != 0) {
+        terminate_by_signal(SIGSEGV);
+        return 0;
+    }
+
+    /* Blocking-mask arithmetic, shared with the native path. */
+    uint32_t new_mask = t->sig_mask | sa->sa_mask;
+    if (!(sa->sa_flags & SA_NODEFER)) new_mask |= sig_bit(signo);
+    new_mask &= ~SIG_UNCATCHABLE;
+    t->sig_mask = new_mask;
+
+    if (sa->sa_flags & SA_RESETHAND) {
+        sa->sa_handler = SIG_DFL;
+        sa->sa_flags &= ~SA_RESETHAND;
+    }
+    __sync_and_and_fetch(&t->sig_pending, ~sig_bit(signo));
+
+    /* Enter the handler: rdi = signo; for SA_SIGINFO, rsi = &info,
+     * rdx = &ucontext (Linux's own ordering). */
+    regs->rip = (uint64_t)(uintptr_t)sa->sa_handler;
+    regs->rsp = handler_rsp;
+    regs->rdi = (uint64_t)signo;
+    if (want_info) {
+        regs->rsi = frame_start + LX_SIGFRAME_INFO_OFF;
+        regs->rdx = frame_start + LX_SIGFRAME_UC_OFF;
+    } else {
+        regs->rsi = 0;
+        regs->rdx = 0;
+    }
+    regs->rax = 0;
+    regs->rflags = (regs->rflags & ~(uint64_t)(FLAG_DF | FLAG_RF | FLAG_TF)) | FLAG_IF;
+    regs->cs = USER_CS;
+    regs->ss = USER_SS;
+    return 1;
+}
+
 static int build_handler_frame(tcb_t *t, int signo, struct registers *regs,
                                const siginfo_t *si) {
+    /* LX_COMPAT L3: an lx process's handler frame is Linux's rt_sigframe;
+     * the native layout stays untouched for native processes. */
+    if (t->persona == PERSONA_LX)
+        return build_handler_frame_lx(t, signo, regs, si);
+
     struct sigaction *sa = &t->sig_actions[signo];
     int want_info = (sa->sa_flags & SA_SIGINFO) && (si != NULL);
 
@@ -677,23 +812,129 @@ int signal_raise_fault(struct registers *regs, int signo,
 
 /* ---- syscalls ---- */
 
-int64_t do_sigaction(int signo, const struct sigaction *act, struct sigaction *old) {
+/* do_sigaction_kernel() — the core, on kernel-resident pointers (no user
+ * copies).  LX_COMPAT L3: the lx arm marshals Linux's 32-byte
+ * kernel_sigaction into a native struct sigaction and calls this, so the
+ * disposition logic exists once. */
+int64_t do_sigaction_kernel(int signo, const struct sigaction *act,
+                            struct sigaction *old) {
     tcb_t *t = sched_current();
     if (!t) return -EINVAL;
     if (signo < 1 || signo >= NSIG) return -EINVAL;
     /* SIGKILL/SIGSTOP cannot be caught or ignored. */
     if (act && (signo == SIGKILL || signo == SIGSTOP)) return -EINVAL;
 
+    struct sigaction kold = t->sig_actions[signo];
+    if (act) {
+        t->sig_actions[signo] = *act;
+    }
+    if (old) {
+        *old = kold;
+    }
+    return 0;
+}
+
+int64_t do_sigaction(int signo, const struct sigaction *act, struct sigaction *old) {
     struct sigaction kact, kold;
     if (act) {
         if (copy_from_user(&kact, act, sizeof(kact)) != 0) return -EFAULT;
     }
-    kold = t->sig_actions[signo];
-    if (act) {
-        t->sig_actions[signo] = kact;
-    }
+    int64_t r = do_sigaction_kernel(signo, act ? &kact : NULL,
+                                    old ? &kold : NULL);
+    if (r != 0) return r;
     if (old) {
         if (copy_to_user(old, &kold, sizeof(kold)) != 0) return -EFAULT;
+    }
+    return 0;
+}
+
+/* ---- LX_COMPAT L3: rt_sigaction(13) marshal ----------------------------
+ *
+ * Linux's rt_sigaction reads/writes a 32-byte struct kernel_sigaction
+ * {handler, flags, restorer, mask(64-bit)} — glibc and musl both convert
+ * their larger libc struct to this before the syscall.  The shared SA_*
+ * flags are value-identical to the native ones (SA_SIGINFO 4, SA_RESTART
+ * 0x10000000, SA_NODEFER 0x40000000, SA_RESETHAND 0x80000000), so they pass
+ * through; SA_RESTORER (0x04000000), SA_ONSTACK, SA_NOCLDSTOP/NOCLDWAIT are
+ * dropped (the restorer pointer itself is kept — musl hands us __restore_rt,
+ * which the lx frame build uses as pretcode).  The 64-bit sa_mask truncates
+ * to our 32-bit mask (NSIG=32; the ladder apps only use signals 1..31) and
+ * zero-extends on the way out. */
+#define LX_SA_SHARED (SA_SIGINFO | SA_RESTART | SA_NODEFER | SA_RESETHAND)
+
+int64_t lx_do_sigaction(int signo, const void *act, void *old) {
+    tcb_t *t = sched_current();
+    if (!t) return -EINVAL;
+
+    struct lx_kernel_sigaction lx, lx_old;
+    if (act) {
+        if (copy_from_user(&lx, act, sizeof(lx)) != 0) return -EFAULT;
+    }
+    struct sigaction kold;
+    int64_t r = 0;
+    if (act) {
+        struct sigaction kact;
+        memset(&kact, 0, sizeof(kact));
+        kact.sa_handler  = (void (*)(int))(uintptr_t)lx.k_sa_handler;
+        kact.sa_flags    = (int)(lx.sa_flags & LX_SA_SHARED);
+        kact.sa_restorer = (void (*)(void))(uintptr_t)lx.sa_restorer;
+        kact.sa_mask     = (uint32_t)(lx.sa_mask & 0xFFFFFFFFu);
+        r = do_sigaction_kernel(signo, &kact, old ? &kold : NULL);
+    } else {
+        r = do_sigaction_kernel(signo, NULL, old ? &kold : NULL);
+    }
+    if (r != 0) return r;
+    if (old) {
+        memset(&lx_old, 0, sizeof(lx_old));
+        lx_old.k_sa_handler = (uint64_t)(uintptr_t)kold.sa_handler;
+        lx_old.sa_flags     = (uint64_t)kold.sa_flags;
+        lx_old.sa_restorer  = (uint64_t)(uintptr_t)kold.sa_restorer;
+        lx_old.sa_mask      = (uint64_t)kold.sa_mask;
+        if (copy_to_user(old, &lx_old, sizeof(lx_old)) != 0) return -EFAULT;
+    }
+    return 0;
+}
+
+/* LX_COMPAT L3: rt_sigprocmask(14) — 8-byte kernel sigset_t both ways.
+ * The native arm writes only its 32-bit sigset_t; musl passes a 128-byte
+ * libc sigset_t whose first 8 bytes are the kernel mask, and busybox ash
+ * passes a NON-NULL oldset (measured: `rt_sigprocmask(SIG_BLOCK, ~[RT], [], 8)`),
+ * so under-writing would leave ash reading garbage in the high word.  Here
+ * the mask is read/written as one 64-bit word; signals above 32 are always
+ * clear on output (AuraLite has NSIG=32, no RT signals). */
+int64_t lx_do_sigprocmask(int how, const void *set, void *old) {
+    tcb_t *t = sched_current();
+    if (!t) return -EINVAL;
+
+    /* Read the new mask FIRST: busybox ash's sigprocmask2() aliases
+     * set == old, so the in-mask must be consumed before old is written
+     * back.  POSIX also demands oldset carry the mask from BEFORE this
+     * call, so the snapshot (below) is the value written out — the
+     * native do_sigprocmask() has the same ordering.  Writing the NEW
+     * mask into oldset broke the shell's wait loop: ash's
+     * `sigfillset(&oldmask); sigprocmask2(SETMASK,&oldmask);
+     *  sigsuspend(&oldmask);` then suspended with SIGCHLD still blocked
+     * and never woke (measured: LX3-BGJOB hang). */
+    uint64_t set8 = 0;
+    if (set) {
+        if (copy_from_user(&set8, set, sizeof(set8)) != 0) return -EFAULT;
+    }
+    uint32_t old_mask = t->sig_mask;   /* snapshot BEFORE any change */
+    if (old) {
+        uint64_t old8 = (uint64_t)old_mask;   /* zero-extend: no RT signals */
+        if (copy_to_user(old, &old8, sizeof(old8)) != 0) return -EFAULT;
+    }
+    if (set) {
+        uint32_t cur = old_mask;
+        uint32_t s = (uint32_t)set8;
+        switch (how) {
+        case SIG_BLOCK:   cur |= s;  break;
+        case SIG_UNBLOCK: cur &= ~s; break;
+        case SIG_SETMASK: cur = s;   break;
+        default: return -EINVAL;
+        }
+        cur &= ~SIG_UNCATCHABLE;
+        t->sig_mask = cur;
     }
     return 0;
 }
@@ -811,4 +1052,69 @@ int64_t do_sigreturn(struct registers *regs) {
     /* The dispatcher will route this return through the iret path; the return
      * value in RAX has already been restored to the interrupted RAX above. */
     return (int64_t)regs->rax;
+}
+
+/* LX_COMPAT L3: rt_sigreturn(15) for an lx process.  musl's __restore_rt
+ * issues the syscall with RSP == frame_start+8 (it popped pretcode), so the
+ * ucontext sits exactly AT regs->rsp and the frame at regs->rsp-8 — the
+ * mirror of build_handler_frame_lx().  Restores the GPRs from uc_mcontext,
+ * the mask from uc_sigmask, and returns via the same iret path the native
+ * rt_sigreturn uses.  r11 has no Linux slot (it is caller-saved there); the
+ * FPU is not restored (see the frame builder's deviation note). */
+void lx_do_sigreturn(struct registers *regs) {
+    tcb_t *t = sched_current();
+    if (!t) return;
+
+    uint64_t uc_addr = regs->rsp;   /* == frame_start + 8 */
+    if (!validate_user_range((void *)(uintptr_t)uc_addr,
+                             sizeof(struct lx_ucontext), 0)) {
+        terminate_by_signal(SIGSEGV);
+        return;
+    }
+    struct lx_ucontext uc;
+    if (copy_from_user(&uc, (void *)(uintptr_t)uc_addr, sizeof(uc)) != 0) {
+        terminate_by_signal(SIGSEGV);
+        return;
+    }
+
+    t->sig_mask = (uint32_t)(uc.uc_sigmask & 0xFFFFFFFFu) & ~SIG_UNCATCHABLE;
+
+    const struct lx_sigcontext *m = &uc.uc_mcontext;
+    regs->r15 = m->r15; regs->r14 = m->r14; regs->r13 = m->r13;
+    regs->r12 = m->r12; regs->r11 = m->r11; regs->r10 = m->r10;
+    regs->r9  = m->r9;  regs->r8  = m->r8;
+    regs->rdi = m->rdi; regs->rsi = m->rsi; regs->rbp = m->rbp;
+    regs->rdx = m->rdx; regs->rcx = m->rcx; regs->rbx = m->rbx;
+    regs->rax = m->rax;
+
+    if (m->rip >= USER_VADDR_TOP || m->rsp >= USER_VADDR_TOP) {
+        terminate_by_signal(SIGSEGV);
+        return;
+    }
+    regs->rip = m->rip;
+    regs->rsp = m->rsp;
+    regs->rflags = (m->eflags & FIX_EFLAGS) | FLAG_IF | FLAG_RESERVED1;
+    regs->cs = USER_CS;
+    regs->ss = USER_SS;
+
+    /* SA_RESTART: mirror the native restart tail.  For an lx process the
+     * restart number is the ORIGINAL Linux number (recorded before
+     * translation), and lx_translate runs again on the re-dispatch — every
+     * restartable row mapped today is an identity, so this stays symmetric. */
+    if (t->syscall_restart_pending) {
+        t->syscall_restart_pending = 0;
+        t->saved_user_rip    = regs->rip;
+        t->saved_user_rflags = regs->rflags;
+        t->saved_user_rsp    = regs->rsp;
+        syscall_saved_rcx    = regs->rip;
+        syscall_saved_r11    = regs->rflags;
+        syscall_saved_rsp    = regs->rsp;
+        regs->rax = syscall_dispatch(t->syscall_restart_num,
+                                     t->syscall_restart_args[0],
+                                     t->syscall_restart_args[1],
+                                     t->syscall_restart_args[2],
+                                     t->syscall_restart_args[3],
+                                     t->syscall_restart_args[4],
+                                     t->syscall_restart_args[5]);
+    }
 }
