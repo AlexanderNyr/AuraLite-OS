@@ -2380,8 +2380,48 @@ $(LX_HELLO_BIN): $(LX_HOST_STAMP)
 	@: > $@
 endif
 
+# LX_COMPAT L2: the second rung needs a REAL Linux userland binary, and
+# the honest source is upstream's own static musl build — unmodified,
+# exactly what the ladder promises.  Fetched (curl/wget, pinned by
+# SHA-256) rather than vendored: this repo ships patches, not 1.1 MB
+# binaries.  The same absent-placeholder contract as the host-gcc hello
+# above: no fetch tool or a hash mismatch leaves a zero-byte file and a
+# loud skip, and the CI initrd assert turns that into a hard failure
+# instead of a vacuous gate.  The stamp depends on the Makefile so a
+# changed URL/hash re-verifies even when a placeholder file exists.
+LX_BUSYBOX_URL := https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+LX_BUSYBOX_SHA := 6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348
+LX_BUSYBOX_BIN := $(BUILD_DIR)/user/lx_busybox
+LX_BUSYBOX_STAMP := $(BUILD_DIR)/user/.lx_busybox-ok
+
+$(LX_BUSYBOX_STAMP): Makefile
+	@mkdir -p $(dir $@)
+	@if [ -s $(LX_BUSYBOX_BIN) ] && \
+	    echo "$(LX_BUSYBOX_SHA)  $(LX_BUSYBOX_BIN)" | sha256sum -c --status >/dev/null 2>&1; then \
+	    :; \
+	elif command -v curl >/dev/null 2>&1; then \
+	    curl -fsSL "$(LX_BUSYBOX_URL)" -o $(LX_BUSYBOX_BIN); \
+	elif command -v wget >/dev/null 2>&1; then \
+	    wget -q -O $(LX_BUSYBOX_BIN) "$(LX_BUSYBOX_URL)"; \
+	else \
+	    echo "  [lx] skipping busybox (no curl/wget to fetch it)"; \
+	    : > $(LX_BUSYBOX_BIN); \
+	fi
+	@if ! echo "$(LX_BUSYBOX_SHA)  $(LX_BUSYBOX_BIN)" | sha256sum -c --status >/dev/null 2>&1; then \
+	    echo "  [lx] busybox fetch failed or SHA-256 mismatch: $(LX_BUSYBOX_URL)"; \
+	    : > $(LX_BUSYBOX_BIN); \
+	fi
+	@touch $@
+
+$(LX_BUSYBOX_BIN): $(LX_BUSYBOX_STAMP)
+	@if [ -s $@ ]; then \
+	    echo "  [lx] $@ (upstream static musl busybox 1.35.0)"; \
+	else \
+	    echo "  [lx] $@ is a placeholder (see the note above)"; \
+	fi
+
 .PHONY: lx-tests
-lx-tests: $(LX_HELLO_BIN)
+lx-tests: $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN)
 
 PETEST_RELOC_EXE := $(BUILD_DIR)/user/petest_reloc.exe
 
@@ -2423,7 +2463,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2599,6 +2639,17 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@if [ -s $(LX_HELLO_BIN) ]; then \
 	    mkdir -p $(INITRD_DIR)/linux/tests; \
 	    cp $(LX_HELLO_BIN) $(INITRD_DIR)/linux/tests/hello; fi
+# LX_COMPAT L2: the /linux userland — upstream's static busybox under
+# /linux/bin (applet dispatch is argv[1], so one binary is ls, cat and
+# echo at once), and a small /linux/etc the gate can cat and list.  The
+# text files stage unconditionally; busybox follows its own
+# placeholder-or-payload rule above.
+	@mkdir -p $(INITRD_DIR)/linux/etc
+	@cp lx/etc/motd $(INITRD_DIR)/linux/etc/motd
+	@cp lx/etc/zz-ls-probe $(INITRD_DIR)/linux/etc/zz-ls-probe
+	@if [ -s $(LX_BUSYBOX_BIN) ]; then \
+	    mkdir -p $(INITRD_DIR)/linux/bin; \
+	    cp $(LX_BUSYBOX_BIN) $(INITRD_DIR)/linux/bin/busybox; fi
 # W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
 	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
 	         $(INITRD_DIR)/tests/fwddll.dll

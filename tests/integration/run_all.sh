@@ -75,6 +75,7 @@ ALL_CASES=(
     test_open_flags
     test_lseek
     test_lx_hello
+    test_lx_busybox
     test_signals
     test_termios
     test_jobcontrol

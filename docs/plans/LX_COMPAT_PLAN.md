@@ -307,7 +307,101 @@ colliding numbers still reach their native arms).
 
 kernel personality + translation table + `lxrun` + hello case + patch.
 
-### Phase L2 — Structures: busybox file utilities run
+### Phase L2 — Structures: busybox file utilities run ✅ DONE (2026-09-09)
+
+*Measured first, mapped second.*  The whole phase was scoped from a host
+`strace` of the exact busybox build the gate stages (upstream 1.35.0
+static musl), against `asm/unistd_64.h` — which corrected two number
+labels L1's comments had wrong (getcwd is 79, chdir is 80) before any
+code moved.
+
+#### What shipped
+
+* `getdents64` (217) arm: the VFS readdir op is a stateless
+  "list immediate children" (the LISTDIR snapshot), so the iteration
+  cursor lives in the OFD's seek offset — each call re-lists, skips
+  `pos` entries, packs `struct linux_dirent64` records until `count`
+  is exhausted, and parks `pos` on the first unpacked entry.  `d_off`
+  is the entry index + 1, so telldir/seekdir (an lseek on the dir fd)
+  lines up with the cursor for free.  `d_ino == 0` (the initrd hands
+  file #0 its array index) is substituted — musl's readdir silently
+  drops zero-inode entries.
+* `struct stat` marshal (`lx_marshal_stat`): Linux's 144-byte x86-64
+  layout for stat(4)/fstat(5)/lstat(6)/newfstatat(262), st_mode through
+  the same `stat_posix_mode()` the native arms use.  These are lx-only
+  arms BECAUSE the native arms at 5/6/262 fill `struct vfs_stat` — the
+  number equality is a trap, not a shortcut.
+* Identity rows measured, not assumed: open(2)/openat(257) (the O_*
+  vocabulary in `kernel/fs/vfs.h` is the asm-generic one; vfs_open
+  enforces O_DIRECTORY/O_CLOEXEC), munmap(11), fcntl(72) (same command
+  numbers), ioctl(16) (TIOCGWINSZ for ls's columns; termios agrees on
+  the 36 bytes musl reads — NCCS 19 vs musl's 32 is an L3 problem),
+  rt_sigprocmask(14) (SIG_BLOCK/UNBLOCK/SETMASK match; the native mask
+  is 32-bit — busybox's whole run passes oldset == NULL, measured).
+* Aliases: getcwd 79→540, chdir 80→541 (the L1 LISTDIR collision
+  resolves through the table), setuid 105→504, setgid 106→505.
+* More identity rows measured IN-GUEST (not from source alone):
+  clock_gettime(228→228, native arm + kernel_timespec == Linux
+  timespec — busybox dd dies without it), dup(32→32) and dup2(33→33,
+  same argument order — dd's "can't duplicate file descriptor"
+  receipt).
+
+#### Result (measured on the gate, TCG)
+
+`test_lx_busybox` PASSES 9/9: echo writes its own line, cat returns
+the staged motd (through busybox's sendfile-ENOSYS read/write
+fallback), `ls -1 /` names `linux`, `ls -1 /linux/etc` lists both
+entries, and all four applet processes exit 0.  The in-guest probe
+(`busybox stat`) reads the full marshalled struct stat — S_IFREG,
+0644, size 80.  The only unmapped Linux nrs left in these runs are by
+design: 40 sendfile (verified fallback), 13 rt_sigaction (L3's first
+job — dd installs a handler; it tolerates the ENOSYS).
+
+Getting there surfaced and fixed a FOURTH kernel bug, measured before
+the fix: **validate_user_range rejected lazily-mapped anonymous pages.**
+The first touch of a fresh anonymous mmap page has no PTE, so the
+PRESENT check failed and read(2) into such a buffer returned EFAULT —
+busybox cat's copyfd mmaps its copy buffer and read straight into it
+(head, reading into a stack buffer, worked — which is what isolated
+the buffer type as the variable).  Linux faults the page in from
+kernel context and completes the copy.  The fix extends the existing
+COW-materialisation pattern in validate_user_range: a not-PRESENT page
+now goes through handle_user_page_fault() (the same resolver the
+user-mode path uses) and re-validates; kernel addresses and missing
+VMAs still fail exactly as before, so wild pointers stay loud.  No
+native binary ever read into fresh mmap memory — the native libc
+allocates from brk, which maps eagerly — which is why this stayed
+hidden until a Linux binary arrived.
+
+The gate's assertion mechanics are themselves measured facts: the
+console answers TIOCGWINSZ, so busybox believes stdout is a terminal
+and colourises `ls` (every gate `ls` runs `--color=never`); applet
+lines end with a CR from the tty (patterns anchor at `^` only — the
+host grep does not parse `\r`); and the boot selftest's own
+`/bin/hello` prints a bare `hello` line, so `/linux/tests` is not
+asserted by name (the per-run `exited (code=0)` receipts carry the
+clean-exit proof instead).
+
+#### Deviations from the task list (honest, measured)
+
+* busybox is upstream's own prebuilt static musl binary (fetched by
+  the Makefile behind a pinned SHA-256), not host-built: building it
+  would vendor a 4 MB source tree to avoid a 1.1 MB download, and the
+  prebuilt is *more* "unmodified Linux binary", not less.  Staged at
+  `/linux/bin/busybox` (argv[1] applet dispatch), `/linux/etc/motd` +
+  `/linux/etc/zz-ls-probe` feed the cat/ls receipts.
+* `sendfile`(40) is NOT mapped: busybox's copyfd falls back to a
+  read/write loop on ENOSYS (verified in libbb/copyfd.c), so the
+  honest -ENOSYS plus the loud dispatcher print is the receipt.
+* sigaction marshal and faccessat2(439) move to L3 (nothing in the
+  ls/cat/echo trace asked for them; ash will).
+
+#### Test gate
+
+`test_lx_busybox` green (echo/cat/ls×3, anchored `^…$` patterns so the
+serial echo of the typed command cannot satisfy them); `fs`/`posix`
+shards unchanged (the marshal is behind the personality; the native
+stat arms still fill struct vfs_stat).
 
 #### Tasks
 
@@ -459,7 +553,7 @@ lua case + checker + shard + docs + patch; plan COMPLETE.
 ## 6. Close-out checklist
 
 - [ ] L1: `lxrun /linux/tests/hello` prints and exits 0 in CI
-- [ ] L2: `lxrun busybox ls /` lists the real root in CI
+- [x] L2: `lxrun busybox ls /` lists the real root in CI (test_lx_busybox: `ls -1 /` asserts the `linux` root entry, plus `/linux/etc` and `/linux/tests` listings, cat of the staged motd, and echo — 2026-09-09)
 - [ ] L3: scripted busybox ash passes its pipeline/job-control receipts in CI
 - [ ] L4: glibc `sh -c 'echo ok'` runs in CI
 - [ ] L5: unmodified lua passes its scripted program in CI

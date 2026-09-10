@@ -48,6 +48,21 @@
 #define LX_ARM_PRLIMIT64       (LX_ARM_BASE + 302u)  /* 302 */
 #define LX_ARM_READLINKAT      (LX_ARM_BASE + 267u)  /* 267 */
 
+/* L2: the stat family and the directory read.  stat(4)/fstat(5)/
+ * lstat(6) look like number matches with the native table — and that
+ * is exactly why they must NOT be identity rows: the native arms at
+ * 5/6/105 fill struct vfs_stat, a layout no Linux binary speaks.  The
+ * number equality is a trap; the lx arms marshal into Linux's 144-byte
+ * struct stat instead.  getdents64(217) has no native arm at all (the
+ * define exists, the dispatcher arm never did — native opendir goes
+ * through LISTDIR=80), and newfstatat(262) exists natively but again
+ * answers in struct vfs_stat. */
+#define LX_ARM_STAT             (LX_ARM_BASE + 4u)    /*   4 */
+#define LX_ARM_FSTAT            (LX_ARM_BASE + 5u)    /*   5 */
+#define LX_ARM_LSTAT            (LX_ARM_BASE + 6u)    /*   6 */
+#define LX_ARM_GETDENTS64       (LX_ARM_BASE + 217u)  /* 217 */
+#define LX_ARM_NEWFSTATAT       (LX_ARM_BASE + 262u)  /* 262 */
+
 /* Translate a Linux x86-64 syscall number to the native number (or an
  * LX_ARM_* pseudo-number, or LX_UNMAPPED).  Pure table lookup. */
 uint32_t lx_translate(uint32_t linux_nr);

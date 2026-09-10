@@ -2,6 +2,41 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [LX L2 — busybox ls/cat/echo] 2026-09-09 — a real Linux userland binary runs
+
+The ladder's second rung is green: an UNMODIFIED upstream busybox
+(static musl 1.35.0, fetched by the Makefile behind a pinned SHA-256,
+staged at /linux/bin/busybox) lists directories, cats files and echoes
+through the lx personality.  The phase was scoped from a host strace of
+the exact binary: stat(4)/fstat(5)/lstat(6)/newfstatat(262) become
+lx-only arms marshalling Linux's 144-byte struct stat (the native arms
+at those numbers fill struct vfs_stat — number equality is a trap);
+getdents64(217) packs struct linux_dirent64 records from the VFS
+readdir snapshot with the iteration cursor in the OFD's seek offset
+(d_off = index + 1 keeps telldir/seekdir consistent); open(2),
+openat(257), munmap(11), fcntl(72), ioctl(16), rt_sigprocmask(14),
+clock_gettime(228), dup(32) and dup2(33) land as MEASURED identity
+rows (O_*/F_*/termios layouts agree; sigprocmask's 32-bit-mask caveat
+is documented at the row; the 228/32/33 rows carry in-guest receipts
+from busybox dd); getcwd 79→540 and chdir 80→541 resolve L1's LISTDIR
+collision through the table; setuid 105→504 / setgid 106→505 cover
+busybox's suid check.  sendfile(40) stays honestly unmapped —
+busybox's copyfd falls back to its own read/write loop on ENOSYS
+(verified in libbb/copyfd.c).  The strace also corrected two L1
+labels before code moved: getcwd is 79, chdir is 80.  And the ladder
+flushed out a FOURTH kernel bug, fixed in the same commit:
+validate_user_range rejected lazily-mapped anonymous pages (no PTE on
+first touch), so read(2) into a fresh anonymous mmap buffer returned
+EFAULT — Linux faults the page in; the fix extends the COW
+materialisation already inside validate_user_range with the same
+handle_user_page_fault() resolver the user-mode path uses.  No native
+binary ever read into fresh mmap memory (the native libc allocates
+from eagerly-mapped brk), which is why it took a Linux binary to
+find it.  CI's lx shard asserts the busybox payload in the initrd
+(same vacuous-gate discipline as hello); test_lx_busybox's receipts
+are ^-anchored so the serial echo of the typed command and the boot
+selftest's own hello line cannot satisfy them.
+
 ## [LX L1 — personality v1] 2026-09-09 — an unmodified static Linux binary runs
 
 The ladder's first rung is green: `lxrun /linux/tests/hello` — and a

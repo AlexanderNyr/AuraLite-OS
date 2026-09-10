@@ -14,6 +14,7 @@
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/cpu_local.h"
+#include "kernel/mm/vma.h"
 #include "kernel/lib/string.h"
 
 #define UACCESS_MAX_CPUS 64
@@ -58,7 +59,22 @@ int validate_user_range(const void *user_ptr, uint64_t len, int write_required) 
     uint64_t last_page = last & ~(PAGE_SIZE_BYTES - 1ULL);
     for (;;) {
         uint64_t flags = paging_get_flags(page);
-        if (!(flags & PAGE_FLAG_PRESENT)) return 0;
+        if (!(flags & PAGE_FLAG_PRESENT)) {
+            /* LX_COMPAT L2: a lazily mapped page has no PTE yet, and a
+             * first touch used to fail validation outright -- read(2)
+             * into a fresh anonymous mmap buffer returned EFAULT where
+             * Linux faults the page in and completes the copy (busybox
+             * cat's copyfd buffer; the fourth kernel bug the Linux
+             * ladder has flushed out).  COW pages are already
+             * materialised right below; resolve the lazy VMA fault the
+             * same way and re-read the flags.  A kernel address or a
+             * missing VMA fails the resolver and this range exactly as
+             * before, so wild pointers still validate-fail loudly. */
+            if (handle_user_page_fault(page, write_required ? 0x02 : 0x00) != 0)
+                return 0;
+            flags = paging_get_flags(page);
+            if (!(flags & PAGE_FLAG_PRESENT)) return 0;
+        }
         if (!(flags & PAGE_FLAG_USER)) return 0;
         if (write_required && (flags & PAGE_FLAG_COW) && !(flags & PAGE_FLAG_WRITABLE)) {
             if (!paging_handle_cow_fault(page, 0x3)) return 0;

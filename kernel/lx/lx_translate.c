@@ -14,9 +14,13 @@
  * a Linux number without a row is LX_UNMAPPED and fails -ENOSYS with
  * the dispatcher's loud print, so a ladder application's first run
  * names its missing calls.  Nothing is mapped "because it probably
- * works" — the collisions (80 getcwd, 82 rename, 293 rseq, ...) stay
- * unmapped until the phase that owns them measures the arm (L2: the
- * *at family and getdents64; L4: futex bitsets, rseq).
+ * works" — the collisions (81 fchdir vs native SPAWN, 82 rename vs
+ * native DNS, 83 mkdir vs native NET_CONNECT, 293/334, ...) stay
+ * unmapped until the phase that owns them measures the arm (L3: the
+ * rt_sigaction/sigframe marshal; L4: futex bitsets, rseq).  sendfile(40)
+ * is absent on purpose too: busybox's copyfd falls back to a read/write
+ * loop on ENOSYS (verified in busybox-1.35.0 libbb/copyfd.c, not
+ * assumed), and the loud print in the guest log is the honest receipt.
  */
 
 #include "kernel/lx/lx.h"
@@ -42,6 +46,55 @@ static const struct lx_row LX_TABLE[] = {
     { 60,  60 },   /* exit(status) */
     { 158, 158 },  /* arch_prctl(SET_FS/GET_FS, addr) — clone.c */
 
+    /* -- identity rows measured for L2 (busybox ls/cat/echo) --------- */
+    { 2,   2 },    /* open(path, flags, mode) — the O_* values are the
+                    * Linux/asm-generic ones in BOTH vocabularies
+                    * (kernel/fs/vfs.h == asm-generic: O_CREAT 0x40,
+                    * O_DIRECTORY 0x10000, O_CLOEXEC 0x80000, ...),
+                    * vfs_open enforces O_DIRECTORY/CLOEXEC/TRUNC and
+                    * answers fd-or-negative-errno, Linux's contract */
+    { 11,  11 },   /* munmap(addr, len) — native SYS_MUNMAP, same shape;
+                    * musl's mallocng unmaps its buffers with it */
+    { 14,  14 },   /* rt_sigprocmask(how, set, old, sigsetsize) — the
+                    * how values match (SIG_BLOCK 0/UNBLOCK 1/SETMASK 2)
+                    * and the native sigset_t is the low 32 bits musl
+                    * passes first (LE).  CAVEAT, measured honest: the
+                    * native mask is 32-bit, musl's is 64-bit — a
+                    * non-NULL oldset gets only its low half written.
+                    * busybox 1.35's whole ls/cat/echo run passes
+                    * oldset == NULL (host strace), so L2 maps it; the
+                    * first caller needing a 64-bit oldset reopens this. */
+    { 16,  16 },   /* ioctl(fd, cmd, arg) — native arm dispatches
+                    * TCGETS/TCSETS/TCSETSW/TCSETSF/TIOCGWINSZ with
+                    * struct termios/winsize; winsize (4x u16) is layout-
+                    * identical to Linux, and termios agrees on the first
+                    * 36 bytes musl reads (4x u32 flags + c_line +
+                    * c_cc[19]).  musl's NCCS is 32, so its c_cc[19..31]
+                    * stay untouched garbage — isatty(), which only
+                    * checks the return code, and TIOCGWINSZ, which ls
+                    * sizes columns with, are unaffected. */
+    { 72,  72 },   /* fcntl(fd, cmd, arg) — native vfs_fcntl covers
+                    * F_GETFD/SETFD/GETFL/SETFL/DUPFD/DUPFD_CLOEXEC with
+                    * the asm-generic command numbers busybox uses
+                    * (F_SETFD 2, FD_CLOEXEC 1, F_DUPFD_CLOEXEC 1030) */
+    { 257, 257 },  /* openat(dirfd, path, flags, mode) — the native Q12
+                    * arm at this very number: copy_at_path joins the
+                    * thread cwd for AT_FDCWD and answers ENOSYS for a
+                    * real dirfd + relative path (the honest native
+                    * limit, inherited), flags as open(2) above */
+    { 228, 228 },  /* clock_gettime(clk_id, struct timespec*) — native
+                    * 228 with the same argument order and a
+                    * kernel_timespec identical to Linux's {tv_sec,
+                    * tv_nsec}.  Measured in-guest: busybox's dd dies
+                    * on the ENOSYS ("clock_gettime(MONOTONIC)
+                    * failed"), ls asks for it once per run */
+    { 32,  32 },   /* dup(oldfd) — native SYS_DUP, same shape */
+    { 33,  33 },   /* dup2(oldfd, newfd) — native SYS_DUP2,
+                    * vfs_dup2(a1, a2), same argument order.  Measured
+                    * in-guest: busybox's dd dup2's its stdin and dies
+                    * on the ENOSYS ("can't duplicate file descriptor")
+                    * with the row absent */
+
     /* -- lx-only arms ------------------------------------------------ */
     { 63,  LX_ARM_UNAME },           /* uname: fills struct utsname     */
     { 12,  LX_ARM_BRK },             /* brk: Linux-exact return        */
@@ -51,6 +104,11 @@ static const struct lx_row LX_TABLE[] = {
     { 267, LX_ARM_READLINKAT },      /* /proc/self/exe probes: -ENOENT */
     { 273, LX_ARM_SET_ROBUST_LIST }, /* accept-and-store               */
     { 302, LX_ARM_PRLIMIT64 },       /* rlimit query: none enforced    */
+    { 4,   LX_ARM_STAT },            /* stat: native arms speak struct */
+    { 5,   LX_ARM_FSTAT },           /*   vfs_stat, NOT Linux's 144-   */
+    { 6,   LX_ARM_LSTAT },           /*   byte layout — marshal (L2)   */
+    { 217, LX_ARM_GETDENTS64 },      /* getdents64: no native arm      */
+    { 262, LX_ARM_NEWFSTATAT },      /* newfstatat: marshal (L2)       */
 
     /* -- aliases: same contract, different native number ------------- */
     { 102, 500 },  /* getuid  -> SYS_GETUID  (native 500) */
@@ -59,6 +117,18 @@ static const struct lx_row LX_TABLE[] = {
     { 108, 503 },  /* getegid -> SYS_GETEGID (native 503) */
     { 318, 319 },  /* getrandom(buf, len, flags) — native 319, same
                     * signature (GRND_NONBLOCK|GRND_RANDOM accepted) */
+    { 79,  540 },  /* getcwd(buf, size) — native SYS_GETCWD (540):
+                    * do_getcwd copies the cwd string and returns its
+                    * length, Linux's convention; -ERANGE when it does
+                    * not fit.  79 is getcwd on x86-64 (80 is chdir —
+                    * checked against asm/unistd_64.h, not recalled) */
+    { 80,  541 },  /* chdir(path) — native SYS_CHDIR (541), NOT native
+                    * 80 (LISTDIR): the collision that kept 80 unmapped
+                    * in L1 resolves through this row and nothing else */
+    { 105, 504 },  /* setuid — native 504; busybox's suid check calls it
+                    * with the id it already holds (0), which the native
+                    * arm permits for euid 0 */
+    { 106, 505 },  /* setgid — native 505, same shape as setuid */
 };
 
 #define LX_TABLE_LEN (sizeof(LX_TABLE) / sizeof(LX_TABLE[0]))

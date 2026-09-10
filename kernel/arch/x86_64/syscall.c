@@ -312,6 +312,66 @@ static uint32_t stat_posix_mode(const struct vfs_stat *st) {
     return m;
 }
 
+/* LX_COMPAT L2: Linux x86-64 struct stat — 144 bytes, the layout musl
+ * and glibc parse.  The offsets are ABI, not a choice: st_mode lands at
+ * 24, st_size at 48, the three timespec pairs at 72/88/104.  The native
+ * stat-family arms fill struct vfs_stat (a shared-kernel/userspace
+ * layout, deliberately different), so the lx personality marshals here
+ * instead of aliasing — see LX_COMPAT_PLAN.md phase L2. */
+struct lx_stat {
+    uint64_t st_dev;
+    uint64_t st_ino;
+    uint64_t st_nlink;
+    uint32_t st_mode;
+    uint32_t st_uid;
+    uint32_t st_gid;
+    uint32_t __pad0;
+    uint64_t st_rdev;
+    int64_t  st_size;
+    int64_t  st_blksize;
+    int64_t  st_blocks;
+    int64_t  st_atime;  int64_t st_atime_nsec;
+    int64_t  st_mtime;  int64_t st_mtime_nsec;
+    int64_t  st_ctime;  int64_t st_ctime_nsec;
+    int64_t  __reserved[3];
+};
+
+/* struct vfs_stat -> struct lx_stat.  st_mode reuses stat_posix_mode()
+ * so the S_IFMT bits agree with what the native arms report for the
+ * same vnode; block size/blocks get conservative defaults when the fs
+ * does not track them (isatty's fstat only reads st_mode). */
+static void lx_marshal_stat(const struct vfs_stat *vs, struct lx_stat *out) {
+    memset(out, 0, sizeof(*out));
+    out->st_dev     = 0;                    /* single root; no dev ids */
+    out->st_ino     = vs->inode;
+    out->st_nlink   = vs->nlink ? vs->nlink : 1;
+    out->st_mode    = stat_posix_mode(vs);
+    out->st_uid     = vs->uid;
+    out->st_gid     = vs->gid;
+    out->st_rdev    = 0;                    /* no device nodes report one */
+    out->st_size    = (int64_t)vs->size;
+    out->st_blksize = 4096;
+    out->st_blocks  = vs->blocks ? (int64_t)vs->blocks
+                                 : (int64_t)((vs->size + 511) / 512);
+    out->st_atime   = (int64_t)vs->atime;
+    out->st_mtime   = (int64_t)vs->mtime;
+    out->st_ctime   = (int64_t)vs->ctime;
+}
+
+/* LX_COMPAT L2: VFS_TYPE_* -> Linux d_type (the DT_* the dirent layer
+ * reports).  The native libc has the same table in userspace; this is
+ * the kernel-side copy for the getdents64 arm. */
+static uint8_t lx_dtype(uint32_t vfs_type) {
+    switch (vfs_type) {
+        case VFS_TYPE_FILE:    return 8;    /* DT_REG  */
+        case VFS_TYPE_DIR:     return 4;    /* DT_DIR  */
+        case VFS_TYPE_CHARDEV: return 2;    /* DT_CHR  */
+        case VFS_TYPE_SYMLINK: return 10;   /* DT_LNK  */
+        case VFS_TYPE_FIFO:    return 1;    /* DT_FIFO */
+        default:               return 0;    /* DT_UNKNOWN */
+    }
+}
+
 /* Q12: AT-family path resolution.  POSIX allows a relative path with
  * dirfd == AT_FDCWD to resolve against the caller's working directory.  The
  * VFS layer has no cwd-relative open path, so the dispatcher joins the
@@ -1315,6 +1375,139 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (copy_to_user((void *)(uintptr_t)a1, &u, sizeof(u)) != 0)
             return (uint64_t)-EFAULT;
         return 0;
+    }
+    case LX_ARM_STAT:
+    case LX_ARM_LSTAT: {
+        /* Linux stat(4)/lstat(6).  Deliberately NOT the native arms
+         * even though native SYS_LSTAT sits at Linux's 6: those fill
+         * struct vfs_stat, and a Linux binary would misread every
+         * field past the first.  orig_num (set above the switch) still
+         * holds the Linux number, so one arm body serves both rows. */
+        char path[SYSCALL_PATH_MAX];
+        struct vfs_stat st;
+        if (copy_user_path(path, a1) != 0) return (uint64_t)-EFAULT;
+        if (!validate_user_range((void *)(uintptr_t)a2,
+                                 sizeof(struct lx_stat), 1))
+            return (uint64_t)-EFAULT;
+        int r = (orig_num == 4) ? vfs_stat(path, &st) : vfs_lstat(path, &st);
+        if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        struct lx_stat ls;
+        lx_marshal_stat(&st, &ls);
+        if (copy_to_user((void *)(uintptr_t)a2, &ls, sizeof(ls)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case LX_ARM_FSTAT: {
+        /* Linux fstat(5).  isatty() probes with it and reads st_mode;
+         * busybox's ls asks for every entry it lists. */
+        struct vfs_stat st;
+        if (!validate_user_range((void *)(uintptr_t)a2,
+                                 sizeof(struct lx_stat), 1))
+            return (uint64_t)-EFAULT;
+        int r = vfs_fstat((int)a1, &st);
+        if (r != 0) return (uint64_t)r;
+        struct lx_stat ls;
+        lx_marshal_stat(&st, &ls);
+        if (copy_to_user((void *)(uintptr_t)a2, &ls, sizeof(ls)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case LX_ARM_NEWFSTATAT: {
+        /* Linux newfstatat(262): dirfd in a1, path in a2, buf in a3,
+         * flags in a4 — the same argument order the native 262 arm
+         * uses; what differs is the payload (native fills struct
+         * vfs_stat, Linux wants the 144-byte layout).  AT_FDCWD joins
+         * the cwd via copy_at_path; a real dirfd with a relative path
+         * stays ENOSYS, the same honest limit the native arm has. */
+        char path[SYSCALL_PATH_MAX];
+        if (!validate_user_range((void *)(uintptr_t)a3,
+                                 sizeof(struct lx_stat), 1))
+            return (uint64_t)-EFAULT;
+        int r = copy_at_path(path, a2, (int)a1);
+        if (r != 0) return (uint64_t)r;
+        struct vfs_stat st;
+        r = (a4 & AT_SYMLINK_NOFOLLOW) ? vfs_lstat(path, &st)
+                                       : vfs_stat(path, &st);
+        if (r != 0) return (uint64_t)vfs_errno(r, ENOENT);
+        struct lx_stat ls;
+        lx_marshal_stat(&st, &ls);
+        if (copy_to_user((void *)(uintptr_t)a3, &ls, sizeof(ls)) != 0)
+            return (uint64_t)-EFAULT;
+        return 0;
+    }
+    case LX_ARM_GETDENTS64: {
+        /* Linux getdents64(fd, buf, count).  The VFS readdir op is
+         * stateless — it lists a directory's immediate children the
+         * way LISTDIR snapshots them — so the iteration cursor lives
+         * in the OFD's seek offset: every call re-lists, skips pos
+         * entries, packs struct linux_dirent64 records until count is
+         * exhausted, and parks pos on the first entry NOT packed.
+         * d_off is the entry index + 1, so telldir/seekdir (an lseek
+         * on the dir fd, which resets pos) lines up with the cursor
+         * for free.  musl's readdir calls until a 0 return. */
+        int fd = (int)a1;
+        tcb_t *cur = sched_current();
+        if (!cur) return (uint64_t)-EBADF;
+        if (fd < 0 || fd >= VFS_MAX_FDS || !cur->fd_table[fd])
+            return (uint64_t)-EBADF;
+        struct ofd *o = cur->fd_table[fd];
+        struct vnode *vn = o->vn;
+        if (!vn || vn->type != VFS_TYPE_DIR) return (uint64_t)-ENOTDIR;
+        if (!vn->ops || !vn->ops->readdir) return (uint64_t)-ENOTDIR;
+
+        uint64_t count = a3;
+        if (count == 0) return (uint64_t)-EINVAL;
+        if (!validate_user_range((void *)(uintptr_t)a2, count, 1))
+            return (uint64_t)-EFAULT;
+
+        struct vfs_dirent *ents =
+            kmalloc((size_t)VFS_MAX_DIRENTS * sizeof(*ents));
+        if (!ents) return (uint64_t)-ENOMEM;
+        int n = vn->ops->readdir(vn, ents, VFS_MAX_DIRENTS);
+        if (n < 0) {
+            kfree(ents);
+            return (uint64_t)vfs_errno(n, ENOENT);
+        }
+
+        /* struct linux_dirent64: u64 d_ino; s64 d_off; u16 d_reclen;
+         * u8 d_type; char d_name[] — 24 bytes of head, then the name
+         * with its NUL, padded to an 8-byte stride. */
+        uint64_t total = 0;
+        uint64_t i = o->pos;    /* entries a previous call consumed */
+        for (; i < (uint64_t)n; i++) {
+            size_t nlen = strlen(ents[i].name);
+            uint64_t reclen = (24 + (uint64_t)nlen + 1 + 7) & ~(uint64_t)7;
+            if (total + reclen > count) break;
+            /* musl's readdir silently drops d_ino == 0 entries; the
+             * initrd hands file #0 its array index (zero) as an inode,
+             * so substitute a non-zero, collision-free ino there
+             * instead of losing the file from every ls. */
+            uint64_t ino = ents[i].inode ? ents[i].inode
+                                         : (0x7FFFFFFF00000000ull | i);
+            uint8_t rec[VFS_PATH_MAX + 24];
+            memset(rec, 0, sizeof(rec));
+            uint8_t *p = rec;
+            *(uint64_t *)p = ino;                    p += 8;   /* d_ino  */
+            *(int64_t *)p = (int64_t)(i + 1);        p += 8;   /* d_off  */
+            *(uint16_t *)p = (uint16_t)reclen;       p += 2;
+            *p = lx_dtype(ents[i].type);             p += 1;   /* d_type */
+            memcpy(p, ents[i].name, nlen);                     /* d_name */
+            if (copy_to_user((void *)(uintptr_t)(a2 + total), rec,
+                             reclen) != 0) {
+                kfree(ents);
+                return (uint64_t)-EFAULT;
+            }
+            total += reclen;
+        }
+        kfree(ents);
+        if (total == 0) {
+            /* Nothing packed: either the cursor is past the listing
+             * (EOF -> 0) or the buffer cannot hold even the first
+             * record (Linux answers EINVAL). */
+            return (uint64_t)((i >= (uint64_t)n) ? 0 : -EINVAL);
+        }
+        o->pos = i;
+        return (uint64_t)total;
     }
     case SYS_GETPID: {
         tcb_t *cur = sched_current();
