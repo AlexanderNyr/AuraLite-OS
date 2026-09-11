@@ -1,6 +1,6 @@
 # AuraLite OS — Linux Application Compatibility Plan (the `lx` personality)
 
-## Status: OPEN — L0 ✅ L1 ✅ L2 ✅ L3 ✅ L4 ✅ L5 ⬜
+## Status: COMPLETE — L0 ✅ L1 ✅ L2 ✅ L3 ✅ L4 ✅ L5 ✅ (all phases landed)
 
 > This is a feature plan in the style of `FSFULL_PLAN.md` and `OTA_PLAN.md`,
 > written against the tree as it stands. It follows the same structure:
@@ -639,33 +639,102 @@ Native mmap/VMA behavior is unchanged: `test_mmap_file` 10/10,
 
 PT_INTERP + futex/TLS/robust arms + dynamic case + patch.
 
-### Phase L5 — Flagship, CI wiring and close-out
+### Phase L5 — Flagship, CI wiring and close-out ✅ DONE (2026-09-11)
+
+*Measured first, mapped second*, same discipline as every rung before
+it.  The flagship binary is **stock lua 5.4.9** — upstream's own
+`make linux` target, a dynamic PIE linked against glibc + libm, fetched
+from lua.org behind a pinned SHA-256 and never patched.  Its first
+in-guest run named the phase's one missing arm the way the ladder is
+designed to: `os.time()` died with *"time result cannot be represented
+in this installation"*, and the serial log showed four loud
+`[syscall] unknown syscall 201` prints — glibc's `time()` issues Linux
+nr **201** directly (lx offers no vDSO `__vdso_time`).  The native
+`SYS_TIME` (520) arm is Linux-exact (`kernel_time()` returns
+seconds-since-epoch and writes through a non-NULL `tloc`), so the fix
+is one alias row `201 → 520` — nothing else was missing: the rest of
+lua's run (dynamic load, stdio, `math`, `string`, `table.sort`,
+`os.date`, `io.lines`) went through rows L1–L4 already mapped.
+
+#### What shipped
+
+* Makefile: `LX_LUA_*` block (5.4.9, lua.org, SHA-256
+  `2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6`,
+  `make linux`, copy), the `lx-payload` aggregate target (hello +
+  busybox + dyn hello + lua), the initrd prerequisite entries, and the
+  staging of `/linux/tests/lua`, `/linux/tests/lua_script.lua`, and
+  lua's NEEDED `libm.so.6` beside the L4 loader set.  The
+  placeholder-or-payload contract is the same as every other lx rung:
+  a failed fetch/build stages nothing and CI's initrd assert fails
+  loudly instead of letting the shard vacuously pass.
+* `lx/tests/lua_script.lua`: five sections, each an assert that fails
+  by name — arithmetic (`2 + 3*4 == 14`, `2^10`, `17 % 5` sign, `math`
+  lib), strings (`upper`/`sub`/`format`/length), a 10 000-entry table
+  built/sorted/reduced to an exact host-computed sum (`499895000`),
+  `os.time()`/`os.date("%Y")`, and `io.lines("/linux/etc/motd")` over a
+  real staged file.  Final `print("LX5-LUA-OK")`.
+* `kernel/lx/lx_translate.c`: the `201 → 520` time alias row with the
+  measured why in its comment.
+* `tests/integration/cases/test_lx_lua.sh`: boots, `lxrun
+  /linux/tests/lua /linux/tests/lua_script.lua`, asserts the `^LX5-LUA-OK`
+  receipt, the `/bin/lxrun.*exited .code=0.` receipt, no `assertion
+  failed`, no exception, no panic — 5 assertions.  Registered in
+  `run_all.sh` after `test_lx_dynamic`, where the existing `lx` group
+  regex (`^test_lx_[a-z0-9_]+$`) already picks it up.
+* `tools/check_lx_claims.py`: the D8-family checker — every ✅ phase
+  pinned to its artefacts (the translation-table arms, `lx_marshal_stat`,
+  `rt_sigframe`, the loader, the five cases) and its greppable receipts
+  (`LXBEE-7f3a`, `LX3-ECHO-OK`, `LX4-HELLO-OK`, `LX5-LUA-OK`, the
+  `201, 520` row, the `lx` group regex, the `fsfull, ota, lx` matrix
+  line), with the usual three-planted-violation negative control.
+  Wired into `make test-unit` and the workflow's claim-check step.
+* Workflow: the Linux-personality presence step now also asserts
+  `./linux/tests/lua` and `./linux/tests/lua_script.lua` are in the
+  initrd (the `w32hello.exe` precedent); the `lx` matrix entry, the
+  `--check-groups` partition step and the shard runner were already
+  present at this baseline — verified, not recreated.
+* Docs rows same-commit: `docs/status.md`, `README.md`, `TODO.md`
+  (bullets, not open boxes), ledger coverage, baseline moved, this plan
+  → COMPLETE.
+
+#### Result (measured on the gate, TCG)
+
+`lx` shard green: `test_lx_hello`, `test_lx_busybox`, `test_lx_shell`,
+`test_lx_dynamic`, `test_lx_lua` all pass together (5 cases, 630 s).
+`test_lx_lua` PASSES 5/5: the receipt `LX5-LUA-OK` prints, lua exits 0,
+no `assertion failed`, no exception, no panic — an unmodified stock
+interpreter ran a real program through the personality, dynamic load
+and all.  `run_all.sh --check-groups` reports the partition OK with the
+`lx` group present.  `check_lx_claims.py` OK (6 phases, 28 artefact +
+41 receipt pins) and its selftest catches all three planted violations;
+`tools/residue_harvest.py` matches the moved baseline.
+
+#### Deviations from the task list (honest, measured)
+
+* The guest RTC is epoch 0 by design (`time_init_cmos`), so the script
+  asserts that `os.time()` returns a number ≥ 0 and that `os.date("%Y")`
+  formats a parseable 4-digit year — the *path* works, not any
+  particular wall-clock year.
+* `libm.so.6` is copied from the host's multiarch directory (the same
+  dereferenced-copy discipline as L4's ld-linux and libc) rather than
+  built — lua is the unmodified binary; its shared-library
+  dependencies are the guest's, staged from the distro.
 
 #### Tasks
 
-* Host-build `lua` 5.4 (static at first, dynamic if L4 held) into
-  `/linux/tests/`; `tests/integration/cases/test_lx_lua.sh`: scripted
-  lua (arithmetic, string, table stress, `os.date`, a read of /linux
-  via io.lines) — the unmodified-interpreter proof.
-* `tools/check_lx_claims.py` in the checker family: every ✅ phase
-  pinned to its artefacts (the translation table symbols, the marshal
-  functions, the CI case registrations) *and* its greppable receipts —
-  with the usual planted-violation negative control.
-* The `lx` CI shard: the four cases as their own group in
-  `run_all.sh`'s partition (`--check-groups` proves it), mirroring the
-  fsfull/ota precedent — not `posix`, whose wall-clock they would
-  stretch; matrix + workflow step wired like O5's.
-* Makefile: the host-built /linux payload is a target (`lx-payload`)
-  with the mingw/w32-sdk precedent (skip loudly, CI asserts presence
-  like `w32hello.exe`).
-* docs rows same-commit: `docs/status.md`, README, TODO (bullets, not
-  open boxes — those are owned by the residue phases), ledger coverage
-  rows, baseline moved, this plan → COMPLETE.
+* Host-build lua 5.4 into `/linux/tests/`; scripted lua case — done,
+  above.
+* `tools/check_lx_claims.py` with artefacts + receipts + negative
+  control — done, above.
+* The `lx` shard group/matrix/step — verified at baseline, the new
+  case joins the existing group.
+* Makefile `lx-payload` target + CI presence assert — done, above.
+* Docs rows + ledger + baseline + plan → COMPLETE — done, above.
 
 #### Test gate
 
-CI: `lx` shard green alongside all existing shards; check_lx_claims in
-test-unit; ratchet green.
+`lx` shard green alongside all existing shards; `check_lx_claims` in
+`make test-unit` and the workflow; the residue ratchet green.
 
 #### Deliverable
 
@@ -692,11 +761,11 @@ lua case + checker + shard + docs + patch; plan COMPLETE.
 
 ## 6. Close-out checklist
 
-- [ ] L1: `lxrun /linux/tests/hello` prints and exits 0 in CI
+- [x] L1: `lxrun /linux/tests/hello` prints and exits 0 in CI (test_lx_hello: 5/5 — 2026-09-09)
 - [x] L2: `lxrun busybox ls /` lists the real root in CI (test_lx_busybox: `ls -1 /` asserts the `linux` root entry, plus `/linux/etc` and `/linux/tests` listings, cat of the staged motd, and echo — 2026-09-09)
 - [x] L3: scripted busybox ash passes its pipeline/job-control receipts in CI (test_lx_shell: 9/9, both invocations, exit-7 status — 2026-09-10)
-- [ ] L4: glibc `sh -c 'echo ok'` runs in CI
-- [ ] L5: unmodified lua passes its scripted program in CI
-- [ ] L5: `tools/check_lx_claims.py` green in test-unit, negative control included
-- [ ] L5: `lx` group in `run_all.sh` partition, `--check-groups` green
-- [ ] L5: ledger coverage rows + baseline moved same-commit; plan → COMPLETE
+- [x] L4: glibc `sh -c 'echo ok'` runs in CI (test_lx_dynamic: 6/6, `LX4-HELLO-OK` + `ok` + `LX4-SH-OK` — 2026-09-10)
+- [x] L5: unmodified lua passes its scripted program in CI (test_lx_lua: 5/5, `LX5-LUA-OK`, exit 0 — 2026-09-11)
+- [x] L5: `tools/check_lx_claims.py` green in test-unit, negative control included
+- [x] L5: `lx` group in `run_all.sh` partition, `--check-groups` green
+- [x] L5: ledger coverage rows + baseline moved same-commit; plan → COMPLETE

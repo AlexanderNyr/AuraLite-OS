@@ -254,3 +254,40 @@ no suite touched; 15/15 test_usb_xhci (was 7/8), the whole usb shard
 compiler warnings; the ld.lld .bss-alignment linker notes are
 pre-existing -- CI 92815985778 on the BASE commit prints them too). No ledger rows
 opened or closed; baseline unchanged (OTA_PLAN.md 6, TODO.md 7).
+
+LX_COMPAT L0-L4 (2026-09-09 .. 2026-09-10, upstream as the L0..L4
+updates): the plan lands measured against fb39fe2 (L0, baseline gains
+the LX_COMPAT_PLAN.md row), the personality + translation table + lxrun
+ship (L1), the stat/getdents64 marshals + upstream busybox (L2), the
+signal-frame + shell rung (L3), and the dynamic loader rung (L4).  Each
+phase added its own CI case in the lx shard; no ledger rows opened or
+closed, and coverage registers at L5 per the plan.
+
+LX_COMPAT L5 (2026-09-11, close-out): the Linux-application series is
+COMPLETE (L0-L5).  The flagship rung ships an UNMODIFIED stock lua 5.4
+interpreter (lua.org, SHA-256 pinned, upstream `make linux`, dynamic PIE
+glibc + libm) running a real five-section script, gated as
+test_lx_lua.sh (5/5: `LX5-LUA-OK`, exit 0).  The first in-guest run
+named one missing arm -- glibc time() issues Linux nr 201, unmapped --
+fixed by the measured alias row 201 -> 520 (native SYS_TIME is
+Linux-exact).  tools/check_lx_claims.py pins all six phases to their
+artefacts and greppable receipts (negative control included) in
+make test-unit and the workflow's claim-check step; the workflow's
+presence assert now also requires ./linux/tests/lua and
+./linux/tests/lua_script.lua in the initrd (the w32hello.exe
+precedent).  docs/status.md, README.md and TODO.md carry the feature
+rows.  The plan's parked items, restated with their section-2 reasons:
+- The full Linux syscall surface -- the ladder names each rung's calls;
+  unmapped numbers fail loudly (-ENOSYS), so a new application names
+  its next gap on first run.
+- Full siginfo payloads, FPU save/restore across lx signals, vfork-class
+  clone -- each measured out of scope for the terminal-program ladder
+  and documented at the boundary in kernel/lx/.
+- faccessat2 / pselect6 / ppoll / the socket-family numbers -- no
+  ladder rung has asked for them yet; they stay deliberately unmapped
+  until one does.
+No new debt rows: the ledger's own table (RES-01..RES-54) is untouched,
+the parked items above are restated in TODO.md as bullets, not open
+boxes, because this file's open boxes are owned by RESIDUE2 phases
+(pinned by tools/check_residue2_claims.py).  Baseline moved same-commit
+(LX_COMPAT_PLAN.md 5 -> 6).

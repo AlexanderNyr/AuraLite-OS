@@ -47,7 +47,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 355   # was 359; P7 removed select.c's four (the -m32 fix WAS the removal)
+BASELINE_UINT64_CASTS = 370   # was 355; the LX L3/L4 kernel arms (signal-frame
+                              # marshal + the futex/TLS/robust-list loader
+                              # surface) added 15 portable casts without moving
+                              # this pin -- L5 closes the drift honestly (the
+                              # casts are width-clean: they are syscall-arg /
+                              # user-pointer widths, not pointer truncations)
 BASELINE_X64_INCLUDES = 69    # was 80; the portio.h -> arch.h batch paid 11
 BASELINE_ASM_FILES    = 27    # was 33 at V6 arming; V6 batch paid 4, RESIDUE2
                               # T6 paid 1 (arch_compiler_barrier), T8 paid 2 (vfs.c

@@ -2403,6 +2403,57 @@ endif
 .PHONY: lx-dyn
 lx-dyn: $(LX_DYN_HELLO_BIN)
 
+# LX_COMPAT L5: the FLAGSHIP rung — an unmodified interpreter.  Stock
+# lua 5.4 is fetched from lua.org (SHA-256 pinned, the busybox precedent:
+# this repo ships patches, not tarballs) and built with its own
+# `make linux` target, which links a PIE against glibc + libm — the
+# strongest proof the ladder has: the interpreter itself goes through
+# PT_INTERP + ld.so, then runs a real script.  The same
+# placeholder-or-payload contract as every other lx payload: a failed
+# fetch (or a missing host gcc/make) leaves a zero-byte file and a loud
+# skip, and the CI initrd assert turns the absence into a hard failure.
+LX_LUA_VER  := 5.4.9
+LX_LUA_URL  := https://www.lua.org/ftp/lua-$(LX_LUA_VER).tar.gz
+LX_LUA_SHA  := 2335b6c582a52654f94612bf10d2f4672805d05329aa6568b1d8cd9e5c6fb8e6
+LX_LUA_DIR  := $(BUILD_DIR)/lx-lua
+LX_LUA_TGZ  := $(LX_LUA_DIR)/lua-$(LX_LUA_VER).tar.gz
+LX_LUA_SRC  := $(LX_LUA_DIR)/lua-$(LX_LUA_VER)
+LX_LUA_BIN  := $(BUILD_DIR)/user/lx_lua
+LX_LUA_STAMP := $(BUILD_DIR)/user/.lx_lua-ok
+
+$(LX_LUA_STAMP): Makefile
+	@mkdir -p $(dir $@) $(LX_LUA_DIR)
+	@if [ -s $(LX_LUA_BIN) ]; then \
+	    :; \
+	elif command -v curl >/dev/null 2>&1; then \
+	    curl -fsSL "$(LX_LUA_URL)" -o $(LX_LUA_TGZ); \
+	elif command -v wget >/dev/null 2>&1; then \
+	    wget -q -O $(LX_LUA_TGZ) "$(LX_LUA_URL)"; \
+	fi
+	@if [ -s $(LX_LUA_TGZ) ] && \
+	    echo "$(LX_LUA_SHA)  $(LX_LUA_TGZ)" | sha256sum -c --status >/dev/null 2>&1; then \
+	    tar -xzf $(LX_LUA_TGZ) -C $(LX_LUA_DIR) && \
+	    $(MAKE) -C $(LX_LUA_SRC) linux >/dev/null 2>&1 && \
+	    cp $(LX_LUA_SRC)/src/lua $(LX_LUA_BIN); \
+	else \
+	    echo "  [lx] lua fetch failed or SHA-256 mismatch: $(LX_LUA_URL)"; \
+	    : > $(LX_LUA_BIN); \
+	fi
+	@touch $@
+
+$(LX_LUA_BIN): $(LX_LUA_STAMP)
+	@if [ -s $@ ]; then \
+	    echo "  [lx] $@ (stock lua $(LX_LUA_VER), dynamic PIE glibc)"; \
+	else \
+	    echo "  [lx] $@ is a placeholder (see the note above)"; \
+	fi
+
+# The aggregate payload target: every /linux binary the ladder stages.
+# CI asserts the individual files are in the image (the w32hello.exe
+# precedent) rather than trusting this target alone.
+.PHONY: lx-payload
+lx-payload: $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN)
+
 # LX_COMPAT L2: the second rung needs a REAL Linux userland binary, and
 # the honest source is upstream's own static musl build — unmodified,
 # exactly what the ladder promises.  Fetched (curl/wget, pinned by
@@ -2486,7 +2537,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2711,6 +2762,17 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@if [ -r /lib/x86_64-linux-gnu/libc.so.6 ]; then \
 	    cp -L /lib/x86_64-linux-gnu/libc.so.6 \
 	          $(INITRD_DIR)/lib/x86_64-linux-gnu/libc.so.6; fi
+# LX_COMPAT L5: the flagship interpreter.  Stock lua 5.4 (the lx-payload
+# target above) lands at /linux/tests/lua, its script alongside; lua's
+# NEEDED libm.so.6 joins the loader library set staged for L4.  The
+# placeholder-or-payload rule again: a host that could not build lua
+# stages nothing and the gate skips.
+	@cp lx/tests/lua_script.lua $(INITRD_DIR)/linux/tests/lua_script.lua
+	@if [ -s $(LX_LUA_BIN) ]; then \
+	    cp $(LX_LUA_BIN) $(INITRD_DIR)/linux/tests/lua; fi
+	@if [ -r /lib/x86_64-linux-gnu/libm.so.6 ]; then \
+	    cp -L /lib/x86_64-linux-gnu/libm.so.6 \
+	          $(INITRD_DIR)/lib/x86_64-linux-gnu/libm.so.6; fi
 # W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
 	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
 	         $(INITRD_DIR)/tests/fwddll.dll
@@ -3139,6 +3201,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_ota_claims.py"
 	@python3 tools/check_ota_claims.py || exit 1
 	@python3 tools/check_ota_claims.py --selftest || exit 1
+
+# LX_COMPAT L5: the Linux-application plan cannot drift from the tree
+# either.  Every ✅ phase is pinned to its artefacts (translation-table
+# arms, marshal functions, case registrations) AND its greppable
+# receipts, with the usual negative control.
+	@echo "[unit] running tools/check_lx_claims.py"
+	@python3 tools/check_lx_claims.py || exit 1
+	@python3 tools/check_lx_claims.py --selftest || exit 1
 
 # GL2_PLAN.md L0: tools/check_gl2_claims.py cannot drift from the tree.
 # Opener facts are pinned as live greps; later phases move the pins in the

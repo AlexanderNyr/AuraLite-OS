@@ -729,6 +729,22 @@ the parked OTA items stay bullets, not boxes):
 - **Boot-success watchdog** — stage2 consulting a boot-attempt counter for auto-rollback of a kernel that faults mid-boot.
 - **Delta updates, and a real `statvfs(3)`** — today's is a hardcoded stub; `ota` guards with a size sanity bound + write-time ENOSPC abort instead.
 
+### Linux application compatibility (LX_COMPAT_PLAN.md — L0–L5 complete)
+
+- [x] Per-process `lx` personality: `/linux/**` execs get the Linux syscall-number map, native processes keep the native one (`kernel/lx/`, host-tested by `test_lx_translate`).
+- [x] Static glibc `hello` runs and exits 0 (`test_lx_hello.sh`).
+- [x] Unmodified upstream busybox runs `ls`/`cat`/`echo` with Linux-shaped `struct stat`/`getdents64` (`test_lx_busybox.sh`).
+- [x] Busybox `ash` runs scripts with Linux signal frames and job control (`test_lx_shell.sh`).
+- [x] Dynamic PIE binaries run through the real glibc loader (PT_INTERP + ld.so + futex/TLS/robust list) — `sh -c 'echo ok'` and a dynamic hello (`test_lx_dynamic.sh`).
+- [x] An **unmodified stock lua 5.4** interpreter runs a real script — arithmetic, strings, a 10 000-entry table sort/reduce, `os.time`/`os.date`, and a `io.lines` read of `/linux/etc/motd` (`test_lx_lua.sh`).
+Parked with reasons (LX_COMPAT_PLAN §2; the open boxes in this file are
+owned by RESIDUE2 phases by convention — the residue2 checker pins
+that — so the parked lx items stay bullets, not boxes):
+
+- **The full Linux syscall surface** — the ladder names each rung's calls; unmapped numbers fail loudly (`-ENOSYS`), so a new application names its next gap on first run.
+- **Full siginfo payloads, FPU save/restore across lx signals, vfork-class clone** — each measured out of scope for the terminal-program ladder and documented at the boundary in `kernel/lx/`.
+- **`faccessat2`/`pselect6`/`ppoll`/socket-family numbers** — no ladder rung has asked for them yet; they stay deliberately unmapped until one does.
+
 ### Memory management
 
 - [x] Strict per-segment user ELF permissions and NX for user data/stack.

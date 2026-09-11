@@ -175,6 +175,20 @@ static const struct lx_row LX_TABLE[] = {
                     * with the id it already holds (0), which the native
                     * arm permits for euid 0 */
     { 106, 505 },  /* setgid — native 505, same shape as setuid */
+
+    /* -- L5: the stock-lua interpreter surface ------------------------
+     * time(201) has no native arm at 201 — the native clock/time block
+     * lives elsewhere (see syscall.c P8: gettimeofday 96, clock_gettime
+     * 228, time 520).  The native SYS_TIME (520) arm is Linux-exact:
+     * kernel_time() returns seconds-since-epoch and writes through a
+     * non-NULL tloc, time(2)'s contract.  glibc's time() on x86-64
+     * issues Linux 201 directly (lx offers no vDSO __vdso_time), so the
+     * unmodified lua interpreter's os.time() died on -ENOSYS until this
+     * row: measured in-guest as four `unknown syscall 201` prints and
+     * `time result cannot be represented in this installation` at
+     * lua_script.lua:43.  With the row present os.time() returns the
+     * (epoch-0) boot-seconds value and os.date("%Y") formats "1970". */
+    { 201, 520 },  /* time -> native SYS_TIME (520) */
 };
 
 #define LX_TABLE_LEN (sizeof(LX_TABLE) / sizeof(LX_TABLE[0]))

@@ -109,6 +109,12 @@ int main(void) {
     expect(105, 504, "setuid -> SYS_SETUID (busybox re-drops to its own uid)");
     expect(106, 505, "setgid -> SYS_SETGID (same shape)");
     expect(21,  513, "access -> SYS_ACCESS (musl prefers access on x86-64)");
+    /* L4/L5 alias rows, measured in-guest (the L4 pin below was left
+     * LX_UNMAPPED in the L4 commit's test by mistake while the table
+     * row shipped 202 -> 530 -- fixed here so the pin matches the map
+     * the test compiles against). */
+    expect(202, 530, "futex -> SYS_FUTEX (native 530; do_futex decodes Linux's op vocabulary)");
+    expect(201, 520, "time -> SYS_TIME (native 520; glibc's time() issues Linux 201 directly, no vDSO)");
 
     printf("[lx] collisions stay unmapped (their native arms belong to "
            "native processes)\n");
@@ -117,7 +123,6 @@ int main(void) {
     expect(83,  LX_UNMAPPED, "mkdir: native 83 is NET_CONNECT");
     expect(40,  LX_UNMAPPED, "sendfile: busybox's copyfd falls back to read/write on ENOSYS");
     expect(334, LX_UNMAPPED, "rseq: glibc falls back to plain sequences (L4)");
-    expect(202, LX_UNMAPPED, "futex: native 530 (L4)");
     expect(439, LX_UNMAPPED, "faccessat2 (musl's access uses nr 21 on x86-64; L4 if a ladder app needs it)");
     expect(9999, LX_UNMAPPED, "nowhere");
 

@@ -58,6 +58,15 @@ additional post-phase extensions.
   the manifest), swaps the A/B slots and syncs. The CI gate boots 0.0.1,
   installs a 0.0.2-ota kernel over HTTP, reboots into it and rolls back:
   three boots in one serial log (`ota` shard).
+- Linux personality (`lx`, LX_COMPAT_PLAN L0–L5 complete): **unmodified
+  Linux applications** run on the kernel through a per-process
+  syscall-number map selected by the `/linux` path prefix at `execve` —
+  `lxrun /linux/tests/hello` (static glibc), `lxrun /linux/bin/busybox ls /`
+  (upstream static musl), `lxrun /linux/bin/sh -c 'echo ok'` (dynamic glibc
+  via the real loader), and `lxrun /linux/tests/lua /linux/tests/lua_script.lua`
+  (an unmodified stock lua 5.4 interpreter running a real program). The
+  five-rung ladder is CI-gated as the `lx` shard, and
+  `tools/check_lx_claims.py` keeps the plan honest.
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
   kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.

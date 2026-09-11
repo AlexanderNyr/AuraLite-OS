@@ -78,6 +78,7 @@ ALL_CASES=(
     test_lx_busybox
     test_lx_shell
     test_lx_dynamic
+    test_lx_lua
     test_signals
     test_termios
     test_jobcontrol
