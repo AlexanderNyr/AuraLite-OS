@@ -50,11 +50,16 @@
 #define AT_EXECFN  31
 #define AUX_ENTRIES 14            /* all but the AT_NULL terminator pair */
 
-/* ELF facts elf_load() exposes so build_initial_stack can fill AT_PHDR etc. */
+/* ELF facts elf_load() exposes so build_initial_stack can fill AT_PHDR etc.
+ * LX_COMPAT L4: AT_ENTRY is the MAIN program's entry (ld.so jumps there when
+ * its own work is done); the interpreter's entry is the JUMP target and never
+ * lands in the auxv.  AT_BASE is the interpreter's load bias (0 for a static
+ * image, which is what every native binary is). */
 struct exec_elfinfo {
-    uint64_t entry;               /* AT_ENTRY  */
-    uint64_t phdr;                /* AT_PHDR   */
-    uint64_t phnum;               /* AT_PHNUM  */
+    uint64_t entry;               /* AT_ENTRY (main program, biased) */
+    uint64_t phdr;                /* AT_PHDR  (main program, biased) */
+    uint64_t phnum;               /* AT_PHNUM */
+    uint64_t base;                /* AT_BASE  (interpreter bias, 0 static) */
 };
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL
@@ -76,17 +81,21 @@ static uint64_t choose_user_stack_top(void) {
     return USER_STACK_TOP - pages * 0x1000ULL;
 }
 
-static void map_user_stack_pages(uint64_t stack_top) {
+/* LX_COMPAT L4: @stack_x honours PT_GNU_STACK — an image that declares
+ * an executable stack (p_flags & PF_X, only ever ancient glibc nested-
+ * function trampolines) gets one; everything else (the default, every
+ * modern glibc image) keeps the NX stack. */
+static void map_user_stack_pages(uint64_t stack_top, int stack_x) {
     uint64_t base = stack_top - USER_STACK_SIZE - USER_STACK_GUARD_SIZE;
+    uint64_t flags = PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_USER;
+    if (!stack_x) flags |= PAGE_FLAG_NO_EXEC;
     for (uint64_t off = USER_STACK_GUARD_SIZE; off < USER_STACK_GUARD_SIZE + USER_STACK_SIZE; off += 0x1000) {
         uint64_t phys = pmm_alloc_frame();
         if (phys == 0) {
             kprintf("[proc] OOM mapping user stack\n");
             return;
         }
-        paging_map(base + off, phys,
-                   PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
-                   PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
+        paging_map(base + off, phys, flags);
     }
 }
 
@@ -270,7 +279,7 @@ static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *
         { AT_PHENT,  56 },                       /* sizeof(Elf64_Phdr) */
         { AT_PHNUM,  ei ? ei->phnum : 0 },
         { AT_PAGESZ, 4096 },
-        { AT_BASE,   0 },                        /* no dynamic interpreter */
+        { AT_BASE,   ei ? ei->base : 0 },        /* interpreter load bias */
         { AT_FLAGS,  0 },
         { AT_ENTRY,  ei ? ei->entry : 0 },
         { AT_UID,    uid },
@@ -301,43 +310,67 @@ static uint64_t build_initial_stack(uint64_t stack_top, const struct exec_args *
  */
 static void __attribute__((noreturn))
 load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea,
-                   const char *execfn) {
+                   const char *execfn,
+                   const void *interp_data, uint64_t interp_size) {
     tcb_t *cur = sched_current();
     if (!cur) {
         kprintf("[proc] FATAL: load_and_jump_args with no current thread\n");
         if (elf_data) kfree((void *)elf_data);
+        if (interp_data) kfree((void *)interp_data);
         if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
     struct exec_elfinfo ei;
     ei.phdr  = 0;
     ei.phnum = 0;
-    uint64_t entry;
+    ei.base  = 0;
 
-    /* WIN32_PLAN.md W32-3: a PE32+ image goes to the w32 loader instead.
-     * Selection is by the file's own magic, not by filename, so a .exe that
-     * is really an ELF (or the reverse) is still handled correctly.
-     *
-     * The auxv fields stay zero for a PE: AT_PHDR/AT_PHNUM describe an ELF
-     * program-header table, which a PE does not have.  A Win32 binary reads
-     * its own headers through its module base instead, which pe_load() maps
-     * for exactly that reason. */
+    /* LX_COMPAT L4: a PIE (ET_DYN) main image needs a load bias; ET_EXEC
+     * maps at its fixed p_vaddr (bias 0).  0x555555554000 is Linux's
+     * classic default PIE base -- above the mmap floor and below the
+     * interpreter, so neither the allocator nor the loader collides. */
+    const struct elf64_ehdr *main_eh = (const struct elf64_ehdr *)elf_data;
+    uint64_t main_bias = (main_eh->e_type == ET_DYN) ? 0x555555554000ULL : 0;
+
+    uint64_t main_entry = 0, jump_entry = 0;
     if (pe_image_probe(elf_data, elf_size)) {
-        entry = pe_load(elf_data, elf_size, &cur->brk, NULL);
+        /* WIN32_PLAN.md W32-3: a PE32+ image goes to the w32 loader instead.
+         * Selection is by the file's own magic, not by filename.  A PE has
+         * no PT_INTERP, so @interp_data is always NULL on this path. */
+        jump_entry = pe_load(elf_data, elf_size, &cur->brk, NULL);
     } else {
-        entry = elf_load(elf_data, elf_size, &cur->brk, &ei.phdr, &ei.phnum);
+        main_entry = elf_load_at(elf_data, elf_size, main_bias,
+                                 &cur->brk, &ei.phdr, &ei.phnum);
+        jump_entry = main_entry;
+
+        if (interp_data && interp_size) {
+            /* LX_COMPAT L4: map the interpreter at its own bias (0x7f0... is
+             * far above the mmap ceiling 0x700000000000 and below the user
+             * stack 0x7ffff0000000, so nothing else can claim it).  The
+             * interpreter image's own phdr/brk are discarded: AT_PHDR is the
+             * MAIN program's, and the program break tracks the main image. */
+            const struct elf64_ehdr *ie = (const struct elf64_ehdr *)interp_data;
+            uint64_t interp_bias = (ie->e_type == ET_DYN) ? 0x7f0000000000ULL
+                                                          : 0;
+            jump_entry = elf_load_at(interp_data, interp_size, interp_bias,
+                                     NULL, NULL, NULL);
+            ei.base = interp_bias;
+        }
     }
-    ei.entry = entry;
-    if (entry == 0) {
+    ei.entry = main_entry ? main_entry : jump_entry;
+    if (jump_entry == 0) {
         kprintf("[proc] ELF load failed\n");
         if (elf_data) kfree((void *)elf_data);
+        if (interp_data) kfree((void *)interp_data);
         if (execfn)  kfree((void *)execfn);
         if (ea) { exec_args_free(ea); kfree(ea); }
         thread_exit();
     }
     uint64_t stack_top = choose_user_stack_top();
-    map_user_stack_pages(stack_top);
+    int stack_x = elf_gnu_stack_x(elf_data, elf_size);
+    map_user_stack_pages(stack_top, stack_x);
     if (elf_data) kfree((void *)elf_data);
+    if (interp_data) kfree((void *)interp_data);
 
     if (cur && cur->kernel_stack) {
         uint64_t kstack = (uint64_t)cur->kernel_stack + THREAD_STACK_SIZE;
@@ -370,9 +403,10 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
     /* execfn was kmalloc'd by the caller and copied onto the user stack above. */
     if (execfn) kfree((void *)execfn);
 
-    kprintf("[proc] entering Ring 3 at 0x%llx RSP=0x%llx (CR3=0x%llx)\n",
-            (unsigned long long)entry, (unsigned long long)user_rsp,
-            (unsigned long long)(read_cr3() & 0x000FFFFFFFFFF000ULL));
+    kprintf("[proc] entering Ring 3 at 0x%llx RSP=0x%llx (CR3=0x%llx)%s\n",
+            (unsigned long long)jump_entry, (unsigned long long)user_rsp,
+            (unsigned long long)(read_cr3() & 0x000FFFFFFFFFF000ULL),
+            ei.base ? " [dynamic]" : "");
 
     /* FIX_R3: a fresh program starts with NO TLS.  Without this an execve()
      * would leak the old program's (or another tenant's) FS into the new
@@ -382,14 +416,14 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
     cur->tls_base = 0;
     write_fs_base(0);
 
-    jump_to_user(entry, user_rsp, 0);
+    jump_to_user(jump_entry, user_rsp, 0);
     thread_exit();   /* not reached */
 }
 
 /* Back-compat wrapper: load with no argv/envp. */
 static void __attribute__((noreturn))
 load_and_jump(const void *elf_data, uint64_t elf_size) {
-    load_and_jump_args(elf_data, elf_size, NULL, NULL);
+    load_and_jump_args(elf_data, elf_size, NULL, NULL, NULL, 0);
 }
 
 /* ---- fork() ---- */
@@ -767,6 +801,54 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
         return -ENOMEM;
     }
 
+    /* 1b) LX_COMPAT L4: a PT_INTERP segment names the dynamic loader
+     * (e.g. /lib64/ld-linux-x86-64.so.2).  Read it NOW, while a failure
+     * can still return an errno with the caller's address space intact —
+     * Linux's execve fails ENOENT when the interpreter is missing, and so
+     * do we.  The bytes are handed to load_and_jump_args, which maps the
+     * loader and frees both images. */
+    uint8_t *interp_buf = NULL;
+    uint64_t interp_size = 0;
+    {
+        char interp_path[128];
+        if (elf_interp_path(buf, (uint64_t)total, interp_path,
+                            sizeof(interp_path))) {
+            int ifd = vfs_open(interp_path, O_RDONLY, 0);
+            if (ifd < 0) {
+                kprintf("[proc] execve: interpreter '%s' open failed (%d)\n",
+                        interp_path, ifd);
+                kfree(buf);
+                exec_args_free(ea); kfree(ea);
+                return ifd;
+            }
+            struct vnode *ivn = vfs_get_vnode(ifd);
+            uint64_t isz = ivn ? ivn->size : 0;
+            if (isz > 8 * 1024 * 1024) {
+                vfs_close(ifd);
+                kfree(buf);
+                exec_args_free(ea); kfree(ea);
+                return -EINVAL;
+            }
+            uint64_t icap = isz > (256 * 1024) ? isz : (256 * 1024);
+            interp_buf = kmalloc(icap);
+            if (!interp_buf) {
+                vfs_close(ifd);
+                kfree(buf);
+                exec_args_free(ea); kfree(ea);
+                return -ENOMEM;
+            }
+            uint64_t itot = 0;
+            int64_t in;
+            while ((in = vfs_read(ifd, interp_buf + itot, icap - itot)) > 0) {
+                itot += (uint64_t)in;
+            }
+            vfs_close(ifd);
+            interp_size = itot;
+            kprintf("[proc] execve: interpreter '%s' (%llu bytes)\n",
+                    interp_path, (unsigned long long)interp_size);
+        }
+    }
+
     /* 2) Create a fresh address space.  Q14: execve detaches SysV shm
      * segments (POSIX/Linux semantics) — the address space is about to be
      * replaced wholesale. */
@@ -780,6 +862,7 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
     uint64_t new_pml4 = paging_new_address_space();
     if (new_pml4 == 0) {
         kfree(buf);
+        if (interp_buf) kfree(interp_buf);
         exec_args_free(ea); kfree(ea);
         return -ENOMEM;
     }
@@ -808,12 +891,14 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
 
     /* 5) Load and jump (does not return).  Pass the captured argv/envp so they
      *    are materialised on the new process's initial user stack.  AT_EXECFN
-     *    gets a kernel copy of the path (load_and_jump_args frees it). */
+     *    gets a kernel copy of the path (load_and_jump_args frees it); the
+     *    interpreter image (L4) rides along and is freed there too. */
     {
         size_t eflen = strlen(path) + 1;
         char *ef = kmalloc(eflen);
         if (ef) memcpy(ef, path, eflen);
-        load_and_jump_args(buf, (uint64_t)total, ea, ef);
+        load_and_jump_args(buf, (uint64_t)total, ea, ef,
+                           interp_buf, interp_size);
     }
 
     return -1;   /* not reached */
@@ -942,8 +1027,11 @@ static void spawn_thread(void *arg) {
         thread_exit();
     }
     /* `path` becomes AT_EXECFN: load_and_jump_args copies it onto the new
-     * process's initial stack and frees it.  (ea is also consumed there.) */
-    load_and_jump_args(buf, (uint64_t)total, ea, path);
+     * process's initial stack and frees it.  (ea is also consumed there.)
+     * LX_COMPAT L4: the spawn path stays static-only (no PT_INTERP) — every
+     * dynamic binary on the ladder is reached through lxrun's execve, and
+     * native programs never have an interpreter. */
+    load_and_jump_args(buf, (uint64_t)total, ea, path, NULL, 0);
     #undef SPAWN_MAX_IMAGE
 }
 

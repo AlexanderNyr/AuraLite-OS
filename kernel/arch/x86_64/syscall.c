@@ -644,7 +644,7 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
 
     /* Validation of prot and flags (as before). */
     int anonymous = (flags & MAP_ANONYMOUS) ? 1 : 0;
-    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0) {
         return (uint64_t)-EINVAL;
     }
     if (!(flags & (MAP_SHARED | MAP_PRIVATE))) return (uint64_t)-EINVAL;
@@ -654,7 +654,15 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
      * anything that set the dirty bit (see page_cache_mark_dirty()).
      * MAP_SHARED + anonymous continues to go through shmem. */
     if (anonymous) {
-        if (fd != (uint64_t)-1) return (uint64_t)-EINVAL;
+        /* Linux IGNORES fd for MAP_ANONYMOUS.  glibc passes its fd=-1
+         * through the syscall register WITHOUT sign extension (a 32-bit
+         * mov $-1, %edi zeroes the upper half), so the kernel actually
+         * receives 0x00000000FFFFFFFF here.  Demanding fd == -1 (the
+         * 64-bit form) made EVERY anonymous mmap fail -EINVAL — the
+         * loader's PROT_NONE reserve, the MAP_FIXED segment placement,
+         * and the minimal-malloc page — which cascaded into a NULL
+         * dereference in init_tls.  Accept any fd value, like Linux. */
+        (void)fd;
     } else {
         if (fd == (uint64_t)-1 || (off & (PAGE_SIZE_BYTES - 1ULL)) ||
             off > 0x7FFFFFFFFFFFFFFFULL) {
@@ -669,8 +677,31 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
 
     if (flags & MAP_FIXED) {
         if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
-        if (!user_mmap_range_ok(addr, len) || !user_range_is_free(addr, len)) {
-            return (uint64_t)-ENOMEM;
+        if (!user_mmap_range_ok(addr, len)) return (uint64_t)-ENOMEM;
+        /* LX_COMPAT L4: Linux MAP_FIXED discards whatever is already mapped
+         * in the range.  ld.so reserves a PROT_NONE/PROT_READ stretch with a
+         * plain mmap(NULL,...) and then MAP_FIXEDs its real RX/R/RW segments
+         * on top of it; without removing the overlap the OLDER (reserve) VMA
+         * — which sorts first — wins the fault lookup and the loader would
+         * hand out zero pages instead of file bytes.  Unmap present frames as
+         * well so stale contents cannot leak into the new mapping (shared
+         * file-backed frames stay in the page cache, same rule as munmap). */
+        int fixed_shared_file = 0;
+        {
+            uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
+            vma_t *ov = vma_find(cur->vma_list, addr);
+            if (ov && (ov->flags & VMA_SHARED) && (ov->flags & VMA_FILE) &&
+                !(ov->flags & VMA_SHMEM) && ov->file)
+                fixed_shared_file = 1;
+            vma_remove_range(&cur->vma_list, addr, addr + len);
+            spinlock_release_irqrestore(&cur->vma_lock, vf);
+        }
+        for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
+            uint64_t phys = paging_get_phys(addr + off);
+            if (phys) {
+                paging_unmap(addr + off);
+                if (!fixed_shared_file) pmm_free_frame(phys);
+            }
         }
     } else {
         uint64_t start = cur->mmap_next ? cur->mmap_next : USER_MMAP_BASE;
@@ -808,7 +839,7 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
     if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
     len = align_up_u64(len, PAGE_SIZE_BYTES);
 
-    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0 || prot == 0) {
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0) {
         return (uint64_t)-EINVAL;
     }
 

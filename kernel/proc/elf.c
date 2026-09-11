@@ -40,7 +40,8 @@ static uint64_t align_down_page(uint64_t v) {
     return v & ~PAGE_MASK;
 }
 
-static int validate_elf(const struct elf64_ehdr *eh, uint64_t size) {
+static int validate_elf(const struct elf64_ehdr *eh, uint64_t size,
+                        uint64_t bias) {
     uint64_t phdr_bytes;
 
     if (size < sizeof(struct elf64_ehdr)) {
@@ -79,9 +80,18 @@ static int validate_elf(const struct elf64_ehdr *eh, uint64_t size) {
         kprintf(ELF_TAG "unexpected phdr size %u\n", eh->e_phentsize);
         return 0;
     }
-    if (eh->e_entry == 0 || eh->e_entry >= USER_VADDR_TOP) {
+    /* LX_COMPAT L4: for an ET_DYN image e_entry is a bias-relative
+     * offset, so the "does it land in user space" check applies the bias
+     * (a PIE entry of 0x1040 at bias 0x555555554000 is fine; without the
+     * bias the same image would be misread as an empty entry). */
+    uint64_t entry_abs;
+    if (add_overflow_u64((uint64_t)eh->e_entry, bias, &entry_abs)) {
+        kprintf(ELF_TAG "entry+bias overflow\n");
+        return 0;
+    }
+    if (entry_abs == 0 || entry_abs >= USER_VADDR_TOP) {
         kprintf(ELF_TAG "bad entry address 0x%llx\n",
-                (unsigned long long)eh->e_entry);
+                (unsigned long long)entry_abs);
         return 0;
     }
     phdr_bytes = (uint64_t)eh->e_phnum * (uint64_t)sizeof(struct elf64_phdr);
@@ -92,7 +102,8 @@ static int validate_elf(const struct elf64_ehdr *eh, uint64_t size) {
     return 1;
 }
 
-static int validate_segment(const struct elf64_phdr *ph, uint64_t image_size) {
+static int validate_segment(const struct elf64_phdr *ph, uint64_t image_size,
+                            uint64_t bias) {
     uint64_t file_end;
     uint64_t mem_end;
 
@@ -104,13 +115,14 @@ static int validate_segment(const struct elf64_phdr *ph, uint64_t image_size) {
         kprintf(ELF_TAG "segment file range out of bounds\n");
         return 0;
     }
-    if (ph->p_vaddr < PAGE_SIZE) {
+    if (bias + ph->p_vaddr < PAGE_SIZE) {
         kprintf(ELF_TAG "refusing low user mapping at 0x%llx\n",
-                (unsigned long long)ph->p_vaddr);
+                (unsigned long long)(bias + ph->p_vaddr));
         return 0;
     }
     if (ph->p_memsz == 0) return 1;
-    if (add_overflow_u64(ph->p_vaddr, ph->p_memsz - 1, &mem_end) || mem_end >= USER_VADDR_TOP) {
+    if (add_overflow_u64(bias + ph->p_vaddr, ph->p_memsz - 1, &mem_end) ||
+        mem_end >= USER_VADDR_TOP) {
         kprintf(ELF_TAG "segment virtual range out of bounds\n");
         return 0;
     }
@@ -185,19 +197,23 @@ static int zero_user_mapping(uint64_t dst_virt, uint64_t len) {
  * filled pages.
  */
 static int load_segment(const struct elf64_phdr *ph, const uint8_t *image,
-                        uint64_t image_size) {
+                        uint64_t image_size, uint64_t bias) {
     uint64_t seg_start, seg_end, npages;
     uint64_t final_flags;
 
-    if (!validate_segment(ph, image_size)) {
+    if (!validate_segment(ph, image_size, bias)) {
         return 0;
     }
     if (ph->p_memsz == 0) {
         return 1;
     }
 
-    seg_start = ph->p_vaddr & ~PAGE_MASK;
-    seg_end   = align_up_page(ph->p_vaddr + ph->p_memsz);
+    /* LX_COMPAT L4: every virtual address is bias-relative for an ET_DYN
+     * image; ET_EXEC passes bias 0 and nothing changes. */
+    uint64_t vaddr = bias + ph->p_vaddr;
+
+    seg_start = vaddr & ~PAGE_MASK;
+    seg_end   = align_up_page(vaddr + ph->p_memsz);
     npages    = (seg_end - seg_start) / PAGE_SIZE;
     final_flags = elf_page_flags(ph->p_flags);
 
@@ -230,14 +246,14 @@ static int load_segment(const struct elf64_phdr *ph, const uint8_t *image,
 
     if (ph->p_filesz) {
         const uint8_t *src = image + ph->p_offset;
-        if (!copy_into_user_mapping(ph->p_vaddr, src, ph->p_filesz)) {
+        if (!copy_into_user_mapping(vaddr, src, ph->p_filesz)) {
             kprintf(ELF_TAG "failed to copy PT_LOAD bytes\n");
             return 0;
         }
     }
 
     if (ph->p_memsz > ph->p_filesz) {
-        if (!zero_user_mapping(ph->p_vaddr + ph->p_filesz, ph->p_memsz - ph->p_filesz)) {
+        if (!zero_user_mapping(vaddr + ph->p_filesz, ph->p_memsz - ph->p_filesz)) {
             kprintf(ELF_TAG "failed to zero PT_LOAD bss\n");
             return 0;
         }
@@ -246,11 +262,11 @@ static int load_segment(const struct elf64_phdr *ph, const uint8_t *image,
     return 1;
 }
 
-uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
-                  uint64_t *out_phdr, uint64_t *out_phnum) {
+uint64_t elf_load_at(const void *image, uint64_t size, uint64_t bias,
+                     uint64_t *out_brk, uint64_t *out_phdr, uint64_t *out_phnum) {
     const struct elf64_ehdr *eh = (const struct elf64_ehdr *)image;
 
-    if (!validate_elf(eh, size)) {
+    if (!validate_elf(eh, size, bias)) {
         return 0;
     }
 
@@ -267,12 +283,13 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
             phdr_vaddr = phdrs[i].p_vaddr;
         }
         if (phdrs[i].p_type == PT_LOAD) {
-            if (!load_segment(&phdrs[i], (const uint8_t *)image, size)) {
+            if (!load_segment(&phdrs[i], (const uint8_t *)image, size, bias)) {
                 return 0;
             }
             segs_loaded++;
             if (phdrs[i].p_memsz) {
-                uint64_t end = align_up_page(phdrs[i].p_vaddr + phdrs[i].p_memsz);
+                uint64_t end = align_up_page(bias + phdrs[i].p_vaddr +
+                                             phdrs[i].p_memsz);
                 if (end > highest_end) highest_end = end;
                 /* LX_COMPAT L1: also DESCRIBE the segment in the owning
                  * thread's VMA list, with the p_flags protections.  The
@@ -294,7 +311,7 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
                     if (phdrs[i].p_flags & PF_X) vflags |= VMA_EXEC;
                     uint64_t vf = spinlock_acquire_irqsave(&owner->vma_lock);
                     (void)vma_insert(&owner->vma_list,
-                                     align_down_page(phdrs[i].p_vaddr),
+                                     align_down_page(bias + phdrs[i].p_vaddr),
                                      end, vflags, NULL, 0);
                     spinlock_release_irqrestore(&owner->vma_lock, vf);
                 }
@@ -316,10 +333,67 @@ uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
     }
 
     if (out_brk)  *out_brk  = highest_end;
-    if (out_phdr) *out_phdr = phdr_vaddr;
+    if (out_phdr) *out_phdr = bias + phdr_vaddr;
     if (out_phnum)*out_phnum= (uint64_t)eh->e_phnum;
 
     kprintf(ELF_TAG "loaded %d segment(s), entry 0x%llx\n",
-            segs_loaded, (unsigned long long)eh->e_entry);
-    return eh->e_entry;
+            segs_loaded, (unsigned long long)(bias + eh->e_entry));
+    return bias + eh->e_entry;
+}
+
+/* Back-compat wrapper (bias 0): the native static binaries. */
+uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
+                  uint64_t *out_phdr, uint64_t *out_phnum) {
+    return elf_load_at(image, size, 0, out_brk, out_phdr, out_phnum);
+}
+
+/* LX_COMPAT L4: locate the PT_INTERP segment and copy its path.  The
+ * segment's p_filesz bytes are a NUL-terminated string IN the image
+ * (e.g. "/lib64/ld-linux-x86-64.so.2"); the copy is bounded by both the
+ * segment's file range and @cap.  Returns 1 and fills @out when present,
+ * 0 otherwise (a static image). */
+int elf_interp_path(const void *image, uint64_t size, char *out, uint64_t cap) {
+    const struct elf64_ehdr *eh = (const struct elf64_ehdr *)image;
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+
+    /* Header bounds only — validate_elf's full pass is the loader's job;
+     * here a malformed header simply means "no interpreter". */
+    if (size < sizeof(struct elf64_ehdr)) return 0;
+    if (eh->e_phnum == 0) return 0;
+    uint64_t phbytes = (uint64_t)eh->e_phnum * sizeof(struct elf64_phdr);
+    if (eh->e_phoff > size || phbytes > size - eh->e_phoff) return 0;
+
+    const struct elf64_phdr *phdrs =
+        (const struct elf64_phdr *)((const uint8_t *)image + eh->e_phoff);
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (phdrs[i].p_type != PT_INTERP) continue;
+        if (phdrs[i].p_filesz == 0 || phdrs[i].p_filesz >= cap) return 0;
+        if (phdrs[i].p_offset > size ||
+            phdrs[i].p_filesz > size - phdrs[i].p_offset) return 0;
+        const char *s = (const char *)image + phdrs[i].p_offset;
+        memcpy(out, s, (size_t)phdrs[i].p_filesz);
+        out[phdrs[i].p_filesz] = '\0';
+        return 1;
+    }
+    return 0;
+}
+
+/* LX_COMPAT L4: PT_GNU_STACK's PF_X bit decides whether the initial user
+ * stack is executable.  Absent segment (or a non-X one) -> 0 -> NX, the
+ * default every modern glibc image ships. */
+int elf_gnu_stack_x(const void *image, uint64_t size) {
+    const struct elf64_ehdr *eh = (const struct elf64_ehdr *)image;
+    if (size < sizeof(struct elf64_ehdr)) return 0;
+    if (eh->e_phnum == 0) return 0;
+    uint64_t phbytes = (uint64_t)eh->e_phnum * sizeof(struct elf64_phdr);
+    if (eh->e_phoff > size || phbytes > size - eh->e_phoff) return 0;
+
+    const struct elf64_phdr *phdrs =
+        (const struct elf64_phdr *)((const uint8_t *)image + eh->e_phoff);
+    for (int i = 0; i < eh->e_phnum; i++) {
+        if (phdrs[i].p_type == PT_GNU_STACK)
+            return (phdrs[i].p_flags & PF_X) ? 1 : 0;
+    }
+    return 0;
 }

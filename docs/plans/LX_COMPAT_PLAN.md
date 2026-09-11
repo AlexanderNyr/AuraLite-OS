@@ -1,6 +1,6 @@
 # AuraLite OS — Linux Application Compatibility Plan (the `lx` personality)
 
-## Status: OPEN — L0 ✅ L1 ✅ L2 ✅ L3 ✅ L4 ⬜ L5 ⬜
+## Status: OPEN — L0 ✅ L1 ✅ L2 ✅ L3 ✅ L4 ✅ L5 ⬜
 
 > This is a feature plan in the style of `FSFULL_PLAN.md` and `OTA_PLAN.md`,
 > written against the tree as it stands. It follows the same structure:
@@ -555,36 +555,85 @@ unchanged (`test_signals`/`test_jobcontrol`/`test_stopped` re-run green
 
 signal-frame/process plumbing + shell case + patch.
 
-### Phase L4 — Dynamic binaries: the loader runs
+### Phase L4 — Dynamic binaries: the loader runs ✅ DONE (2026-09-10)
 
-#### Tasks
+*Measured first, mapped second*, same discipline as L3: the gate's exact
+host binaries (Debian gcc default PIE `hello` and `dash -c 'echo ok'`)
+were straced on the host to learn the loader's syscall vocabulary before
+a line of kernel code moved.  The host trace names the exact L4 shape:
+glibc 2.41's ld.so reserves a PROT_READ stretch with `mmap(NULL, 2047568,
+PROT_READ, MAP_PRIVATE|MAP_DENYWRITE, 3, 0)`, then MAP_FIXEDs its real
+RX/R/RW segments on top, mprotects the RELRO region, installs TLS via
+`arch_prctl(ARCH_SET_FS)`, registers `set_tid_address`/`set_robust_list`,
+and calls `rseq` once — all before the first `write`.  Three host facts
+shaped the phase: (1) glibc passes `fd=-1` for MAP_ANONYMOUS through the
+syscall register WITHOUT sign extension (a 32-bit `mov $-1,%edi` zeroes
+the upper half), so the kernel sees `0x00000000FFFFFFFF` — Linux ignores
+fd for anonymous maps and so must the lx arm; (2) glibc's
+`_dl_map_object_from_fd` dedups DSOs by `r_file_id = (st_dev, st_ino)`,
+and the main executable (opened `__RTLD_OPENEXEC`) carries id {0,0} — so
+if every initrd file reported `st_ino = 0`, libc.so.6 would be mistaken
+for the already-loaded main map, never mmapped, and relocation would die
+with "undefined symbol: `__libc_start_main`"; (3) both the PIE hello and
+libc have a page-alignment HOLE between their RW segment and the one
+before it, so ld.so *must* reserve-then-MAP_FIXED — a PROT_NONE-free
+kernel cannot run this ladder rung at all.
 
-* `elf_load()`: PT_INTERP recognized; interpreter image mapped, entry
-  chain (map ld.so, hand it the executable's phdrs via auxv), AT_BASE
-  filled; PT_GNU_STACK honored for stack NX.
-* mmap discipline ld.so needs: MAP_FIXED mappings at its chosen
-  addresses (fixed-map collision policy: within the user area, the
-  existing VMA allocator arbitrates), munmap of partial failures,
-  mprotect on the RELRO segment.
-* futex additions glibc's lock paths use (FUTEX_WAIT_BITSET/
-  WAKE_BITSET/REQUEUE, op encoding) on top of the existing queue.
-* TLS: the dtv/TCB block ld.so builds at ARCH_SET_FS is already
-  reachable through arch_prctl; assert FS-relative access faults into
-  the right VMA (no kernel changes expected — measurement first).
-* `set_robust_list` (278): accept-and-store (futex exit semantics stay
-  native — a no-op honest for the ladder apps).
-* `rseq`(293-collision): the Linux number is distinct *inside the lx
-  map* — registered, answered -ENOSYS (glibc falls back); the collision
-  only proves the per-process table is load-bearing.
-* Dynamic `hello` + `sh -c` staged (Debian gcc default + `/bin/sh`
-  symlink) into `/linux/tests/dyn/`.
-* `tests/integration/cases/test_lx_dynamic.sh`: ld.so maps, `sh -c
-  'echo ok'` receipt, exit status.
+#### What shipped
 
-#### Test gate
+* `elf.c`/`elf.h`: `elf_load_at` is the bias-aware loader (ET_DYN main
+  at `0x555555554000`, interpreter at `0x7f0000000000`); `elf_interp_path`
+  reads PT_INTERP; `elf_gnu_stack_x` returns PF_X for the stack NX
+  decision; PT_GNU_STACK honored in `map_user_stack_pages`.
+* `process.c`: `execve_image()` reads the PT_INTERP file and hands its
+  bytes to `load_and_jump_args(..., interp_data, interp_size)`, which
+  maps the interpreter, sets AT_BASE, and fills AT_PHDR/AT_PHNUM/
+  AT_ENTRY from the MAIN program (the correct Linux contract — AT_ENTRY
+  is where ld.so jumps, not where it starts).
+* `futex.c`/`futex.h`: FUTEX_WAIT/WAKE/WAIT_BITSET/WAKE_BITSET/REQUEUE/
+  CMP_REQUEUE on a 64-bucket spinlock table; bitset match on wake,
+  requeue moves sleeping waiters between buckets (the pthread-condvar
+  broadcast shape), CMP_REQUEUE checks `*uaddr == cmpval` under the
+  bucket lock and returns -EAGAIN.  Timeouts stay ignored (block
+  indefinitely) — stated honestly in the comment.
+* `clone.c`: `do_arch_prctl` (ARCH_SET_FS/GET_FS) and `do_futex`
+  decoding all six ops (command = `op & 0x7f`, PRIVATE|CLOCK above).
+* `lx_translate.c`: futex `202 → 530`, pread64 `17 → 17` (positional
+  vfs_pread, offset unmoved — ld.so reads program headers with it);
+  rseq 334 stays UNMAPPED so glibc takes its documented -ENOSYS fallback
+  (measured in-guest: `[syscall] unknown syscall 334` appears once,
+  then the loader proceeds).
+* `syscall.c`: MAP_FIXED now discards whatever is mapped in the range
+  (removes overlapping VMAs, unmaps present frames, keeps shared
+  file-backed frames in the page cache) instead of rejecting the overlap;
+  `prot == 0` (PROT_NONE) accepted for both mmap and mprotect — Linux
+  allows it and ld.so's reserve mapping is PROT_NONE-free only by luck;
+  anonymous mmap ignores fd like Linux.
+* `initrd.c`: each initrd file vnode now gets a unique non-zero
+  `inode_id` (and readdir reports the same value as `d_ino`), so `st_ino`
+  is distinct per file — the r_file_id dedup above depends on it.
+* Makefile: `build/user/lx_dyn_hello` host target (Debian gcc DEFAULT
+  flags: PIE + glibc), stages `/linux/tests/dyn/{hello,sh_cmd.sh}`, the
+  host `/usr/bin/dash` at `/linux/bin/dash` with a `/linux/bin/sh` link,
+  and dereferenced copies of `/lib64/ld-linux-x86-64.so.2` +
+  `/lib/x86_64-linux-gnu/libc.so.6` at their loader-expected paths.
+* Tests: `test_lx_dynamic.sh` integration gate (registered in
+  run_all.sh).
 
-`test_lx_dynamic` green; no native mmap/VMA behavior change (`core`
-mmap cases unchanged).
+#### Result (measured on the gate, TCG)
+
+`test_lx_dynamic` PASSES 6/6.  `lxrun /linux/tests/dyn/hello` prints
+`LX4-HELLO-OK` and exits 0 (full loader path: PT_INTERP read, ld.so
+mapped at AT_BASE, libc reserve+MAP_FIXED+RELRO, futex, ARCH_SET_FS,
+set_robust_list, rseq -ENOSYS).  `lxrun /linux/bin/sh -c 'echo ok'`
+prints `ok` (dash echo builtin — the plan's literal receipt).  The
+binfmt_script re-exec `lxrun /linux/tests/dyn/sh_cmd.sh` prints
+`LX4-SH-OK` (a second dynamic exec from inside a dynamic process).  All
+three exit 0, no exception, no panic.
+
+Native mmap/VMA behavior is unchanged: `test_mmap_file` 10/10,
+`test_mmap_shared` 7/7.  L1–L3 still green: `test_lx_hello` 5/5,
+`test_lx_busybox` 9/9, `test_lx_shell` 9/9.
 
 #### Deliverable
 

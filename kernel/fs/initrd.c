@@ -240,6 +240,16 @@ int initrd_init(uint64_t address, uint64_t size) {
             initrd_vnodes[i].size    = initrd.files[i].size;
             initrd_vnodes[i].ops     = &initrd_ops;
             initrd_vnodes[i].fs_data = (void *)&initrd.files[i];
+            /* LX_COMPAT L4: each file needs a unique, NON-ZERO inode.
+             * st_ino feeds glibc's r_file_id (st_dev, st_ino) dedup in
+             * _dl_map_object_from_fd: the main executable is opened with
+             * __RTLD_OPENEXEC and therefore carries id {0,0}, so if every
+             * initrd file also reported ino 0 the loader would mistake
+             * libc.so.6 for the already-loaded main map, never mmap it,
+             * and die at relocation with "undefined symbol:
+             * __libc_start_main".  0x20000000 + i + 1 keeps files distinct
+             * from the directory inodes (0x40000000 + i) below. */
+            initrd_vnodes[i].inode_id = 0x20000000u + (unsigned)i + 1u;
         }
     }
 
@@ -368,7 +378,7 @@ static int initrd_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
         EMIT_NAME(out[n].name, child);
         out[n].type  = VFS_TYPE_FILE;
         out[n].size  = initrd.files[i].size;
-        out[n].inode = (uint64_t)i;
+        out[n].inode = 0x20000000u + (unsigned)i + 1u;   /* == inode_id */
         n++;
     }
     #undef EMIT_NAME

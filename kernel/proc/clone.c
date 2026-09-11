@@ -206,15 +206,28 @@ int64_t do_arch_prctl(int code, uint64_t addr) {
 
 int64_t do_futex(uint64_t uaddr, int op, uint32_t val, uint64_t timeout,
                  uint32_t *uaddr2, uint32_t val3) {
-    (void)timeout; (void)uaddr2; (void)val3;
+    (void)timeout;   /* timed waits block indefinitely; the ladder apps
+                      * use only untimed internal locks (honest limit) */
 
-    /* FUTEX_WAIT == 0, FUTEX_WAKE == 1 (low bits; ignore PRIVATE flag 128). */
+    /* The op encodes the command in the low bits with FUTEX_PRIVATE_FLAG
+     * (128) and FUTEX_CLOCK_REALTIME (256) or-ed on; 0x7f keeps only the
+     * command (both flags are above it). */
     int cmd = op & 0x7f;
     switch (cmd) {
-    case 0: /* FUTEX_WAIT */
+    case FUTEX_WAIT:
         return futex_wait((uint32_t *)(uintptr_t)uaddr, val);
-    case 1: /* FUTEX_WAKE */
+    case FUTEX_WAKE:
         return futex_wake((uint32_t *)(uintptr_t)uaddr, (int)val);
+    case FUTEX_WAIT_BITSET:
+        return futex_wait_bitset((uint32_t *)(uintptr_t)uaddr, val, val3);
+    case FUTEX_WAKE_BITSET:
+        return futex_wake_bitset((uint32_t *)(uintptr_t)uaddr, (int)val, val3);
+    case FUTEX_REQUEUE:
+        return futex_requeue((uint32_t *)(uintptr_t)uaddr, (int)val,
+                             uaddr2, 0);
+    case FUTEX_CMP_REQUEUE:
+        return futex_requeue((uint32_t *)(uintptr_t)uaddr, (int)val,
+                             uaddr2, val3);
     default:
         return -ENOSYS;
     }

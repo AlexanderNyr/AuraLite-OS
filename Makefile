@@ -2380,6 +2380,29 @@ $(LX_HELLO_BIN): $(LX_HOST_STAMP)
 	@: > $@
 endif
 
+# LX_COMPAT L4: the DYNAMIC rung.  Built with the host gcc's DEFAULT
+# flags — Debian gcc links PIE against glibc, so the binary carries a
+# PT_INTERP (/lib64/ld-linux-x86-64.so.2) and a NEEDED libc.so.6.  The
+# same placeholder-or-payload contract as the static hello: no host gcc
+# leaves a zero-byte file, the initrd staging skips it, and the CI
+# initrd assert turns the absence into a hard failure.
+LX_DYN_HELLO_BIN := $(BUILD_DIR)/user/lx_dyn_hello
+
+ifneq ($(LX_HOST_CC),)
+$(LX_DYN_HELLO_BIN): lx/tests/dyn_hello.c $(LX_HOST_STAMP)
+	@mkdir -p $(dir $@)
+	$(LX_HOST_CC) -O2 -Wall -Wextra $< -o $@
+	@echo "  [lx] $@ (dynamic PIE glibc example, Debian gcc default)"
+else
+$(LX_DYN_HELLO_BIN): $(LX_HOST_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [lx] skipping the dynamic example (no host gcc)"
+	@: > $@
+endif
+
+.PHONY: lx-dyn
+lx-dyn: $(LX_DYN_HELLO_BIN)
+
 # LX_COMPAT L2: the second rung needs a REAL Linux userland binary, and
 # the honest source is upstream's own static musl build — unmodified,
 # exactly what the ladder promises.  Fetched (curl/wget, pinned by
@@ -2463,7 +2486,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2664,6 +2687,30 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # unconditionally (a text file like motd); the gate only runs it when
 # busybox is present.
 	@cp lx/tests/ash_script.sh $(INITRD_DIR)/linux/tests/ash_script.sh
+# LX_COMPAT L4: the dynamic ladder.  hello (host gcc default: PIE glibc)
+# lands in /linux/tests/dyn/; a glibc SHELL (host dash) lands at
+# /linux/bin/dash with a hard link at /linux/bin/sh (argv[0] basename
+# dispatch, the same tar type-'1' link the busybox applets use).  The
+# dynamic loader and libc are copied (symlinks dereferenced) to the paths
+# PT_INTERP and ld.so's default search expect: /lib64/ld-linux-x86-64.so.2
+# and /lib/x86_64-linux-gnu/libc.so.6.  Everything follows the
+# placeholder-or-payload rule: a host without dash/ld-linux/libc stages
+# nothing and the gate skips like it does for busybox.
+	@mkdir -p $(INITRD_DIR)/linux/tests/dyn
+	@cp lx/tests/dyn/sh_cmd.sh $(INITRD_DIR)/linux/tests/dyn/sh_cmd.sh
+	@if [ -s $(LX_DYN_HELLO_BIN) ]; then \
+	    cp $(LX_DYN_HELLO_BIN) $(INITRD_DIR)/linux/tests/dyn/hello; fi
+	@if [ -r /usr/bin/dash ]; then \
+	    mkdir -p $(INITRD_DIR)/linux/bin; \
+	    cp -L /usr/bin/dash $(INITRD_DIR)/linux/bin/dash; \
+	    ln -f $(INITRD_DIR)/linux/bin/dash $(INITRD_DIR)/linux/bin/sh; fi
+	@mkdir -p $(INITRD_DIR)/lib64 $(INITRD_DIR)/lib/x86_64-linux-gnu
+	@if [ -r /lib64/ld-linux-x86-64.so.2 ]; then \
+	    cp -L /lib64/ld-linux-x86-64.so.2 \
+	          $(INITRD_DIR)/lib64/ld-linux-x86-64.so.2; fi
+	@if [ -r /lib/x86_64-linux-gnu/libc.so.6 ]; then \
+	    cp -L /lib/x86_64-linux-gnu/libc.so.6 \
+	          $(INITRD_DIR)/lib/x86_64-linux-gnu/libc.so.6; fi
 # W32-7 hostile fixtures: a forwarder export, and a DllMain that fails.
 	@python3 tools/mk_dll_variants.py --forwarder $(TESTDLL) \
 	         $(INITRD_DIR)/tests/fwddll.dll

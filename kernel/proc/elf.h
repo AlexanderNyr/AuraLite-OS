@@ -31,6 +31,12 @@
 
 #define PT_LOAD       1
 #define PT_PHDR       6           /* program-header table itself (M5 auxv) */
+#define PT_INTERP     3           /* LX_COMPAT L4: dynamic interpreter path */
+#define PT_GNU_STACK  0x6474e551  /* LX_COMPAT L4: stack NX/exec hint */
+
+/* e_type values (LX_COMPAT L4: ET_DYN needs a load bias). */
+#define ET_EXEC       2           /* fixed addresses (p_vaddr is absolute) */
+#define ET_DYN        3           /* position-independent (PIE / shared obj) */
 
 /* Program-header permission bits. */
 #define PF_X          0x1
@@ -95,5 +101,27 @@ struct elf64_phdr {
  */
 uint64_t elf_load(const void *image, uint64_t size, uint64_t *out_brk,
                   uint64_t *out_phdr, uint64_t *out_phnum);
+
+/* LX_COMPAT L4: the dynamic-loader hooks.
+ *
+ * elf_load_at() is elf_load() with an explicit load bias: every PT_LOAD
+ * p_vaddr (and the returned entry/phdr) is offset by @bias.  An ET_EXEC
+ * image passes bias 0; an ET_DYN image (a PIE executable or a shared
+ * object like ld-linux) is position-independent — its p_vaddr/e_entry
+ * are offsets, and the caller chooses a bias in user space.  Linux does
+ * this for every PIE/DSO; AuraLite has no per-image ASLR yet, so the
+ * bias is a fixed constant chosen by the caller (see process.c).
+ *
+ * elf_interp_path() answers whether @image carries a PT_INTERP segment
+ * and copies its NUL-terminated path into @out (bounded by @cap).
+ *
+ * elf_gnu_stack_x() answers whether the image's PT_GNU_STACK (when
+ * present) requests an executable stack (p_flags & PF_X); absent, the
+ * answer is 0 and the stack stays NX — the correct default for every
+ * modern glibc image (PT_GNU_STACK is RW, not X). */
+uint64_t elf_load_at(const void *image, uint64_t size, uint64_t bias,
+                     uint64_t *out_brk, uint64_t *out_phdr, uint64_t *out_phnum);
+int elf_interp_path(const void *image, uint64_t size, char *out, uint64_t cap);
+int elf_gnu_stack_x(const void *image, uint64_t size);
 
 #endif /* AURALITE_PROC_ELF_H */

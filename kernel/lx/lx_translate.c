@@ -15,9 +15,10 @@
  * the dispatcher's loud print, so a ladder application's first run
  * names its missing calls.  Nothing is mapped "because it probably
  * works" — the collisions (81 fchdir vs native SPAWN, 82 rename vs
- * native DNS, 83 mkdir vs native NET_CONNECT, 334 rseq, 202 futex, ...)
- * stay unmapped until the phase that owns them measures the arm
- * (L4: futex bitsets, rseq).  sendfile(40)
+ * native DNS, 83 mkdir vs native NET_CONNECT, 334 rseq, ...) stay
+ * unmapped until the phase that owns them measures the arm (L4 mapped
+ * futex 202 and pread64 17; rseq stays unmapped so glibc takes its
+ * documented -ENOSYS fallback).  sendfile(40)
  * is absent on purpose too: busybox's copyfd falls back to a read/write
  * loop on ENOSYS (verified in busybox-1.35.0 libbb/copyfd.c, not
  * assumed), and the loud print in the guest log is the honest receipt.
@@ -150,6 +151,18 @@ static const struct lx_row LX_TABLE[] = {
                     * exists), so ash's /etc/selinux probes come here   */
     { 318, 319 },  /* getrandom(buf, len, flags) — native 319, same
                     * signature (GRND_NONBLOCK|GRND_RANDOM accepted) */
+
+    /* -- L4: the dynamic-loader surface ------------------------------
+     * futex(202) has no native arm at 202 (the native futex lives at
+     * 530); the argument order is identical — (uaddr, op, val, timeout,
+     * uaddr2, val3) — so this is a straight alias and do_futex decodes
+     * the op in Linux's vocabulary (WAIT/WAKE/WAIT_BITSET/WAKE_BITSET/
+     * REQUEUE/CMP_REQUEUE, PRIVATE|CLOCK flags above bit 7).
+     * pread64(17) IS native 17 with the same (fd, buf, count, off)
+     * order and a positional vfs_pread that does not move the fd offset
+     * — ld.so reads program headers at their file offset through it. */
+    { 202, 530 },  /* futex -> native SYS_FUTEX (do_futex, same 6 args) */
+    { 17,  17 },   /* pread64 — identity: native SYS_PREAD64 == 17 */
     { 79,  540 },  /* getcwd(buf, size) — native SYS_GETCWD (540):
                     * do_getcwd copies the cwd string and returns its
                     * length, Linux's convention; -ERANGE when it does
