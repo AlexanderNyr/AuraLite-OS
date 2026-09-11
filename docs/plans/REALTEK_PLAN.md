@@ -1,6 +1,6 @@
 # AuraLite OS — Realtek Gigabit NIC Driver Plan (the `r8169` family)
 
-## Status: OPEN — RT0 ⬜ RT1 ⬜ RT2 ⬜ RT3 ⬜
+## Status: OPEN — RT0 ✅ RT1 ✅ RT2 ⬜ RT3 ⬜
 
 > This is a feature plan in the style of `FSFULL_PLAN.md`, `OTA_PLAN.md`
 > and `LX_COMPAT_PLAN.md`, written against the tree as it stands.  It
@@ -164,7 +164,7 @@ because the hardware QEMU cannot fake.
 
 ## 4. Phases
 
-### Phase RT0 — Plan landing ⬜
+### Phase RT0 — Plan landing ✅ DONE
 
 #### Tasks
 
@@ -183,13 +183,64 @@ because the hardware QEMU cannot fake.
 
 `docs/plans/REALTEK_PLAN.md` + the `tools/residue_baseline.txt` row.
 
-### Phase RT1 — The 8169 surface, host-pinned ⬜
+### Phase RT1 — The 8169 surface, host-pinned ✅ DONE (2026-09-11)
 
 *Measured first, mapped second.*  Every register offset and descriptor
-field comes from the RTL8169 datasheet, cross-checked against Linux's
-`r8169.h` (`drivers/net/ethernet/realtek/r8169.h`), and is host-pinned
-before a line of driver code exists — the 8139 precedent, where the
-ring arithmetic (not the driver) carried the two bug classes.
+field comes from the RTL8169 datasheet (Rev. 1.21 and the
+RTL8169SC/8110SC register spec), cross-checked against Linux's `r8169`
+driver, and is host-pinned before a line of driver code exists — the
+8139 precedent, where the ring arithmetic (not the driver) carried the
+two bug classes.
+
+#### What shipped
+
+* `drivers/r8169/r8169_desc.h` (new): the register map and the legacy
+  TX/RX descriptor surface as pure C with no hardware in it — MAC0–5 /
+  MAR0–7, the 64-bit `TNPDS`/`RDSAR` ring-base pairs, CR/TPPOLL/IMR/
+  ISR/TCR/RCR/Cfg9346/RMS/C+CR/ETThR **with their per-register access
+  widths** (`r8169_reg_width()`: ISR/IMR are 16-bit, CR/TPPOLL are
+  8-bit — reading ISR as 32-bit spans a neighbour), the ChipCmd/
+  TxPoll/interrupt/RCR-accept/Cfg9346 content bits, the 16-byte
+  `r8169_tx_desc`/`r8169_rx_desc` layouts, and the decision core:
+  `r8169_rx_classify()` (OWN-stop / error-drop / fragment-drop /
+  FCS-stripped length / desync-reset), `r8169_rx_advance()`,
+  `r8169_tx_opts1()`, EOR-preserving `r8169_rx_rearm_opts1()` /
+  `r8169_tx_free_opts1()`, and the 256-byte-alignment +
+  low/high base-address split helpers.
+* `tests/unit/test_r8169_desc.c` (new): the host gate — **74 checks** —
+  driving the cases QEMU cannot be asked to produce (FCS stripping, the
+  hardware error bits, the OWN hand-off, fragmented frames, impossible
+  lengths, count-modulo wrap, EOR preservation on rearm, and the pinned
+  surface relationships: the 14-bit length field *is* the armed buffer
+  16383, 16-byte descriptors, the 1024-descriptor cap, 256-byte
+  alignment).  The negative control is proven, not asserted: planting
+  the dropped-FCS bug fires 3 failures, planting the dropped-EOR-on
+  rearm bug fires 2.
+* Registered in `make test-unit` beside `test_rtl8139_ring`.
+* Zero width-sweep spend: no `(uint64_t)` casts, no `kernel/arch/x86_64`
+  includes, no inline asm in the header — the 8139 rule.
+
+#### Result (measured on the host gate)
+
+`test_r8169_desc` PASSES 74/74 in `make test-unit`; `check_width_sweep.py`
+OK (casts 370/370, x64-includes 69/69, asm-files 27/27); the marker
+ratchet green (`REALTEK_PLAN.md` stays at 5).
+
+#### Deviations from the task list (honest, measured)
+
+* The §RT2 "4 GiB DMA refusal" question resolves at the surface: the
+  datasheet shows the 8169's descriptor-base and buffer addresses are
+  **64-bit** (`TNPDS`/`RDSAR` are low+high pairs; the descriptor `addr`
+  field is a full u64), so there is no 32-bit truncation trap to refuse
+  the way the 8139's `RBSTART`/`TSAD` forced.  The honest rule the
+  header pins instead: the **high register must be programmed**
+  (`r8169_desc_base_lo/hi`), and a driver that writes only the low
+  register is the 8139 bug in disguise.
+* The plan cited Linux's `r8169.h` as the cross-check; on the current
+  tree that file is only a type/enum header — the register map lives in
+  `r8169_main.c` (v6.12) / `r8169.c` (v3.10), which are the sources the
+  offsets and bits were actually pinned from.  Citation corrected by
+  measurement.
 
 #### Tasks
 
@@ -328,8 +379,8 @@ wiring + docs + metal package + checker + patch; plan COMPLETE.
 
 ## 6. Close-out checklist
 
-- [ ] RT0: `REALTEK_PLAN.md` lands; baseline row moved same-commit; ratchet green
-- [ ] RT1: `test_r8169_desc.c` green in test-unit, negative control included
+- [x] RT0: `REALTEK_PLAN.md` lands; baseline row moved same-commit; ratchet green (2026-09-11)
+- [x] RT1: `test_r8169_desc.c` green in test-unit (74/74), negative control included (2026-09-11)
 - [ ] RT2: `test_r8169_driver.c` + `r8169_model.h` self-test green; width-sweep ratchets at budget
 - [ ] RT3: net_init chain wired; catalog/docs flip; `check_realtek_claims.py` green in test-unit; ledger rows + baseline moved same-commit; plan → COMPLETE
 - [ ] RT3: metal-receipt slot 10 ships as `PENDING-USER` (a status, not a failure)
