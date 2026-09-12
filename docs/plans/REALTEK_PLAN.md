@@ -1,6 +1,6 @@
 # AuraLite OS — Realtek Gigabit NIC Driver Plan (the `r8169` family)
 
-## Status: OPEN — RT0 ✅ RT1 ✅ RT2 ⬜ RT3 ⬜
+## Status: COMPLETE — RT0 ✅ RT1 ✅ RT2 ✅ RT3 ✅
 
 > This is a feature plan in the style of `FSFULL_PLAN.md`, `OTA_PLAN.md`
 > and `LX_COMPAT_PLAN.md`, written against the tree as it stands.  It
@@ -268,13 +268,91 @@ ratchet green.
 
 the descriptor/register model + host test + patch.
 
-### Phase RT2 — The driver core, proved against a host chip model ⬜
+### Phase RT2 — The driver core, proved against a host chip model ✅ DONE (2026-09-11)
 
 The decisive phase.  The 8169 has no QEMU model, so the *chip* becomes
 software under test: the driver core is written against a narrow
 register-I/O seam (read/write callbacks, not raw MMIO), and a host test
 links it against a register-level model of the 8169 and drives the full
 state machine end to end — on the host, in CI, no silicon, no QEMU.
+
+*Measured first, modelled second.*  The model is reconstructed from the
+registers the driver programs (the ring pointers come from TNPDS/RDSAR,
+not a side channel), every register access is width-checked against
+`r8169_reg_width()` (a wrong-width access is a *fault*, not a silent
+truncation), and the model's own self-test is load-bearing: it asserts
+the fault counter moves on illegal accesses, so a model wrong the same
+way as the driver is caught, not passed.
+
+#### What shipped
+
+* `drivers/r8169/r8169_core.h` (new): the driver state machine as pure
+  C with no hardware in it — reset, MAC load, ring configuration
+  (256-byte-alignment refusal by name, BOTH halves of the 64-bit
+  TNPDS/RDSAR pairs programmed, Linux-pinned TCR/RCR/RMS/ETThr values),
+  link poll (PHY status is inverse-free), TX (runt pad to 60 bytes,
+  OWN hand-off, TxPoll kick, completion poll, underrun/timeout errors),
+  RX drain (FCS strip, error/fragment drop, desync reset, EOR-preserving
+  rearm), and ISR ack.  All device access goes through the typed seam
+  `struct r8169_io` — `rd8/rd16/rd32/wr8/wr16/wr32/relax` callbacks, so
+  the width discipline is structural (a 16-bit register cannot be
+  touched with a 32-bit accessor).
+* `drivers/r8169/r8169.{c,h}` (new): the kernel driver.  `r8169.h` is
+  the netdev-facing surface (probe `10ec:8168`/`10ec:8169`, `init`/
+  `get_mac`/`link_up`/`send`/`recv`/`recv_wait`/`register_netdev`).
+  `r8169.c` is the glue that binds the seam to BAR0 port I/O, probes
+  PCI, allocates the 64-slot TX ring + 256-slot RX ring + 16383-byte
+  RX buffers, and runs the INTx handler that drains RX into a 64-slot
+  software queue and wakes sleepers (`[r8169] RX via IRQ wake` once —
+  the R9/RES-28 receipt).  It includes the exact core the host gate
+  proves, so the tested object and the shipped driver are one.
+* `tests/unit/r8169_model.h` (new): the register-level model of the
+  8169 — register file with per-register width faults, ISR W1C, CR
+  reset/writable-mask semantics, Cfg9346 lock, TX DMA (OWN consumption,
+  byte capture, TxOK latch, planted underrun → TXERR) and RX delivery
+  (armed-buffer write, full-wire-length descriptor, RxOK latch, planted
+  OWN-protocol violation → fault) — plus its own self-test.
+* `tests/unit/test_r8169_driver.c` (new): the host gate — **1635
+  checks** — model self-test, then the full data path driven against
+  the model: reset → MAC load → config (HIGH registers programmed, EOR
+  exactly on the last descriptor, rings reconstructed from the
+  registers alone) → TX (byte-exact frame, runt pad, underrun, timeout)
+  → RX (FCS strip, error drop, desync reset, 256-slot full-ring wrap
+  with EOR survival) → IRQ/status.  Negative controls are proven, not
+  asserted: planting the dropped-FCS bug fires **260** failures,
+  planting the dropped-EOR-on-rearm bug fires **1**, planting the
+  dropped-runt-pad bug fires **2**, and planting the model's OWN-bit
+  hand-off removal fires **1** (the model's self-test catches its own
+  bug — the "wrong the same way" trap, closed).
+* Registered in `make test-unit` beside `test_r8169_desc`.
+
+#### Result (measured on the host gate)
+
+`test_r8169_driver` PASSES 1635/1635; `test_r8169_desc` still 74/74,
+`test_rtl8139_ring` 203/203; full `make test-unit` green (rc=0);
+`check_width_sweep.py` OK (casts 370/370, x64-includes 69/69, asm-files
+27/27 — **zero** portable-include spend, the 8139 rule); the marker
+ratchet green (`REALTEK_PLAN.md` stays at 5); `drivers/r8169/r8169.c`
+compiles clean in the kernel build.
+
+#### Deviations from the task list (honest, measured)
+
+* The task list said "MMIO window map".  RT1's measured surface shows
+  the 8169 answers the same 256-byte register file at BAR0 (I/O space)
+  and BAR1 (memory space); the driver uses **BAR0 port I/O**, exactly
+  like the 8139, so there is no MMIO window to map.  Recorded, not
+  silently changed.
+* The task list's "4 GiB DMA refusal by name" resolves to *not
+  applicable*: the datasheet shows the 8169's ring-base and descriptor
+  addresses are **64-bit** (RT1's recorded deviation).  The honest
+  analog the core enforces instead is the **256-byte-alignment refusal
+  by name** plus programming **both halves** of TNPDS/RDSAR.
+* "links `r8169.c` against the model" resolves by construction:
+  `r8169.c` is kernel glue (PCI probe, DMA allocation, INTx, netdev)
+  that cannot run on the host; the host gate drives `r8169_core.h`, the
+  pure-C state machine that `r8169.c` includes verbatim.  They are one
+  object — the D2 pattern — so nothing the gate proves can drift from
+  what ships.
 
 #### Tasks
 
@@ -309,7 +387,62 @@ portable-include spend, the 8139 rule); ratchet green.
 
 driver core + chip model + host gate + patch.
 
-### Phase RT3 — Wiring, catalog flip, metal package, close-out ⬜
+### Phase RT3 — Wiring, catalog flip, metal package, close-out ✅ DONE (2026-09-11)
+
+The close-out: the driver joins the boot-time NIC chain, the catalog
+and the docs stop calling the 8169 driverless, the metal confirmation
+ships as a paste-back slot instead of silicon, and a claim checker pins
+the whole plan to the tree.
+
+#### What shipped
+
+* `r8169_init()` / `r8169_register_netdev()` join `net_init()`'s
+  fallback chain **after e1000e, before rtl8139** — gigabit before
+  100 Mbit, the priority rule the comment already states.  On a machine
+  whose only NIC is an 8168/8169, the driver is now the active netdev.
+* The catalog/docs flip same-commit: `virtual_drivers.c`'s two rows
+  move from "known / no data path" to "host-model data path"; the
+  `docs/status.md` 🚧 row splits (its vmxnet3/e1000e half was already ✅;
+  the RTL8169 half flips to ✅ with the PENDING-USER caveat, so the
+  status-wip count moves 7 → 6); `docs/driver_guide.md`'s "Not
+  supported" paragraph retracts into an RTL8169 networking section;
+  `docs/virtual_driver_matrix.md` moves the row into the active table.
+* **The metal confirmation ships, not the silicon:** `docs/metal_receipts.md`
+  gains **slot 10** — boot on a machine with an onboard 8168/8169 (or
+  PCI-passthrough one into the VM), paste the `[r8169] found …`,
+  `MAC …`, `ready: … link=up` and `RX via IRQ wake` lines.  M-class,
+  `PENDING-USER@RT3` — a *status*, not a failure (the RES-30 precedent:
+  the host gate proves the driver; only the user's machine can prove the
+  chip).
+* `tools/check_realtek_claims.py` in the checker family: every ✅ phase
+  pinned to its artefacts (the descriptor header, the model, the driver,
+  the host tests, the catalog rows) *and* its greppable receipts (the
+  `r8169` catalog key, the `[r8169]` receipt strings, the net_init chain
+  entry), with the usual planted-violation negative control.  Wired into
+  `make test-unit` and the workflow's claim-check step.
+* docs rows same-commit (`docs/status.md`, `docs/driver_guide.md`,
+  `docs/virtual_driver_matrix.md`), the two ledger coverage rows
+  (RES-55 W → DONE@RT3, RES-56 M → PENDING-USER@RT3), the checker's
+  row/class pins and the debt baseline moved, this plan → COMPLETE.
+
+#### Result (measured on the tree)
+
+`make test-unit` green (rc=0): `test_r8169_desc` 74/74,
+`test_r8169_driver` 1635/1635, `check_realtek_claims.py` OK (4 phases,
+21 artefact + 30 receipt pins) with SELFTEST OK; the debt-ledger checker
+OK (56 rows, classes W 35 · M 7 · N 4 · S 10); `check_width_sweep.py` OK
+(casts 370/370, x64-includes 69/69, asm-files 27/27 — zero
+portable-include spend).  `kernel/net/net.c` and
+`drivers/vm/virtual_drivers.c` compile clean as kernel objects with the
+driver wired in; on machines without the chip the r8169 sections are
+garbage-collected and the chain falls through to the 8139 as before.
+
+#### Deviations from the task list
+
+* None — the phase landed as written.  The only recorded resolution is
+  that "ledger coverage rows" (plural) names exactly the two rows the
+  Ledger-integration note at the top of this plan already split out:
+  one W-class coverage row (RES-55) and one M-class row (RES-56).
 
 #### Tasks
 
@@ -381,6 +514,6 @@ wiring + docs + metal package + checker + patch; plan COMPLETE.
 
 - [x] RT0: `REALTEK_PLAN.md` lands; baseline row moved same-commit; ratchet green (2026-09-11)
 - [x] RT1: `test_r8169_desc.c` green in test-unit (74/74), negative control included (2026-09-11)
-- [ ] RT2: `test_r8169_driver.c` + `r8169_model.h` self-test green; width-sweep ratchets at budget
-- [ ] RT3: net_init chain wired; catalog/docs flip; `check_realtek_claims.py` green in test-unit; ledger rows + baseline moved same-commit; plan → COMPLETE
-- [ ] RT3: metal-receipt slot 10 ships as `PENDING-USER` (a status, not a failure)
+- [x] RT2: `test_r8169_driver.c` + `r8169_model.h` self-test green; width-sweep ratchets at budget (2026-09-11)
+- [x] RT3: net_init chain wired; catalog/docs flip; `check_realtek_claims.py` green in test-unit; ledger rows + baseline moved same-commit; plan → COMPLETE (2026-09-11)
+- [x] RT3: metal-receipt slot 10 ships as `PENDING-USER` (a status, not a failure) (2026-09-11)

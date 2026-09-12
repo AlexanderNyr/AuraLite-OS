@@ -2915,6 +2915,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_virtio_net \
                 $(BUILD_DIR)/test_rtl8139_ring \
                 $(BUILD_DIR)/test_r8169_desc \
+                $(BUILD_DIR)/test_r8169_driver \
                 $(BUILD_DIR)/test_stack_guard \
                 $(BUILD_DIR)/test_select_stack \
                 $(BUILD_DIR)/test_blkdev \
@@ -3210,6 +3211,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
 	@echo "[unit] running tools/check_lx_claims.py"
 	@python3 tools/check_lx_claims.py || exit 1
 	@python3 tools/check_lx_claims.py --selftest || exit 1
+
+# REALTEK_PLAN RT3: the Realtek NIC plan cannot drift from the tree.
+# Every ✅ phase is pinned to its artefacts (the descriptor surface, the
+# driver core + chip model + host gates, the net_init wiring + catalog
+# rows) AND its greppable receipts, with the usual negative control.
+	@echo "[unit] running tools/check_realtek_claims.py"
+	@python3 tools/check_realtek_claims.py || exit 1
+	@python3 tools/check_realtek_claims.py --selftest || exit 1
 
 # GL2_PLAN.md L0: tools/check_gl2_claims.py cannot drift from the tree.
 # Opener facts are pinned as live greps; later phases move the pins in the
@@ -3746,6 +3755,17 @@ $(BUILD_DIR)/test_rtl8139_ring: tests/unit/test_rtl8139_ring.c \
 
 $(BUILD_DIR)/test_r8169_desc: tests/unit/test_r8169_desc.c \
                               drivers/r8169/r8169_desc.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# RT2: links the REAL driver core (drivers/r8169/r8169_core.h) against
+# the register-level chip model (tests/unit/r8169_model.h) and drives
+# the full data path -- probe/MAC/config/TX/RX/IRQ -- on the host,
+# because QEMU has no 8169.  The model carries its own self-test.
+$(BUILD_DIR)/test_r8169_driver: tests/unit/test_r8169_driver.c \
+                                tests/unit/r8169_model.h \
+                                drivers/r8169/r8169_core.h \
+                                drivers/r8169/r8169_desc.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 

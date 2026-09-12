@@ -17,6 +17,7 @@ Boot log prefix:
 |---|---|---|---|
 | Intel e1000 82540EM/82545EM/82543GC | `8086:100e`, `8086:100f`, `8086:1004` | QEMU, VirtualBox, VMware | Active network driver (IRQ-driven; first in `net_init`'s probe order). |
 | Realtek RTL8139 | `10ec:8139` | QEMU (`-nic rtl8139`) | Active network driver (`drivers/rtl8139/`; third in probe order, `test_rtl8139`). |
+| Realtek RTL8169/8168 | `10ec:8169`, `10ec:8168` | onboard / PCI cards (QEMU has no 8169) | Network driver (`drivers/r8169/`; host-model data path — QEMU cannot emulate the chip, so it is gated against a register-level model, `test_r8169_driver`; real silicon PENDING-USER, metal slot 10). |
 | virtio-net | `1af4:1000` (transitional), `1af4:1041` (modern) | QEMU, VirtualBox | Active network driver (`drivers/virtio_net/`; second in probe order, `test_virtio_net`). |
 | AHCI SATA | class `01/06`, e.g. `8086:2922` | QEMU, VirtualBox, VMware | Active DMA sector read/write. |
 | virtio-blk | `1af4:1001` (transitional), `1af4:1042` (modern) | QEMU, VirtualBox | Active storage lane: shared virtio transport (MMIO + PCI, RES-21/R7) with an ext2 mount gate (`test_vblk_ext2`). |
@@ -37,7 +38,7 @@ Boot log prefix:
 
 | Category | Devices recognised |
 |---|---|
-| Alternative NICs | Intel e1000e `8086:10d3`, AMD PCnet `1022:2000`, VMware VMXNET3 `15ad:07b0`, Realtek RTL8169/8168 `10ec:8169/8168`. |
+| Alternative NICs | Intel e1000e `8086:10d3`, AMD PCnet `1022:2000`, VMware VMXNET3 `15ad:07b0`. |
 | Alternative storage | PIIX IDE `8086:7010/7111`, virtio-scsi `1af4:1004/1048`, VMware PVSCSI `15ad:07c0`, LSI SCSI/SAS, BusLogic. |
 | GPUs | VMware SVGA II, VirtualBox VMSVGA/VBoxVGA, QXL. These currently rely on the bootloader-provided framebuffer only (virtio-gpu/VirGL moved to the partial table above). |
 | Audio | AC'97, Intel HDA, Ensoniq ES1371. |

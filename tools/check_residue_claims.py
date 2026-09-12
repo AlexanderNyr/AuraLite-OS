@@ -19,8 +19,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-LEDGER_ROWS = 54
-CLASS_PIN = {"W": 34, "M": 6, "N": 4, "S": 10}
+LEDGER_ROWS = 56
+CLASS_PIN = {"W": 35, "M": 7, "N": 4, "S": 10}
 PHASE_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5", "R6",
                "R7", "R8", "R9", "R10", "R11", "R12"]
 

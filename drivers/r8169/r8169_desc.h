@@ -5,7 +5,8 @@
 
 /*
  * r8169_desc.h -- the RTL8169/8168/8111 register + descriptor surface,
- * as pure C.  (REALTEK_PLAN.md phase RT1.)
+ * as pure C.  (REALTEK_PLAN.md phase RT1; RT2 extended the surface
+ * with PHYSTATUS and the config constants the driver core programs.)
  *
  * The D2 pattern this tree already uses for TCP (tcp_x5.h, tcp_cc.h)
  * and for the 8139 (rtl8139_ring.h): the facts that are easy to get
@@ -99,6 +100,10 @@ enum r8169_reg {
     R8169_RMS        = 0xDA,
     /* C+ Command register, 16-bit (0xE0-0xE1). */
     R8169_CPLUS_CMD  = 0xE0,
+    /* PHY status, 8-bit (0x6C).  Link is INVERSE-free here: the bit is
+     * SET when the link is up (unlike the 8139's MSR.LINKB).  Linux
+     * r8169_main.c: `return RTL_R8(PHYstatus) & LinkStatus;`. */
+    R8169_PHYSTATUS  = 0x6C,
     /* Receive Descriptor Start Address, 64-bit, 256-byte aligned
      * (datasheet p.19, "RDSAR").  Low at 0xE4-0xE7, high 0xE8-0xEB. */
     R8169_RDSAR_LOW  = 0xE4,
@@ -134,6 +139,8 @@ static inline enum r8169_reg_width r8169_reg_width(uint16_t off) {
         return R8169_W16;
     case R8169_TCR: case R8169_RCR:
         return R8169_W32;
+    case R8169_PHYSTATUS:
+        return R8169_W8;
     case R8169_TNPDS_LOW: case R8169_TNPDS_HIGH:
     case R8169_RDSAR_LOW: case R8169_RDSAR_HIGH:
         return R8169_W64;
@@ -194,6 +201,29 @@ static inline enum r8169_reg_width r8169_reg_width(uint16_t off) {
 #define R8169_CFG9346_LOCK   0x00
 #define R8169_CFG9346_UNLOCK 0xC0
 
+/* PHY status (0x6C) bits.  Linux "rtl8169_PHYstatus". */
+#define R8169_PHY_LINK       0x02   /* link is up (set, not inverse) */
+#define R8169_PHY_FULLDUP    0x01
+#define R8169_PHY_1000F      0x10
+#define R8169_PHY_100        0x08
+#define R8169_PHY_10         0x04
+
+/* Receive Configuration (RCR) beyond the accept bits: the RX FIFO
+ * threshold (bits 15:13) and the max RX DMA burst (bits 10:8).  Linux
+ * RX_FIFO_THRESH (7<<13) | RX_DMA_BURST (7<<8). */
+#define R8169_RCR_FIFO_THRESH  (7u << 13)
+#define R8169_RCR_DMA_BURST    (7u << 8)
+
+/* Transmit Configuration (TCR): the IFG sits at bits 26:24 and the max
+ * TX DMA burst at bits 10:8 (datasheet TCR table).  Linux
+ * TX_DMA_BURST(7) << TxDMAShift(8) | InterFrameGap(3) << 24. */
+#define R8169_TCR_DMA_SHIFT    8
+#define R8169_TCR_IFG_SHIFT    24
+
+/* Early Transmit Threshold (0xEC): NoEarlyTx (0x3F) means the chip
+ * transmits on FIFO-empty, no early threshold (Linux). */
+#define R8169_ETTHR_NO_EARLY   0x3F
+
 /* ------------------------------------------------------------------ *
  * Descriptors: 4 consecutive double words (16 bytes) each, up to 1024
  * per ring (datasheet p.21).  The ring base address is 64-bit and MUST
@@ -220,6 +250,11 @@ static inline enum r8169_reg_width r8169_reg_width(uint16_t off) {
 #define R8169_RX_LEN_MASK    0x3fff
 #define R8169_TX_LEN_MASK    0xffff
 #define R8169_FCS_LEN        4       /* the CRC the length INCLUDES */
+
+/* Rx Maximum Size (0xDA): Linux programs R8169_RX_BUF_SIZE + 1, i.e.
+ * one byte more than the armed buffer so the largest armed frame is
+ * never refused at the size gate. */
+#define R8169_RMS_MAX        (R8169_RX_BUF_SZ + 1)
 
 /* opts1 bits shared by both descriptor types.  Linux "rtl_desc_bit". */
 #define R8169_DESC_OWN       (1u << 31)  /* NIC owns the descriptor      */

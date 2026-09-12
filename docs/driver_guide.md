@@ -22,6 +22,7 @@ See also [`status.md`](status.md) for a feature matrix.
 | PCI | `drivers/pci/` | ✅ | Config-space reads/writes and simple scanning. |
 | e1000 NIC | `drivers/e1000/` | ✅ | Intel 8254x legacy TX/RX rings. |
 | RTL8139 NIC | `drivers/rtl8139/` | ✅ | Realtek 8139 family: RX ring buffer + 4 TX descriptors, INTx-driven. |
+| RTL8169 NIC | `drivers/r8169/` | ✅ | Realtek 8169/8168/8111 gigabit: descriptor rings + OWN-bit hand-off, host-model-gated (real silicon PENDING-USER). |
 | AHCI | `drivers/ahci/` | ✅/🧪 | SATA controller/port setup and DMA sector read/write self-test. |
 | UHCI | `drivers/usb/uhci.c` | ✅/🧪 | USB 1.1 controller + CONTROL/BULK TD/QH transfers. |
 | OHCI | `drivers/usb/ohci.c` | 🚧 | Controller/port bring-up. |
@@ -185,12 +186,11 @@ Implementation notes:
 
 Unsupported virtual NICs:
 
-- VMware vmxnet3;
-- Intel e1000e unless a dedicated compatible path is added;
 - VirtualBox PCnet adapters.
 
-(virtio-net and the Realtek 8139 family both have drivers — see below and
-`drivers/virtio_net/`.)
+(virtio-net, vmxnet3, e1000e, the Realtek 8169 gigabit family and the
+Realtek 8139 family all have drivers — see below and `drivers/virtio_net/`,
+`drivers/vmxnet3/`, `drivers/e1000e/`.)
 
 ## RTL8139 networking
 
@@ -262,12 +262,45 @@ Two other quirks the ring header handles, each host-tested:
   hardware bias, and the 16-bit wrap in its inverse was itself a bug the host
   test caught before it ever ran.
 
-### Not supported
+## RTL8169 networking
 
-RTL8169/8168/8111 gigabit parts (`10ec:8168`, `10ec:8169`) are a *different*
-chip with descriptor rings, not this ring buffer. They are listed in the
-virtual-hardware catalog as known-without-a-data-path; QEMU does not emulate
-them, so a driver could not be gated here.
+Location: `drivers/r8169/`
+
+The Realtek 8169/8168/8111 is the gigabit sibling of the 8139 — the most
+common onboard NIC on real motherboards.  It is a *different* machine:
+descriptor rings with an OWN-bit ownership hand-off (not the 8139's ring
+buffer), and 64-bit descriptor/buffer addresses (no 4 GiB DMA wall).
+
+| Device | PCI ID | Common source |
+|---|---|---|
+| RTL8169 | `10ec:8169` | gigabit PCI add-in cards |
+| RTL8168/8111 | `10ec:8168` | onboard gigabit on most consumer motherboards |
+
+Implementation notes:
+
+- **Port I/O, not MMIO.** The register file is the same 256-byte surface at
+  BAR0 (I/O space) and BAR1 (memory space); this driver uses BAR0, exactly
+  like the 8139.
+- **Descriptor rings, not a ring buffer.** A 64-slot TX ring and a 256-slot
+  RX ring; each descriptor carries an OWN bit — the chip owns a descriptor
+  while OWN is set, the driver while it is clear.  Re-arm preserves the EOR
+  (ring-end) bit.
+- **The 14-bit RX length field.** Each RX descriptor is armed with 16383
+  bytes — the largest value the field can express — and the driver strips the
+  4-byte FCS the length includes.
+- **No 4 GiB refusal needed.** The ring bases (TNPDS/RDSAR) and descriptor
+  addresses are 64-bit; the driver programs both halves of each base and
+  refuses a base that is not 256-byte aligned, by name.
+- INTx-driven, with the one-shot `[r8169] RX via IRQ wake` receipt; TX pads
+  runts to the 60-byte Ethernet minimum.
+
+**The gate is inverted:** QEMU does not emulate the 8169, so the data path
+is proved on the host against a register-level model of the chip
+(`tests/unit/r8169_model.h`, self-tested) driven by `test_r8169_driver.c`
+(1635 checks: probe → MAC → TX → RX → IRQ).  The register map, descriptor
+layouts and hand-off arithmetic are host-pinned in
+`drivers/r8169/r8169_desc.h` (74 checks).  The real-silicon confirmation is
+metal-receipt slot 10 — `PENDING-USER`, a status, not a failure.
 
 ## AHCI
 

@@ -66,10 +66,12 @@ N = non-goal to re-affirm · S = sub-series hand-off.
 | RES-52 | S | HANDED-OFF@Y7 | TCP window scaling — the 64240 window stays | OPENER, measured: `TCP_WINDOW` is 64240; grep `wscale`/`TCPOPT`/`shift_cnt` across tcp.c+tcp.h is 0 |
 | RES-53 | W | DONE | TLS CertificateVerify: `rsa_pss_rsae_sha256` — RSASSA-PSS SHA-256 / MGF1 / saltLen=32; host `test_atls_tls` 41/41 (openssl vector + RSA s_server) | PSS verify lands; rust-lang.org CV is no longer the refusal |
 | RES-54 | S | OPEN | GLSL AST → TGSI retarget (GL2 D7) | OPENER, measured: the canned triangle GL2 L6 shipped is hand-written TGSI dword arrays in glvirgl.c, and G11's compiler still produces an interpreted AST with no back end — a real TGSI retarget is compiler work (a successor plan, not a GL2 phase). The seam it would hang on is live: gl_backend_t.draw is wired, the eligibility screen and the whole-draw fallback are tested host-side (test_glvirgl 73) |
+| RES-55 | W | DONE@RT3 | Realtek 8169/8168 gigabit NIC — REALTEK_PLAN.md (RT0-RT3). The 8169 is the one catalogued NIC QEMU cannot emulate, so the gate is INVERTED: the register/descriptor surface is host-pinned (r8169_desc.h, test_r8169_desc 74 checks) and the driver core is proved end-to-end against a register-level chip model on the host (test_r8169_driver 1635 checks: probe → MAC → TX → RX → IRQ; negative controls proven), then wired into net_init after e1000e and catalogued/docs flipped. Real silicon is the M-class successor (RES-56) | host gates + check_realtek_claims.py green in make test-unit; net_init chain includes r8169 |
+| RES-56 | M | PENDING-USER@RT3 | 8169 real-silicon data path — the chip is the only place the true data path can be observed (QEMU has no 8169), and the model proves the driver, not the chip (REALTEK_PLAN §1.2) | RT3 package slot 10 ships; user paste-back is the number's only source (the RES-30/32/33/48 discipline) |
 
 ## Arithmetic (checker-enforced)
 
-Rows: 54.  Classes: **W 34 · M 6 · N 4 · S 10**.  The R0 recount
+Rows: 56.  Classes: **W 35 · M 7 · N 4 · S 10**.  The R0 recount
 **W 33 · M 5 · N 2 · S 8** (the plan §2 draft hand-summed 27/6/3/12
 and was WRONG — amended same-commit, catch recorded) is the
 historical pin; Y7 appended RES-49..53.  Statuses at CLOSE: OPEN 6 (RES-02/06/07/16/18/54 — named survivors, none hidden: two narrowed oddities, two port-adoption rows, one IOAPIC-routing row, and GL2's D7 hand-off; RES-26's DONE@Y4 flip is recorded below and was mistakenly still counted here), DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure), DONE@R12 2 (RES-42/45), RE-AFFIRMED@R12 2 (RES-43/44), HANDED-OFF@R12 7 (RES-11/12/36/38/39/46/47 — every one leaves with a MEASURED opener fact in its row), DONE@L7 1 (RES-41 — the canned DRAW_VBO seam landed in GL2 L6; its compiler half opens as RES-54).
@@ -291,3 +293,12 @@ the parked items above are restated in TODO.md as bullets, not open
 boxes, because this file's open boxes are owned by RESIDUE2 phases
 (pinned by tools/check_residue2_claims.py).  Baseline moved same-commit
 (LX_COMPAT_PLAN.md 5 -> 6).
+
+REALTEK RT3 (2026-09-11, close-out): the Realtek NIC series is COMPLETE
+(RT0-RT3).  +2 rows: RES-55 (W, coverage) → DONE@RT3 and RES-56 (M, real
+silicon) ships as PENDING-USER@RT3 — the 8169's data path is proved against
+a register-level host model because QEMU has no 8169, and only the user's
+machine can prove the chip.  tools/check_realtek_claims.py pins every ✅
+phase to its artefacts and greppable receipts (negative control included)
+in make test-unit and the workflow's claim-check step.  Baseline moved
+same-commit (status-wip 7 → 6; the RTL8169 status row flips 🚧 → ✅).

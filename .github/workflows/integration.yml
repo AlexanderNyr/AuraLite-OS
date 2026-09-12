@@ -143,6 +143,17 @@ jobs:
           python3 tools/check_lx_claims.py --check
           python3 tools/check_lx_claims.py --selftest
 
+      # REALTEK_PLAN RT3: the Realtek NIC plan cannot drift from the
+      # tree.  Every ✅ phase is pinned to its artefacts (the descriptor
+      # surface, the driver core + chip model + host gates, the net_init
+      # wiring + catalog/docs rows) AND its greppable receipts (the
+      # r8169 catalog key, the [r8169] receipt strings, the chain
+      # entry), with the usual negative control.
+      - name: Realtek plan claim check
+        run: |
+          python3 tools/check_realtek_claims.py --check
+          python3 tools/check_realtek_claims.py --selftest
+
       - name: Integration case registry check
         run: python3 tools/check_test_registry.py --check
 

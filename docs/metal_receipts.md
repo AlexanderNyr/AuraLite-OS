@@ -33,6 +33,7 @@ Paste the line(s) back into this table with the machine named.
 | 7 | **IOAPIC base discovery (NEW)** | (boots by itself) | `[ioapic] base 0x... (MADT agree)` — or the named-disagreement line, which is exactly the machine we want to hear about | pending-user |
 | 8 | O3 wall-clock | stopwatch: power-on to `auralite#` | seconds, plus which boot path (BIOS/UEFI) | pending-user |
 | 9 | Fast-boot A/B (fw_cfg is QEMU-only; on metal use the build knob) | `make SELFTEST=off iso` vs default, same stopwatch | the two wall-clock numbers | pending-user |
+| 10 | **RTL8169/8168 real-silicon data path (NEW)** | boot on a machine whose NIC is an onboard 8168/8169 (or a PCI-passthrough'd one); DHCP lease + `ping` | `[r8169] found …` + `[r8169] MAC …` + `[r8169] ready: … link=up` + `[r8169] RX via IRQ wake` | pending-user |
 
 ## The WHPX-targeted PCID block (receipt 5+6 in one sitting)
 

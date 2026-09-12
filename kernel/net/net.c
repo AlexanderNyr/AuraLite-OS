@@ -10,6 +10,7 @@
 #include "drivers/vmxnet3/vmxnet3.h"
 #include "drivers/e1000e/e1000e.h"
 #include "drivers/virtio_net/virtio_net.h"
+#include "drivers/r8169/r8169.h"
 #include "drivers/rtl8139/rtl8139.h"
 #include "kernel/net/netdev.h"
 #include "kernel/net/dns.h"
@@ -1112,12 +1113,15 @@ int net_init(void) {
     gateway_ip = ip_from_octets(GW_IP_O0, GW_IP_O1, GW_IP_O2, GW_IP_O3);
 
     /* Backend selection: e1000 is the default NIC.  When it is absent we fall
-     * back to a modern virtio-net device, and then to the Realtek RTL8139
-     * family -- the most widely cloned Fast Ethernet part there is, and the
-     * NIC a great deal of older physical hardware (and every `-device
-     * rtl8139' VM) actually presents.  The first NIC registered with the
-     * netdev layer becomes the active one, so the order here IS the
-     * priority: paravirtual before emulated-gigabit before 100 Mbit. */
+     * back to a modern virtio-net device, then through the emulated-gigabit
+     * parts (vmxnet3, e1000e), then the Realtek gigabit r8169 (the most
+     * common onboard NIC on real motherboards -- QEMU does not emulate it,
+     * so its data path is proved against a register-level host model), and
+     * finally the Realtek RTL8139 family, the most widely cloned Fast
+     * Ethernet part there is and the NIC every `-device rtl8139' VM
+     * actually presents.  The first NIC registered with the netdev layer
+     * becomes the active one, so the order here IS the priority:
+     * paravirtual before emulated-gigabit before 100 Mbit. */
     int have_nic = 0;
     if (e1000_init() == 0) {
         e1000_register_netdev();
@@ -1130,6 +1134,9 @@ int net_init(void) {
         have_nic = 1;
     } else if (e1000e_init() == 0) {
         e1000e_register_netdev();
+        have_nic = 1;
+    } else if (r8169_init() == 0) {
+        r8169_register_netdev();
         have_nic = 1;
     } else if (rtl8139_init() == 0) {
         rtl8139_register_netdev();
