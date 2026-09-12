@@ -8,7 +8,8 @@
 #   2. every source file carries a licence/provenance comment header;
 #   3. no file under w32/ mentions Wine or ReactOS as a source (the two
 #      licence-incompatible implementations contributors reach for);
-#   4. no Microsoft binary has been committed.
+#   4. no Microsoft binary has been committed (by name AND by MZ magic --
+#      the W32A-0 PE rule: renaming putty.exe to putty.bin must not help).
 #
 # Usage:
 #   tools/check_provenance.sh            # check the tree
@@ -70,7 +71,19 @@ check_tree() {
     while IFS= read -r f; do
         bad "binary that must not be redistributed: ${f#$root/}"
     done < <(find "$root" -type f \
-                  \( -iname '*.dll' -o -iname '*.sys' -o -iname '*.msi' \) \
+                  \( -iname '*.dll' -o -iname '*.sys' -o -iname '*.msi' \
+                     -o -iname '*.exe' \) \
+                  -not -path '*/.git/*' -not -path '*/build/*' | sort)
+
+    # W32A-0: PE rule.  Names lie -- a committed putty.exe renamed to .bin
+    # would sail past the name filter above -- so also scan content for the
+    # MZ magic (the first two bytes of every PE file, including .efi).
+    # build/ stays exempt: the tree's own test .exes live there (gitignored).
+    while IFS= read -r f; do
+        if head -c 2 "$f" 2>/dev/null | grep -q "^MZ"; then
+            bad "PE binary committed (MZ magic): ${f#$root/}"
+        fi
+    done < <(find "$root" -type f -size +1c \
                   -not -path '*/.git/*' -not -path '*/build/*' | sort)
 
     return 0
@@ -85,6 +98,8 @@ if [ "${1:-}" = "--selftest" ]; then
 
     # Violation: a source file with no provenance entry and no licence header.
     printf 'int sneaky(void) { return 0; }\n' > "$tmp/w32/src/sneaky.c"
+    # Violation: an MZ binary hiding under an innocent name (the PE rule).
+    printf 'MZ\0\0sneaky-binary' > "$tmp/w32/src/font.bin"
 
     echo "[provenance] self-test: planting an unrecorded file..."
     # Note: check_tree runs in a command substitution (a subshell), so its

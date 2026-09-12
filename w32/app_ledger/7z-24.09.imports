@@ -1,0 +1,106 @@
+# ledger: 7z-24.09
+# generator: tools/w32_import_ledger.py (W32APP_PLAN.md W32A-0)
+# Source binary: 7z.dll (7-Zip 24.09 codec) -- USER-SUPPLIED, NEVER COMMITTED (§1.1).
+# Only DLL/symbol NAMES are recorded: facts about an interface, no bytes.
+version: 7-Zip 24.09 codec
+file: 7z.dll
+size: 1907712
+sha256: 882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+format: PE32+ DLL x86-64
+subsystem: 5.2
+characteristics: 0x2022
+pdata_functions: 6812
+tls_directory: absent
+delay_dlls: (none)
+manifest_comctl: none
+manifest_exec_level: (none)
+manifest_dpi: (none)
+manifest_supported_os: 0
+imports_total: 86
+# dll | symbol (#<n> = ordinal) | class | observed [delay]
+advapi32.dll SystemFunction036 REAL static-only
+kernel32.dll CloseHandle REAL static-only
+kernel32.dll CompareFileTime REAL static-only
+kernel32.dll CreateDirectoryW REAL static-only
+kernel32.dll CreateEventW REAL static-only
+kernel32.dll CreateFileW REAL static-only
+kernel32.dll CreateSemaphoreW REAL static-only
+kernel32.dll DeleteCriticalSection REAL static-only
+kernel32.dll DeleteFileW REAL static-only
+kernel32.dll DosDateTimeToFileTime REAL static-only
+kernel32.dll EnterCriticalSection REAL static-only
+kernel32.dll FileTimeToDosDateTime REAL static-only
+kernel32.dll FileTimeToLocalFileTime REAL static-only
+kernel32.dll FileTimeToSystemTime REAL static-only
+kernel32.dll FindClose REAL static-only
+kernel32.dll FindFirstFileW REAL static-only
+kernel32.dll FindFirstStreamW REAL static-only
+kernel32.dll FindNextStreamW REAL static-only
+kernel32.dll GetCurrentDirectoryW REAL static-only
+kernel32.dll GetCurrentProcess REAL static-only
+kernel32.dll GetCurrentProcessId REAL static-only
+kernel32.dll GetCurrentThreadId REAL static-only
+kernel32.dll GetFileAttributesW REAL static-only
+kernel32.dll GetFileInformationByHandle REAL static-only
+kernel32.dll GetLargePageMinimum REAL static-only
+kernel32.dll GetLastError REAL static-only
+kernel32.dll GetOEMCP REAL static-only
+kernel32.dll GetProcessAffinityMask REAL static-only
+kernel32.dll GetSystemInfo REAL static-only
+kernel32.dll GetSystemTimeAsFileTime REAL static-only
+kernel32.dll GetTempPathW REAL static-only
+kernel32.dll GetTickCount REAL static-only
+kernel32.dll GlobalMemoryStatusEx REAL static-only
+kernel32.dll InitializeCriticalSection REAL static-only
+kernel32.dll IsProcessorFeaturePresent REAL static-only
+kernel32.dll LeaveCriticalSection REAL static-only
+kernel32.dll LocalFileTimeToFileTime REAL static-only
+kernel32.dll MultiByteToWideChar REAL static-only
+kernel32.dll QueryPerformanceCounter REAL static-only
+kernel32.dll ReadFile REAL static-only
+kernel32.dll ReleaseSemaphore REAL static-only
+kernel32.dll ResetEvent REAL static-only
+kernel32.dll ResumeThread REAL static-only
+kernel32.dll SetEvent REAL static-only
+kernel32.dll SetFileAttributesW REAL static-only
+kernel32.dll SetFileTime REAL static-only
+kernel32.dll SetLastError REAL static-only
+kernel32.dll SetThreadAffinityMask REAL static-only
+kernel32.dll Sleep REAL static-only
+kernel32.dll VirtualAlloc REAL static-only
+kernel32.dll VirtualFree REAL static-only
+kernel32.dll WaitForMultipleObjects REAL static-only
+kernel32.dll WaitForSingleObject REAL static-only
+kernel32.dll WideCharToMultiByte REAL static-only
+kernel32.dll WriteFile REAL static-only
+msvcrt.dll ??1type_info@@UEAA@XZ REAL static-only
+msvcrt.dll ?terminate@@YAXXZ REAL static-only
+msvcrt.dll _CxxThrowException REAL static-only
+msvcrt.dll __C_specific_handler REAL static-only
+msvcrt.dll __CxxFrameHandler REAL static-only
+msvcrt.dll __dllonexit REAL static-only
+msvcrt.dll _beginthreadex REAL static-only
+msvcrt.dll _initterm REAL static-only
+msvcrt.dll _onexit REAL static-only
+msvcrt.dll _purecall REAL static-only
+msvcrt.dll free REAL static-only
+msvcrt.dll malloc REAL static-only
+msvcrt.dll memcmp REAL static-only
+msvcrt.dll memcpy REAL static-only
+msvcrt.dll memmove REAL static-only
+msvcrt.dll memset REAL static-only
+msvcrt.dll realloc REAL static-only
+msvcrt.dll strchr REAL static-only
+msvcrt.dll strcmp REAL static-only
+msvcrt.dll strlen REAL static-only
+msvcrt.dll strstr REAL static-only
+msvcrt.dll wcscmp REAL static-only
+oleaut32.dll #10 REAL static-only
+oleaut32.dll #150 REFUSE static-only
+oleaut32.dll #2 REAL static-only
+oleaut32.dll #4 REAL static-only
+oleaut32.dll #6 REAL static-only
+oleaut32.dll #7 REAL static-only
+oleaut32.dll #9 REAL static-only
+user32.dll CharPrevExA REAL static-only
+user32.dll CharUpperW REAL static-only

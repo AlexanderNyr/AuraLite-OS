@@ -2,6 +2,27 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-0 — import ledgers] 2026-09-12 — the Win32 ladder, measured and machine-checked
+
+The W32APP series opens with its foundation phase: the three ladder
+applications (PuTTY 0.85, 7-Zip 24.09, Notepad++ 8.8.9 + its four shipped
+plugins) are measured import-for-import by a new stdlib-only PE32+
+parser, `tools/w32_import_ledger.py`, and the measurement is committed as
+five D9-classified ledgers under `w32/app_ledger/` — names only, no
+bytes. Every row is confirmed against `llvm-readobj` (8/8 binaries
+identical, ordinals and delay-load included), and the W32A-0 gate
+re-derives the §2.2 census from the committed files: 348/298/86/590
+imports, a 611-symbol K/U/G union, a 569-symbol gap against the 44 live
+exports. Measurement corrected the draft (union 600→611, PuTTY `.pdata`
+1752→2430, NPP 9693→10543, all three manifests pin comctl32 v6, NPP has
+a TLS directory too). Also new: the receipt protocol
+(`docs/w32app_receipts.md`, with `AWAITING` stubs for the six app gates),
+the plan claim checker (`tools/check_w32app_claims.py`, with the REFUSE
+guard that blocks app gates while their ledgers hold unresolved
+ordinals), and the provenance PE rule (committed-`MZ` scan, so a renamed
+binary fails like a committed one). Delivered as
+`patches/W32A0_ledger.patch`.
+
 ## [LX L2 — busybox ls/cat/echo] 2026-09-09 — a real Linux userland binary runs
 
 The ladder's second rung is green: an UNMODIFIED upstream busybox
