@@ -74,6 +74,10 @@
 #define PE_REL_ABSOLUTE    0
 #define PE_REL_DIR64      10
 
+/* A resource type id.  RT_MANIFEST is the only one the loader reads (W32A-1);
+ * version and icon resources stay opaque blobs for later phases. */
+#define PE_RSRC_MANIFEST   24
+
 /* ---- Return codes ------------------------------------------------------ */
 
 #define PE_OK                  0
@@ -170,6 +174,7 @@ typedef struct {
     uint16_t ordinal;          /* the real ordinal (ordinal_base applied) */
     uint32_t rva;              /* where the implementation lives          */
     int      is_forwarder;     /* rva points at "OTHERDLL.SymbolName"     */
+    char     forwarder[128];   /* the target text when is_forwarder       */
 } pe_export_t;
 
 /* Walk the export directory; same contract as pe_imports() -- writes up to
@@ -185,6 +190,37 @@ int pe_exports(const pe_image_t *img, pe_export_t *out, size_t max,
 /* Walk the base relocation directory; same contract as pe_imports(). */
 int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
                    size_t *count);
+
+/* One delay-load import (W32A-1).  Same shape as pe_import_t: the delay IAT
+ * slot plays the role of the IAT, and the image's own __delayLoadHelper2
+ * patches it on first call -- the loader never writes it. */
+typedef struct {
+    char     dll[64];          /* truncated with NUL if longer */
+    char     name[128];        /* empty when imported by ordinal */
+    uint16_t ordinal;          /* valid when by_ordinal */
+    int      by_ordinal;
+    uint32_t iat_rva;          /* the delay-IAT slot for this import */
+} pe_delay_import_t;
+
+/* Walk the delay-load directory; same contract as pe_imports() -- writes up
+ * to `max` entries and always reports the true total in *count.  Returns
+ * PE_OK with count = 0 when there is no delay directory.
+ *
+ * Only RVA-based (x86-64-style) descriptors are accepted; the 32-bit
+ * VA-based form returns PE_ERR_UNSUPPORTED rather than being misread. */
+int pe_delay_imports(const pe_image_t *img, pe_delay_import_t *out, size_t max,
+                     size_t *count);
+
+/* Find the first resource of a type id (W32A-1: PE_RSRC_MANIFEST).  Walks the
+ * three resource levels (type -> name -> language) and returns the data
+ * entry's RVA and size; the caller reads the bytes with pe_rva_to_offset().
+ * First match wins at the name and language levels -- manifests ship one --
+ * and a missing type (or a missing resource directory) reports rva = 0,
+ * len = 0 with PE_OK, mirroring the "absent is legal" import contract.
+ * String-named type entries are skipped: real manifests address type 24
+ * by id, and so do the in-tree fixtures. */
+int pe_find_resource(const pe_image_t *img, uint32_t type_id,
+                     uint32_t *rva_out, uint32_t *len_out);
 
 /* Is this image loadable as a w32 process?  Separated from pe_parse() so the
  * kernel can apply policy without re-parsing, and so the EFI refusal has one

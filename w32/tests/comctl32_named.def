@@ -1,0 +1,7 @@
+; comctl32_named.def — W32A-1 fixture: NAMED imports (Hint/Name ILT).
+; The twin of comctl32_ord.def.  NoSuchFunction names nothing the loader
+; knows, so ordbadname.exe must refuse BY NAME; a .def needs no DLL behind
+; it to produce the import record, which is exactly what this tests.
+LIBRARY COMCTL32.dll
+EXPORTS
+    NoSuchFunction

@@ -109,6 +109,7 @@ ALL_CASES=(
     test_w32_crt
     test_w32_loadlibrary
     test_w32_integration
+    test_w32_a1_loader
     test_ahci_large_read
     test_doom
     test_stack_guard

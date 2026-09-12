@@ -54,6 +54,24 @@ ReactOS.
 | `app_ledger/7z-24.09.imports` | Measured import ledger, 7z.dll 24.09 (W32A-0) |
 | `app_ledger/notepad++-8.8.9.imports` | Measured import ledger, NPP 8.8.9 (W32A-0) |
 | `app_ledger/npp-plugins-8.8.9.imports` | Measured import ledger, NPP plugins (W32A-0) |
+| `include/w32/oleaut32.h` | BSTR/VARIANT API, REAL (W32A-1) |
+| `src/w32_oleaut32.c` | BSTR/VARIANT memory management, pure libc (W32A-1) |
+| `include/w32/w32_manifest.h` | Manifest probing API (W32A-1) |
+| `src/w32_manifest.c` | Type-24 manifest scan: execution level, comctl, dpi, OS (W32A-1) |
+| `include/w32/w32_gen.h` | GENERATED ordinal/stub tables, from the TSVs (W32A-1) |
+| `src/w32_stubs_gen.c` | GENERATED stub bodies (W32A-1) |
+| `ordinal_map.tsv` | Ordinal→name facts, published source cited per row (W32A-1) |
+| `stub_map.tsv` | GENERATED one row per unimplemented ladder import (W32A-1) |
+| `tests/ordtest.asm`, `tests/ordbadname.asm`, `tests/ordbadnum.asm` | Ordinal-import fixtures (W32A-1) |
+| `tests/oleaut32_ord.def`, `tests/comctl32_ord.def`, `tests/comctl32_named.def`, `tests/nosuchdll.def` | Import-library .def fixtures (W32A-1) |
+| `tests/delayhelper.asm`, `tests/delaytarget.asm`, `tests/delaytarget.def` | Delay-load helper and target (W32A-1) |
+| `tests/delaytest_present.asm`, `tests/delaytest_absent.asm` | Delay-load present/absent fixtures (W32A-1) |
+| `tests/chain_a.asm`, `tests/chain_a.def`, `tests/chain_b.asm`, `tests/chain_b.def`, `tests/chainmain.asm` | Recursive-load chain + DllMain ordering (W32A-1) |
+| `tests/cyc_c.asm`, `tests/cyc_c.def`, `tests/cyc_d.asm`, `tests/cyc_d.def`, `tests/cycmain.asm` | Import-cycle refusal fixtures (W32A-1) |
+| `tests/datadll.asm`, `tests/datadll.def`, `tests/datamain.asm` | Data-export fixtures (W32A-1) |
+| `tests/fwdtest.asm`, `tests/fwdtest.def`, `tests/fwdstatic.asm`, `tests/fwdmain.asm` | Forwarder-refusal fixtures (W32A-1) |
+| `tests/mantest.asm`, `tests/mantest_*.manifest`, `tests/mantest_*.rc` | Manifest fixtures: v5/v6/admin/bad (W32A-1) |
+| `tests/W32A1.bindreport` | Committed ledger-harness report, refreshed by the A1 unit test (W32A-1) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

@@ -1,0 +1,4 @@
+; cyc_c.def — W32A-1 fixture: half of the import cycle.
+LIBRARY cyc_c.dll
+EXPORTS
+    cyc_c_fn

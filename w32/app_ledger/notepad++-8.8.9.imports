@@ -39,11 +39,11 @@ advapi32.dll RegQueryInfoKeyW REAL static-only
 advapi32.dll RegQueryValueExW REAL static-only
 advapi32.dll RegSetValueExW REAL static-only
 comctl32.dll #17 REAL static-only
-comctl32.dll #381 REFUSE static-only
-comctl32.dll #410 REFUSE static-only
-comctl32.dll #411 REFUSE static-only
-comctl32.dll #412 REFUSE static-only
-comctl32.dll #413 REFUSE static-only
+comctl32.dll #381 REAL static-only
+comctl32.dll #410 REAL static-only
+comctl32.dll #411 REAL static-only
+comctl32.dll #412 REAL static-only
+comctl32.dll #413 REAL static-only
 comctl32.dll ImageList_AddMasked REAL static-only
 comctl32.dll ImageList_BeginDrag REAL static-only
 comctl32.dll ImageList_Create REAL static-only
@@ -347,7 +347,7 @@ oleaut32.dll #4 REAL static-only
 oleaut32.dll #6 REAL static-only
 sensapi.dll IsDestinationReachableW FAIL-CLEAN static-only
 sensapi.dll IsNetworkAlive FAIL-CLEAN static-only
-shell32.dll #165 REFUSE static-only
+shell32.dll #165 REAL static-only
 shell32.dll DragFinish REAL static-only
 shell32.dll DragQueryFileW REAL static-only
 shell32.dll DragQueryPoint REAL static-only

@@ -19,7 +19,7 @@ BUILD_DIR   := build
 # link BOOTX64.EFI as PE32+.
 ### RUST: add rustc to required tools
 REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar \
-                  mformat mcopy lld-link rustc
+                  mformat mcopy lld-link llvm-rc rustc
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
@@ -1070,7 +1070,9 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_handle.o  $(USER_BUILD)/w32_bind.o \
                 $(USER_BUILD)/w32_peu.o     $(USER_BUILD)/w32_user32.o \
                 $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o \
-                $(USER_BUILD)/w32_module.o
+                $(USER_BUILD)/w32_module.o \
+                $(USER_BUILD)/w32_oleaut32.o $(USER_BUILD)/w32_manifest.o \
+                $(USER_BUILD)/w32_stubs_gen.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1094,6 +1096,16 @@ $(USER_BUILD)/w32_argv.o: w32/src/w32_argv.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 # W32-7: LoadLibrary/GetProcAddress/FreeLibrary over real DLL files.
 $(USER_BUILD)/w32_module.o: w32/src/w32_module.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
+# W32APP_PLAN.md W32A-1: BSTR/VARIANT (real), the manifest prober, and the
+# generated ordinal/stub tables.  w32_stubs_gen.c regenerates from the
+# committed TSVs; the W32A-1 unit gate fails if it drifts from them.
+$(USER_BUILD)/w32_oleaut32.o: w32/src/w32_oleaut32.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_manifest.o: w32/src/w32_manifest.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_stubs_gen.o: w32/src/w32_stubs_gen.c w32/include/w32/w32_gen.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 $(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
@@ -2305,6 +2317,242 @@ $(TESTDLL): w32/tests/testdll.asm w32/tests/testdll.def $(K32_IMPLIB)
 	         $(BUILD_DIR)/user/testdll.obj $(K32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (DLL: 3 exports, 2 imports, DllMain)"
 
+# W32APP_PLAN.md W32A-1: the loader fixtures.  Import libraries come
+# from committed .defs (no Microsoft file, no DLL shipped --
+# w32/LICENSING.md); DLLs and exes from nasm -f win64 objects; .res
+# files from committed .rc/.manifest pairs via llvm-rc.  Every DLL
+# links at a distinct base far from where it will land, so the load
+# path genuinely relocates each one (the W32-7 testdll precedent).
+W32A1_DLLS := $(BUILD_DIR)/user/delaytarget.dll \
+              $(BUILD_DIR)/user/chain_a.dll \
+              $(BUILD_DIR)/user/chain_b.dll \
+              $(BUILD_DIR)/user/cyc_c.dll \
+              $(BUILD_DIR)/user/cyc_d.dll \
+              $(BUILD_DIR)/user/datadll.dll \
+              $(BUILD_DIR)/user/fwdtest.dll
+W32A1_EXES := $(BUILD_DIR)/user/ordtest.exe \
+              $(BUILD_DIR)/user/ordbadnum.exe \
+              $(BUILD_DIR)/user/ordbadname.exe \
+              $(BUILD_DIR)/user/delaytest_present.exe \
+              $(BUILD_DIR)/user/delaytest_absent.exe \
+              $(BUILD_DIR)/user/chainmain.exe \
+              $(BUILD_DIR)/user/cycmain.exe \
+              $(BUILD_DIR)/user/datamain.exe \
+              $(BUILD_DIR)/user/fwdmain.exe \
+              $(BUILD_DIR)/user/fwdstatic.exe \
+              $(BUILD_DIR)/user/mantest_v6.exe \
+              $(BUILD_DIR)/user/mantest_v5.exe \
+              $(BUILD_DIR)/user/mantest_none.exe \
+              $(BUILD_DIR)/user/mantest_admin.exe \
+              $(BUILD_DIR)/user/mantest_bad.exe
+W32A1_FIXTURES := $(W32A1_DLLS) $(W32A1_EXES)
+
+# One pattern mints every W32A-1 import library from its committed
+# .def.  The -out DLL is lld-link's mandatory by-product of minting
+# an import library; it lands under a scratch name that is never
+# shipped, so parallel builds cannot race the real DLL rules below.
+$(BUILD_DIR)/user/%.lib: w32/tests/%.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/$*.implib-stub.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+# .rc -> .res via llvm-rc (MS rc syntax: /fo names the output).  The
+# .manifest rides as a second prerequisite so an edited manifest
+# rebuilds the .res; llvm-rc resolves it relative to the .rc's dir.
+$(BUILD_DIR)/user/%.res: w32/tests/%.rc w32/tests/%.manifest
+	@mkdir -p $(dir $@)
+	llvm-rc /fo$@ $<
+	@echo "  [pe] $@ (compiled resources)"
+
+# W32A-1 DLL: delaytarget.  no imports; the delay-load target.
+$(BUILD_DIR)/user/delaytarget.dll: w32/tests/delaytarget.asm w32/tests/delaytarget.def $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/delaytarget.obj
+	lld-link -dll -def:w32/tests/delaytarget.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a0000000 \
+	         $(BUILD_DIR)/user/delaytarget.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+# W32A-1 DLL: chain_b.  leaf of the recursive-load chain.
+$(BUILD_DIR)/user/chain_b.dll: w32/tests/chain_b.asm w32/tests/chain_b.def $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/chain_b.obj
+	lld-link -dll -def:w32/tests/chain_b.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a2000000 \
+	         $(BUILD_DIR)/user/chain_b.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+# W32A-1 DLL: chain_a.  imports chain_b_fn.
+$(BUILD_DIR)/user/chain_a.dll: w32/tests/chain_a.asm w32/tests/chain_a.def $(BUILD_DIR)/user/chain_b.lib $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/chain_a.obj
+	lld-link -dll -def:w32/tests/chain_a.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a1000000 \
+	         $(BUILD_DIR)/user/chain_a.obj $(BUILD_DIR)/user/chain_b.lib $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+# W32A-1 DLL: cyc_c.  imports cyc_d_fn (the cycle).
+$(BUILD_DIR)/user/cyc_c.dll: w32/tests/cyc_c.asm w32/tests/cyc_c.def $(BUILD_DIR)/user/cyc_d.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/cyc_c.obj
+	lld-link -dll -def:w32/tests/cyc_c.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a3000000 \
+	         $(BUILD_DIR)/user/cyc_c.obj $(BUILD_DIR)/user/cyc_d.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+# W32A-1 DLL: cyc_d.  imports cyc_c_fn (the cycle).
+$(BUILD_DIR)/user/cyc_d.dll: w32/tests/cyc_d.asm w32/tests/cyc_d.def $(BUILD_DIR)/user/cyc_c.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/cyc_d.obj
+	lld-link -dll -def:w32/tests/cyc_d.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a4000000 \
+	         $(BUILD_DIR)/user/cyc_d.obj $(BUILD_DIR)/user/cyc_c.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+# W32A-1 DLL: datadll.  one DATA export plus one function.
+$(BUILD_DIR)/user/datadll.dll: w32/tests/datadll.asm w32/tests/datadll.def
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/datadll.obj
+	lld-link -dll -def:w32/tests/datadll.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a5000000 \
+	         $(BUILD_DIR)/user/datadll.obj -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+# W32A-1 DLL: fwdtest.  one forwarded export, no code.
+$(BUILD_DIR)/user/fwdtest.dll: w32/tests/fwdtest.asm w32/tests/fwdtest.def
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/fwdtest.obj
+	lld-link -dll -def:w32/tests/fwdtest.def -entry:DllMain -nodefaultlib \
+	         -machine:x64 -base:0x1a6000000 \
+	         $(BUILD_DIR)/user/fwdtest.obj -out:$@
+	@echo "  [pe] $@ (W32A-1 DLL)"
+
+$(BUILD_DIR)/user/delayhelper.obj: w32/tests/delayhelper.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $@
+
+$(BUILD_DIR)/user/mantest.obj: w32/tests/mantest.asm
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $@
+
+# W32A-1 exe: ordtest.  ordinal imports incl. the BSTR round-trip + name/number alias.
+$(BUILD_DIR)/user/ordtest.exe: w32/tests/ordtest.asm $(K32_IMPLIB) $(BUILD_DIR)/user/comctl32_ord.lib $(BUILD_DIR)/user/oleaut32_ord.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/ordtest.asm -o $(BUILD_DIR)/user/ordtest.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/ordtest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/comctl32_ord.lib $(BUILD_DIR)/user/oleaut32_ord.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: ordbadnum.  unmapped ordinal 9999: refused by number.
+$(BUILD_DIR)/user/ordbadnum.exe: w32/tests/ordbadnum.asm $(K32_IMPLIB) $(BUILD_DIR)/user/comctl32_ord.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/ordbadnum.asm -o $(BUILD_DIR)/user/ordbadnum.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/ordbadnum.obj $(K32_IMPLIB) $(BUILD_DIR)/user/comctl32_ord.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: ordbadname.  unknown name: refused by name.
+$(BUILD_DIR)/user/ordbadname.exe: w32/tests/ordbadname.asm $(K32_IMPLIB) $(BUILD_DIR)/user/comctl32_named.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/ordbadname.asm -o $(BUILD_DIR)/user/ordbadname.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/ordbadname.obj $(K32_IMPLIB) $(BUILD_DIR)/user/comctl32_named.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: delaytest_present.  delay-load hit: /delayload keeps delay_add off the classic table.
+$(BUILD_DIR)/user/delaytest_present.exe: w32/tests/delaytest_present.asm $(BUILD_DIR)/user/delayhelper.obj $(K32_IMPLIB) $(BUILD_DIR)/user/delaytarget.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/delaytest_present.asm -o $(BUILD_DIR)/user/delaytest_present.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/delaytest_present.obj $(BUILD_DIR)/user/delayhelper.obj $(K32_IMPLIB) $(BUILD_DIR)/user/delaytarget.lib /delayload:delaytarget.dll -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: delaytest_absent.  delay-load miss: the helper exits 77 naming the DLL.
+$(BUILD_DIR)/user/delaytest_absent.exe: w32/tests/delaytest_absent.asm $(BUILD_DIR)/user/delayhelper.obj $(K32_IMPLIB) $(BUILD_DIR)/user/nosuchdll.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/delaytest_absent.asm -o $(BUILD_DIR)/user/delaytest_absent.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/delaytest_absent.obj $(BUILD_DIR)/user/delayhelper.obj $(K32_IMPLIB) $(BUILD_DIR)/user/nosuchdll.lib /delayload:nosuchdll.dll -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: chainmain.  recursive load; attach order A-after-B, detach reversed.
+$(BUILD_DIR)/user/chainmain.exe: w32/tests/chainmain.asm $(K32_IMPLIB) $(BUILD_DIR)/user/chain_a.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/chainmain.asm -o $(BUILD_DIR)/user/chainmain.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/chainmain.obj $(K32_IMPLIB) $(BUILD_DIR)/user/chain_a.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: cycmain.  the import cycle: refused with the cycle named.
+$(BUILD_DIR)/user/cycmain.exe: w32/tests/cycmain.asm $(K32_IMPLIB) $(BUILD_DIR)/user/cyc_c.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/cycmain.asm -o $(BUILD_DIR)/user/cycmain.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/cycmain.obj $(K32_IMPLIB) $(BUILD_DIR)/user/cyc_c.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: datamain.  reads an imported DWORD through its __imp_ slot.
+$(BUILD_DIR)/user/datamain.exe: w32/tests/datamain.asm $(K32_IMPLIB) $(BUILD_DIR)/user/datadll.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/datamain.asm -o $(BUILD_DIR)/user/datamain.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/datamain.obj $(K32_IMPLIB) $(BUILD_DIR)/user/datadll.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: fwdmain.  dynamic forwarder: NULL + 127, target named.
+$(BUILD_DIR)/user/fwdmain.exe: w32/tests/fwdmain.asm $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/fwdmain.asm -o $(BUILD_DIR)/user/fwdmain.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/fwdmain.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: fwdstatic.  static forwarder: refused at bind, target named.
+$(BUILD_DIR)/user/fwdstatic.exe: w32/tests/fwdstatic.asm $(K32_IMPLIB) $(BUILD_DIR)/user/fwdtest.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 w32/tests/fwdstatic.asm -o $(BUILD_DIR)/user/fwdstatic.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/fwdstatic.obj $(K32_IMPLIB) $(BUILD_DIR)/user/fwdtest.lib -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: mantest_v6.  comctl v6 + asInvoker + dpi + 2x supportedOS.
+$(BUILD_DIR)/user/mantest_v6.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_v6.res
+	@mkdir -p $(dir $@)
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_v6.res -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: mantest_v5.  comctl v5.82: the version discriminates.
+$(BUILD_DIR)/user/mantest_v5.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_v5.res
+	@mkdir -p $(dir $@)
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_v5.res -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: mantest_none.  no manifest: the gate stays silent.
+$(BUILD_DIR)/user/mantest_none.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: mantest_admin.  requireAdministrator: refused before mapping.
+$(BUILD_DIR)/user/mantest_admin.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_admin.res
+	@mkdir -p $(dir $@)
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_admin.res -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+# W32A-1 exe: mantest_bad.  malformed manifest: refused as malformed.
+$(BUILD_DIR)/user/mantest_bad.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_bad.res
+	@mkdir -p $(dir $@)
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) $(BUILD_DIR)/user/mantest_bad.res -out:$@
+	@echo "  [pe] $@ (W32A-1 exe)"
+
+
+
 # W32-8: the mingw-w64 examples.  Built only if the cross-compiler is
 # installed -- the OS build must never require it -- but when it IS present
 # the console example is copied into the initrd so the gate can run a
@@ -2537,7 +2785,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2703,6 +2951,11 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
 	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
+# W32A-1: 7 DLLs + 15 exes.  Basenames are preserved because the
+# loader resolves dependency names against the exe's directory.
+	@for f in $(W32A1_FIXTURES); do \
+	    cp $$f $(INITRD_DIR)/tests/; \
+	done
 	@if [ -s $(W32_EXAMPLE_EXE) ]; then \
 	    cp $(W32_EXAMPLE_EXE) $(INITRD_DIR)/tests/w32hello.exe; fi
 	@if [ -s $(W32_UNSUP_EXE) ]; then \
@@ -2978,6 +3231,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_kernel32 \
                 $(BUILD_DIR)/test_w32_argv \
                 $(BUILD_DIR)/test_w32_exports \
+                $(BUILD_DIR)/test_w32_a1 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3030,6 +3284,38 @@ $(BUILD_DIR)/test_w32_exports: tests/unit/test_w32_exports.c w32/src/w32_pe.c \
 	          -fsanitize=address,undefined $(W32_INC) -I . \
 	          tests/unit/test_w32_exports.c w32/src/w32_pe.c -o $@
 
+# W32A-1: the binder-only ledger harness.  A host tool that parses
+# the BUILT fixtures with the real w32_pe.c/w32_manifest.c, resolves
+# every import through the real ordinal map + generated tables
+# (w32_stubs_gen.c) plus build-derived ground truth (w32_a1_tables.h,
+# regenerated every build from w32_bind.c + stub_map.tsv -- never
+# hand-copied), and asserts the ledger class per import.  Under
+# ASan+UBSan: PE parsing is untrusted-input code.
+$(BUILD_DIR)/w32_a1_tables.h: w32/src/w32_bind.c w32/stub_map.tsv \
+                              tools/w32_gen_a1_tables.py
+	@mkdir -p $(dir $@)
+	python3 tools/w32_gen_a1_tables.py w32/src/w32_bind.c > $@
+
+$(BUILD_DIR)/test_w32_a1: tests/unit/test_w32_a1.c \
+                          tests/unit/test_w32_a1.h \
+                          tests/unit/test_w32_a1_check.c \
+                          tests/unit/test_w32_a1_report.c \
+                          tests/unit/test_w32_a1_fixtures1.c \
+                          tests/unit/test_w32_a1_fixtures2.c \
+                          w32/src/w32_pe.c w32/src/w32_manifest.c \
+                          w32/src/w32_stubs_gen.c w32/src/w32_errno.c \
+                          $(BUILD_DIR)/w32_a1_tables.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . -I $(BUILD_DIR) \
+	          tests/unit/test_w32_a1.c \
+	          tests/unit/test_w32_a1_check.c \
+	          tests/unit/test_w32_a1_report.c \
+	          tests/unit/test_w32_a1_fixtures1.c \
+	          tests/unit/test_w32_a1_fixtures2.c \
+	          w32/src/w32_pe.c w32/src/w32_manifest.c \
+	          w32/src/w32_stubs_gen.c w32/src/w32_errno.c -o $@
+
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.
 .PHONY: w32-peinfo
@@ -3040,8 +3326,16 @@ $(BUILD_DIR)/w32_peinfo: w32/tools/peinfo.c w32/src/w32_pe.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) \
 	    w32/tools/peinfo.c w32/src/w32_pe.c -o $@
 
-test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo
-	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(W32A1_FIXTURES)
+# W32A-1: the harness asserts over the built fixtures, so they are	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+# W32A-1: the committed bindreport agrees textually with a fresh one.
+	@echo "[unit] running $(BUILD_DIR)/test_w32_a1 --emit-report"
+	@$(BUILD_DIR)/test_w32_a1 --emit-report $(BUILD_DIR)/user > \
+	    $(BUILD_DIR)/W32A1.bindreport.new
+	@diff -u w32/tests/W32A1.bindreport $(BUILD_DIR)/W32A1.bindreport.new || \
+	    (echo "w32/tests/W32A1.bindreport is stale; refresh it with:"; \
+	     echo "  $(BUILD_DIR)/test_w32_a1 --emit-report $(BUILD_DIR)/user > w32/tests/W32A1.bindreport"; \
+	     exit 1)
 # Shell-based unit tests.  test_userlibs inspects the built archives rather
 # than compiled code, so it is a script rather than a C binary and cannot join
 # $(UNIT_TESTS), which is a list of executables to build.  It skips cleanly

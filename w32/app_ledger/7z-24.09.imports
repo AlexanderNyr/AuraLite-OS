@@ -96,7 +96,7 @@ msvcrt.dll strlen REAL static-only
 msvcrt.dll strstr REAL static-only
 msvcrt.dll wcscmp REAL static-only
 oleaut32.dll #10 REAL static-only
-oleaut32.dll #150 REFUSE static-only
+oleaut32.dll #150 REAL static-only
 oleaut32.dll #2 REAL static-only
 oleaut32.dll #4 REAL static-only
 oleaut32.dll #6 REAL static-only

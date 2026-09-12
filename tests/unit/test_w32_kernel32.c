@@ -111,6 +111,14 @@ typedef long ssize_t;
 #include "../../w32/src/kernel32.c"
 #undef main
 
+/* W32A-1: ExitProcess detaches loaded DLLs in reverse load order; the real
+ * teardown lives in w32_module.c (guest-only, needs the mmap loader), so the
+ * host test stubs the entry point.  No test calls ExitProcess (it never
+ * returns; the guest loader case covers the ordering); the flag exists so a
+ * future longjmp-based test can observe the call. */
+static int saw_detach_all;
+void w32_module_detach_all(void) { saw_detach_all = 1; (void)saw_detach_all; }
+
 /* ---- handle table --------------------------------------------------------- */
 
 static void test_std_handles_resolve(void) {

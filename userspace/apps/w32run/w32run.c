@@ -28,6 +28,8 @@
 #include "w32/w32_pe.h"
 #include "w32/w32_bind.h"
 #include "w32/w32_crt.h"
+#include "w32/w32_module.h"
+#include "w32/w32_manifest.h"
 #include "w32/kernel32.h"
 
 #ifndef PROT_READ
@@ -82,6 +84,32 @@ int main(int argc, char **argv) {
                pe_strerror(rc), img.subsystem);
         return 1;
     }
+
+    /* W32A-1: the manifest gate.  A requireAdministrator manifest refuses
+     * (there is no elevation to grant); a malformed one refuses (the
+     * Windows side-by-side error); anything else records its comctl/dpi
+     * facts and proceeds. */
+    {
+        w32_manifest_t mf;
+        if (w32_manifest_check(buf, (size_t)total, &mf) != 0) {
+            printf("w32run: refused: malformed application manifest\n");
+            return 1;
+        }
+        if (mf.exec_level == W32_MANIFEST_ADMIN) {
+            printf("w32run: refused: manifest requests requireAdministrator "
+                   "(elevation is not supported)\n");
+            return 1;
+        }
+        if (mf.has_manifest)
+            printf("w32run: manifest: comctl v%d, exec=%s%s\n",
+                   mf.comctl_major,
+                   mf.exec_level == W32_MANIFEST_HIGHEST ?
+                       "highestAvailable" : "asInvoker",
+                   mf.dpi_aware ? ", dpi-aware" : "");
+    }
+
+    /* W32A-1: dependency DLLs load from the executable's directory first. */
+    w32_module_set_exe_dir(path);
 
     /* Map one writable+executable region for the whole image.
      *

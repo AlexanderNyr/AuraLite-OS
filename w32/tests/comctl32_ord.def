@@ -1,0 +1,13 @@
+; comctl32_ord.def — ordinal-only imports for the W32A-1 ordtest fixture.
+;
+; NONAME entries make lld-link emit ordinal-only ILT records (no Hint/Name),
+; the same shape real toolchains produce for ordinal imports -- verified with
+; llvm-readobj ("Symbol: (17)").  The ordinals are the ladder-measured ones
+; (w32/ordinal_map.tsv); nothing here is a Microsoft file and no DLL is
+; redistributed (w32/LICENSING.md).
+LIBRARY COMCTL32.dll
+EXPORTS
+    InitCommonControls @17 NONAME
+    LoadIconWithScaleDown @381 NONAME
+    SetWindowSubclass @410 NONAME
+    NoSuchOrd @9999 NONAME

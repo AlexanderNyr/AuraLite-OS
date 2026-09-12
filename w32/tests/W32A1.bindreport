@@ -1,0 +1,79 @@
+# W32A-1 bind report.  Regenerate with:
+#   build/test_w32_a1 --emit-report build/user > w32/tests/W32A1.bindreport
+ordtest.exe: KERNEL32.dll!ExitProcess -> REAL via static
+ordtest.exe: KERNEL32.dll!GetLastError -> REAL via static
+ordtest.exe: KERNEL32.dll!GetModuleHandleA -> REAL via static
+ordtest.exe: KERNEL32.dll!GetProcAddress -> REAL via static
+ordtest.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+ordtest.exe: KERNEL32.dll!WriteFile -> REAL via static
+ordtest.exe: COMCTL32.dll!#17 -> REAL via gen:TODO [via ordmap: InitCommonControls]
+ordtest.exe: COMCTL32.dll!#381 -> REAL via gen:TODO [via ordmap: LoadIconWithScaleDown]
+ordtest.exe: OLEAUT32.dll!#2 -> REAL via static [via ordmap: SysAllocString]
+ordtest.exe: OLEAUT32.dll!#6 -> REAL via static [via ordmap: SysFreeString]
+ordtest.exe: OLEAUT32.dll!#7 -> REAL via static [via ordmap: SysStringLen]
+ordbadnum.exe: KERNEL32.dll!ExitProcess -> REAL via static
+ordbadnum.exe: COMCTL32.dll!#9999 -> REFUSED via ordmap:unmapped [loader spells #9999]
+ordbadname.exe: KERNEL32.dll!ExitProcess -> REAL via static
+ordbadname.exe: COMCTL32.dll!NoSuchFunction -> REFUSED via unresolved
+delaytest_present.exe: KERNEL32.dll!ExitProcess -> REAL via static
+delaytest_present.exe: KERNEL32.dll!GetModuleHandleA -> REAL via static
+delaytest_present.exe: KERNEL32.dll!GetProcAddress -> REAL via static
+delaytest_present.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+delaytest_present.exe: KERNEL32.dll!LoadLibraryA -> REAL via static
+delaytest_present.exe: KERNEL32.dll!WriteFile -> REAL via static
+delaytest_present.exe: delaytarget.dll!delayed_add -> DELAY via delay-dir
+delaytest_absent.exe: KERNEL32.dll!ExitProcess -> REAL via static
+delaytest_absent.exe: KERNEL32.dll!GetProcAddress -> REAL via static
+delaytest_absent.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+delaytest_absent.exe: KERNEL32.dll!LoadLibraryA -> REAL via static
+delaytest_absent.exe: KERNEL32.dll!WriteFile -> REAL via static
+delaytest_absent.exe: nosuchdll.dll!NoSuchFunc -> DELAY via delay-dir
+chainmain.exe: KERNEL32.dll!ExitProcess -> REAL via static
+chainmain.exe: KERNEL32.dll!GetModuleHandleA -> REAL via static
+chainmain.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+chainmain.exe: KERNEL32.dll!WriteFile -> REAL via static
+chainmain.exe: chain_a.dll!chain_a_fn -> REAL via file
+cycmain.exe: KERNEL32.dll!ExitProcess -> REAL via static
+cycmain.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+cycmain.exe: KERNEL32.dll!WriteFile -> REAL via static
+cycmain.exe: cyc_c.dll!cyc_c_fn -> REFUSED via cycle [cyc_c.dll -> cyc_d.dll -> cyc_c.dll]
+datamain.exe: KERNEL32.dll!ExitProcess -> REAL via static
+datamain.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+datamain.exe: KERNEL32.dll!WriteFile -> REAL via static
+datamain.exe: datadll.dll!answer -> REAL via file:DATA
+datamain.exe: datadll.dll!data_fn -> REAL via file
+fwdmain.exe: KERNEL32.dll!ExitProcess -> REAL via static
+fwdmain.exe: KERNEL32.dll!FreeLibrary -> REAL via static
+fwdmain.exe: KERNEL32.dll!GetLastError -> REAL via static
+fwdmain.exe: KERNEL32.dll!GetProcAddress -> REAL via static
+fwdmain.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+fwdmain.exe: KERNEL32.dll!LoadLibraryA -> REAL via static
+fwdmain.exe: KERNEL32.dll!WriteFile -> REAL via static
+fwdstatic.exe: KERNEL32.dll!ExitProcess -> REAL via static
+fwdstatic.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+fwdstatic.exe: KERNEL32.dll!WriteFile -> REAL via static
+fwdstatic.exe: fwdtest.dll!FwdFunc -> REFUSED via forwarder [target kernel32.GetTickCount64]
+mantest_v6.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+mantest_v6.exe: KERNEL32.dll!WriteFile -> REAL via static
+mantest_v6.exe: manifest comctl=v6 exec=asInvoker dpi=1 supportedOS=2
+mantest_v5.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+mantest_v5.exe: KERNEL32.dll!WriteFile -> REAL via static
+mantest_v5.exe: manifest comctl=v5 exec=asInvoker dpi=0 supportedOS=0
+mantest_none.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+mantest_none.exe: KERNEL32.dll!WriteFile -> REAL via static
+mantest_none.exe: no manifest
+mantest_admin.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+mantest_admin.exe: KERNEL32.dll!WriteFile -> REAL via static
+mantest_admin.exe: manifest comctl=v5 exec=requireAdministrator dpi=0 supportedOS=0
+mantest_bad.exe: KERNEL32.dll!GetStdHandle -> REAL via static
+mantest_bad.exe: KERNEL32.dll!WriteFile -> REAL via static
+mantest_bad.exe: manifest MALFORMED
+delaytarget.dll: KERNEL32.dll!GetStdHandle -> REAL via static
+delaytarget.dll: KERNEL32.dll!WriteFile -> REAL via static
+chain_a.dll: chain_b.dll!chain_b_fn -> REAL via file
+chain_a.dll: KERNEL32.dll!GetStdHandle -> REAL via static
+chain_a.dll: KERNEL32.dll!WriteFile -> REAL via static
+chain_b.dll: KERNEL32.dll!GetStdHandle -> REAL via static
+chain_b.dll: KERNEL32.dll!WriteFile -> REAL via static
+cyc_c.dll: cyc_d.dll!cyc_d_fn -> REFUSED via cycle [cyc_d.dll -> cyc_c.dll -> cyc_d.dll]
+cyc_d.dll: cyc_c.dll!cyc_c_fn -> REFUSED via cycle [cyc_c.dll -> cyc_d.dll -> cyc_c.dll]

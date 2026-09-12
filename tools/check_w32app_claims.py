@@ -69,6 +69,24 @@ ARTEFACTS = {
                "docs/w32app_receipts.md",
                "tools/check_w32app_claims.py",
                "tools/check_provenance.sh"],
+    "W32A-1": ["w32/ordinal_map.tsv",
+               "w32/stub_map.tsv",
+               "w32/include/w32/w32_gen.h",
+               "w32/src/w32_stubs_gen.c",
+               "tools/w32_gen_stubs.py",
+               "tools/w32_mkstubmap.py",
+               "w32/include/w32/oleaut32.h",
+               "w32/src/w32_oleaut32.c",
+               "w32/include/w32/w32_manifest.h",
+               "w32/src/w32_manifest.c",
+               "w32/tests/W32A1.bindreport",
+               "tests/unit/test_w32_a1.c",
+               "tests/unit/test_w32_a1.h",
+               "tests/unit/test_w32_a1_check.c",
+               "tests/unit/test_w32_a1_fixtures1.c",
+               "tests/unit/test_w32_a1_fixtures2.c",
+               "tests/unit/test_w32_a1_report.c",
+               "tests/integration/cases/test_w32_a1_loader.sh"],
 }
 
 # Greppable receipts each done phase must carry in its plan section.
@@ -78,6 +96,9 @@ RECEIPTS = {
                "611",
                "569",
                "patches/W32A0_ledger.patch"],
+    "W32A-1": ["patches/W32A1_loader.patch",
+               "34/34",
+               "W32A1.bindreport"],
 }
 
 

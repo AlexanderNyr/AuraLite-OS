@@ -1,0 +1,8 @@
+; fwdtest.def — W32A-1 fixture: a forwarded export.
+; FwdFunc is not implemented here; its export entry points at
+; kernel32.GetTickCount64.  The loader refuses forwarders on every path and
+; names the TARGET, never a bare "unsupported".  (Named fwdtest, not
+; fwddll: W32-7's hostile forwarder fixture already owns tests/fwddll.dll.)
+LIBRARY fwdtest.dll
+EXPORTS
+    FwdFunc=kernel32.GetTickCount64

@@ -33,6 +33,12 @@
 #define W32_ERROR_WRITE_FAULT           29u
 #define W32_ERROR_READ_FAULT            30u
 #define W32_ERROR_PROC_NOT_FOUND       127u
+/* W32A-1: the mpr fail-clean stubs (w32/src/w32_stubs_gen.c).  There is no
+ * network provider, so the WNet* surface reports it: opens and queries
+ * fail with NO_NETWORK, enumeration is empty (NO_MORE_ITEMS).  Values from
+ * the published Win32 error list, like every code above. */
+#define W32_ERROR_NO_MORE_ITEMS         259u
+#define W32_ERROR_NO_NETWORK           1222u
 
 /* The per-process last-error slot.  Win32 makes this thread-local; AuraLite's
  * w32 personality is single-threaded per process for now, so a process-wide

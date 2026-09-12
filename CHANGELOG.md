@@ -2,6 +2,27 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-1 — loader] 2026-09-12 — ordinals, delay-load, DLL chains, manifests
+
+"Refused at load" becomes "runs until the first missing import": the
+loader now binds all five pinned files' static tables end to end
+(binding is not behaviour — unimplemented imports land on loud stubs
+or named refusals, never silent NULLs). Ordinal imports resolve by
+number in the static binder and `GetProcAddress` (15 documented
+ordinals across COMCTL32/OLEAUT32/SHELL32; unknown ordinals and `#<n>`
+refuse by number); delay-load thunks resolve on first call through an
+in-guest helper (absent targets fail at first call with the DLL
+named); user DLLs import from each other with slot-claiming nested
+loads, refusal-by-name cycles, a documented depth cap, and
+dependencies-first `DllMain` / reverse teardown; data exports bind as
+addresses; type-24 manifests select comctl32, honour asInvoker, refuse
+requireAdministrator by name, record dpi, and log supportedOS loudly.
+Eight OLEAUT32 BSTR functions are REAL already (pure libc, no reason
+to stub them). Proved by 34/34 guest assertions, a binder-only harness
+over the pinned tables, and a committed `.bindreport` that must agree
+textually with a fresh one. Delivered as
+`patches/W32A1_loader.patch`.
+
 ## [W32A-0 — import ledgers] 2026-09-12 — the Win32 ladder, measured and machine-checked
 
 The W32APP series opens with its foundation phase: the three ladder

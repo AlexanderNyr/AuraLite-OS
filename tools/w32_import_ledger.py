@@ -102,16 +102,18 @@ OVERRIDES = {
     ("advapi32.dll", "AdjustTokenPrivileges"): ("FAIL-CLEAN", "W32A-9: no privileges"),
     ("advapi32.dll", "GetFileSecurityW"): ("FAIL-CLEAN", "W32A-9: owner-only approx"),
     ("advapi32.dll", "SetFileSecurityW"): ("FAIL-CLEAN", "W32A-9: owner-only approx"),
-    # W32A-1 must resolve these ordinals or refuse them by number; until it
-    # does, the honest ledger class is REFUSE (no guessing at ordinal maps).
-    ("comctl32.dll", "#381"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("comctl32.dll", "#410"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("comctl32.dll", "#411"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("comctl32.dll", "#412"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("comctl32.dll", "#413"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("shell32.dll", "#165"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("oleaut32.dll", "#149"): ("REFUSE", "W32A-1: unresolved ordinal"),
-    ("oleaut32.dll", "#150"): ("REFUSE", "W32A-1: unresolved ordinal"),
+    # W32A-1 resolutions. Every ladder ordinal maps to a DOCUMENTED MS
+    # function; the ordinal<->name facts come from published documentations,
+    # cited per entry (see w32/ordinal_map.tsv, the loader's copy of this).
+    # Chappell = geoffchappell.com studies; pefile = erocarrera/pefile (MIT).
+    ("comctl32.dll", "#381"): ("REAL", "W32A-1: LoadIconWithScaleDown, Chappell comctl32/ords610"),
+    ("comctl32.dll", "#410"): ("REAL", "W32A-1: SetWindowSubclass, Chappell comctl32/ords472"),
+    ("comctl32.dll", "#411"): ("REAL", "W32A-1: GetWindowSubclass, Chappell comctl32/ords472"),
+    ("comctl32.dll", "#412"): ("REAL", "W32A-1: RemoveWindowSubclass, Chappell comctl32/ords472"),
+    ("comctl32.dll", "#413"): ("REAL", "W32A-1: DefSubclassProc, Chappell comctl32/ords472"),
+    ("shell32.dll", "#165"): ("REAL", "W32A-1: SHCreateDirectory, Chappell shell32/ords400"),
+    ("oleaut32.dll", "#149"): ("REAL", "W32A-1: SysStringByteLen, pefile ordlookup"),
+    ("oleaut32.dll", "#150"): ("REAL", "W32A-1: SysAllocStringByteLen, pefile ordlookup"),
 }
 
 # ---------------------------------------------------------------------------

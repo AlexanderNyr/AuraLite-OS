@@ -15,6 +15,7 @@
  */
 
 #include "w32/kernel32.h"
+#include "w32/w32_module.h"
 
 /* The guest headers are skipped when this file is compiled into a host unit
  * test, which stubs the same functions itself (tests/unit/test_w32_kernel32.c).
@@ -30,6 +31,9 @@
 /* --- process -------------------------------------------------------------- */
 
 W32ABI void ExitProcess(unsigned int code) {
+    /* W32A-1: loaded DLLs detach in reverse load order before the process
+     * goes away.  A DLL that needed cleanup gets it; nothing outlives us. */
+    w32_module_detach_all();
     _exit((int)code);
     for (;;) { }                       /* _exit is noreturn; keep the compiler happy */
 }

@@ -21,9 +21,16 @@
  *   - Forwarder exports ("KERNEL32.Sleep" as a string in place of code).
  *     Detected by pe_exports() and refused by name, because following one
  *     means resolving into another module and the failure mode of getting
- *     that subtly wrong is a call into a string.
- *   - Delay-load imports: the directory is detected and refused.
- *   - Imports by ordinal, matching the policy w32_bind.c already applies.
+ *     that subtly wrong is a call into a string.  The refusal names the
+ *     forwarder target (W32A-1).
+ *   - Dependency cycles: a DLL that (transitively) imports itself refuses
+ *     with the cycle named (W32A-1).
+ *   - Dependency chains deeper than W32_LOAD_DEPTH_MAX, with the depth
+ *     named (W32A-1).
+ *
+ * W32A-1 lifted the W32-7 delay-load and ordinal refusals: delay imports
+ * bind lazily through LoadLibrary/GetProcAddress (the image's own helper
+ * calls them), and ordinals translate through the ordinal map.
  *
  * Refusals are explicit and named.  A loader that silently returns a handle
  * to a half-initialised module is worse than one that says no.
@@ -41,8 +48,16 @@
  * value the program can fabricate must not be dereferenceable. */
 typedef void *W32_HMODULE;
 
-#define W32_MODULE_MAX      16   /* built-ins plus loaded files          */
+#define W32_MODULE_MAX      64   /* built-ins plus loaded files.
+                                 * 16 died in W32A-1: the stub-module
+                                 * registration alone fills 20, and a full
+                                 * table fails every file load silently. */
 #define W32_MODULE_NAME_MAX 64
+
+/* W32A-1: a dependency chain (exe -> A -> B -> ...) stops here.  Deeper
+ * than any ladder chain (two: an exe plus one DLL), shallow enough that a
+ * malicious cycle-that-is-not-quite-a-cycle cannot recurse usefully. */
+#define W32_LOAD_DEPTH_MAX   8
 
 /* Documented error codes this layer reports through w32_set_last_error(). */
 #define W32_ERROR_MOD_NOT_FOUND   126u
@@ -71,6 +86,33 @@ void *W32ABI w32_GetProcAddress(W32_HMODULE mod, const char *name);
  * mappings); a file module is unmapped when its last reference goes, after
  * DllMain(DLL_PROCESS_DETACH). */
 int W32ABI w32_FreeLibrary(W32_HMODULE mod);
+
+/* ---- W32A-1: recursive loading --------------------------------------------
+ *
+ * w32_load_dependency() is the static binder's back door into the module
+ * loader: when an import names a DLL no built-in answers, the binder asks
+ * here, and the DLL is found (already loaded) or loaded (from disk) and the
+ * symbol resolved inside it.  by_ord/ord carry an ordinal import through so
+ * ordinal-only exports in user DLLs match by number.  Returns the bound
+ * address, or NULL with the last error set.  Cycles and over-deep chains
+ * refuse here, loudly.
+ *
+ * Search order for a bare name (documented subset of the Windows order):
+ * the main executable's directory first (set by w32run), then the path as
+ * given (relative names resolve against the working directory).  A name
+ * with a separator or drive letter is tried literally only.
+ */
+void *w32_load_dependency(const char *dll, const char *name,
+                          int by_ord, unsigned ord);
+
+/* Record the main executable's path so dependency loads search its
+ * directory.  Call once at startup, before any bind; later calls replace. */
+void w32_module_set_exe_dir(const char *exe_path);
+
+/* Run DllMain(DLL_PROCESS_DETACH) for every loaded file module, newest
+ * first, and unmap them all.  ExitProcess calls this: dependencies tear
+ * down in reverse of the attach order, and nothing outlives the process. */
+void w32_module_detach_all(void);
 
 /* ---- testability -------------------------------------------------------
  * Reference count for @mod, or -1 if it is not a live handle.  Exposed so

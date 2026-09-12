@@ -1,0 +1,4 @@
+; delaytarget.def — the delay-load target for the W32A-1 fixtures.
+LIBRARY delaytarget.dll
+EXPORTS
+    delayed_add

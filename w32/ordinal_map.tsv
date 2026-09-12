@@ -1,0 +1,37 @@
+# ordinal_map.tsv — ordinal→name facts for the W32A-1 loader.
+#
+# WIN32 personality, W32APP_PLAN.md phase W32A-1 ("Ordinal imports in the
+# static binder and in GetProcAddress").  One row per ladder-measured
+# ordinal import: the DLL, the ordinal, the documented function behind it,
+# and the published source that pins the fact.  tools/w32_gen_stubs.py turns
+# this into the loader's lookup table (w32/src/w32_stubs_gen.c); the claim
+# checker pins the row count.
+#
+# Columns: dll | ordinal | name | source
+#
+# Sources:
+#   Chappell-<page>  Geoff Chappell's COMCTL32/shell studies
+#                    (geoffchappell.com/studies/windows/shell/...), read for
+#                    the ordinal<->name facts, which are interface facts.
+#   pefile-MIT       erocarrera/pefile ordlookup/oleaut32.py (MIT licence):
+#                    an ordinal table, no code taken.
+#
+# The 15 rows below are exactly the measured set from the W32A-0 census:
+# COMCTL32#(17,381,410,411,412,413), OLEAUT32#(2,4,6,7,9,10,149,150),
+# SHELL32#(165).  Any other ordinal stays refused by number (D9).
+dll	ordinal	name	source
+comctl32.dll	17	InitCommonControls	Chappell-comctl32-ords350
+comctl32.dll	381	LoadIconWithScaleDown	Chappell-comctl32-ords610
+comctl32.dll	410	SetWindowSubclass	Chappell-comctl32-ords472
+comctl32.dll	411	GetWindowSubclass	Chappell-comctl32-ords472
+comctl32.dll	412	RemoveWindowSubclass	Chappell-comctl32-ords472
+comctl32.dll	413	DefSubclassProc	Chappell-comctl32-ords472
+oleaut32.dll	2	SysAllocString	pefile-MIT-oleaut32
+oleaut32.dll	4	SysAllocStringLen	pefile-MIT-oleaut32
+oleaut32.dll	6	SysFreeString	pefile-MIT-oleaut32
+oleaut32.dll	7	SysStringLen	pefile-MIT-oleaut32
+oleaut32.dll	9	VariantClear	pefile-MIT-oleaut32
+oleaut32.dll	10	VariantCopy	pefile-MIT-oleaut32
+oleaut32.dll	149	SysStringByteLen	pefile-MIT-oleaut32
+oleaut32.dll	150	SysAllocStringByteLen	pefile-MIT-oleaut32
+shell32.dll	165	SHCreateDirectory	Chappell-shell32-ords400

@@ -169,10 +169,14 @@ Refused explicitly, rather than half-supported:
 - **Forwarder exports.** An export whose RVA points back into the export
   directory is a string naming another DLL. Returning that address would
   hand the caller a pointer to text they would then call. The refusal is per
-  symbol — other exports of the same DLL still resolve.
-- **Delay-load imports.** The directory is detected and the load refused.
-- **Imports by ordinal**, matching the policy the static binder already
-  applies.
+  symbol — other exports of the same DLL still resolve, and the refusal names the forwarder target.
+- **Delay-load imports** are honoured: an in-guest helper resolves the
+  target on first call through the thunk and patches it. A target that
+  is itself absent fails at first call with the DLL named — the
+  documented Windows behaviour, not a load refusal.
+- **Imports by ordinal** bind through per-module ordinal→name maps
+  (built from import data and documented ordinals); unknown ordinals
+  refuse by number, and `#<n>` names refuse with the number named.
 - **`.exe` files.** `IMAGE_FILE_DLL` must be set; loading an executable
   would run its entry point under `DllMain`'s contract.
 - **Images with relocations stripped** that cannot be placed at their
@@ -182,12 +186,16 @@ Refused explicitly, rather than half-supported:
 A DLL whose `DllMain` returns FALSE fails to load and its mapping is torn
 down, rather than leaving a module a program believes it loaded.
 
-**A loaded DLL can only import from the built-in modules.** Its import table
-is bound against the same static export table the main image uses, so one
-DLL cannot import from another DLL. A dependency chain of two user DLLs is
-therefore not loadable — and, as a side effect, a two-DLL import cycle
-cannot arise. Supporting it needs a recursive load with an in-progress set,
-which is future work rather than a hidden bug.
+A loaded DLL may import from the built-in modules *and* from other
+user DLLs. The load claims its table slot before mapping, so a nested
+load cannot steal it; import cycles refuse by name, depth is capped,
+`DllMain` runs dependencies-first (`DLL_PROCESS_ATTACH` order) and
+teardown runs in reverse at `ExitProcess`. Exported RVAs that are data
+bind as addresses the loader never calls, and `.rsrc` type-24
+manifests are parsed: the Common-Controls identity selects comctl32,
+`requestedExecutionLevel` honours asInvoker (requireAdministrator
+refuses with the reason named), `dpiAware` is recorded, and
+`supportedOS` GUIDs are logged, not actioned.
 
 ## Not implemented at all
 

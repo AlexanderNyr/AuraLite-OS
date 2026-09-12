@@ -1,0 +1,5 @@
+; nosuchdll.def — the delay-load target that does not exist.  Only the import
+; library is ever built from this; there is deliberately no nosuchdll.dll.
+LIBRARY nosuchdll.dll
+EXPORTS
+    NoSuchFunc

@@ -609,7 +609,7 @@ fiction). Delivered as `patches/W32A0_ledger.patch`.
 
 ---
 
-### Phase W32A-1 — Loader: ordinals, delay-load, DLL chains, manifests ⬜ PLANNED
+### Phase W32A-1 — Loader: ordinals, delay-load, DLL chains, manifests ✅ DONE
 
 **Objective:** turn "refused at load" into "runs until the first missing
 import" for every ladder binary. After this phase the loader binds all
@@ -618,26 +618,26 @@ binding is not behaviour).
 
 #### Tasks
 
-- [ ] Ordinal imports in the static binder and in `GetProcAddress`:
+- [x] Ordinal imports in the static binder and in `GetProcAddress`:
       ordinal→name maps per built-in module, built from mingw-w64 import
       data and documented ordinals. Covers the measured set at minimum:
       `COMCTL32#(17,381,410,411,412,413)`, `OLEAUT32#(2,4,6,7,9,10,149,
       150)`, `SHELL32#(165)`. Unknown ordinals refuse by number (D9).
-- [ ] Delay-load directory honoured: `__delayLoadHelper`-equivalent that
+- [x] Delay-load directory honoured: `__delayLoadHelper`-equivalent that
       resolves the target on first call through the thunk and patches it.
       Proved against the measured case (`7zFM.exe` → `MPR.dll`, six
       `WNet*`). A delay target that is itself absent fails at first call
       with the DLL named — the documented Windows behaviour, not a load
       refusal.
-- [ ] Recursive DLL loading with an in-progress set: a user DLL may
+- [x] Recursive DLL loading with an in-progress set: a user DLL may
       import from built-ins *and* from other user DLLs (lifts the
       `docs/win32.md` single-level limit). Cycles refuse by name. Depth
       cap documented. `DllMain` order: dependencies first (the
       `DLL_PROCESS_ATTACH` contract), teardown in reverse.
-- [ ] Data exports: exported RVAs that are data (`msvcrt`'s `_fmode`,
+- [x] Data exports: exported RVAs that are data (`msvcrt`'s `_fmode`,
       `_commode`, `_acmdln`) bind as addresses, not entry points.
       `GetProcAddress` returns them; the loader never calls them.
-- [ ] Manifest parsing from `.rsrc` type 24: SxS `assemblyIdentity` for
+- [x] Manifest parsing from `.rsrc` type 24: SxS `assemblyIdentity` for
       `Microsoft.Windows.Common-Controls` selects the comctl32 major
       (v6.0.0.0 in all three ladder manifests; the v5/unversioned branch
       exists for manifests without the dependency and is fixture-proved);
@@ -646,10 +646,10 @@ binding is not behaviour).
       manifest refuses with the reason named, it does not pretend);
       `dpiAware`/`dpiAwareness` is recorded for W32A-7. `supportedOS`
       GUIDs are parsed and ignored loudly (logged, not actioned).
-- [ ] Same-table alias resolution where a built-in legitimately answers
+- [x] Same-table alias resolution where a built-in legitimately answers
       two names; true cross-DLL forwarders keep the W32-7 refusal (D4).
       The refusal text names the forwarder target.
-- [ ] W32A-9 reserves: none. W32A-1 binds; behaviour phases fill.
+- [x] W32A-9 reserves: none. W32A-1 binds; behaviour phases fill.
 
 #### Test gate
 
@@ -665,10 +665,28 @@ binding is not behaviour).
   the ledger falsifiable this early).
 - Full `make test` green; all W32-0 – W32-8 gates unchanged.
 
+#### Done
+
+The loader binds every ladder binary's static table: 15 documented
+ordinals (COMCTL32, OLEAUT32, SHELL32) resolve by number in the static
+binder and in `GetProcAddress`, with unknown ordinals refused by number;
+`#<n>` names refuse with the number named. Delay-load thunks resolve
+through an in-guest helper on first call (present and absent targets
+asserted separately). User DLLs import from built-ins and from each
+other: the load claims its slot before mapping (a nested load can no
+longer steal it), cycles refuse by name, depth is capped, `DllMain`
+runs dependencies-first and detaches in reverse. Data exports bind as
+addresses the loader never calls. Type-24 manifests select comctl32,
+record asInvoker/dpi, refuse requireAdministrator by name, and log
+supportedOS loudly. The guest suite passes 34/34; the binder-only
+harness binds the five pinned tables (782 stubs, 3 data cells) and the
+committed `w32/tests/W32A1.bindreport` agrees textually with a fresh
+one. Delivered as `patches/W32A1_loader.patch`.
+
 **Deliverable:** binder/loader changes, ordinal maps, delay helper,
 recursive load, manifest parser, fixtures
-(`w32/tests/delaytest.*`, `w32/tests/ordtest.*`, `w32/tests/manifest*`),
-`tests/integration/cases/test_w32a1_loader.sh`,
+(`w32/tests/delaytest.*`, `w32/tests/ordtest.*`, `w32/tests/mantest*`),
+`tests/integration/cases/test_w32_a1_loader.sh`,
 `patches/W32A1_loader.patch`.
 
 ---

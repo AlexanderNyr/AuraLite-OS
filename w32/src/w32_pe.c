@@ -22,6 +22,7 @@
 #define PE_MAX_IMPORTS_TOTAL 65536u
 #define PE_MAX_RELOC_BLOCKS  65536u
 #define PE_MAX_RELOCS_TOTAL  1048576u
+#define PE_MAX_RESOURCE_ENTRIES 4096u
 
 static int in_bounds(const pe_image_t *img, uint64_t off, uint64_t len) {
     if (off > img->size) return 0;
@@ -372,6 +373,15 @@ int pe_exports(const pe_image_t *img, pe_export_t *out, size_t max,
          * string like "KERNEL32.Sleep" lives.  That is the documented way to
          * tell the two apart -- there is no flag bit. */
         e.is_forwarder = (fn_rva >= dir_rva && fn_rva < dir_rva + dir_size);
+        e.forwarder[0] = 0;
+        if (e.is_forwarder) {
+            /* The target text lives at the forwarder RVA.  Copied so the
+             * refusal can name it (W32A-1); a malformed entry fails the
+             * walk rather than producing a half-named refusal. */
+            rc = copy_cstr_at_rva(img, fn_rva, e.forwarder,
+                                  sizeof e.forwarder);
+            if (rc != PE_OK) return rc;
+        }
 
         /* Attach a name if this ordinal has one. */
         for (uint32_t j = 0; j < n_names; j++) {
@@ -449,6 +459,185 @@ int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
     }
 
     *count = total;
+    return PE_OK;
+}
+
+/* Walk the delay-load directory (W32A-1).
+ *
+ * Each IMAGE_DELAYLOAD_DESCRIPTOR is 32 bytes: attributes, three RVAs that
+ * name the DLL and the two thunk tables, and bookkeeping the loader does
+ * not need (bound IAT, unload IAT, timestamp).  Like the import directory
+ * it ends in an all-zero descriptor; unlike it, the directory header also
+ * carries a size, so the walk is bounded both ways.
+ *
+ * What the loader does with the result is deliberately narrow: enumerate
+ * (so the binder can prove it saw every delay import a real binary has),
+ * and nothing else.  Resolution happens inside the image, by its own
+ * __delayLoadHelper2 calling LoadLibrary/GetProcAddress and patching the
+ * delay IAT -- that is the documented Windows division of labour, and the
+ * reason W32-7's blanket refusal could be lifted without a loader-side
+ * stub patcher.  See docs/win32.md (W32A-1).
+ */
+int pe_delay_imports(const pe_image_t *img, pe_delay_import_t *out, size_t max,
+                     size_t *count) {
+    if (!img || !count) return PE_ERR_ARG;
+    if (!out && max) return PE_ERR_ARG;
+    *count = 0;
+
+    if (img->num_directories <= PE_DIR_DELAY_IMPORT) return PE_OK;
+    pe_dir_t d = img->dir[PE_DIR_DELAY_IMPORT];
+    if (d.rva == 0 || d.size == 0) return PE_OK;   /* no delay imports: legal */
+
+    size_t total = 0;
+    uint32_t ndesc = d.size / 32u;
+    if (ndesc > PE_MAX_IMPORT_DLLS) ndesc = PE_MAX_IMPORT_DLLS;
+
+    for (uint32_t di = 0; di < ndesc; di++) {
+        uint64_t desc_rva = (uint64_t)d.rva + (uint64_t)di * 32u;
+        if (desc_rva > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
+
+        uint32_t off;
+        int rc = pe_rva_to_offset(img, (uint32_t)desc_rva, 32, &off);
+        if (rc != PE_OK) return rc;
+
+        const uint8_t *p = img->data + off;
+        uint32_t attrs    = rd32(p + 0);
+        uint32_t name_rva = rd32(p + 4);
+        uint32_t iat      = rd32(p + 12);
+        uint32_t intab    = rd32(p + 16);
+
+        if (name_rva == 0 && iat == 0 && intab == 0) break;  /* terminator */
+        if (name_rva == 0) continue;
+
+        /* Bit 0 (dlattrRva) says the descriptor holds RVAs.  Clear means
+         * the 32-bit VA form, which this 64-bit loader must not misread. */
+        if ((attrs & 1u) == 0) return PE_ERR_UNSUPPORTED;
+        if (intab == 0) continue;
+
+        char dll[64];
+        dll[0] = '\0';
+        rc = copy_cstr_at_rva(img, name_rva, dll, sizeof dll);
+        if (rc != PE_OK) return rc;
+
+        for (uint32_t ti = 0; ; ti++) {
+            if (total >= PE_MAX_IMPORTS_TOTAL) return PE_ERR_MALFORMED;
+
+            uint64_t te_rva = (uint64_t)intab + (uint64_t)ti * 8u;
+            if (te_rva > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
+
+            uint32_t toff;
+            rc = pe_rva_to_offset(img, (uint32_t)te_rva, 8, &toff);
+            if (rc != PE_OK) return rc;
+
+            uint64_t entry = rd64(img->data + toff);
+            if (entry == 0) break;
+
+            uint64_t slot = (uint64_t)iat + (uint64_t)ti * 8u;
+            if (slot > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
+
+            pe_delay_import_t imp;
+            for (size_t k = 0; k < sizeof imp; k++) ((uint8_t *)&imp)[k] = 0;
+
+            size_t dl = 0;
+            while (dl < sizeof(imp.dll) - 1 && dll[dl]) { imp.dll[dl] = dll[dl]; dl++; }
+            imp.dll[dl] = '\0';
+            imp.iat_rva = (uint32_t)slot;
+
+            if (entry & 0x8000000000000000ull) {
+                imp.by_ordinal = 1;
+                imp.ordinal = (uint16_t)(entry & 0xFFFFu);
+            } else {
+                uint32_t hn_rva = (uint32_t)(entry & 0x7FFFFFFFull);
+                uint32_t hoff;
+                rc = pe_rva_to_offset(img, hn_rva, 3, &hoff);
+                if (rc != PE_OK) return rc;
+                rc = copy_cstr_at_rva(img, hn_rva + 2, imp.name, sizeof imp.name);
+                if (rc != PE_OK) return rc;
+            }
+
+            if (total < max) out[total] = imp;
+            total++;
+        }
+    }
+
+    *count = total;
+    return PE_OK;
+}
+
+/* Read one resource-directory table and resolve a single level of the walk:
+ * find the entry for `want` (an integer id; string entries are skipped) and
+ * return the offset of the table or data it points at, plus which kind. */
+static int rsrc_level(const pe_image_t *img, uint32_t base, uint32_t tab_rva,
+                      uint32_t want, int first_ok,
+                      uint32_t *out_rva, int *out_is_dir) {
+    uint32_t off;
+    int rc = pe_rva_to_offset(img, tab_rva, 16, &off);
+    if (rc != PE_OK) return rc;
+
+    const uint8_t *t = img->data + off;
+    uint32_t n = (uint32_t)rd16(t + 12) + (uint32_t)rd16(t + 14);
+    if (n > PE_MAX_RESOURCE_ENTRIES) return PE_ERR_MALFORMED;
+
+    for (uint32_t i = 0; i < n; i++) {
+        uint64_t ent_rva = (uint64_t)tab_rva + 16u + (uint64_t)i * 8u;
+        if (ent_rva > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
+        uint32_t eoff;
+        rc = pe_rva_to_offset(img, (uint32_t)ent_rva, 8, &eoff);
+        if (rc != PE_OK) return rc;
+
+        uint32_t id  = rd32(img->data + eoff);
+        uint32_t ptr = rd32(img->data + eoff + 4);
+        if (id & 0x80000000u) continue;    /* string entry: not our id */
+        if (!first_ok && id != want) continue;
+
+        /* The offset is relative to the resource section base, and must
+         * stay inside the resource directory's own span. */
+        uint32_t target = ptr & 0x7FFFFFFFu;
+        if ((uint64_t)base + target > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
+        *out_rva = base + target;
+        *out_is_dir = (ptr & 0x80000000u) ? 1 : 0;
+        return PE_OK;
+    }
+    return 1;   /* level walked, nothing matched */
+}
+
+int pe_find_resource(const pe_image_t *img, uint32_t type_id,
+                     uint32_t *rva_out, uint32_t *len_out) {
+    if (!img || !rva_out || !len_out) return PE_ERR_ARG;
+    *rva_out = 0;
+    *len_out = 0;
+
+    if (img->num_directories <= PE_DIR_RESOURCE) return PE_OK;
+    pe_dir_t d = img->dir[PE_DIR_RESOURCE];
+    if (d.rva == 0 || d.size == 0) return PE_OK;
+
+    uint32_t base = d.rva;
+    uint32_t next = 0;
+    int is_dir = 0;
+
+    /* Type level: match the id. */
+    int rc = rsrc_level(img, base, base, type_id, 0, &next, &is_dir);
+    if (rc == 1) return PE_OK;             /* type absent: legal */
+    if (rc != PE_OK) return rc;
+    if (!is_dir) return PE_ERR_MALFORMED;  /* a type must be a table */
+
+    /* Name level: first entry wins. */
+    rc = rsrc_level(img, base, next, 0, 1, &next, &is_dir);
+    if (rc == 1) return PE_OK;             /* empty type: nothing in it */
+    if (rc != PE_OK) return rc;
+    if (!is_dir) return PE_ERR_MALFORMED;  /* a name must be a table */
+
+    /* Language level: first entry wins; it must be data, not a table. */
+    rc = rsrc_level(img, base, next, 0, 1, &next, &is_dir);
+    if (rc == 1) return PE_OK;
+    if (rc != PE_OK) return rc;
+    if (is_dir) return PE_ERR_MALFORMED;
+
+    uint32_t doff;
+    rc = pe_rva_to_offset(img, next, 16, &doff);
+    if (rc != PE_OK) return rc;
+    *rva_out = rd32(img->data + doff);
+    *len_out = rd32(img->data + doff + 4);
     return PE_OK;
 }
 

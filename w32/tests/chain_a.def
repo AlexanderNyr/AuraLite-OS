@@ -1,0 +1,5 @@
+; chain_a.def — W32A-1 fixture: the top of the two-DLL chain.
+; chain_a imports chain_b_fn from chain_b.dll (see chain_a.asm).
+LIBRARY chain_a.dll
+EXPORTS
+    chain_a_fn

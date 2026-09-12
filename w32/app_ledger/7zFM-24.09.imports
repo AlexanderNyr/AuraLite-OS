@@ -211,7 +211,7 @@ ole32.dll RegisterDragDrop REAL static-only
 ole32.dll ReleaseStgMedium REAL static-only
 ole32.dll RevokeDragDrop REAL static-only
 oleaut32.dll #10 REAL static-only
-oleaut32.dll #149 REFUSE static-only
+oleaut32.dll #149 REAL static-only
 oleaut32.dll #2 REAL static-only
 oleaut32.dll #4 REAL static-only
 oleaut32.dll #6 REAL static-only

@@ -1,0 +1,7 @@
+; datadll.def — W32A-1 fixture: a data export plus one function.
+; `answer DATA` makes lld-link emit a data (not code) export; the loader
+; binds its address and never calls it.
+LIBRARY datadll.dll
+EXPORTS
+    answer DATA
+    data_fn

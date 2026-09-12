@@ -10,13 +10,17 @@ EXPORTS
     CloseHandle
     CreateFileA
     ExitProcess
+    FreeLibrary
     GetCommandLineA
     GetLastError
+    GetModuleHandleA
+    GetProcAddress
     GetProcessHeap
     GetStdHandle
     GetTickCount64
     HeapAlloc
     HeapFree
+    LoadLibraryA
     ReadFile
     SetLastError
     Sleep

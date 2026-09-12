@@ -1,0 +1,7 @@
+; oleaut32_ord.def — ordinal-only imports for the W32A-1 ordtest fixture.
+; See comctl32_ord.def for why NONAME; ordinals from w32/ordinal_map.tsv.
+LIBRARY OLEAUT32.dll
+EXPORTS
+    SysAllocString @2 NONAME
+    SysFreeString @6 NONAME
+    SysStringLen @7 NONAME

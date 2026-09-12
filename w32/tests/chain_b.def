@@ -1,0 +1,4 @@
+; chain_b.def — W32A-1 fixture: the bottom of the two-DLL chain.
+LIBRARY chain_b.dll
+EXPORTS
+    chain_b_fn
