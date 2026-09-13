@@ -21,6 +21,7 @@
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/assert.h"
 
 #define USER_STACK_TOP         0x7FFFF0000000ULL    /* near top of user half */
 /* SELFHOST SH1: 4 MiB usable user stack (was 1 MiB); see guard.c. */
@@ -44,6 +45,13 @@ void jump_to_user(uint64_t entry, uint64_t stack_top, uint64_t stack_bottom) {
         tss_set_rsp0(kstack_top);
         set_syscall_stack(kstack_top);
     }
+    /* W32A-3: park this thread's user GS in the KERNEL_GS_BASE shadow
+     * before the first iretq to Ring 3 (the uniform first-entry rule:
+     * clone/fork/spawn all install here rather than trusting whichever
+     * thread ran on this CPU before).  jump_to_user_asm's swapgs makes
+     * the shadow live on entry. */
+    write_kernel_gs_base(cur ? cur->user_gs_base : 0);
+    ASSERT(read_kernel_gs_base() == (cur ? cur->user_gs_base : 0));
     jump_to_user_asm(entry, stack_top, 0);
 }
 

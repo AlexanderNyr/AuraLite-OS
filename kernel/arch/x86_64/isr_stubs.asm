@@ -50,7 +50,42 @@ isr%1:
     jmp isr_common_stub
 %endmacro
 
+; W32A-3 swapgs audit (the one kernel-wide change this phase makes).
+; GS.base is the cpu_local anchor in Ring 0 and the running thread's user
+; GS (its Win32 TEB-lite, 0 if unset) in Ring 3; KERNEL_GS_BASE shadows
+; the other side.  Every path below swaps by the CPL it is LEAVING, and
+; every return swaps by the CPL it is ENTERING:
+;   SYSCALL entry/exit (syscall_entry.asm) .... unconditional (Ring 3 only)
+;   interrupt/exception entry/exit (here) ..... by frame CS RPL (both rings)
+;   signal-iret slow path (syscall_sigreturn.asm) by pushed CS (always Ring 3)
+;   first process entry (user_entry.asm) ...... by pushed CS (always Ring 3)
+;   fork/clone child entry (fork_return.asm) .. unconditional (Ring 3 only)
+; The interrupted frame's CS is read from the STACK, never from %gs, so the
+; test itself is safe in either state.  Signal delivery rewrites RIP but
+; keeps CS RPL=3, so the exit test still swaps.  #DF (vector 8) arrives on
+; IST1 but goes through this same stub, so its GS handling is identical.
+; KNOWN ACCEPTED WINDOW: an NMI (LINT1 is unmasked, lapic.c) landing in the
+; 2 instructions between swapgs and sysret/iretq on an EXIT path runs the
+; NMI handler with the wrong GS - CPL=0 in the frame, so no compensating
+; swap happens, and the handler's cpu_local reads see user memory.  The NMI
+; sources on this tree never fire under qemu (no watchdog, no panic button;
+; CI boots thousands of times without one), and the window is 2 cycles wide
+; per transition, so the expected rate is zero; a hit would halt in #DF
+; with garbled diagnostics, never silently corrupt.  A paranoid-NMI stub
+; (RIP-range check + compensating swap) is the documented follow-up if NMI
+; ever becomes a real source here.  Entry windows are NMI-safe by
+; construction: the entry swapgs runs before any %gs use, and an NMI inside
+; the window sees the pre-swap state, which is exactly what its own CPL test
+; expects.  (SYSCALL entry is additionally single-state: the kernel never
+; executes SYSCALL itself, so the entry swap is unconditional.)
+
 isr_common_stub:
+    ; W32A-3: stack is [int_no][err][rip][cs]... - CS RPL at [rsp+24]
+    ; tells which ring we came from.  Swap only for Ring 3 origin.
+    test byte [rsp + 24], 3
+    jz .Lw32a3_no_swap_in
+    swapgs                     ; GS.base <- cpu_local, shadow <- user GS
+.Lw32a3_no_swap_in:
     ; Save all general-purpose registers. First push ends highest; the struct
     ; in isr.h lists them in the opposite (low-first) order to match.
     push rax
@@ -101,6 +136,12 @@ isr_common_stub:
     pop rbx
     pop rax
 
+    ; W32A-3: stack is back to [int_no][err][rip][cs]... — the (possibly
+    ; signal-rewritten) CS RPL at [rsp+24] tells which ring we return to.
+    test byte [rsp + 24], 3
+    jz .Lw32a3_no_swap_out
+    swapgs                     ; GS.base <- user GS, shadow <- cpu_local
+.Lw32a3_no_swap_out:
     add rsp, 16           ; discard err_code + int_no
     iretq
 

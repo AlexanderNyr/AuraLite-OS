@@ -81,6 +81,12 @@ typedef void (W32ABI *w32_tls_callback_fn)(void *dll_handle,
 int w32_crt_run_tls_callbacks(unsigned char *base, size_t image_size,
                               uint32_t dir_rva, uint32_t dir_size);
 
+/* W32A-3: register a DLL's TLS directory at LoadLibrary time.  Returns the
+ * module slot, -7 for "no directory", or -1..-6 malformed/full (same codes
+ * as above).  The caller runs PROCESS_ATTACH via w32_tls_run_module. */
+int w32_crt_register_tls(unsigned char *base, size_t image_size,
+                         uint32_t dir_rva, uint32_t dir_size);
+
 /* Run the .CRT$XC* static-initialiser table between @start and @end.
  *
  * These are the C++ global constructors.  The section is an array of

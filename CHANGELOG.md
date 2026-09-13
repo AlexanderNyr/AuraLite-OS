@@ -2,6 +2,25 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-3 — threads and per-thread TLS] 2026-09-13 — the one kernel change
+
+The threading API is REAL throughout, no new stubs: 48 ledger symbols
+closed (gap 350, machine-checked). CreateThread/ExitThread/TerminateThread
+with join/code queries, Tls/Fls slots with exit callbacks, critical
+sections, exclusive SRW + condition variables, InitOnce, SList, events,
+mutexes with abandonment, semaphores, single/multiple/alertable waits,
+user APCs, and a minimal threadpool (N = online CPUs, max 64); per-thread
+TEB-lite at documented offsets through a user GS the kernel's `swapgs`
+entry change manages per thread. Proved by a 963/0 host suite (plain +
+ASan, one documented raw-clone false positive) and two nasm guest fixtures
+(threads, exit 66; TLS, exit 67) behind
+`tests/integration/cases/test_w32_a3.sh`; the 50-boot SMP matrix and tenant
+lanes run on CI. Two known gaps travel with the phase: the entry-path
+assertion suite is audit-notes-only, and pre-A3 stub-map rows were never
+kind-flipped. The patch also carries the 8-file W32A-2 repair fallout
+(bind-to-stub gate move, VirtualProtect no-op note, Makefile objects,
+fs/ps/proc fixes).
+
 ## [W32A-2 — kernel32 breadth I] 2026-09-13 — files, time, process, locale, heap
 
 The measurable file/time/process-info subset of the ledger is REAL
@@ -14,12 +33,14 @@ single-instance named pipes; PE+ELF spawn with stdio redirection,
 Toolhelp snapshots, and the documented Windows 10 version identity;
 en-US locale tables with strict 65001+1252 conversions, compare/map,
 the lstr family, and a FormatMessage table covering every returned
-error; HeapReAlloc/Size, Global/Local families, mprotect-backed
-VirtualProtect; CPUID features, ticks, Beep, SleepEx,
+error; HeapReAlloc/Size, Global/Local families, no-op
+VirtualProtect (no `mprotect` syscall: READWRITE succeeds, the rest refuse); CPUID features, ticks, Beep, SleepEx,
 OutputDebugStringW, and the documented restart-manager
 accept-and-ignore. Proved by a 677/0 host suite (normal + ASan/UBSan,
 identical logs) and seven mingw-w64 guest fixtures exiting 55
-through `tests/integration/cases/test_w32_a2_kernel32.sh`.
+through `tests/integration/cases/test_w32_a2_kernel32.sh`; the W32-8
+gate moves to the bind-to-stub contract (its load-time refusal
+assertions went red on CI #384).
 `CharUpperW`/`CharLowerW`/`IsChar*W`/`IsTextUnicode` stay host-only
 until W32A-5 (user32/advapi32 ownership per the ledgers). Delivered as
 `patches/W32A2_kernel32fs.patch`.

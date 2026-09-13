@@ -192,6 +192,14 @@ jobs:
               exit 1
             fi
           done
+          for f in threads tls; do
+            if ! tar tf build/initrd.tar | grep -q "./tests/w32a3_$f.exe"; then
+              echo "w32a3_$f.exe missing from the initrd: the W32A-3"
+              echo "fixtures were not built, so test_w32_a3 would"
+              echo "fail instead of testing anything."
+              exit 1
+            fi
+          done
 
       # LX_COMPAT L1/L2/L5: the same vacuous-gate discipline for the Linux
       # personality -- the host gcc is always present on the runner, but

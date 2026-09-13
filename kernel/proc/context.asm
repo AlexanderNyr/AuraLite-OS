@@ -77,6 +77,20 @@ context_switch:
     mov ecx, 0xC0000100        ; IA32_FS_BASE
     wrmsr                      ; FS.base <- new_tcb->tls_base
 
+    ; W32A-3: load the incoming thread's USER GS into the KERNEL_GS_BASE
+    ; shadow.  Nothing is saved: the shadow always mirrors the RUNNING
+    ; thread's user_gs_base (ARCH_SET_GS updates both together), so the
+    ; outgoing value is dead by definition and the incoming one is the
+    ; whole state.  Unconditional, like FS above: a thread with
+    ; user_gs_base == 0 must NOT keep the previous tenant's TEB shadow.
+    ; GS_BASE itself (the cpu_local anchor) is never touched here — only
+    ; swapgs at the Ring 3 boundary exchanges the two.
+    mov rax, [rsi + TCB_USER_GS]
+    mov rdx, rax
+    shr rdx, 32
+    mov ecx, 0xC0000102        ; IA32_KERNEL_GS_BASE
+    wrmsr                      ; shadow <- new_tcb->user_gs_base
+
     popfq                      ; restore RFLAGS
     pop r15
     pop r14

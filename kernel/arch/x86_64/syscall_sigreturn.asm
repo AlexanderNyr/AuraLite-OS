@@ -57,4 +57,12 @@ syscall_iret_to_user:
     mov rdi, [rax + 64]
     mov rax, [rax + 112]         ; rax last
 
+    ; W32A-3: the signal frame's target is Ring 3 by construction (the
+    ; slow path only builds user handler frames), but test the pushed CS
+    ; like isr_common_stub does rather than trusting it: [rsp]=rip,
+    ; [rsp+8]=cs.  Nothing after the swap may use %gs.
+    test byte [rsp + 8], 3
+    jz .Lw32a3_no_swap_out
+    swapgs
+.Lw32a3_no_swap_out:
     iretq

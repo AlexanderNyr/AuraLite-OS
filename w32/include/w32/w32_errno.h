@@ -61,6 +61,7 @@
 #define W32_ERROR_PIPE_BUSY             231u   /* fs: WaitNamedPipe, no instance */
 #define W32_ERROR_PIPE_NOT_CONNECTED    233u   /* fs: pipe op before connect */
 #define W32_ERROR_WAIT_TIMEOUT          258u   /* fs: change-poll, nothing yet */
+#define W32_ERROR_ABANDONED_WAIT_0       80u   /* thr: mutex owner died (W32A-3) */
 #define W32_STILL_ACTIVE                259u   /* ps: exit code, not an error */
 #define W32_ERROR_DIRECTORY             267u   /* ps: SetCurrentDirectory(file) */
 #define W32_ERROR_NO_UNICODE_TRANSLATION 1113u /* loc: strict conversion fails */

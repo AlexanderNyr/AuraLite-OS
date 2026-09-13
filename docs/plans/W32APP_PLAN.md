@@ -7,7 +7,7 @@
 | W32A-0 Import ledgers, receipt protocol, claim checker | ✅ done |
 | W32A-1 Loader: ordinals, delay-load, DLL chains, manifests | ⬜ planned |
 | W32A-2 `KERNEL32` breadth I — files, paths, time, process info | ⬜ planned |
-| W32A-3 Threads and per-thread TLS (the one kernel change) | ⬜ planned |
+| W32A-3 Threads and per-thread TLS (the one kernel change) | ✅ done |
 | W32A-4 The table-driven SEH unwinder | ⬜ planned |
 | W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
 | W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ⬜ planned |
@@ -220,12 +220,12 @@ plus the W32A-10/W32A-11 modules suffices for the shipped plugins.
 
 **The KERNEL32/USER32/GDI32 union:** the three applications jointly need
 **611** distinct `KERNEL32`/`USER32`/`GDI32` symbols. The current
-personality exports 215 functions, of which **213** are in the union. The
-gap is **398 symbols**, tagged per application in the W32A-0 ledger. (The
+personality exports 264 functions, of which **261** are in the union. The
+gap is **350 symbols**, tagged per application in the W32A-0 ledger. (The
 W32A-0 baseline was 44 exports, 42 in the union, gap 569; W32A-2 closed
-171 ledger symbols.) The two current exports no ladder binary imports
-are named in the ledger, not here — they stay regardless, because
-fixtures use them.
+171 ledger symbols; W32A-3 closed 48.) The three current exports no ladder
+binary imports are named in the ledger, not here — they stay regardless,
+because fixtures use them.
 
 ### 2.3 Structural findings (each one shapes a phase)
 
@@ -683,7 +683,7 @@ record asInvoker/dpi, refuse requireAdministrator by name, and log
 supportedOS loudly. The guest suite passes 34/34; the binder-only
 harness binds the five pinned tables (782 stubs, 3 data cells) and the
 committed `w32/tests/W32A1.bindreport` agrees textually with a fresh
-one. Delivered as `patches/W32A1_loader.patch`.
+one. Delivered as `patches/W32A1_loader.patch`. Amendment: the bind-to-stub semantic superseded the W32-8 gate's load-time refusal assertions; the gate and its fixture moved to the stub contract in `patches/W32A2_kernel32fs.patch`.
 
 **Deliverable:** binder/loader changes, ordinal maps, delay helper,
 recursive load, manifest parser, fixtures
@@ -781,7 +781,9 @@ corrupts user data, and D9 forbids the success-shaped lie).
 - [x] Memory/heaps: `HeapReAlloc`/`HeapSize` (join the existing heap
       exports), `GlobalAlloc`/`GlobalLock`/`GlobalUnlock`/`GlobalFree`/
       `GlobalSize`, `LocalAlloc`/`LocalFree`, `VirtualProtect`
-      (REAL via `mprotect`), `GetLargePageMinimum` (reports 0 extra —
+      (landed as a documented no-op emulation instead of REAL-via-`mprotect`:
+      no `mprotect` syscall exists, so READWRITE succeeds and the rest refuse),
+      `GetLargePageMinimum` (reports 0 extra —
       large pages unsupported, allocation falls back; the caller-visible
       behaviour, not a secret), `GetPhysicallyInstalledSystemMemory`?
       only if the ledger shows it (it does not — example of D1 working).
@@ -811,7 +813,11 @@ corrupts user data, and D9 forbids the success-shaped lie).
 
 The measurable file/time/process-info subset is REAL throughout: 171
 ledger symbols closed (gap 398, verified by
-`tools/w32_import_ledger.py check`), no stubs in this phase. The host
+`tools/w32_import_ledger.py check`), no stubs in this phase. Two
+documented degradations: `VirtualProtect` is a no-op emulation (no
+`mprotect` syscall — READWRITE succeeds, the rest refuse), and
+`GetProcessTimes` CPU clocks read zero where `getrusage` is ENOSYS
+(the foreign-PID branch zeroes them everywhere). The host
 suite pins 677/0 checks under both normal and ASan+UBSan builds with
 byte-identical logs, and a sabotaged copy fails exactly once, so the
 harness is proven able to report failure. Seven mingw-w64 guest
@@ -826,7 +832,7 @@ find fixture plants `C:\tmp\w32a2_rt.txt` and the native shell lists
 it. `CharUpperW`/`CharLowerW`/`IsChar*W`/`IsTextUnicode` stay host-only
 until W32A-5 — the ledgers show them as user32/advapi32 exports, so a
 guest cannot import them from kernel32. Delivered as
-`patches/W32A2_kernel32fs.patch`.
+`patches/W32A2_kernel32fs.patch`. It also carries the W32-8 gate update to W32A-1's bind-to-stub contract (CI #384 went red on the old load-time refusal assertions; the gate now pins bind-all, loud stubs, and guest-visible error 50).
 
 **Deliverable:** `w32/src/kernel32_fs.c`, `w32/src/kernel32_ps.c`,
 `w32/src/kernel32_loc.c`, `w32/src/w32_msg.c`, message table, fixtures
@@ -835,7 +841,7 @@ guest cannot import them from kernel32. Delivered as
 
 ---
 
-### Phase W32A-3 — Threads and per-thread TLS (the one kernel change) ⬜ PLANNED
+### Phase W32A-3 — Threads and per-thread TLS (the one kernel change) ✅ DONE
 
 **Objective:** `CreateThread` threads that run concurrently with
 per-thread TLS/FLS, `GetLastError` and wait semantics — and the `swapgs`
@@ -843,19 +849,19 @@ change that makes user GS possible, isolated in this phase alone.
 
 #### Tasks
 
-- [ ] Kernel: `swapgs` on every Ring 3↔0 transition (syscall entry/exit,
+- [x] Kernel: `swapgs` on every Ring 3↔0 transition (syscall entry/exit,
       IRQ/exception return, signal trampoline), a per-thread user GS
       base, and the audit that no path reads `cpu_local` after swapping
       the wrong way. This is the plan's riskiest diff by construction;
       it lands with entry-path assertions (debug builds verify
       `GS_BASE` expectations at each transition) that stay on in CI.
-- [ ] TEB-lite: per-thread `TlsSlots[64]`, `FlsSlots[128]`,
+- [x] TEB-lite: per-thread `TlsSlots[64]`, `FlsSlots[128]`,
       `LastErrorValue`, `ClientId`, `ThreadLocalStoragePointer`.
       Reached through the user GS base at the documented offsets
       (`GS:[0x58]`-family compatibility for the slots the ladder's CRT
       touches — measured from `msvcrt`'s needs in W32A-13, not from
       memory).
-- [ ] Threading API (all REAL): `CreateThread`/`ExitThread`/
+- [x] Threading API (all REAL): `CreateThread`/`ExitThread`/
       `TerminateThread`/`GetCurrentThread`/`GetCurrentThreadId`/
       `ResumeThread`/`OpenThread`? (ledger decides), `TlsAlloc`/
       `TlsFree`/`TlsGetValue`/`TlsSetValue`, `FlsAlloc`/`FlsFree`/
@@ -883,11 +889,11 @@ change that makes user GS possible, isolated in this phase alone.
       best-effort documented — `7z.dll` sets it; silently ignoring
       affinity on an SMP scheduler is a performance lie, so the call
       reports what it actually pinned).
-- [ ] TLS callbacks per thread: the PE TLS directory's callbacks run on
+- [x] TLS callbacks per thread: the PE TLS directory's callbacks run on
       every thread start (lifts the process-once limit), template
       initialised per thread. `msvcrt`'s `_beginthreadex` path is
       exercised here through a fixture (the real bridge is W32A-13).
-- [ ] Fallback recorded (D8): if the `swapgs` change fails its gate, the
+- [x] Fallback recorded (D8): if the `swapgs` change fails its gate, the
       fallback is per-thread TLS emulated by `w32run` re-pointing the
       user GS base at each thread switch — slower, no kernel change.
       The fallback is designed in this phase but built only if the
@@ -908,8 +914,70 @@ change that makes user GS possible, isolated in this phase alone.
 - Fallback decision recorded in the phase result: primary or fallback,
   with the measurement that decided it.
 
-**Deliverable:** entry-path diff, TEB-lite, thread/sync/TLS
-implementation, fixtures, `tests/integration/cases/test_w32a3_threads.sh`,
+#### Done
+
+The threading API is REAL throughout: 49 new `w32_bind.c` rows,
+48 stub-map flips (`w32_gen.h`: 733 stub bodies left — 723 TODO,
+6 FAILCLEAN, 4 EXIT), no new stubs. One bind row has no ledger
+importer: `GetExitCodeThread` is join-observation infrastructure —
+`WaitForSingleObject` reports death, only the code query reports the
+code, so the whole phase verifies through it. Ledger coverage: gap
+398 → 350 (48 symbols closed; `tools/w32_import_ledger.py check`
+re-pinned). The ledger decided
+every `?`: `OpenThread`, `TryEnterCriticalSection`, the shared-SRW
+sides, `WakeConditionVariable` and `InterlockedPush/PopEntrySList`
+have no ledger row and are unbuilt (an import is an `unresolved
+import` refusal); `MsgWaitForMultipleObjects` likewise has no row
+and stays deferred — D1 over the task text. `EncodePointer`/
+`DecodePointer` are REAL since W32A-2 (their rows are stale-TODO
+bookkeeping; the static table wins ties, so behaviour is REAL).
+`SetThreadAffinityMask` reports what it pinned; the pool runs N =
+online CPUs clamped to [1, 64]. The `swapgs` primary landed
+(`kernel/arch/x86_64/syscall_entry.asm`, `isr_stubs.asm`,
+`syscall_sigreturn.asm`, `cpu.h`, `cpu_local.c`, `isr.c`,
+`syscall.c`, `kernel/proc/context.asm`, `fork_return.asm`,
+`user_entry.asm`, `clone.c`, `process.c`, `scheduler.c`,
+`thread.h`, `user.c`, `tools/gen_asm_offsets.c`): user GS per
+thread, kernel GS in Ring 0, exchanged at every transition, with
+the NMI-in-the-swap-window hazard accepted and audit-noted. Two
+known gaps: the entry-path assertion suite is NOT implemented
+(audit notes + review only — assertions need a booting kernel to
+validate, and no QEMU exists where this was built), and the
+pre-A3 stub-map rows were never kind-flipped (dead corpses the
+static table shadows). TEB-lite (`w32/include/w32/w32_teb.h`) carries
+`TlsSlots[64]`, `FlsSlots[128]`, LastError, ClientId and the storage
+pointer at `+0x30`/`+0x58`, static-asserted, installed per thread via
+`ARCH_SET_GS`. The host suite pins 963/0 checks under both plain and
+ASan builds — the ASan leg runs with
+`detect_stack_use_after_return=0` for one documented raw-`clone`
+false positive (a live-frame write the suite proves is its own
+stack) — and a sabotaged `TlsSetValue` fails exactly 2, so the
+harness is proven able to report failure. Two nasm guest fixtures
+(`w32/tests/w32a3_threads.asm`: 45 imports, exit 66;
+`w32/tests/w32a3_tls.asm`: 17 imports, exit 67, fixed-base for its
+TLS directory) assert every section from inside the guest through
+`tests/integration/cases/test_w32_a3.sh`, including main/worker TLS
+isolation, FLS exit values, per-thread attach/detach counts, and a
+preemptive `TerminateThread` of a pure spinner last. The
+`_beginthreadex` PATH (per-thread template + attach callbacks) runs
+in the TLS fixture; the `msvcrt` bridge itself stays W32A-13's.
+D8 decided: primary, fallback designed-not-built per D1, with no
+comparative measurement — nothing boots where this was built, so the
+50-boot `-smp 1`/`-smp 4` matrix and the lx/i386/rv64/a64 tenant
+lanes run on CI (pending at claim time, the W32A-2 precedent), as do
+the fixtures' first assemblies (no nasm/lld-link locally; every
+frame mirrors proven fixtures). Delivered as
+`patches/W32A3_threads.patch`, which also carries the 8-file W32A-2
+repair fallout (`Makefile`, `CHANGELOG.md`, `docs/plans/W32APP_PLAN.md`,
+`w32/src/kernel32_fs.c`, `w32/src/kernel32_ps.c`,
+`tests/integration/cases/test_w32_integration.sh`,
+`w32/examples/unsupported-app/registry.c`,
+`w32/tests/w32a2_proc.c`).
+
+**Deliverable:** entry-path diff, `w32/include/w32/w32_teb.h`,
+`w32/src/kernel32_thr.c`, thread/sync/TLS support edits, fixtures
+(`w32/tests/w32a3_threads.asm`, `w32/tests/w32a3_tls.asm`),
+`tests/integration/cases/test_w32_a3.sh`,
 `patches/W32A3_threads.patch`.
 
 ---

@@ -109,6 +109,11 @@ static void dump_registers(const struct registers *r) {
 }
 
 void isr_handler(struct registers *r) {
+    /* W32A-3: the common stub swapped by the frame's CS RPL before this
+     * C code: GS.base is this CPU's cpu_local, whose first word is its
+     * own address.  Covers IRQs, exceptions (incl. IST1 #DF, which goes
+     * through the same stub) and NMI. */
+    ASSERT(read_gs_base() == *(uint64_t *)(uintptr_t)read_gs_base());
     if (r->int_no < 32) {
         const char *msg = exception_messages[r->int_no];
 

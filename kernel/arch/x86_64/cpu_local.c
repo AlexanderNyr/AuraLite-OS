@@ -6,6 +6,9 @@
 #include <stdint.h>
 
 #define MSR_GS_BASE 0xC0000101
+/* W32A-3: the swapgs shadow.  Parked at 0 on every CPU (BSP and APs):
+ * no thread has run yet, so no user GS exists to shadow. */
+#define MSR_KERNEL_GS_BASE 0xC0000102
 
 int cpu_local_ready = 0;
 struct cpu_local bsp_cpu_local;
@@ -24,5 +27,6 @@ void cpu_local_init(uint64_t cpu_id) {
     c->cpu_id = cpu_id;
     spinlock_init(&c->rq_lock);
     wrmsr_gs(MSR_GS_BASE, (uint64_t)(uintptr_t)c);
+    wrmsr_gs(MSR_KERNEL_GS_BASE, 0);
     if (cpu_id == 0) cpu_local_ready = 1;
 }

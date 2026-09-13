@@ -22,6 +22,7 @@
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/assert.h"
 #include "drivers/timer/pit.h"
 
 extern void context_switch(tcb_t *old, tcb_t *new);
@@ -203,6 +204,14 @@ void schedule(void) {
 
     if (old != next && old != NULL && next != NULL) {
         context_switch(old, next);
+    }
+
+    /* W32A-3: after the switch returns we run AS next, so the
+     * KERNEL_GS_BASE shadow must be next's user GS.  The check itself
+     * is GS-independent (RDMSR + the TCB pointer, no %gs memory), so it
+     * cannot be fooled by the very corruption it guards against. */
+    if (next != NULL) {
+        ASSERT(read_kernel_gs_base() == next->user_gs_base);
     }
 }
 

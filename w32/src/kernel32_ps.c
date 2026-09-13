@@ -1156,6 +1156,22 @@ static struct ps_obj *ps_proc_of(W32_HANDLE h, int want) {
     return o;
 }
 
+/* W32A-3: wait support on process handles.  Same sweep/ring/waitpid
+ * logic as GetExitCodeProcess, answering only "exited?". */
+int w32_ps_is_exited(W32_HANDLE h) {
+    struct ps_obj *o;
+    W32_DWORD code;
+    if (!h)
+        return 0;
+    o = ps_proc_of(h, PS_TAG_PROCESS);
+    if (!o)
+        return 0;
+    /* Reuse the query (it sweeps, rings, and waitpids). */
+    if (!GetExitCodeProcess(h, &code))
+        return 0;
+    return o->exited ? 1 : 0;
+}
+
 W32ABI W32_BOOL GetExitCodeProcess(W32_HANDLE h, W32_DWORD *code) {
     struct ps_obj *o;
     int st;
@@ -1284,8 +1300,13 @@ W32ABI W32_BOOL GetProcessTimes(W32_HANDLE h, W32_FILETIME *creation,
             self = 1;
     }
     if (self) {
-        if (getrusage(RUSAGE_SELF, &ru) != 0)
-            return ps_fail(w32_error_from_c(-1));
+        /* No CPU clock where getrusage is ENOSYS (AuraLite libc): zeros,
+         * documented -- the same fallback as the foreign branch below.
+         * Creation time stays real either way. */
+        if (getrusage(RUSAGE_SELF, &ru) != 0) {
+            memset(&ru, 0, sizeof(ru));
+            w32_set_last_error(W32_ERROR_SUCCESS);
+        }
         if (creation) {
             creation->dwLowDateTime = (W32_DWORD)(ps_birth_ft & 0xFFFFFFFFu);
             creation->dwHighDateTime = (W32_DWORD)(ps_birth_ft >> 32);
@@ -1337,6 +1358,11 @@ W32ABI W32_HANDLE GetCurrentProcess(void) {
 }
 
 W32ABI W32_DWORD GetCurrentProcessId(void) {
+    /* W32A-3: getpid() is the CALLER's tid now that threads exist; the
+     * process id is the main thread's, cached at w32_thr_init. */
+    W32_DWORD cached = w32_thr_process_id();
+    if (cached)
+        return cached;
     return (W32_DWORD)getpid();
 }
 
@@ -2127,7 +2153,10 @@ W32ABI W32_HANDLE CreateToolhelp32Snapshot(W32_DWORD flags, W32_DWORD pid) {
                     arr[n].exe[k] = '\0';
                 }
                 {
+                    /* Linux writes "PPid:", AuraLite procfs "PPID:". */
                     char *pp = strstr(buf, "PPid:");
+                    if (!pp)
+                        pp = strstr(buf, "PPID:");
                     if (pp)
                         arr[n].ppid = (W32_DWORD)strtol(pp + 5, NULL, 10);
                 }
@@ -2370,11 +2399,9 @@ W32ABI W32_BOOL Beep(W32_DWORD freq, W32_DWORD dur) {
     return 1;
 }
 
-W32ABI W32_DWORD SleepEx(W32_DWORD ms, W32_BOOL alertable) {
-    (void)alertable;            /* no APCs exist to alert with */
-    Sleep(ms);
-    return 0;
-}
+/* W32A-3: SleepEx moved to kernel32_thr.c — alertable for real now
+ * that APCs exist (this file's version ignored `alertable`).  The
+ * declaration in w32/kernel32.h is unchanged. */
 
 W32ABI void OutputDebugStringW(W32_LPCWSTR str) {
     char *u8;

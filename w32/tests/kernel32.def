@@ -27,3 +27,51 @@ EXPORTS
     VirtualAlloc
     VirtualFree
     WriteFile
+
+; W32A-3 (W32APP_PLAN.md): threads + TLS.  D7-exact: the union of what the
+; two guest fixtures import (45 threads + 17 TLS - 8 already above = 45 new).
+    AcquireSRWLockExclusive
+    CloseThreadpoolWork
+    CreateEventA
+    CreateMutexA
+    CreateSemaphoreW
+    CreateThread
+    CreateThreadpoolWork
+    DeleteCriticalSection
+    EnterCriticalSection
+    ExitThread
+    FlsAlloc
+    FlsFree
+    FlsGetValue
+    FlsSetValue
+    FreeLibraryAndExitThread
+    GetCurrentThread
+    GetCurrentThreadId
+    GetExitCodeThread
+    GetThreadTimes
+    InitOnceBeginInitialize
+    InitOnceComplete
+    InitializeCriticalSection
+    InitializeSListHead
+    InterlockedFlushSList
+    LeaveCriticalSection
+    QueueUserAPC
+    ReleaseMutex
+    ReleaseSRWLockExclusive
+    ReleaseSemaphore
+    ResetEvent
+    ResumeThread
+    SetEvent
+    SetThreadAffinityMask
+    SleepConditionVariableSRW
+    SleepEx
+    SubmitThreadpoolWork
+    TerminateThread
+    TlsAlloc
+    TlsFree
+    TlsGetValue
+    TlsSetValue
+    TryAcquireSRWLockExclusive
+    WaitForMultipleObjects
+    WaitForSingleObject
+    WakeAllConditionVariable

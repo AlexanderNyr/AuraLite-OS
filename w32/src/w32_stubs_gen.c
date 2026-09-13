@@ -1540,14 +1540,6 @@ W32ABI W32_DWORD w32_stub_imm32_ImmSetCompositionWindow(void) {
     return 0;
 }
 
-/* kernel32.dll!AcquireSRWLockExclusive: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_AcquireSRWLockExclusive(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "AcquireSRWLockExclusive", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
 /* kernel32.dll!Beep: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_Beep(void) {
     static int once = 0;
@@ -1570,14 +1562,6 @@ W32ABI W32_DWORD w32_stub_kernel32_ClearCommBreak(void) {
     note_todo("kernel32.dll", "ClearCommBreak", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!CloseThreadpoolWork: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void w32_stub_kernel32_CloseThreadpoolWork(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CloseThreadpoolWork", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* kernel32.dll!CompareFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -1636,22 +1620,6 @@ W32ABI W32_DWORD w32_stub_kernel32_CreateDirectoryW(void) {
     return 0;
 }
 
-/* kernel32.dll!CreateEventA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateEventA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateEventA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateEventW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateEventW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateEventW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!CreateFileMappingA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI void *w32_stub_kernel32_CreateFileMappingA(void) {
     static int once = 0;
@@ -1680,22 +1648,6 @@ W32ABI void *w32_stub_kernel32_CreateFileW(void) {
 W32ABI W32_DWORD w32_stub_kernel32_CreateHardLinkW(void) {
     static int once = 0;
     note_todo("kernel32.dll", "CreateHardLinkW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateMutexA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateMutexA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateMutexA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateMutexW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateMutexW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateMutexW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -1732,30 +1684,6 @@ W32ABI W32_DWORD w32_stub_kernel32_CreateProcessW(void) {
     return 0;
 }
 
-/* kernel32.dll!CreateSemaphoreW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateSemaphoreW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateSemaphoreW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateThread: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void *w32_stub_kernel32_CreateThread(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateThread", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateThreadpoolWork: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CreateThreadpoolWork(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateThreadpoolWork", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!CreateToolhelp32Snapshot: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI void *w32_stub_kernel32_CreateToolhelp32Snapshot(void) {
     static int once = 0;
@@ -1770,14 +1698,6 @@ W32ABI void *w32_stub_kernel32_DecodePointer(void) {
     note_todo("kernel32.dll", "DecodePointer", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!DeleteCriticalSection: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_DeleteCriticalSection(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "DeleteCriticalSection", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* kernel32.dll!DeleteFileA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -1820,26 +1740,12 @@ W32ABI void *w32_stub_kernel32_EncodePointer(void) {
     return 0;
 }
 
-/* kernel32.dll!EnterCriticalSection: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_EnterCriticalSection(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "EnterCriticalSection", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
 /* kernel32.dll!EnumSystemLocalesW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_EnumSystemLocalesW(void) {
     static int once = 0;
     note_todo("kernel32.dll", "EnumSystemLocalesW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!ExitThread: terminates.  A (void) stub would resume after exit. */
-W32ABI void w32_stub_kernel32_ExitThread(int code) {
-    printf("w32: kernel32.dll!ExitThread called, terminating\n");
-    ExitProcess((unsigned int)code);
 }
 
 /* kernel32.dll!ExpandEnvironmentStringsW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -1978,38 +1884,6 @@ W32ABI W32_DWORD w32_stub_kernel32_FindResourceW(void) {
     return 0;
 }
 
-/* kernel32.dll!FlsAlloc: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FlsAlloc(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FlsAlloc", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FlsFree: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FlsFree(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FlsFree", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FlsGetValue: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_FlsGetValue(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FlsGetValue", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FlsSetValue: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FlsSetValue(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FlsSetValue", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!FlushFileBuffers: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_FlushFileBuffers(void) {
     static int once = 0;
@@ -2040,14 +1914,6 @@ W32ABI W32_DWORD w32_stub_kernel32_FreeEnvironmentStringsW(void) {
     note_todo("kernel32.dll", "FreeEnvironmentStringsW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!FreeLibraryAndExitThread: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void w32_stub_kernel32_FreeLibraryAndExitThread(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FreeLibraryAndExitThread", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* kernel32.dll!FreeLibraryWhenCallbackReturns: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -2150,22 +2016,6 @@ W32ABI void *w32_stub_kernel32_GetCurrentProcess(void) {
 W32ABI W32_DWORD w32_stub_kernel32_GetCurrentProcessId(void) {
     static int once = 0;
     note_todo("kernel32.dll", "GetCurrentProcessId", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetCurrentThread: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void *w32_stub_kernel32_GetCurrentThread(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCurrentThread", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-2;
-}
-
-/* kernel32.dll!GetCurrentThreadId: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCurrentThreadId(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCurrentThreadId", "W32A-3", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2538,14 +2388,6 @@ W32ABI W32_DWORD w32_stub_kernel32_GetTempPathW(void) {
     return 0;
 }
 
-/* kernel32.dll!GetThreadTimes: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetThreadTimes(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetThreadTimes", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!GetTickCount: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_GetTickCount(void) {
     static int once = 0;
@@ -2706,62 +2548,6 @@ W32ABI void *w32_stub_kernel32_HeapSize(void) {
     return 0;
 }
 
-/* kernel32.dll!InitOnceBeginInitialize: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_InitOnceBeginInitialize(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InitOnceBeginInitialize", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!InitOnceComplete: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_InitOnceComplete(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InitOnceComplete", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!InitializeCriticalSection: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_InitializeCriticalSection(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InitializeCriticalSection", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!InitializeCriticalSectionAndSpinCount: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_InitializeCriticalSectionAndSpinCount(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InitializeCriticalSectionAndSpinCount", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!InitializeCriticalSectionEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_InitializeCriticalSectionEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InitializeCriticalSectionEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!InitializeSListHead: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_InitializeSListHead(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InitializeSListHead", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!InterlockedFlushSList: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_InterlockedFlushSList(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "InterlockedFlushSList", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!IsDBCSLeadByteEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_IsDBCSLeadByteEx(void) {
     static int once = 0;
@@ -2824,14 +2610,6 @@ W32ABI W32_DWORD w32_stub_kernel32_LCMapStringW(void) {
     note_todo("kernel32.dll", "LCMapStringW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!LeaveCriticalSection: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_LeaveCriticalSection(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LeaveCriticalSection", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* kernel32.dll!LoadLibraryExA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -2994,14 +2772,6 @@ W32ABI W32_DWORD w32_stub_kernel32_QueryPerformanceFrequency(void) {
     return 0;
 }
 
-/* kernel32.dll!QueueUserAPC: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_QueueUserAPC(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "QueueUserAPC", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!RaiseException: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI void w32_stub_kernel32_RaiseException(void) {
     static int once = 0;
@@ -3034,30 +2804,6 @@ W32ABI W32_DWORD w32_stub_kernel32_RegisterApplicationRestart(void) {
     return W32_E_NOTIMPL;
 }
 
-/* kernel32.dll!ReleaseMutex: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ReleaseMutex(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ReleaseMutex", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!ReleaseSRWLockExclusive: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_ReleaseSRWLockExclusive(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ReleaseSRWLockExclusive", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!ReleaseSemaphore: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ReleaseSemaphore(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ReleaseSemaphore", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!RemoveDirectoryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_RemoveDirectoryW(void) {
     static int once = 0;
@@ -3070,22 +2816,6 @@ W32ABI W32_DWORD w32_stub_kernel32_RemoveDirectoryW(void) {
 W32ABI W32_DWORD w32_stub_kernel32_ReplaceFileW(void) {
     static int once = 0;
     note_todo("kernel32.dll", "ReplaceFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!ResetEvent: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ResetEvent(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ResetEvent", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!ResumeThread: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ResumeThread(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ResumeThread", "W32A-3", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3194,14 +2924,6 @@ W32ABI W32_DWORD w32_stub_kernel32_SetEnvironmentVariableW(void) {
     return 0;
 }
 
-/* kernel32.dll!SetEvent: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetEvent(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetEvent", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!SetFileAttributesW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_SetFileAttributesW(void) {
     static int once = 0;
@@ -3258,14 +2980,6 @@ W32ABI W32_DWORD w32_stub_kernel32_SetStdHandle(void) {
     return 0;
 }
 
-/* kernel32.dll!SetThreadAffinityMask: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void *w32_stub_kernel32_SetThreadAffinityMask(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetThreadAffinityMask", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!SetUnhandledExceptionFilter: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_SetUnhandledExceptionFilter(void) {
     static int once = 0;
@@ -3282,30 +2996,6 @@ W32ABI W32_DWORD w32_stub_kernel32_SizeofResource(void) {
     return 0;
 }
 
-/* kernel32.dll!SleepConditionVariableSRW: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SleepConditionVariableSRW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SleepConditionVariableSRW", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SleepEx: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SleepEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SleepEx", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SubmitThreadpoolWork: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void w32_stub_kernel32_SubmitThreadpoolWork(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SubmitThreadpoolWork", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
 /* kernel32.dll!SystemTimeToTzSpecificLocalTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_SystemTimeToTzSpecificLocalTime(void) {
     static int once = 0;
@@ -3318,54 +3008,6 @@ W32ABI W32_DWORD w32_stub_kernel32_SystemTimeToTzSpecificLocalTime(void) {
 W32ABI W32_DWORD w32_stub_kernel32_TerminateProcess(void) {
     static int once = 0;
     note_todo("kernel32.dll", "TerminateProcess", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TerminateThread: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_TerminateThread(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TerminateThread", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TlsAlloc: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_TlsAlloc(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TlsAlloc", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TlsFree: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_TlsFree(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TlsFree", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TlsGetValue: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI void *w32_stub_kernel32_TlsGetValue(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TlsGetValue", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TlsSetValue: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_TlsSetValue(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TlsSetValue", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TryAcquireSRWLockExclusive: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_TryAcquireSRWLockExclusive(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TryAcquireSRWLockExclusive", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3402,44 +3044,12 @@ W32ABI W32_DWORD w32_stub_kernel32_VirtualProtect(void) {
     return 0;
 }
 
-/* kernel32.dll!WaitForMultipleObjects: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_WaitForMultipleObjects(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "WaitForMultipleObjects", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!WaitForSingleObject: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_WaitForSingleObject(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "WaitForSingleObject", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!WaitForSingleObjectEx: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_WaitForSingleObjectEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "WaitForSingleObjectEx", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!WaitNamedPipeA: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_WaitNamedPipeA(void) {
     static int once = 0;
     note_todo("kernel32.dll", "WaitNamedPipeA", "W32A-3", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!WakeAllConditionVariable: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_WakeAllConditionVariable(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "WakeAllConditionVariable", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* kernel32.dll!WideCharToMultiByte: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -6518,11 +6128,9 @@ static const w32_export_t gen_exports[] = {
     { "imm32.dll", "ImmSetCompositionFontW", (void *)&w32_stub_imm32_ImmSetCompositionFontW },
     { "imm32.dll", "ImmSetCompositionStringW", (void *)&w32_stub_imm32_ImmSetCompositionStringW },
     { "imm32.dll", "ImmSetCompositionWindow", (void *)&w32_stub_imm32_ImmSetCompositionWindow },
-    { "kernel32.dll", "AcquireSRWLockExclusive", (void *)&w32_stub_kernel32_AcquireSRWLockExclusive },
     { "kernel32.dll", "Beep", (void *)&w32_stub_kernel32_Beep },
     { "kernel32.dll", "CancelIo", (void *)&w32_stub_kernel32_CancelIo },
     { "kernel32.dll", "ClearCommBreak", (void *)&w32_stub_kernel32_ClearCommBreak },
-    { "kernel32.dll", "CloseThreadpoolWork", (void *)&w32_stub_kernel32_CloseThreadpoolWork },
     { "kernel32.dll", "CompareFileTime", (void *)&w32_stub_kernel32_CompareFileTime },
     { "kernel32.dll", "CompareStringEx", (void *)&w32_stub_kernel32_CompareStringEx },
     { "kernel32.dll", "CompareStringW", (void *)&w32_stub_kernel32_CompareStringW },
@@ -6530,32 +6138,22 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "CopyFileExW", (void *)&w32_stub_kernel32_CopyFileExW },
     { "kernel32.dll", "CopyFileW", (void *)&w32_stub_kernel32_CopyFileW },
     { "kernel32.dll", "CreateDirectoryW", (void *)&w32_stub_kernel32_CreateDirectoryW },
-    { "kernel32.dll", "CreateEventA", (void *)&w32_stub_kernel32_CreateEventA },
-    { "kernel32.dll", "CreateEventW", (void *)&w32_stub_kernel32_CreateEventW },
     { "kernel32.dll", "CreateFileMappingA", (void *)&w32_stub_kernel32_CreateFileMappingA },
     { "kernel32.dll", "CreateFileMappingW", (void *)&w32_stub_kernel32_CreateFileMappingW },
     { "kernel32.dll", "CreateFileW", (void *)&w32_stub_kernel32_CreateFileW },
     { "kernel32.dll", "CreateHardLinkW", (void *)&w32_stub_kernel32_CreateHardLinkW },
-    { "kernel32.dll", "CreateMutexA", (void *)&w32_stub_kernel32_CreateMutexA },
-    { "kernel32.dll", "CreateMutexW", (void *)&w32_stub_kernel32_CreateMutexW },
     { "kernel32.dll", "CreateNamedPipeA", (void *)&w32_stub_kernel32_CreateNamedPipeA },
     { "kernel32.dll", "CreatePipe", (void *)&w32_stub_kernel32_CreatePipe },
     { "kernel32.dll", "CreateProcessA", (void *)&w32_stub_kernel32_CreateProcessA },
     { "kernel32.dll", "CreateProcessW", (void *)&w32_stub_kernel32_CreateProcessW },
-    { "kernel32.dll", "CreateSemaphoreW", (void *)&w32_stub_kernel32_CreateSemaphoreW },
-    { "kernel32.dll", "CreateThread", (void *)&w32_stub_kernel32_CreateThread },
-    { "kernel32.dll", "CreateThreadpoolWork", (void *)&w32_stub_kernel32_CreateThreadpoolWork },
     { "kernel32.dll", "CreateToolhelp32Snapshot", (void *)&w32_stub_kernel32_CreateToolhelp32Snapshot },
     { "kernel32.dll", "DecodePointer", (void *)&w32_stub_kernel32_DecodePointer },
-    { "kernel32.dll", "DeleteCriticalSection", (void *)&w32_stub_kernel32_DeleteCriticalSection },
     { "kernel32.dll", "DeleteFileA", (void *)&w32_stub_kernel32_DeleteFileA },
     { "kernel32.dll", "DeleteFileW", (void *)&w32_stub_kernel32_DeleteFileW },
     { "kernel32.dll", "DeviceIoControl", (void *)&w32_stub_kernel32_DeviceIoControl },
     { "kernel32.dll", "DosDateTimeToFileTime", (void *)&w32_stub_kernel32_DosDateTimeToFileTime },
     { "kernel32.dll", "EncodePointer", (void *)&w32_stub_kernel32_EncodePointer },
-    { "kernel32.dll", "EnterCriticalSection", (void *)&w32_stub_kernel32_EnterCriticalSection },
     { "kernel32.dll", "EnumSystemLocalesW", (void *)&w32_stub_kernel32_EnumSystemLocalesW },
-    { "kernel32.dll", "ExitThread", (void *)&w32_stub_kernel32_ExitThread },
     { "kernel32.dll", "ExpandEnvironmentStringsW", (void *)&w32_stub_kernel32_ExpandEnvironmentStringsW },
     { "kernel32.dll", "FileTimeToDosDateTime", (void *)&w32_stub_kernel32_FileTimeToDosDateTime },
     { "kernel32.dll", "FileTimeToLocalFileTime", (void *)&w32_stub_kernel32_FileTimeToLocalFileTime },
@@ -6573,15 +6171,10 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "FindNextStreamW", (void *)&w32_stub_kernel32_FindNextStreamW },
     { "kernel32.dll", "FindResourceA", (void *)&w32_stub_kernel32_FindResourceA },
     { "kernel32.dll", "FindResourceW", (void *)&w32_stub_kernel32_FindResourceW },
-    { "kernel32.dll", "FlsAlloc", (void *)&w32_stub_kernel32_FlsAlloc },
-    { "kernel32.dll", "FlsFree", (void *)&w32_stub_kernel32_FlsFree },
-    { "kernel32.dll", "FlsGetValue", (void *)&w32_stub_kernel32_FlsGetValue },
-    { "kernel32.dll", "FlsSetValue", (void *)&w32_stub_kernel32_FlsSetValue },
     { "kernel32.dll", "FlushFileBuffers", (void *)&w32_stub_kernel32_FlushFileBuffers },
     { "kernel32.dll", "FormatMessageA", (void *)&w32_stub_kernel32_FormatMessageA },
     { "kernel32.dll", "FormatMessageW", (void *)&w32_stub_kernel32_FormatMessageW },
     { "kernel32.dll", "FreeEnvironmentStringsW", (void *)&w32_stub_kernel32_FreeEnvironmentStringsW },
-    { "kernel32.dll", "FreeLibraryAndExitThread", (void *)&w32_stub_kernel32_FreeLibraryAndExitThread },
     { "kernel32.dll", "FreeLibraryWhenCallbackReturns", (void *)&w32_stub_kernel32_FreeLibraryWhenCallbackReturns },
     { "kernel32.dll", "GetACP", (void *)&w32_stub_kernel32_GetACP },
     { "kernel32.dll", "GetApplicationRestartSettings", (void *)&w32_stub_kernel32_GetApplicationRestartSettings },
@@ -6595,8 +6188,6 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "GetCurrentDirectoryW", (void *)&w32_stub_kernel32_GetCurrentDirectoryW },
     { "kernel32.dll", "GetCurrentProcess", (void *)&w32_stub_kernel32_GetCurrentProcess },
     { "kernel32.dll", "GetCurrentProcessId", (void *)&w32_stub_kernel32_GetCurrentProcessId },
-    { "kernel32.dll", "GetCurrentThread", (void *)&w32_stub_kernel32_GetCurrentThread },
-    { "kernel32.dll", "GetCurrentThreadId", (void *)&w32_stub_kernel32_GetCurrentThreadId },
     { "kernel32.dll", "GetDateFormatEx", (void *)&w32_stub_kernel32_GetDateFormatEx },
     { "kernel32.dll", "GetDateFormatW", (void *)&w32_stub_kernel32_GetDateFormatW },
     { "kernel32.dll", "GetDiskFreeSpaceExW", (void *)&w32_stub_kernel32_GetDiskFreeSpaceExW },
@@ -6643,7 +6234,6 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "GetSystemTimeAsFileTime", (void *)&w32_stub_kernel32_GetSystemTimeAsFileTime },
     { "kernel32.dll", "GetTempPathA", (void *)&w32_stub_kernel32_GetTempPathA },
     { "kernel32.dll", "GetTempPathW", (void *)&w32_stub_kernel32_GetTempPathW },
-    { "kernel32.dll", "GetThreadTimes", (void *)&w32_stub_kernel32_GetThreadTimes },
     { "kernel32.dll", "GetTickCount", (void *)&w32_stub_kernel32_GetTickCount },
     { "kernel32.dll", "GetTimeFormatEx", (void *)&w32_stub_kernel32_GetTimeFormatEx },
     { "kernel32.dll", "GetTimeFormatW", (void *)&w32_stub_kernel32_GetTimeFormatW },
@@ -6664,13 +6254,6 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "GlobalUnlock", (void *)&w32_stub_kernel32_GlobalUnlock },
     { "kernel32.dll", "HeapReAlloc", (void *)&w32_stub_kernel32_HeapReAlloc },
     { "kernel32.dll", "HeapSize", (void *)&w32_stub_kernel32_HeapSize },
-    { "kernel32.dll", "InitOnceBeginInitialize", (void *)&w32_stub_kernel32_InitOnceBeginInitialize },
-    { "kernel32.dll", "InitOnceComplete", (void *)&w32_stub_kernel32_InitOnceComplete },
-    { "kernel32.dll", "InitializeCriticalSection", (void *)&w32_stub_kernel32_InitializeCriticalSection },
-    { "kernel32.dll", "InitializeCriticalSectionAndSpinCount", (void *)&w32_stub_kernel32_InitializeCriticalSectionAndSpinCount },
-    { "kernel32.dll", "InitializeCriticalSectionEx", (void *)&w32_stub_kernel32_InitializeCriticalSectionEx },
-    { "kernel32.dll", "InitializeSListHead", (void *)&w32_stub_kernel32_InitializeSListHead },
-    { "kernel32.dll", "InterlockedFlushSList", (void *)&w32_stub_kernel32_InterlockedFlushSList },
     { "kernel32.dll", "IsDBCSLeadByteEx", (void *)&w32_stub_kernel32_IsDBCSLeadByteEx },
     { "kernel32.dll", "IsDebuggerPresent", (void *)&w32_stub_kernel32_IsDebuggerPresent },
     { "kernel32.dll", "IsProcessorFeaturePresent", (void *)&w32_stub_kernel32_IsProcessorFeaturePresent },
@@ -6679,7 +6262,6 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "LCMapStringA", (void *)&w32_stub_kernel32_LCMapStringA },
     { "kernel32.dll", "LCMapStringEx", (void *)&w32_stub_kernel32_LCMapStringEx },
     { "kernel32.dll", "LCMapStringW", (void *)&w32_stub_kernel32_LCMapStringW },
-    { "kernel32.dll", "LeaveCriticalSection", (void *)&w32_stub_kernel32_LeaveCriticalSection },
     { "kernel32.dll", "LoadLibraryExA", (void *)&w32_stub_kernel32_LoadLibraryExA },
     { "kernel32.dll", "LoadLibraryExW", (void *)&w32_stub_kernel32_LoadLibraryExW },
     { "kernel32.dll", "LoadLibraryW", (void *)&w32_stub_kernel32_LoadLibraryW },
@@ -6700,18 +6282,12 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "Process32NextW", (void *)&w32_stub_kernel32_Process32NextW },
     { "kernel32.dll", "QueryPerformanceCounter", (void *)&w32_stub_kernel32_QueryPerformanceCounter },
     { "kernel32.dll", "QueryPerformanceFrequency", (void *)&w32_stub_kernel32_QueryPerformanceFrequency },
-    { "kernel32.dll", "QueueUserAPC", (void *)&w32_stub_kernel32_QueueUserAPC },
     { "kernel32.dll", "RaiseException", (void *)&w32_stub_kernel32_RaiseException },
     { "kernel32.dll", "ReadConsoleW", (void *)&w32_stub_kernel32_ReadConsoleW },
     { "kernel32.dll", "ReadDirectoryChangesW", (void *)&w32_stub_kernel32_ReadDirectoryChangesW },
     { "kernel32.dll", "RegisterApplicationRestart", (void *)&w32_stub_kernel32_RegisterApplicationRestart },
-    { "kernel32.dll", "ReleaseMutex", (void *)&w32_stub_kernel32_ReleaseMutex },
-    { "kernel32.dll", "ReleaseSRWLockExclusive", (void *)&w32_stub_kernel32_ReleaseSRWLockExclusive },
-    { "kernel32.dll", "ReleaseSemaphore", (void *)&w32_stub_kernel32_ReleaseSemaphore },
     { "kernel32.dll", "RemoveDirectoryW", (void *)&w32_stub_kernel32_RemoveDirectoryW },
     { "kernel32.dll", "ReplaceFileW", (void *)&w32_stub_kernel32_ReplaceFileW },
-    { "kernel32.dll", "ResetEvent", (void *)&w32_stub_kernel32_ResetEvent },
-    { "kernel32.dll", "ResumeThread", (void *)&w32_stub_kernel32_ResumeThread },
     { "kernel32.dll", "RtlCaptureContext", (void *)&w32_stub_kernel32_RtlCaptureContext },
     { "kernel32.dll", "RtlLookupFunctionEntry", (void *)&w32_stub_kernel32_RtlLookupFunctionEntry },
     { "kernel32.dll", "RtlPcToFileHeader", (void *)&w32_stub_kernel32_RtlPcToFileHeader },
@@ -6725,7 +6301,6 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "SetCurrentDirectoryW", (void *)&w32_stub_kernel32_SetCurrentDirectoryW },
     { "kernel32.dll", "SetEndOfFile", (void *)&w32_stub_kernel32_SetEndOfFile },
     { "kernel32.dll", "SetEnvironmentVariableW", (void *)&w32_stub_kernel32_SetEnvironmentVariableW },
-    { "kernel32.dll", "SetEvent", (void *)&w32_stub_kernel32_SetEvent },
     { "kernel32.dll", "SetFileAttributesW", (void *)&w32_stub_kernel32_SetFileAttributesW },
     { "kernel32.dll", "SetFilePointer", (void *)&w32_stub_kernel32_SetFilePointer },
     { "kernel32.dll", "SetFilePointerEx", (void *)&w32_stub_kernel32_SetFilePointerEx },
@@ -6733,29 +6308,15 @@ static const w32_export_t gen_exports[] = {
     { "kernel32.dll", "SetHandleInformation", (void *)&w32_stub_kernel32_SetHandleInformation },
     { "kernel32.dll", "SetPriorityClass", (void *)&w32_stub_kernel32_SetPriorityClass },
     { "kernel32.dll", "SetStdHandle", (void *)&w32_stub_kernel32_SetStdHandle },
-    { "kernel32.dll", "SetThreadAffinityMask", (void *)&w32_stub_kernel32_SetThreadAffinityMask },
     { "kernel32.dll", "SetUnhandledExceptionFilter", (void *)&w32_stub_kernel32_SetUnhandledExceptionFilter },
     { "kernel32.dll", "SizeofResource", (void *)&w32_stub_kernel32_SizeofResource },
-    { "kernel32.dll", "SleepConditionVariableSRW", (void *)&w32_stub_kernel32_SleepConditionVariableSRW },
-    { "kernel32.dll", "SleepEx", (void *)&w32_stub_kernel32_SleepEx },
-    { "kernel32.dll", "SubmitThreadpoolWork", (void *)&w32_stub_kernel32_SubmitThreadpoolWork },
     { "kernel32.dll", "SystemTimeToTzSpecificLocalTime", (void *)&w32_stub_kernel32_SystemTimeToTzSpecificLocalTime },
     { "kernel32.dll", "TerminateProcess", (void *)&w32_stub_kernel32_TerminateProcess },
-    { "kernel32.dll", "TerminateThread", (void *)&w32_stub_kernel32_TerminateThread },
-    { "kernel32.dll", "TlsAlloc", (void *)&w32_stub_kernel32_TlsAlloc },
-    { "kernel32.dll", "TlsFree", (void *)&w32_stub_kernel32_TlsFree },
-    { "kernel32.dll", "TlsGetValue", (void *)&w32_stub_kernel32_TlsGetValue },
-    { "kernel32.dll", "TlsSetValue", (void *)&w32_stub_kernel32_TlsSetValue },
-    { "kernel32.dll", "TryAcquireSRWLockExclusive", (void *)&w32_stub_kernel32_TryAcquireSRWLockExclusive },
     { "kernel32.dll", "UnhandledExceptionFilter", (void *)&w32_stub_kernel32_UnhandledExceptionFilter },
     { "kernel32.dll", "UnmapViewOfFile", (void *)&w32_stub_kernel32_UnmapViewOfFile },
     { "kernel32.dll", "UnregisterApplicationRestart", (void *)&w32_stub_kernel32_UnregisterApplicationRestart },
     { "kernel32.dll", "VirtualProtect", (void *)&w32_stub_kernel32_VirtualProtect },
-    { "kernel32.dll", "WaitForMultipleObjects", (void *)&w32_stub_kernel32_WaitForMultipleObjects },
-    { "kernel32.dll", "WaitForSingleObject", (void *)&w32_stub_kernel32_WaitForSingleObject },
-    { "kernel32.dll", "WaitForSingleObjectEx", (void *)&w32_stub_kernel32_WaitForSingleObjectEx },
     { "kernel32.dll", "WaitNamedPipeA", (void *)&w32_stub_kernel32_WaitNamedPipeA },
-    { "kernel32.dll", "WakeAllConditionVariable", (void *)&w32_stub_kernel32_WakeAllConditionVariable },
     { "kernel32.dll", "WideCharToMultiByte", (void *)&w32_stub_kernel32_WideCharToMultiByte },
     { "kernel32.dll", "WriteConsoleW", (void *)&w32_stub_kernel32_WriteConsoleW },
     { "kernel32.dll", "lstrcatW", (void *)&w32_stub_kernel32_lstrcatW },

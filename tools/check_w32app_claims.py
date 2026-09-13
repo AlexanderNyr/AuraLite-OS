@@ -97,6 +97,14 @@ ARTEFACTS = {
                "w32/tests/w32a2_heap.c",
                "tests/integration/cases/test_w32_a2_kernel32.sh",
                "patches/W32A2_kernel32fs.patch"],
+    "W32A-3": ["w32/src/kernel32_thr.c",
+               "w32/include/w32/w32_teb.h",
+               "tests/unit/test_w32_a3.c",
+               "w32/tests/w32a3_threads.asm",
+               "w32/tests/w32a3_tls.asm",
+               "tests/integration/cases/test_w32_a3.sh",
+               "kernel/arch/x86_64/syscall_entry.asm",
+               "patches/W32A3_threads.patch"],
 }
 
 # Greppable receipts each done phase must carry in its plan section.
@@ -112,6 +120,9 @@ RECEIPTS = {
     "W32A-2": ["patches/W32A2_kernel32fs.patch",
                "677/0",
                "test_w32_a2_kernel32"],
+    "W32A-3": ["patches/W32A3_threads.patch",
+               "963/0",
+               "test_w32_a3"],
 }
 
 

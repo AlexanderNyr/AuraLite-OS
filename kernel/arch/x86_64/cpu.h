@@ -133,6 +133,16 @@ static inline void write_msr(uint32_t msr, uint64_t val) {
 
 /* Architectural MSR indices in use. */
 #define MSR_IA32_FS_BASE  0xC0000100U
+/* W32A-3: the GS pair.  GS_BASE is the kernel's per-CPU anchor (struct
+ * cpu_local, programmed once in cpu_local_init); KERNEL_GS_BASE is the
+ * SHADOW holding the RUNNING thread's user GS (its Win32 TEB-lite, or 0
+ * for threads that never set one).  swapgs exchanges the two at every
+ * Ring 3 <-> Ring 0 transition, so %gs reaches cpu_local in the kernel
+ * and the TEB in userspace.  Both are programmed through the MSR path
+ * only — CR4.FSGSBASE is never enabled (see the FIX_R3 note below), so
+ * wrgsbase/rdgsbase raise #UD. */
+#define MSR_IA32_GS_BASE         0xC0000101U
+#define MSR_IA32_KERNEL_GS_BASE  0xC0000102U
 
 /* FIX_R3: FS.base is programmed through the IA32_FS_BASE MSR, never via
  * wrfsbase.  CR4.FSGSBASE is not set anywhere in this tree (and the qemu64
@@ -141,6 +151,27 @@ static inline void write_msr(uint32_t msr, uint64_t val) {
  * taking the whole kernel down.  The MSR path works on every x86-64 CPU. */
 static inline void write_fs_base(uint64_t val) {
     write_msr(MSR_IA32_FS_BASE, val);
+}
+
+/* W32A-3: GS.base / KernelGSbase accessors.  The kernel writes GS_BASE
+ * exactly once per CPU (cpu_local_init); KERNEL_GS_BASE is reloaded on
+ * every context switch (context.asm) and at every first-user-entry point
+ * (clone/fork/spawn), always from current->user_gs_base.  Userspace can
+ * never write either MSR directly: it goes through ARCH_SET_GS. */
+static inline uint64_t read_gs_base(void) {
+    return read_msr(MSR_IA32_GS_BASE);
+}
+
+static inline void write_gs_base(uint64_t val) {
+    write_msr(MSR_IA32_GS_BASE, val);
+}
+
+static inline uint64_t read_kernel_gs_base(void) {
+    return read_msr(MSR_IA32_KERNEL_GS_BASE);
+}
+
+static inline void write_kernel_gs_base(uint64_t val) {
+    write_msr(MSR_IA32_KERNEL_GS_BASE, val);
 }
 
 /* ---- TLB ---- */

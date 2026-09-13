@@ -38,6 +38,12 @@
 #define W32_HANDLE_KIND_CHANGE 2
 #define W32_HANDLE_KIND_MAP    3
 #define W32_HANDLE_KIND_PROC   4
+/* W32A-3: thread + sync objects.  CloseHandle owns all four (the reapers
+ * live in kernel32_thr.c, reached through the kind switch). */
+#define W32_HANDLE_KIND_THREAD 5
+#define W32_HANDLE_KIND_EVENT  6
+#define W32_HANDLE_KIND_MUTEX  7
+#define W32_HANDLE_KIND_SEMAPHORE 8
 
 /* w32_handle_release's report for a payload slot CloseHandle owns (MAP,
  * PROC): the payload is already freed and there is no fd to close.  -1

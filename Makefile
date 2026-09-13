@@ -1072,7 +1072,10 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o \
                 $(USER_BUILD)/w32_module.o \
                 $(USER_BUILD)/w32_oleaut32.o $(USER_BUILD)/w32_manifest.o \
-                $(USER_BUILD)/w32_stubs_gen.o
+                $(USER_BUILD)/w32_stubs_gen.o \
+                $(USER_BUILD)/w32_kernel32_fs.o $(USER_BUILD)/w32_kernel32_ps.o \
+                $(USER_BUILD)/w32_kernel32_loc.o $(USER_BUILD)/w32_msg.o \
+                $(USER_BUILD)/w32_utf.o $(USER_BUILD)/w32_kernel32_thr.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1106,6 +1109,24 @@ $(USER_BUILD)/w32_oleaut32.o: w32/src/w32_oleaut32.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/w32_manifest.o: w32/src/w32_manifest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_stubs_gen.o: w32/src/w32_stubs_gen.c w32/include/w32/w32_gen.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+
+# W32APP_PLAN.md W32A-2: the kernel32 breadth split -- files, processes,
+# locales, and the FormatMessage table.  Every new w32 translation unit
+# must land here AND in W32_USER_OBJ above: the host suite amalgamates
+# the .c files directly, so it cannot catch a missing object (CI #385
+# proved it -- w32run.elf failed to link with 20+ undefined symbols).
+$(USER_BUILD)/w32_kernel32_fs.o: w32/src/kernel32_fs.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_kernel32_ps.o: w32/src/kernel32_ps.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_kernel32_loc.o: w32/src/kernel32_loc.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_msg.o: w32/src/w32_msg.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_utf.o: w32/src/w32_utf.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_kernel32_thr.o: w32/src/kernel32_thr.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 $(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
@@ -2304,6 +2325,28 @@ $(CRTTEST_EXE): w32/tests/crt_test.asm $(K32_IMPLIB)
 	         $(BUILD_DIR)/user/crttest.obj $(K32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (TLS callbacks + .CRT static initialisers)"
 
+# W32A-3: threads + TLS guest fixtures.  nasm -f win64 + lld-link against the
+# in-tree kernel32.lib, like the W32-4/5/6 gates (nasm is unconditional, so
+# there are no zero-byte placeholders here — a missing assembler fails loudly
+# at build time).  The TLS fixture links at a fixed base because its TLS
+# directory holds VAs, exactly like crttest.
+W32A3T_EXE := $(BUILD_DIR)/user/w32a3_threads.exe
+W32A3L_EXE := $(BUILD_DIR)/user/w32a3_tls.exe
+
+$(W32A3T_EXE): w32/tests/w32a3_threads.asm $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a3_threads.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a3_threads.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-3 threads guest fixture)"
+
+$(W32A3L_EXE): w32/tests/w32a3_tls.asm $(K32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a3_tls.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib -base:0x140000000 \
+	         $(BUILD_DIR)/user/w32a3_tls.obj $(K32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-3 TLS guest fixture)"
+
 TESTDLL := $(BUILD_DIR)/user/testdll.dll
 
 # W32-7: a real user-supplied DLL -- exports, its own KERNEL32 imports, and a
@@ -2806,7 +2849,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2971,6 +3014,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(K32TEST_EXE) $(INITRD_DIR)/tests/k32test.exe
 	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
 	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
+	@cp $(W32A3T_EXE) $(INITRD_DIR)/tests/w32a3_threads.exe
+	@cp $(W32A3L_EXE) $(INITRD_DIR)/tests/w32a3_tls.exe
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
 # W32A-1: 7 DLLs + 15 exes.  Basenames are preserved because the
 # loader resolves dependency names against the exe's directory.

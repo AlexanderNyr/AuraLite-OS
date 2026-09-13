@@ -3,16 +3,30 @@
  */
 
 #include "w32/w32_errno.h"
+#include "w32/w32_teb.h"
 
 #include <errno.h>
 
-/* Win32 makes this thread-local.  A w32 process is single-threaded today, so
- * a process-wide slot is exact rather than an approximation; when threads
- * arrive this moves to TLS.  Recorded in the plan rather than pre-built. */
-static W32_DWORD last_error = W32_ERROR_SUCCESS;
+/* W32A-3: threads arrived, so LastError moved to the TEB (+0x48) as the
+ * old comment promised.  The process-wide slot survives as the pre-init
+ * fallback: w32_teb_self() returns NULL before w32_thr_init runs (and on
+ * foreign threads), and an error set there must go somewhere observable. */
+static W32_DWORD last_error_fallback = W32_ERROR_SUCCESS;
 
-void w32_set_last_error(W32_DWORD code) { last_error = code; }
-W32_DWORD w32_get_last_error_raw(void)  { return last_error; }
+void w32_set_last_error(W32_DWORD code) {
+    struct w32_teb *teb = w32_teb_self();
+    if (teb)
+        teb->last_error = code;
+    else
+        last_error_fallback = code;
+}
+
+W32_DWORD w32_get_last_error_raw(void) {
+    struct w32_teb *teb = w32_teb_self();
+    if (teb)
+        return teb->last_error;
+    return last_error_fallback;
+}
 
 /* AuraLite returns negative errno values from its syscalls.  Mapping them in
  * one place stops each wrapper inventing its own translation, which is how

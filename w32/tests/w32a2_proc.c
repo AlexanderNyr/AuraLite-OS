@@ -263,6 +263,7 @@ void __stdcall winstart(void) {
                         found = 1;
                         CHECKX(pe.szExeFile[0] != 0, "proc-snap-name");
                         CHECKX(pe.cntThreads == 1, "proc-snap-threads");
+                        CHECKX(pe.th32ParentProcessID != 0, "proc-snap-ppid");
                     }
                 } while (Process32NextW(snap, &pe));
                 CHECKX(GetLastError() == ERROR_NO_MORE_FILES,

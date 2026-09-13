@@ -152,7 +152,15 @@ typedef struct tcb {
 
     /* ---- P9: pthread / thread-group ---- */
     uint64_t  tgid;                /* thread group ID = PID of main thread */
-    uint64_t  tls_base;            /* FS.base — WRFSBASE on context switch */
+    uint64_t  tls_base;            /* FS.base — MSR load on context switch */
+    /* W32A-3: the thread's USER GS.base (its Win32 TEB-lite, set via
+     * ARCH_SET_GS; 0 until set).  The kernel never maps this address
+     * itself: context_switch loads it into the KERNEL_GS_BASE shadow,
+     * and swapgs makes it live exactly while Ring 3 runs.  fork()
+     * inherits it (address space is cloned whole); clone() threads and
+     * exec() start at 0 — every w32 thread installs its own TEB,
+     * including the main thread at process init. */
+    uint64_t  user_gs_base;
     int       detached;            /* 1 = pthread_detach() called */
     uint64_t  join_value;          /* pthread_exit() value */
     int       is_pthread;          /* 1 = userspace thread */
@@ -297,8 +305,9 @@ uint64_t thread_zombies_reaped_total(void);
 tcb_t *kthread_create(void (*fn)(void *), void *arg, const char *name);
 
 /* FIX_R3: two-step thread creation for callers that must initialise TCB
- * fields (pml4_phys, fork_user_*, tls_base, fd tables, credentials) before
- * the thread may be scheduled anywhere on SMP.  kthread_create_unstarted()
+ * fields (pml4_phys, fork_user_*, tls_base, user_gs_base, fd tables,
+ * credentials) before the thread may be scheduled anywhere on SMP.
+ * kthread_create_unstarted()
  * returns a fully-formed but UNPUBLISHED TCB; kthread_start() enqueues it.
  * After kthread_start() returns the thread can run on any cpu. */
 tcb_t *kthread_create_unstarted(void (*fn)(void *), void *arg,

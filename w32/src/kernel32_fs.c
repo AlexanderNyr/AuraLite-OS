@@ -2985,6 +2985,7 @@ W32ABI W32_BOOL SetFilePointerEx(W32_HANDLE h, W32_LARGE_INTEGER dist,
 W32ABI W32_BOOL SetEndOfFile(W32_HANDLE h) {
     int fd;
     int64_t at;
+    char p[40];
 
     fd = w32_handle_to_fd(h);
     if (fd < 0)
@@ -2992,7 +2993,11 @@ W32ABI W32_BOOL SetEndOfFile(W32_HANDLE h) {
     at = (int64_t)lseek(fd, 0, SEEK_CUR);
     if (at < 0)
         return fs_fail_c(-1);
-    if (ftruncate(fd, (off_t)at) != 0)
+    /* No ftruncate on AuraLite: truncate through /proc/self/fd/<N>, the
+     * Q13/Q15 precedent (lib/libc's mq_ftruncate).  The same path runs
+     * on Linux, so the host suite pins exactly what the guest runs. */
+    snprintf(p, sizeof(p), "/proc/self/fd/%d", fd);
+    if (truncate(p, (uint64_t)at) != 0)
         return fs_fail_c(-1);
     return 1;
 }

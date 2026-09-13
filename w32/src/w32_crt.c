@@ -33,6 +33,7 @@
 #endif
 
 #include "w32/w32_crt.h"
+#include "w32/kernel32.h"   /* W32A-3: TLS module registry */
 
 /* ------------------------------------------------------------------------
  * Image-bounds checking
@@ -65,61 +66,103 @@ static int va_to_rva(unsigned char *base, size_t image_size,
  * TLS callbacks
  * ------------------------------------------------------------------------ */
 
-int w32_crt_run_tls_callbacks(unsigned char *base, size_t image_size,
-                              uint32_t dir_rva, uint32_t dir_size) {
-    /* No TLS directory is the common case and not an error. */
-    if (dir_rva == 0 || dir_size == 0) return 0;
+/* W32A-3: validate one TLS directory and register its template +
+ * callbacks with the thread runtime.  Returns the slot (0..15) or
+ * negative: -1..-5 are the historical malformed codes (kept: w32run and
+ * the hostile-input gate depend on them), -6 is registry-full.  *ncb
+ * reports the callback count for the loader's message.  Nothing RUNS
+ * here: the exe's callbacks run via w32_tls_attach_main, a DLL's via
+ * w32_tls_run_module, both after their module is fully loaded. */
+static int crt_tls_register(unsigned char *base, size_t image_size,
+                            uint32_t dir_rva, uint32_t dir_size, int *ncb) {
+    const w32_tls_directory_t *tls;
+    uint64_t raw_start_rva = 0;
+    uint64_t raw_size = 0;
+    const void *raw_init = 0;
+    w32_tls_cb_fn cbs[65];
+    int n = 0;
+    uint64_t cb_rva;
+    int slot;
 
+    *ncb = 0;
+    if (dir_rva == 0 || dir_size == 0) return -7;   /* no directory */
     if (!in_image(image_size, dir_rva, sizeof(w32_tls_directory_t)))
         return -1;
+    tls = (const w32_tls_directory_t *)(void *)(base + dir_rva);
 
-    const w32_tls_directory_t *tls =
-        (const w32_tls_directory_t *)(void *)(base + dir_rva);
+    /* Template range (may be empty: callbacks without data). */
+    if (tls->start_address_of_raw_data && tls->end_address_of_raw_data &&
+        tls->end_address_of_raw_data > tls->start_address_of_raw_data) {
+        uint64_t end_rva;
+        if (!va_to_rva(base, image_size, tls->start_address_of_raw_data,
+                       &raw_start_rva))
+            return -1;
+        if (!va_to_rva(base, image_size, tls->end_address_of_raw_data,
+                       &end_rva))
+            return -1;
+        raw_size = end_rva - raw_start_rva;
+        if (!in_image(image_size, raw_start_rva, (size_t)raw_size))
+            return -1;
+        raw_init = (const void *)(base + raw_start_rva);
+    }
+
+    /* Callback array (may be absent: data without callbacks). */
+    if (tls->address_of_callbacks) {
+        if (!va_to_rva(base, image_size, tls->address_of_callbacks, &cb_rva))
+            return -2;
+        for (;;) {
+            uint64_t fn_va;
+            uint64_t fn_rva;
+            if (!in_image(image_size, cb_rva + (uint64_t)n * 8, 8)) return -3;
+            fn_va = *(const uint64_t *)(const void *)
+                        (base + cb_rva + (size_t)n * 8);
+            if (fn_va == 0) break;
+            if (!va_to_rva(base, image_size, fn_va, &fn_rva)) return -4;
+            if (n >= 64) return -5;
+            cbs[n++] = (w32_tls_cb_fn)(void *)(base + fn_rva);
+        }
+    }
+    *ncb = n;
+
+    slot = w32_tls_register_module((void *)base, raw_init, raw_size,
+                                   tls->size_of_zero_fill, cbs, n);
+    if (slot < 0)
+        return -6;
 
     /* The TLS index is a DWORD the loader owns: the image reads it to find
-     * its slot.  With one TLS block per process (see the note in
-     * WIN32_PLAN.md about GS), slot 0 is the only correct answer, and
-     * writing it is what makes __declspec(thread) reads resolve. */
+     * its slot.  The exe registers first and always lands on slot 0; a DLL
+     * gets the next free one.  An out-of-image index pointer is ignored
+     * rather than fatal (historical policy: the image is malformed, but
+     * nothing has executed on its say-so yet). */
     if (tls->address_of_index) {
         uint64_t idx_rva;
         if (va_to_rva(base, image_size, tls->address_of_index, &idx_rva) &&
             in_image(image_size, idx_rva, sizeof(uint32_t))) {
-            *(uint32_t *)(void *)(base + idx_rva) = 0;
+            *(uint32_t *)(void *)(base + idx_rva) = (uint32_t)slot;
         }
-        /* An out-of-image index pointer is ignored rather than fatal: the
-         * image is malformed, but nothing has been executed on its say-so
-         * yet, and refusing to start it would be a harsher policy than the
-         * rest of the loader applies. */
     }
+    return slot;
+}
 
-    if (!tls->address_of_callbacks) return 0;
+int w32_crt_run_tls_callbacks(unsigned char *base, size_t image_size,
+                              uint32_t dir_rva, uint32_t dir_size) {
+    /* No TLS directory is the common case and not an error. */
+    int ncb = 0;
+    int slot;
+    if (dir_rva == 0 || dir_size == 0) return 0;
+    slot = crt_tls_register(base, image_size, dir_rva, dir_size, &ncb);
+    if (slot == -7) return 0;
+    if (slot < 0) return slot;
+    return ncb;
+}
 
-    uint64_t cb_rva;
-    if (!va_to_rva(base, image_size, tls->address_of_callbacks, &cb_rva))
-        return -2;
-
-    int ran = 0;
-    for (;;) {
-        if (!in_image(image_size, cb_rva + (uint64_t)ran * 8, 8)) return -3;
-
-        uint64_t fn_va = *(const uint64_t *)(const void *)
-                             (base + cb_rva + (size_t)ran * 8);
-        if (fn_va == 0) break;   /* NULL terminates the array */
-
-        /* A callback pointing outside the image is refused.  This is the
-         * hostile case the gate exercises: the array is attacker-controlled
-         * data, and the whole point of the check is that we never call
-         * through it. */
-        uint64_t fn_rva;
-        if (!va_to_rva(base, image_size, fn_va, &fn_rva)) return -4;
-
-        w32_tls_callback_fn cb = (w32_tls_callback_fn)(void *)(base + fn_rva);
-        cb((void *)base, W32_DLL_PROCESS_ATTACH, NULL);
-        ran++;
-
-        if (ran > 64) return -5;   /* refuse an absurd or looping array */
-    }
-    return ran;
+/* Register a DLL's TLS directory at LoadLibrary time.  Returns the slot
+ * or negative (same codes as above, -7 for "no directory"). */
+int w32_crt_register_tls(unsigned char *base, size_t image_size,
+                         uint32_t dir_rva, uint32_t dir_size) {
+    int ncb = 0;
+    if (dir_rva == 0 || dir_size == 0) return -7;
+    return crt_tls_register(base, image_size, dir_rva, dir_size, &ncb);
 }
 
 /* ------------------------------------------------------------------------

@@ -78,7 +78,9 @@ W32_HANDLE w32_handle_alloc(int fd, int closable) {
 W32_HANDLE w32_handle_alloc_obj(int kind, void *obj, void (*free_obj)(void *)) {
     if (!obj) return (W32_HANDLE)0;
     if (kind != W32_HANDLE_KIND_FIND && kind != W32_HANDLE_KIND_MAP &&
-        kind != W32_HANDLE_KIND_PROC && kind != W32_HANDLE_KIND_CHANGE)
+        kind != W32_HANDLE_KIND_PROC && kind != W32_HANDLE_KIND_CHANGE &&
+        kind != W32_HANDLE_KIND_THREAD && kind != W32_HANDLE_KIND_EVENT &&
+        kind != W32_HANDLE_KIND_MUTEX && kind != W32_HANDLE_KIND_SEMAPHORE)
         return (W32_HANDLE)0;
     for (int i = 3; i < W32_HANDLE_MAX; i++) {
         if (!table[i].in_use) {

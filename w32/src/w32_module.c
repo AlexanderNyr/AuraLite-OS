@@ -32,6 +32,8 @@
 #include "w32/w32_errno.h"
 #include "w32/w32_bind.h"
 #include "w32/w32_pe.h"
+#include "w32/w32_crt.h"      /* W32A-3: TLS directory registration */
+#include "w32/kernel32.h"    /* W32A-3: TLS run/unregister */
 #include "w32/w32_crt.h"
 #include "w32/w32_gen.h"
 
@@ -372,6 +374,9 @@ static void free_slot(int slot) {
     w32_module_t *m = &modules[slot];
     pe_image_t img;
     int k;
+    /* W32A-3: TLS PROCESS_DETACH before DllMain DETACH (TLS-before-
+     * DllMain on the way out too), then the slot unregisters. */
+    w32_tls_unregister_module((void *)m->base);
     if (pe_parse(m->file, m->file_size, &img) == PE_OK && img.entry_point_rva) {
         typedef int (W32ABI *dllmain_fn)(void *, uint32_t, void *);
         dllmain_fn dm = (dllmain_fn)(void *)(m->base + img.entry_point_rva);
@@ -529,6 +534,31 @@ static W32_HMODULE load_one(const char *name) {
      * dependency must not unmap what this module is bound against. */
     take_holds(slot);
 
+    /* W32A-3: a DLL with a TLS directory registers its template and
+     * runs PROCESS_ATTACH before DllMain (TLS-before-DllMain, like the
+     * exe).  Future threads instantiate this module at start. */
+    if (pe_parse(file, file_size, &img) == PE_OK) {
+        int tls_slot = -7;
+        if (img.num_directories > PE_DIR_TLS)
+            tls_slot = w32_crt_register_tls(base, span,
+                                            img.dir[PE_DIR_TLS].rva,
+                                            img.dir[PE_DIR_TLS].size);
+        if (tls_slot >= 0)
+            w32_tls_run_module(tls_slot, W32_DLL_PROCESS_ATTACH);
+        /* A malformed DLL directory (-1..-6) refuses the load, like the
+         * exe path: following it would execute file bytes unchecked. */
+        if (tls_slot <= -1 && tls_slot >= -6) {
+            printf("w32: LoadLibrary(%s) refused: malformed TLS directory (%d)\n",
+                   name, tls_slot);
+            release_holds_only(slot);
+            munmap(base, span);
+            free(file);
+            memset(&modules[slot], 0, sizeof modules[slot]);
+            w32_set_last_error(W32_ERROR_BAD_EXE_FORMAT);
+            return NULL;
+        }
+    }
+
     /* DllMain(DLL_PROCESS_ATTACH).  A DLL that returns FALSE has refused to
      * initialise, and the documented behaviour is that the load fails --
      * so the mapping is torn down rather than left for a program that
@@ -539,6 +569,8 @@ static W32_HMODULE load_one(const char *name) {
         if (!dm((void *)base, W32_DLL_PROCESS_ATTACH, NULL)) {
             printf("w32: LoadLibrary(%s) refused: DllMain returned FALSE\n",
                    name);
+            /* W32A-3: the TLS ATTACH above already ran — detach it. */
+            w32_tls_unregister_module((void *)base);
             release_holds_only(slot);
             munmap(base, span);
             free(file);

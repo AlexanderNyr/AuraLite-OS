@@ -20,6 +20,7 @@
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/proc/clone_decls.h"   /* CLONE_* flags (single definition) */
+#include "kernel/lib/assert.h"
 #include <stdint.h>
 
 /* arch_prctl codes. */
@@ -58,6 +59,16 @@ static void clone_thread_entry(void *arg) {
      * an NX page).  FS.base == current->tls_base now holds at every user
      * entry point, matching the invariant context_switch keeps. */
     write_fs_base(self->tls_base);
+
+    /* W32A-3: install this thread's user GS into the KERNEL_GS_BASE
+     * shadow BEFORE the first user entry, the same rule as FS above.  A
+     * clone() child starts with user_gs_base == 0 (fresh TCB) and its
+     * own trampoline installs the real TEB via ARCH_SET_GS before any
+     * user code runs; the explicit write makes the first-entry state
+     * independent of which thread ran on this CPU before.  fork_child_
+     * sysret's swapgs then makes the shadow live on entry to Ring 3. */
+    write_kernel_gs_base(self->user_gs_base);
+    ASSERT(read_kernel_gs_base() == self->user_gs_base);
 
     /* fork_child_sysret sets RAX=0 and SYSRETs to (rip, rflags, rsp), and
      * Q12: restores the callee-saved user registers too. */
@@ -197,6 +208,20 @@ int64_t do_arch_prctl(int code, uint64_t addr) {
     case ARCH_GET_FS:
         if (copy_to_user((void *)(uintptr_t)addr, &cur->tls_base,
                          sizeof(cur->tls_base)) != 0)
+            return -EFAULT;
+        return 0;
+    /* W32A-3: the user GS base (the thread's Win32 TEB-lite).  Only the
+     * SHADOW is written: GS.base itself is the cpu_local anchor while
+     * Ring 0 runs, and writing it here would blind the kernel.  The new
+     * value goes live at the next swapgs to Ring 3. */
+    case ARCH_SET_GS:
+        cur->user_gs_base = addr;
+        write_kernel_gs_base(addr);   /* MSR path; wrgsbase #UDs here */
+        ASSERT(read_kernel_gs_base() == addr);
+        return 0;
+    case ARCH_GET_GS:
+        if (copy_to_user((void *)(uintptr_t)addr, &cur->user_gs_base,
+                         sizeof(cur->user_gs_base)) != 0)
             return -EFAULT;
         return 0;
     default:

@@ -19,6 +19,8 @@
 #include "kernel/tty/termios.h"
 #include "kernel/tty/tty.h"
 #include "kernel/fs/devfs.h"   /* RESIDUE2 T4: devfs_fd_tty */
+#include "kernel/arch/x86_64/cpu.h"      /* W32A-3: read_gs_base */
+#include "kernel/lib/assert.h"           /* W32A-3: ASSERT */
 #include "kernel/net/net.h"
 #include "kernel/net/tcp.h"
 #include "kernel/net/socket.h"
@@ -880,6 +882,10 @@ void set_syscall_stack(uint64_t stack_top) {
  * CPU's per-CPU syscall slots from the current TCB's per-thread copies.
  * Uses the default SysV C ABI: no args, no return. */
 void syscall_restore_user_frame(void) {
+    /* W32A-3: pre-SYSRET check, still on the kernel GS.  If anything in
+     * the dispatch above corrupted GS.base, fail here rather than
+     * swapping a wrong value out to Ring 3. */
+    ASSERT(read_gs_base() == *(uint64_t *)(uintptr_t)read_gs_base());
     tcb_t *cur = sched_current();
     if (!cur) return;
     if (cur->saved_user_rip) {
@@ -993,6 +999,13 @@ int do_ppoll(struct kernel_pollfd *, uint64_t,
 
 uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
                           uint64_t a4, uint64_t a5, uint64_t a6) {
+
+    /* W32A-3: the entry stub's swapgs must have run before this C code:
+     * GS.base is this CPU's cpu_local, whose first word is its own
+     * address (cpu_local_init).  A wrong GS fails here, before the %gs
+     * reads below.  (If GS points at unmapped memory the read itself
+     * faults, which is equally loud.) */
+    ASSERT(read_gs_base() == *(uint64_t *)(uintptr_t)read_gs_base());
 
     /* Capture the user-mode return frame into the current TCB so subsequent
      * context switches in this syscall cannot corrupt it via the globals. */

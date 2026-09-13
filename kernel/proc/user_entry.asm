@@ -36,4 +36,12 @@ jump_to_user_asm:
     push USER_CS               ; CS
     push rdi                   ; RIP (entry point)
 
+    ; W32A-3: first entry into Ring 3.  The pushed CS is the USER_CS
+    ; constant (RPL=3), tested like isr_common_stub rather than trusted:
+    ; [rsp]=rip, [rsp+8]=cs.  The C caller installed this thread's user
+    ; GS into the KERNEL_GS_BASE shadow already; the swap makes it live.
+    test byte [rsp + 8], 3
+    jz .Lw32a3_no_swap_out
+    swapgs
+.Lw32a3_no_swap_out:
     iretq                      ; -> Ring 3, RIP <- rdi, RSP <- rsi

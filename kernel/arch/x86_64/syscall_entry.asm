@@ -13,11 +13,17 @@
 ;
 ; SMP MODEL:
 ;   - All entry/exit state lives in the per-CPU struct cpu_local slots,
-;     reached through %gs (each CPU's GS.base points at ITS cpu_local, set by
-;     cpu_local_init(); nothing ever changes GS.base after that, and userland
-;     TLS uses FS, so %gs is valid here in both rings).  The offsets come
-;     from tools/gen_asm_offsets.c via build/asm_offsets.inc, so they can
-;     never drift out of sync with the C struct.
+;     reached through %gs.  W32A-3: GS.base is NO LONGER the same in both
+;     rings.  Each CPU's GS.base points at ITS cpu_local (set by
+;     cpu_local_init()) while Ring 0 runs, and at the RUNNING thread's
+;     user GS (its Win32 TEB-lite, or 0) while Ring 3 runs; swapgs at
+;     this entry point and before every exit exchanges the two, with the
+;     user's value parked in the KERNEL_GS_BASE shadow in between.
+;     %gs reaches cpu_local ONLY between the entry swapgs and the exit
+;     swapgs — touching %gs outside that window corrupts user memory.
+;     The offsets come from tools/gen_asm_offsets.c via
+;     build/asm_offsets.inc, so they can never drift out of sync with
+;     the C struct.
 ;   - The old implementation kept this state in .data globals -- correct
 ;     only while one CPU could enter the kernel at a time.  With real SMP
 ;     two CPUs can run syscalls concurrently, and those globals would tear.
@@ -78,6 +84,12 @@ syscall_init:
     ret
 
 syscall_entry:
+    ; W32A-3: SYSCALL is reachable only from Ring 3, so on arrival GS.base
+    ; is ALWAYS the user's (its TEB-lite) and the cpu_local anchor is in
+    ; the KERNEL_GS_BASE shadow.  Swap FIRST, before any %gs touch.
+    ; (NMI inside the swap window is the one known-accepted hazard: see
+    ; the audit note at isr_common_stub in isr_stubs.asm.)
+    swapgs                     ; GS.base <- cpu_local, shadow <- user GS
     ; CPU set: RCX=user RIP, R11=user RFLAGS.  RSP is still the user stack.
     ; Capture the full userspace return frame into THIS cpu's cpu_local slots
     ; (interrupts are masked by FMASK, so nothing can preempt us mid-capture),
@@ -177,4 +189,8 @@ syscall_entry:
     mov rcx, [gs:CL_SYS_RIP]
     mov r11, [gs:CL_SYS_RFLAGS]
     mov rsp, [gs:CL_SYS_RSP]
+    ; W32A-3: the last %gs touch is done — hand GS back to the user.
+    ; SYSRET's target is Ring 3 by construction (STAR), so the swap is
+    ; unconditional.  Nothing after this point may use %gs.
+    swapgs                     ; GS.base <- user GS, shadow <- cpu_local
     o64 sysret

@@ -1019,6 +1019,161 @@ W32ABI W32_DWORD FormatMessageW(W32_DWORD flags, const void *src,
                                W32_DWORD msgId, W32_DWORD langId,
                                W32_LPWSTR buf, W32_DWORD cch, void *args);
 
+
+/* ---- W32A-3: threads + synchronisation ------------------------------------------
+ *
+ * The ledger-decided set (docs/plans/W32APP_PLAN.md W32A-3).  Struct layouts
+ * below are AuraLite's (opaque to apps, which only hold pointers or embed
+ * fixed-size storage); see kernel32_thr.c for the contracts. */
+
+/* Wait codes + INFINITE + STILL_ACTIVE: interface facts, the values every
+ * Win32 program compares against. */
+#define W32_INFINITE            0xFFFFFFFFu
+#define W32_WAIT_OBJECT_0       0u
+#define W32_WAIT_ABANDONED_0    0x80u
+#define W32_WAIT_TIMEOUT        258u
+#define W32_WAIT_IO_COMPLETION  0xC0u
+#define W32_WAIT_FAILED         0xFFFFFFFFu
+/* W32_STILL_ACTIVE lives above (line ~549) and in w32_errno.h; not repeated. */
+
+/* GetCurrentThread's pseudo-handle: (HANDLE)-2, resolved to the caller. */
+#define W32_CURRENT_THREAD ((W32_HANDLE)(intptr_t)-2)
+
+/* TlsAlloc/FlsAlloc exhaustion: 0xFFFFFFFF, like Windows. */
+#define W32_TLS_OUT_OF_INDEXES  0xFFFFFFFFu
+#define W32_FLS_OUT_OF_INDEXES  0xFFFFFFFFu
+
+/* Thread entry point: DWORD fn(void*). */
+typedef W32_DWORD (W32ABI *W32_THREAD_START)(void *param);
+
+/* 24 bytes: fits any RTL_CRITICAL_SECTION storage an app provides. */
+typedef struct {
+    W32_DWORD lock;        /* futex word: 0 free, 1 held, 2 contended */
+    W32_DWORD recursion;
+    W32_DWORD owner_tid;
+    W32_DWORD spin;
+    W32_DWORD waiters;
+    W32_DWORD pad;
+} W32_CRITICAL_SECTION;
+
+/* 8 bytes, zero-init valid. */
+typedef struct {
+    W32_DWORD word;        /* 0 free, else owning tid */
+    W32_DWORD pad;
+} W32_SRWLOCK;
+
+/* 8 bytes, zero-init valid. */
+typedef struct {
+    W32_DWORD seq;         /* WakeAll generation */
+    W32_DWORD pad;
+} W32_CONDITION_VARIABLE;
+
+/* 8 bytes, zero-init valid. */
+typedef struct {
+    W32_DWORD state;       /* 0 unrun, 1 running, 2 done */
+    W32_DWORD pad;
+} W32_INIT_ONCE;
+
+/* 16 bytes: 64-bit Next + 16-bit Depth + 48-bit Sequence. */
+typedef struct {
+    void *next;
+    W32_WORD depth;
+    uint8_t seq[6];
+} W32_SLIST_HEADER;
+
+typedef struct {
+    void *next;
+} W32_SLIST_ENTRY;
+
+W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
+                               W32_THREAD_START start, void *param,
+                               W32_DWORD flags, W32_DWORD *tid_out);
+W32ABI void      ExitThread(W32_DWORD code);
+W32ABI void      FreeLibraryAndExitThread(void *mod, W32_DWORD code);
+W32ABI W32_BOOL  TerminateThread(W32_HANDLE h, W32_DWORD code);
+W32ABI W32_HANDLE GetCurrentThread(void);
+W32ABI W32_DWORD GetCurrentThreadId(void);
+W32ABI W32_DWORD ResumeThread(W32_HANDLE h);
+W32ABI W32_BOOL  GetThreadTimes(W32_HANDLE h, W32_FILETIME *creation,
+                                W32_FILETIME *exit, W32_FILETIME *kernel,
+                                W32_FILETIME *user);
+W32ABI W32_BOOL  GetExitCodeThread(W32_HANDLE h, W32_DWORD *code);
+W32ABI uint64_t  SetThreadAffinityMask(W32_HANDLE h, uint64_t mask);
+W32ABI W32_DWORD TlsAlloc(void);
+W32ABI void     *TlsGetValue(W32_DWORD idx);
+W32ABI W32_BOOL  TlsSetValue(W32_DWORD idx, void *value);
+W32ABI W32_BOOL  TlsFree(W32_DWORD idx);
+W32ABI W32_DWORD FlsAlloc(void *callback);
+W32ABI void     *FlsGetValue(W32_DWORD idx);
+W32ABI W32_BOOL  FlsSetValue(W32_DWORD idx, void *value);
+W32ABI W32_BOOL  FlsFree(W32_DWORD idx);
+W32ABI W32_BOOL  QueueUserAPC(void *fn, W32_HANDLE hThread, uint64_t data);
+W32ABI W32_BOOL  InitializeCriticalSection(W32_CRITICAL_SECTION *cs);
+W32ABI W32_BOOL  InitializeCriticalSectionAndSpinCount(W32_CRITICAL_SECTION *cs,
+                                                       W32_DWORD spin);
+W32ABI W32_BOOL  InitializeCriticalSectionEx(W32_CRITICAL_SECTION *cs,
+                                             W32_DWORD spin, W32_DWORD flags);
+W32ABI void      EnterCriticalSection(W32_CRITICAL_SECTION *cs);
+W32ABI void      LeaveCriticalSection(W32_CRITICAL_SECTION *cs);
+W32ABI void      DeleteCriticalSection(W32_CRITICAL_SECTION *cs);
+W32ABI void      AcquireSRWLockExclusive(W32_SRWLOCK *lock);
+W32ABI W32_BOOL  TryAcquireSRWLockExclusive(W32_SRWLOCK *lock);
+W32ABI void      ReleaseSRWLockExclusive(W32_SRWLOCK *lock);
+W32ABI W32_BOOL  SleepConditionVariableSRW(W32_CONDITION_VARIABLE *cv,
+                                           W32_SRWLOCK *lock, W32_DWORD ms,
+                                           W32_DWORD flags);
+W32ABI void      WakeAllConditionVariable(W32_CONDITION_VARIABLE *cv);
+W32ABI W32_BOOL  InitOnceBeginInitialize(W32_INIT_ONCE *once, W32_DWORD flags,
+                                         W32_BOOL *pending, void **ctx);
+W32ABI W32_BOOL  InitOnceComplete(W32_INIT_ONCE *once, W32_DWORD flags,
+                                  void *ctx);
+W32ABI void      InitializeSListHead(W32_SLIST_HEADER *head);
+W32ABI void     *InterlockedFlushSList(W32_SLIST_HEADER *head);
+W32ABI W32_HANDLE CreateEventA(void *security, W32_BOOL manual,
+                               W32_BOOL initial, const char *name);
+W32ABI W32_HANDLE CreateEventW(void *security, W32_BOOL manual,
+                               W32_BOOL initial, const W32_WCHAR *name);
+W32ABI W32_BOOL  SetEvent(W32_HANDLE h);
+W32ABI W32_BOOL  ResetEvent(W32_HANDLE h);
+W32ABI W32_HANDLE CreateMutexA(void *security, W32_BOOL initial,
+                               const char *name);
+W32ABI W32_HANDLE CreateMutexW(void *security, W32_BOOL initial,
+                               const W32_WCHAR *name);
+W32ABI W32_BOOL  ReleaseMutex(W32_HANDLE h);
+W32ABI W32_HANDLE CreateSemaphoreW(void *security, W32_LONG initial,
+                                   W32_LONG max, const W32_WCHAR *name);
+W32ABI W32_BOOL  ReleaseSemaphore(W32_HANDLE h, W32_LONG count,
+                                  W32_LONG *prev);
+W32ABI W32_DWORD WaitForSingleObject(W32_HANDLE h, W32_DWORD ms);
+W32ABI W32_DWORD WaitForSingleObjectEx(W32_HANDLE h, W32_DWORD ms,
+                                       W32_BOOL alertable);
+W32ABI W32_DWORD WaitForMultipleObjects(W32_DWORD n, W32_HANDLE *hs,
+                                        W32_BOOL wait_all, W32_DWORD ms);
+W32ABI void     *CreateThreadpoolWork(void *callback, void *ctx, void *cbd);
+W32ABI void      SubmitThreadpoolWork(void *work);
+W32ABI void      CloseThreadpoolWork(void *work);
+
+/* W32A-3 internals (not exports): the CloseHandle reapers, ExitProcess
+ * support, the TLS registry, and the process-id cache.  struct
+ * w32_thread / w32_thr_event / w32_thr_mutex / w32_thr_sem are defined
+ * in kernel32_thr.c; closers take them as void* so this header stays
+ * dependency-free. */
+void w32_thread_close(void *t);
+void w32_event_close(void *ev);
+void w32_mutex_close(void *m);
+void w32_sem_close(void *s);
+void w32_thr_kill_all(void);
+W32_DWORD w32_thr_process_id(void);
+typedef void (W32ABI *w32_tls_cb_fn)(void *base, W32_DWORD reason,
+                                     void *reserved);
+int  w32_tls_register_module(void *base, const void *raw_init,
+                             uint64_t raw_size, uint64_t zero_fill,
+                             w32_tls_cb_fn *cbs, int ncb);
+void w32_tls_unregister_module(void *base);
+void w32_tls_run_module(int slot, W32_DWORD reason);
+void w32_tls_attach_main(void);
+int  w32_ps_is_exited(W32_HANDLE h);
+
 /* Called by the CRT stub before anything else; not a Win32 export. */
 void w32_kernel32_init(int argc, char **argv);
 

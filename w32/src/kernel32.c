@@ -16,6 +16,7 @@
 
 #include "w32/kernel32.h"
 #include "w32/w32_module.h"
+#include "w32/w32_teb.h"
 
 /* The guest headers are skipped when this file is compiled into a host unit
  * test, which stubs the same functions itself (tests/unit/test_w32_kernel32.c).
@@ -31,6 +32,10 @@
 /* --- process -------------------------------------------------------------- */
 
 W32ABI void ExitProcess(unsigned int code) {
+    /* W32A-3: workers die first (Windows order: threads, then DLLs, then
+     * the process).  Without this a live worker survives _exit (which is
+     * per-thread) and the process never goes away. */
+    w32_thr_kill_all();
     /* W32A-1: loaded DLLs detach in reverse load order before the process
      * goes away.  A DLL that needed cleanup gets it; nothing outlives us. */
     w32_module_detach_all();
@@ -69,6 +74,54 @@ W32ABI W32_BOOL CloseHandle(W32_HANDLE h) {
             return W32_TRUE;
         w32_set_last_error(W32_ERROR_INVALID_HANDLE);
         return W32_FALSE;
+    }
+    /* W32A-3: thread + sync objects free through their own reapers (the
+     * table's free_fn for these kinds is NULL — the object/free split
+     * differs per kind). */
+    if (kind == W32_HANDLE_KIND_THREAD) {
+        void *o = w32_handle_release_obj(h, W32_HANDLE_KIND_THREAD);
+        if (!o) {
+            w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+            return W32_FALSE;
+        }
+        w32_thread_close(o);
+        w32_set_last_error(W32_ERROR_SUCCESS);
+        return W32_TRUE;
+    }
+    if (kind == W32_HANDLE_KIND_EVENT) {
+        void *o = w32_handle_release_obj(h, W32_HANDLE_KIND_EVENT);
+        if (!o) {
+            w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+            return W32_FALSE;
+        }
+        w32_event_close(o);
+        w32_set_last_error(W32_ERROR_SUCCESS);
+        return W32_TRUE;
+    }
+    if (kind == W32_HANDLE_KIND_MUTEX) {
+        void *o = w32_handle_release_obj(h, W32_HANDLE_KIND_MUTEX);
+        if (!o) {
+            w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+            return W32_FALSE;
+        }
+        w32_mutex_close(o);
+        w32_set_last_error(W32_ERROR_SUCCESS);
+        return W32_TRUE;
+    }
+    if (kind == W32_HANDLE_KIND_SEMAPHORE) {
+        void *o = w32_handle_release_obj(h, W32_HANDLE_KIND_SEMAPHORE);
+        if (!o) {
+            w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+            return W32_FALSE;
+        }
+        w32_sem_close(o);
+        w32_set_last_error(W32_ERROR_SUCCESS);
+        return W32_TRUE;
+    }
+    if (h == W32_CURRENT_THREAD) {
+        /* The thread pseudo-handle: closing it is a no-op success. */
+        w32_set_last_error(W32_ERROR_SUCCESS);
+        return W32_TRUE;
     }
     int fd = w32_handle_to_fd(h);
     if (fd < 0) {
@@ -510,10 +563,21 @@ W32ABI void *LocalFree(void *h) {
 /* --- time ----------------------------------------------------------------- */
 
 W32ABI void Sleep(W32_DWORD ms) {
-    struct timespec ts;
-    ts.tv_sec  = (long)(ms / 1000u);
-    ts.tv_nsec = (long)((ms % 1000u) * 1000000u);
-    nanosleep(&ts, 0);
+    /* Absolute-deadline loop (EINTR from the host kill-tap shortens one
+     * slice, never the sleep) with a kill checkpoint per slice, so a
+     * sleeping victim of TerminateThread dies promptly on the host. */
+    uint64_t deadline = GetTickCount64() + ms;
+    for (;;) {
+        int64_t left;
+        struct timespec ts;
+        w32_thr_checkpoint();
+        left = (int64_t)(deadline - GetTickCount64());
+        if (left <= 0)
+            return;
+        ts.tv_sec = (long)(left / 1000);
+        ts.tv_nsec = (long)((left % 1000) * 1000000L);
+        nanosleep(&ts, 0);
+    }
 }
 
 W32ABI W32_ULONGLONG GetTickCount64(void) {
@@ -540,6 +604,9 @@ W32ABI W32_DWORD GetTickCount(void) {
 static char cmdline[1024];
 
 void w32_kernel32_init(int argc, char **argv) {
+    /* W32A-3: threads first — the main TEB must exist before any API
+     * (including this init's own tail) touches LastError. */
+    w32_thr_init();
     w32_handle_init();
     w32_fs_init();
     w32_ps_init(argc, argv, NULL);

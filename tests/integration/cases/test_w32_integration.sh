@@ -10,7 +10,9 @@
 # import thunks and the code generation that come with it, actually works.
 # This case answers that with mingw-w64 output.
 #
-# It also checks the two routing behaviours and the documented refusal.
+# It also checks the two routing behaviours and the documented stub
+# behaviour (since W32A-1 the loader binds unimplemented imports to
+# loud phase-owned stubs instead of refusing at load time).
 
 set -u
 cd "$(dirname "$0")/.."
@@ -60,15 +62,23 @@ il_assert_grep "$LOG" "HeapAlloc worked" \
 il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=0\)" \
     "and it exited cleanly through ExitProcess"
 
-# --- the documented refusal ------------------------------------------------
+# --- the documented stub ------------------------------------------------------
 # The unsupported example imports ADVAPI32 (the registry -- a non-goal, D8).
-# It must be refused at LOAD time with the import named, not crash later.
-il_assert_grep "$LOG" "unresolved import ADVAPI32\.dll!Reg" \
-    "an unsupported import is refused by name at load time"
-il_assert_no_grep "$LOG" "this should not print" \
-    "and not one instruction of the program ran"
+# Since W32A-1 such imports bind to loud phase-owned stubs: the program
+# runs until the first missing import, which fails loudly with the owning
+# phase named and a guest-visible error -- not a crash, not a silence.
+il_assert_grep "$LOG" "w32run: /tests/w32unsup\\.exe .* 5 import\\(s\\) bound" \
+    "all five imports bound, stubbed ones included"
+il_assert_grep "$LOG" "w32: TODO advapi32\\.dll!RegOpenKeyExA needs W32A-9" \
+    "the missing import fails loudly with its owning phase named"
+il_assert_grep "$LOG" "w32: TODO advapi32\\.dll!RegCloseKey needs W32A-9" \
+    "every touched stub reports, not just the first"
+il_assert_grep "$LOG" "w32unsup: running with stubbed ADVAPI32" \
+    "the program itself starts and runs"
+il_assert_grep "$LOG" "w32unsup: stub failed with 50, exiting" \
+    "and the stub's failure is guest-visible, not silent"
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION.*KERNEL|kernel panic" \
-    "the refusal is clean, not a fault"
+    "the stub path is clean, not a fault"
 
 # --- an import-free PE still takes the kernel path -------------------------
 # That path applies per-section W^X, so it must not be given up for the

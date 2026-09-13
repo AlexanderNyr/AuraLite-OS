@@ -25,6 +25,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"
+#include "kernel/lib/assert.h"
 #include "kernel/ipc/sysvipc.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/boot_info.h"
@@ -416,6 +417,14 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
     cur->tls_base = 0;
     write_fs_base(0);
 
+    /* W32A-3: a fresh program starts with NO user GS either (same leak
+     * class as FS above — the old program's TEB address would otherwise
+     * survive exec).  The new main thread installs its own TEB at init;
+     * until then Ring 3 runs with GS.base == 0. */
+    cur->user_gs_base = 0;
+    write_kernel_gs_base(0);
+    ASSERT(read_kernel_gs_base() == 0);
+
     jump_to_user(jump_entry, user_rsp, 0);
     thread_exit();   /* not reached */
 }
@@ -458,6 +467,12 @@ static void fork_child_entry(void *arg) {
      * child->tls_base in do_fork); install it before the first user entry
      * so FS is never whatever the previous tenant of this CPU left. */
     write_fs_base(self ? self->tls_base : 0);
+
+    /* W32A-3: same rule for the inherited user GS (copied into
+     * child->user_gs_base in do_fork): park it in the KERNEL_GS_BASE
+     * shadow so fork_child_sysret's swapgs makes it live on entry. */
+    write_kernel_gs_base(self ? self->user_gs_base : 0);
+    ASSERT(read_kernel_gs_base() == (self ? self->user_gs_base : 0));
 
     /* Jump to user mode at the saved RIP. RAX will be set to 0 by the
      * fork_child_sysret asm (below) so the child sees fork()==0.  Q12: also
@@ -536,6 +551,9 @@ int64_t do_fork(void) {
          * starts life as a byte-copy of the parent's address space, so the
          * parent's TLS block is equally valid there. */
         child->tls_base = parent->tls_base;
+        /* W32A-3: fork() clones the address space whole, so the user GS
+         * (TEB-lite) comes along like FS above. */
+        child->user_gs_base = parent->user_gs_base;
         /* Share the parent's open-file descriptions (shared seek offset/flags),
          * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags. */
         vfs_fork_inherit(child->fd_table, parent->fd_table,

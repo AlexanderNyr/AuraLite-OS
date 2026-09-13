@@ -43,4 +43,11 @@ fork_child_sysret:
     mov r11, rsi              ; user RFLAGS (SYSRET loads RFLAGS from R11)
     mov rsp, rax              ; switch to the user stack
     xor rax, rax              ; fork() returns 0 in the child
+    ; W32A-3: SYSRET's target is Ring 3 by construction (STAR), and this
+    ; routine only ever enters a fork/clone child, so the swap is
+    ; unconditional.  The C caller installed the child's user GS into the
+    ; KERNEL_GS_BASE shadow already; without this swap the child would
+    ; run with the cpu_local anchor as its GS and corrupt it on the
+    ; first TEB touch.
+    swapgs
     o64 sysret                ; 64-bit SYSRET -> Ring 3

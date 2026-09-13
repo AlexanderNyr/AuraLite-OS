@@ -206,6 +206,10 @@ int main(int argc, char **argv) {
         return 1;
     }
     if (ntls > 0) printf("w32run: ran %d TLS callback(s)\n", ntls);
+    /* W32A-3: instantiate the main thread's TLS blocks and run the exe's
+     * PROCESS_ATTACH callbacks (registration above only validated).  Still
+     * before the static initialisers, the documented order. */
+    w32_tls_attach_main();
 
     /* Static initialisers live in .CRT.  A real linker merges the
      * .CRT$XCA/.CRT$XCU/.CRT$XCZ contributions into that one section,
