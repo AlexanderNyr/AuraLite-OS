@@ -1,11 +1,21 @@
-/* w32_handle.c — the HANDLE table.  WIN32_PLAN.md phase W32-4. */
+/* w32_handle.c — the HANDLE table.  WIN32_PLAN.md phase W32-4.
+ *
+ * W32A-2 grows the slot from fd-only to fd-or-payload: find sessions, file
+ * mappings, process objects and change notifications share the one handle
+ * space (one forgery rule) with an opaque payload instead of an fd.
+ */
 
 #include "w32/w32_handle.h"
 
+#include <stdint.h>
+
 struct slot {
     int in_use;
+    int kind;
     int fd;
     int closable;
+    void *obj;
+    void (*free_obj)(void *);
 };
 
 static struct slot table[W32_HANDLE_MAX];
@@ -30,12 +40,17 @@ static int handle_to_index(W32_HANDLE h) {
     return (int)i;
 }
 
+static void clear_slot(int i) {
+    table[i].in_use = 0;
+    table[i].kind = W32_HANDLE_KIND_FD;
+    table[i].fd = -1;
+    table[i].closable = 0;
+    table[i].obj = 0;
+    table[i].free_obj = 0;
+}
+
 void w32_handle_init(void) {
-    for (int i = 0; i < W32_HANDLE_MAX; i++) {
-        table[i].in_use = 0;
-        table[i].fd = -1;
-        table[i].closable = 0;
-    }
+    for (int i = 0; i < W32_HANDLE_MAX; i++) clear_slot(i);
     /* Slots 0..2 are the standard streams.  They are pre-bound and marked
      * non-closable: a program that calls CloseHandle(GetStdHandle(...)) must
      * not take stdout away from the rest of the process. */
@@ -51,12 +66,32 @@ W32_HANDLE w32_handle_alloc(int fd, int closable) {
     for (int i = 3; i < W32_HANDLE_MAX; i++) {
         if (!table[i].in_use) {
             table[i].in_use = 1;
+            table[i].kind = W32_HANDLE_KIND_FD;
             table[i].fd = fd;
             table[i].closable = closable ? 1 : 0;
             return index_to_handle(i);
         }
     }
     return (W32_HANDLE)0;              /* caller sets ERROR_TOO_MANY_OPEN_FILES */
+}
+
+W32_HANDLE w32_handle_alloc_obj(int kind, void *obj, void (*free_obj)(void *)) {
+    if (!obj) return (W32_HANDLE)0;
+    if (kind != W32_HANDLE_KIND_FIND && kind != W32_HANDLE_KIND_MAP &&
+        kind != W32_HANDLE_KIND_PROC && kind != W32_HANDLE_KIND_CHANGE)
+        return (W32_HANDLE)0;
+    for (int i = 3; i < W32_HANDLE_MAX; i++) {
+        if (!table[i].in_use) {
+            table[i].in_use = 1;
+            table[i].kind = kind;
+            table[i].fd = -1;
+            table[i].closable = 1;
+            table[i].obj = obj;
+            table[i].free_obj = free_obj;
+            return index_to_handle(i);
+        }
+    }
+    return (W32_HANDLE)0;
 }
 
 int w32_handle_to_fd(W32_HANDLE h) {
@@ -80,13 +115,51 @@ int w32_handle_to_fd(W32_HANDLE h) {
     int i = handle_to_index(h);
     if (i < 0) return -1;
     if (!table[i].in_use) return -1;
-    return table[i].fd;
+    return table[i].fd;   /* -1 for payload kinds: fd callers refuse them */
+}
+
+int w32_handle_kind(W32_HANDLE h) {
+    int i = handle_to_index(h);
+    if (i < 0) return -1;
+    if (!table[i].in_use) return -1;
+    return table[i].kind;
+}
+
+void *w32_handle_get_obj(W32_HANDLE h, int kind) {
+    int i = handle_to_index(h);
+    if (i < 0) return 0;
+    if (!table[i].in_use) return 0;
+    if (table[i].kind != kind) return 0;
+    return table[i].obj;
+}
+
+void *w32_handle_release_obj(W32_HANDLE h, int kind) {
+    int i = handle_to_index(h);
+    if (i < 0) return 0;
+    if (!table[i].in_use) return 0;
+    if (table[i].kind != kind) return 0;
+    void *obj = table[i].obj;
+    clear_slot(i);
+    return obj;
 }
 
 int w32_handle_release(W32_HANDLE h) {
     int i = handle_to_index(h);
     if (i < 0) return -1;
     if (!table[i].in_use) return -1;
+    if (table[i].kind == W32_HANDLE_KIND_FIND ||
+        table[i].kind == W32_HANDLE_KIND_CHANGE) {
+        /* Win32 wants FindClose for these; CloseHandle refuses them. */
+        return -1;
+    }
+    if (table[i].kind == W32_HANDLE_KIND_MAP ||
+        table[i].kind == W32_HANDLE_KIND_PROC) {
+        void *obj = table[i].obj;
+        void (*free_obj)(void *) = table[i].free_obj;
+        clear_slot(i);
+        if (free_obj) free_obj(obj);
+        return W32_HANDLE_FREED;
+    }
     if (!table[i].closable) {
         /* A live but non-closable handle (a standard stream): CloseHandle
          * reports success and does nothing, which is what Win32 programs
@@ -94,9 +167,7 @@ int w32_handle_release(W32_HANDLE h) {
         return -1;
     }
     int fd = table[i].fd;
-    table[i].in_use = 0;
-    table[i].fd = -1;
-    table[i].closable = 0;
+    clear_slot(i);
     return fd;
 }
 

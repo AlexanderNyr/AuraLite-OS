@@ -2599,6 +2599,27 @@ $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE): $(W32_MINGW_STAMP)
 	@: > $@
 endif
 
+# W32A-2: the seven guest kernel32 fixtures.  Same contract as the
+# mingw examples above: compiler-emitted C, -nostdlib, winstart entry,
+# kernel32-only imports; an absent cross-compiler leaves zero-byte
+# placeholders and the initrd staging skips them, and CI fails on the
+# absence the same way it does for w32hello.exe.
+W32A2_NAMES := find time map pipes proc locale heap
+W32A2_EXES := $(addprefix $(BUILD_DIR)/user/w32a2_,$(addsuffix .exe,$(W32A2_NAMES)))
+
+ifneq ($(MINGW_CC),)
+$(BUILD_DIR)/user/w32a2_%.exe: w32/tests/w32a2_%.c w32/tests/w32a2_common.h $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -lkernel32
+	@echo "  [pe] $@ (W32A-2 guest fixture)"
+else
+$(W32A2_EXES): $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the W32A-2 fixtures (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
 # LX_COMPAT L1: the unmodified Linux guest example.  Built with the
 # HOST's own gcc against the host's glibc, -static: the whole point is
 # that it is an ordinary Linux x86-64 binary no AuraLite toolchain
@@ -2785,7 +2806,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2960,6 +2981,10 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	    cp $(W32_EXAMPLE_EXE) $(INITRD_DIR)/tests/w32hello.exe; fi
 	@if [ -s $(W32_UNSUP_EXE) ]; then \
 	    cp $(W32_UNSUP_EXE) $(INITRD_DIR)/tests/w32unsup.exe; fi
+# W32A-2: the seven guest fixtures, basename-preserved like W32A-1.
+	@for f in $(W32A2_EXES); do \
+	    if [ -s $$f ]; then cp $$f $(INITRD_DIR)/tests/; fi; \
+	done
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.

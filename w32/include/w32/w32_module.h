@@ -87,6 +87,11 @@ void *W32ABI w32_GetProcAddress(W32_HMODULE mod, const char *name);
  * DllMain(DLL_PROCESS_DETACH). */
 int W32ABI w32_FreeLibrary(W32_HMODULE mod);
 
+/* kernel32_ps.c owns a second module table (LoadLibrary cookies,
+ * 0x4D000000+slot — disjoint from the loader's 0x4000+i handles).
+ * w32_FreeLibrary tries the loader first, then this. */
+int ps_mod_free(void *mod);
+
 /* ---- W32A-1: recursive loading --------------------------------------------
  *
  * w32_load_dependency() is the static binder's back door into the module

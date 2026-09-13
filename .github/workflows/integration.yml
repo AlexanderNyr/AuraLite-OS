@@ -184,6 +184,14 @@ jobs:
             exit 1
           fi
           tar tf build/initrd.tar | grep -E 'w32hello|w32unsup|testdll'
+          for f in find time map pipes proc locale heap; do
+            if ! tar tf build/initrd.tar | grep -q "./tests/w32a2_$f.exe"; then
+              echo "w32a2_$f.exe missing from the initrd: the W32A-2"
+              echo "fixtures were not built, so test_w32_a2_kernel32 would"
+              echo "skip instead of testing anything."
+              exit 1
+            fi
+          done
 
       # LX_COMPAT L1/L2/L5: the same vacuous-gate discipline for the Linux
       # personality -- the host gcc is always present on the runner, but
@@ -329,7 +337,7 @@ jobs:
             || python3 -m pip install vncdotool 2>/dev/null \
             || echo "::warning::vncdotool install failed; GUI captures will soft-skip"
 
-      # The gui shard carries the six w32 gates; mingw builds their
+      # The gui shard carries the seven w32 gates; mingw builds their
       # example binaries.  Installed for every shard (uniform steps
       # beat per-shard special cases; +15 s).
       - name: Install mingw-w64

@@ -2,6 +2,28 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-2 — kernel32 breadth I] 2026-09-13 — files, time, process, locale, heap
+
+The measurable file/time/process-info subset of the ledger is REAL
+throughout, no stubs: 171 symbols closed (gap 398, machine-checked).
+Find/enumerate, attributes, copy/move/replace with progress and
+cancel, disk/volume/path queries; file times with UTC conversions and
+a TSC-backed performance counter; CreateFile breadth with sharing,
+overlapped completion, and mmap-backed file mappings; anonymous and
+single-instance named pipes; PE+ELF spawn with stdio redirection,
+Toolhelp snapshots, and the documented Windows 10 version identity;
+en-US locale tables with strict 65001+1252 conversions, compare/map,
+the lstr family, and a FormatMessage table covering every returned
+error; HeapReAlloc/Size, Global/Local families, mprotect-backed
+VirtualProtect; CPUID features, ticks, Beep, SleepEx,
+OutputDebugStringW, and the documented restart-manager
+accept-and-ignore. Proved by a 677/0 host suite (normal + ASan/UBSan,
+identical logs) and seven mingw-w64 guest fixtures exiting 55
+through `tests/integration/cases/test_w32_a2_kernel32.sh`.
+`CharUpperW`/`CharLowerW`/`IsChar*W`/`IsTextUnicode` stay host-only
+until W32A-5 (user32/advapi32 ownership per the ledgers). Delivered as
+`patches/W32A2_kernel32fs.patch`.
+
 ## [W32A-1 — loader] 2026-09-12 — ordinals, delay-load, DLL chains, manifests
 
 "Refused at load" becomes "runs until the first missing import": the

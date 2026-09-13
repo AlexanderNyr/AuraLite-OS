@@ -220,10 +220,12 @@ plus the W32A-10/W32A-11 modules suffices for the shipped plugins.
 
 **The KERNEL32/USER32/GDI32 union:** the three applications jointly need
 **611** distinct `KERNEL32`/`USER32`/`GDI32` symbols. The current
-personality exports 44 functions, of which **42** are in the union. The
-gap is **569 symbols**, tagged per application in the W32A-0 ledger. The
-two current exports no ladder binary imports are named in the ledger, not
-here — they stay regardless, because fixtures use them.
+personality exports 215 functions, of which **213** are in the union. The
+gap is **398 symbols**, tagged per application in the W32A-0 ledger. (The
+W32A-0 baseline was 44 exports, 42 in the union, gap 569; W32A-2 closed
+171 ledger symbols.) The two current exports no ladder binary imports
+are named in the ledger, not here — they stay regardless, because
+fixtures use them.
 
 ### 2.3 Structural findings (each one shapes a phase)
 
@@ -411,7 +413,7 @@ until a receipt promotes it.
 A function enters the personality if and only if the committed ledger
 shows a ladder binary importing it (statically or through an observed
 dynamic load). The set grows only when the ledger grows. "Useful" and
-"obviously next" are not admission criteria — the 569-symbol gap is
+"obviously next" are not admission criteria — the 398-symbol gap is
 already larger than any contributor's intuition, and intuition is how a
 plan like this fails by dilution.
 
@@ -691,7 +693,7 @@ recursive load, manifest parser, fixtures
 
 ---
 
-### Phase W32A-2 — `KERNEL32` breadth I: files, paths, time, process info ⬜ PLANNED
+### Phase W32A-2 — `KERNEL32` breadth I: files, paths, time, process info ✅ DONE
 
 **Objective:** the measurable file/time/process-info subset of the ledger —
 everything in it is REAL (no stubs in this phase; a file API that lies
@@ -699,7 +701,7 @@ corrupts user data, and D9 forbids the success-shaped lie).
 
 #### Tasks
 
-- [ ] Find/enumerate: `FindFirstFileW`/`FindFirstFileA`/
+- [x] Find/enumerate: `FindFirstFileW`/`FindFirstFileA`/
       `FindFirstFileExW`/`FindNextFileW`/`FindNextFileA`/`FindClose`,
       `FindFirstStreamW`/`FindNextStreamW` (streams beyond `::$DATA`
       report "not found" — NTFS streams do not exist here, and the
@@ -707,7 +709,7 @@ corrupts user data, and D9 forbids the success-shaped lie).
       `FindNextChangeNotification`/`FindCloseChangeNotification` —
       backed by VFS mtime polling at a documented granularity, or
       FAIL-CLEAN if the polling proves racy; the phase records which).
-- [ ] Attributes/time: `GetFileAttributesW`/`GetFileAttributesExW`,
+- [x] Attributes/time: `GetFileAttributesW`/`GetFileAttributesExW`,
       `SetFileAttributesW` (readonly/hidden/system mapping documented —
       hidden-ness is a name-prefix convention, stated not smuggled),
       `CopyFileW`/`CopyFileExW` (progress callback honoured, cancel
@@ -725,7 +727,7 @@ corrupts user data, and D9 forbids the success-shaped lie).
       `GetSystemTimeAsFileTime`, `GetLocalTime`, `GetTimeZoneInformation`
       (UTC, documented), `QueryPerformanceCounter`/
       `QueryPerformanceFrequency` (REAL from the TSC/LAPIC calibration).
-- [ ] Handles/files: `CreateFileW` (all `dwCreationDisposition` values,
+- [x] Handles/files: `CreateFileW` (all `dwCreationDisposition` values,
       sharing flags honoured between w32 handles), `ReadFile`/`WriteFile`
       breadth (overlapped: `GetOverlappedResult` REAL for completed I/O;
       true async completion is FAIL-CLEAN — the VFS has no async
@@ -736,7 +738,7 @@ corrupts user data, and D9 forbids the success-shaped lie).
       `UnmapViewOfFile` (backed by `mmap`/`MAP_SHARED`), `CancelIo`,
       `DeviceIoControl` (named-refusal per control code — storage
       ioctls are not a file API).
-- [ ] Pipes/processes: `CreatePipe`, `CreateNamedPipeA`/`ConnectNamedPipe`/
+- [x] Pipes/processes: `CreatePipe`, `CreateNamedPipeA`/`ConnectNamedPipe`/
       `WaitNamedPipeA` (named pipes over the VFS fifo layer —
       `mkfifo` exists; single-instance semantics documented),
       `CreateProcessA`/`CreateProcessW` (PE + ELF via the spawn path,
@@ -760,7 +762,7 @@ corrupts user data, and D9 forbids the success-shaped lie).
       compatibility identity — the one place this plan sanctions a fixed
       impersonation, because version checks branch on it and there is no
       honest value; the value is one constant, greppable, in one file).
-- [ ] Locales/strings/time-format: `GetACP`/`GetOEMCP`/`GetCPInfo`/
+- [x] Locales/strings/time-format: `GetACP`/`GetOEMCP`/`GetCPInfo`/
       `IsValidCodePage` (65001 UTF-8 + 1252 recorded set),
       `GetUserDefaultLCID`/`GetUserDefaultLangID`/
       `GetSystemDefaultLangID`/`GetLocaleInfoA`/`GetLocaleInfoW`/
@@ -776,14 +778,14 @@ corrupts user data, and D9 forbids the success-shaped lie).
       `FormatMessageA`/`FormatMessageW` (REAL from the message table —
       every error this personality returns gains a message here, or the
       error is unreturnable; that rule is the phase's QA).
-- [ ] Memory/heaps: `HeapReAlloc`/`HeapSize` (join the existing heap
+- [x] Memory/heaps: `HeapReAlloc`/`HeapSize` (join the existing heap
       exports), `GlobalAlloc`/`GlobalLock`/`GlobalUnlock`/`GlobalFree`/
       `GlobalSize`, `LocalAlloc`/`LocalFree`, `VirtualProtect`
       (REAL via `mprotect`), `GetLargePageMinimum` (reports 0 extra —
       large pages unsupported, allocation falls back; the caller-visible
       behaviour, not a secret), `GetPhysicallyInstalledSystemMemory`?
       only if the ledger shows it (it does not — example of D1 working).
-- [ ] Misc process-info: `IsDebuggerPresent` (FALSE, documented),
+- [x] Misc process-info: `IsDebuggerPresent` (FALSE, documented),
       `IsProcessorFeaturePresent` (REAL from CPUID),
       `GetNativeSystemInfo`/`GetSystemInfo`, `GetTickCount`
       (joins `GetTickCount64`), `Beep` (PC speaker — REAL, the backend
@@ -805,8 +807,30 @@ corrupts user data, and D9 forbids the success-shaped lie).
   visible to `ls`/`cat`, and vice versa.
 - Full `make test` green.
 
-**Deliverable:** `w32/src/kernel32_fs.c` (or equivalent split),
-message table, fixtures, `tests/integration/cases/test_w32a2_kernel32.sh`,
+#### Done
+
+The measurable file/time/process-info subset is REAL throughout: 171
+ledger symbols closed (gap 398, verified by
+`tools/w32_import_ledger.py check`), no stubs in this phase. The host
+suite pins 677/0 checks under both normal and ASan+UBSan builds with
+byte-identical logs, and a sabotaged copy fails exactly once, so the
+harness is proven able to report failure. Seven mingw-w64 guest
+fixtures (`w32/tests/w32a2_find.c`, `w32a2_time.c`, `w32a2_map.c`,
+`w32a2_pipes.c`, `w32a2_proc.c`, `w32a2_locale.c`, `w32a2_heap.c` over
+`w32a2_common.h`) assert the REAL behaviour and every refusal by name
+from inside the guest, each exiting 55 on a clean run; all seven parse
+clean under `-Wall -Wextra`. The message-table rule holds: every error
+the phase returns has `FormatMessage` coverage, pinned by the host
+`== msg ==` cases and the process fixture. Round-trips are real: the
+find fixture plants `C:\tmp\w32a2_rt.txt` and the native shell lists
+it. `CharUpperW`/`CharLowerW`/`IsChar*W`/`IsTextUnicode` stay host-only
+until W32A-5 — the ledgers show them as user32/advapi32 exports, so a
+guest cannot import them from kernel32. Delivered as
+`patches/W32A2_kernel32fs.patch`.
+
+**Deliverable:** `w32/src/kernel32_fs.c`, `w32/src/kernel32_ps.c`,
+`w32/src/kernel32_loc.c`, `w32/src/w32_msg.c`, message table, fixtures
+(`w32/tests/w32a2_*.c`), `tests/integration/cases/test_w32_a2_kernel32.sh`,
 `patches/W32A2_kernel32fs.patch`.
 
 ---
@@ -1989,5 +2013,8 @@ phase accepts a gap list as success.
 
 If the outcome is PuTTY with a receipt, 7-Zip with a receipt, Notepad++
 with a receipt, and Audacity with a gap list — each saying exactly what
+works and what does not — that is a real result, and this plan will have
+been worth following.
+hat
 works and what does not — that is a real result, and this plan will have
 been worth following.

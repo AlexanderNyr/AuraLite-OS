@@ -85,6 +85,23 @@ int clock_gettime(int id, void *tp) {
     return 0;
 }
 
+/* W32A-2: the new CloseHandle dispatch and Read/WriteFile consult the fs
+ * file's tables; this test does not link that file, so it stubs the three
+ * consultations with their no-pipe answers (behaviour-identical here). */
+int w32_fs_pipe_fds(void *h, int *rfd, int *wfd) {
+    (void)h; (void)rfd; (void)wfd; return 0;
+}
+int w32_fs_pipe_drop(void *h, int *peer_out) {
+    (void)h; (void)peer_out; return -1;
+}
+void w32_fs_note_close(int fd) { (void)fd; }
+/* w32_kernel32_init boots the fs/ps files; this test drives the handle
+ * table directly and never calls it, but still links it. */
+void w32_fs_init(void) {}
+void w32_ps_init(int argc, char **argv, char **envp) {
+    (void)argc; (void)argv; (void)envp;
+}
+
 /* malloc/free/memset/memcpy/strlen/strchr come from the host libc. */
 #include <stdlib.h>
 #include <string.h>
@@ -226,7 +243,9 @@ static void test_writefile_errno_mapping(void) {
     stub_write_ret = -28;                    /* -ENOSPC */
     r = WriteFile(GetStdHandle(W32_STD_OUTPUT_HANDLE), "x", 1, &written, 0);
     CHECK_EQ(r, W32_FALSE);
-    CHECK_EQ(GetLastError(), W32_ERROR_NOT_ENOUGH_MEMORY);
+    /* W32A-2: ENOSPC left NOT_ENOUGH_MEMORY (a W32-4 approximation from
+     * before DISK_FULL existed) for the true DISK_FULL. */
+    CHECK_EQ(GetLastError(), W32_ERROR_DISK_FULL);
     stub_write_ret = 0;
 }
 

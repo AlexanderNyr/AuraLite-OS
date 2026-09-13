@@ -704,6 +704,9 @@ void *w32_load_dependency(const char *dll, const char *name,
 int W32ABI w32_FreeLibrary(W32_HMODULE mod) {
     w32_module_t *m = handle_to_slot(mod);
     if (!m) {
+        /* Not a loader module: the ps table (LoadLibrary cookies). */
+        if (ps_mod_free(mod))
+            return 1;
         w32_set_last_error(W32_ERROR_MOD_NOT_FOUND);
         return 0;
     }

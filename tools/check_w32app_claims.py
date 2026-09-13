@@ -87,6 +87,16 @@ ARTEFACTS = {
                "tests/unit/test_w32_a1_fixtures2.c",
                "tests/unit/test_w32_a1_report.c",
                "tests/integration/cases/test_w32_a1_loader.sh"],
+    "W32A-2": ["w32/tests/w32a2_common.h",
+               "w32/tests/w32a2_find.c",
+               "w32/tests/w32a2_time.c",
+               "w32/tests/w32a2_map.c",
+               "w32/tests/w32a2_pipes.c",
+               "w32/tests/w32a2_proc.c",
+               "w32/tests/w32a2_locale.c",
+               "w32/tests/w32a2_heap.c",
+               "tests/integration/cases/test_w32_a2_kernel32.sh",
+               "patches/W32A2_kernel32fs.patch"],
 }
 
 # Greppable receipts each done phase must carry in its plan section.
@@ -99,6 +109,9 @@ RECEIPTS = {
     "W32A-1": ["patches/W32A1_loader.patch",
                "34/34",
                "W32A1.bindreport"],
+    "W32A-2": ["patches/W32A2_kernel32fs.patch",
+               "677/0",
+               "test_w32_a2_kernel32"],
 }
 
 
