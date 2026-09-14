@@ -21,7 +21,18 @@ EXPORTS
     HeapAlloc
     HeapFree
     LoadLibraryA
+    RaiseException
     ReadFile
+    RtlCaptureContext
+    RtlLookupFunctionEntry
+    RtlPcToFileHeader
+    RtlUnwind
+    RtlUnwindEx
+    RtlVirtualUnwind
+    SetUnhandledExceptionFilter
+    UnhandledExceptionFilter
+    _XcptFilter
+    __C_specific_handler
     SetLastError
     Sleep
     VirtualAlloc

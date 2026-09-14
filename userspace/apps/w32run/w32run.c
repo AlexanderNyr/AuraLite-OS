@@ -161,6 +161,11 @@ int main(int argc, char **argv) {
         for (int k = 0; k < 8; k++) p[k] = (unsigned char)((v >> (k * 8)) & 0xFF);
     }
 
+    /* W32A-4: register the exe with the module table so the unwinder's
+     * address queries resolve fault PCs inside it.  Before TLS callbacks:
+     * a callback can fault too, and the fault entry needs the module. */
+    w32_module_register_exe(base, (size_t)img.size_of_image);
+
     /* Bind the imports.  An unresolved name is fatal and named. */
     const char *mdll = 0, *mname = 0;
     size_t nimp = 0;

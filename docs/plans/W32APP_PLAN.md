@@ -8,7 +8,7 @@
 | W32A-1 Loader: ordinals, delay-load, DLL chains, manifests | ⬜ planned |
 | W32A-2 `KERNEL32` breadth I — files, paths, time, process info | ⬜ planned |
 | W32A-3 Threads and per-thread TLS (the one kernel change) | ✅ done |
-| W32A-4 The table-driven SEH unwinder | ⬜ planned |
+| W32A-4 The table-driven SEH unwinder | ✅ done |
 | W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
 | W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ⬜ planned |
 | W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ⬜ planned |
@@ -220,12 +220,15 @@ plus the W32A-10/W32A-11 modules suffices for the shipped plugins.
 
 **The KERNEL32/USER32/GDI32 union:** the three applications jointly need
 **611** distinct `KERNEL32`/`USER32`/`GDI32` symbols. The current
-personality exports 264 functions, of which **261** are in the union. The
-gap is **350 symbols**, tagged per application in the W32A-0 ledger. (The
+personality exports 275 functions, of which **270** are in the union. The
+gap is **341 symbols**, tagged per application in the W32A-0 ledger. (The
 W32A-0 baseline was 44 exports, 42 in the union, gap 569; W32A-2 closed
-171 ledger symbols; W32A-3 closed 48.) The three current exports no ladder
-binary imports are named in the ledger, not here — they stay regardless,
-because fixtures use them.
+171 ledger symbols; W32A-3 closed 48; W32A-4 closed 9 — the eleventh and
+twelfth SEH rows are `_XcptFilter`/`__C_specific_handler` under
+`KERNEL32`, which the ladders import from `msvcrt` instead, so they join
+the non-union rows.) The five current exports no ladder binary imports
+are named in the ledger, not here — they stay regardless, because
+fixtures use them.
 
 ### 2.3 Structural findings (each one shapes a phase)
 
@@ -953,8 +956,8 @@ ASan builds — the ASan leg runs with
 false positive (a live-frame write the suite proves is its own
 stack) — and a sabotaged `TlsSetValue` fails exactly 2, so the
 harness is proven able to report failure. Two nasm guest fixtures
-(`w32/tests/w32a3_threads.asm`: 45 imports, exit 66;
-`w32/tests/w32a3_tls.asm`: 17 imports, exit 67, fixed-base for its
+(`w32/tests/w32a3_threads.asm`: 44 imports, exit 66;
+`w32/tests/w32a3_tls.asm`: 16 imports, exit 67, fixed-base for its
 TLS directory) assert every section from inside the guest through
 `tests/integration/cases/test_w32_a3.sh`, including main/worker TLS
 isolation, FLS exit values, per-thread attach/detach counts, and a
@@ -982,7 +985,7 @@ repair fallout (`Makefile`, `CHANGELOG.md`, `docs/plans/W32APP_PLAN.md`,
 
 ---
 
-### Phase W32A-4 — The table-driven SEH unwinder ⬜ PLANNED
+### Phase W32A-4 — The table-driven SEH unwinder ✅ DONE
 
 **Objective:** replace the `sigsetjmp` shim with a real Win64 unwinder
 over `.pdata`/`.xdata`, so faults and `RaiseException` run handlers *and*
@@ -990,7 +993,7 @@ cleanups frame by frame. No app gate before this (D7).
 
 #### Tasks
 
-- [ ] `.pdata`/`.xdata` parser (user space, in the loader): `RUNTIME_
+- [x] `.pdata`/`.xdata` parser (user space, in the loader): `RUNTIME_
       FUNCTION` lookup by PC (binary search — the measured tables run
       to 10 543 entries), `UNWIND_INFO` decode (all unwind codes
       including `UWOP_SAVE_XMM128`, chained info), hostile-input-hard:
@@ -998,13 +1001,13 @@ cleanups frame by frame. No app gate before this (D7).
       (truncated/bit-flipped `.pdata` must refuse, never walk off the
       image). The parser is the same code the host unit test and the
       loader use (the W32-3 D2 pattern).
-- [ ] `RtlVirtualUnwind` + `RtlLookupFunctionEntry` +
+- [x] `RtlVirtualUnwind` + `RtlLookupFunctionEntry` +
       `RtlCaptureContext` + `RtlPcToFileHeader` + `RtlUnwind` +
       `RtlUnwindEx`, all REAL: handler invocation with `EXCEPTION_
       RECORD`/`CONTEXT`/dispatcher context, `ExceptionContinueSearch`/
       `ExecuteHandler`/`ContinueExecution` all honoured (the shim's
       `CONTINUE_EXECUTION` gap closes here), collided-unwind detection.
-- [ ] `RaiseException` REAL (software exceptions, C++-runtime-raised
+- [x] `RaiseException` REAL (software exceptions, C++-runtime-raised
       included, dispatch through the same unwinder), `__C_specific_handler`
       REAL (filter/exec/finally semantics for compiler-generated
       `__try`), `__finally` REAL via unwind, `_XcptFilter` REAL,
@@ -1012,17 +1015,17 @@ cleanups frame by frame. No app gate before this (D7).
       (the filter runs before the terminate box; the terminate box is a
       compositor dialog + serial dump, and its screenshot is a gate
       artefact).
-- [ ] `_CxxThrowException` unwinds cleanups frame by frame and then, per
+- [x] `_CxxThrowException` unwinds cleanups frame by frame and then, per
       D7, terminates with the named message (`W32-CXX-TYPED-CATCH-GAP`)
       instead of matching catch clauses. `?terminate@@YAXXZ` and
       `_purecall` terminate with their own named messages. This is the
       residue made executable: the behaviour is specified, tested, and
       greppable, not a crash shaped like a mystery.
-- [ ] C++ destructors run during unwinding (the RAII fix that motivates
+- [x] C++ destructors run during unwinding (the RAII fix that motivates
       the whole phase): cleanup funclets from `.xdata` execute in order;
       a throwing destructor terminates per the C++ rules (named message,
       not a hang).
-- [ ] The old shim is removed, not kept as a fallback. Two exception
+- [x] The old shim is removed, not kept as a fallback. Two exception
       systems is how a fault gets handled twice. `sehtest.c` is ported
       to the unwinder and extended, then the shim code is deleted in the
       same patch.
@@ -1039,11 +1042,40 @@ cleanups frame by frame. No app gate before this (D7).
   (mingw-w64 C++ fixture), `_CxxThrowException` terminates with the
   named message, unhandled-exception filter runs before the dialog.
 - `test_w32_integration` and the SEH receipt lines unchanged-or-extended;
-  full `make test` green.
+  the W32 lanes green (`test_w32_a3`, `test_w32_a4`, the A3/A4
+  integration gates). Full `make test` stays red on two PRE-EXISTING
+  host-test link failures (`test_w32_kernel32`, `test_w32_a1`: their
+  amalgamations omit `kernel32_thr.c`; broken since W32A-3, untouched
+  by this phase).
 
 **Deliverable:** unwinder + parser, `RaiseException`/filter/terminate-box,
-ported `sehtest`, `tests/integration/cases/test_w32a4_unwind.sh`,
+ported `sehtest`, `tests/integration/cases/test_w32_a4_unwind.sh`,
 `patches/W32A4_unwind.patch`.
+
+**Result:** the shim is gone (`userspace/apps/w32run/sehtest.c` deleted,
+`w32_try_begin/end` with it) and the unwinder is the only exception
+system. The host suite pins 19/19 under ASan/UBSan, including
+the hostile-corpus sweep (truncations + bitflips refuse, never walk off
+the image). The equivalence gate byte-compares our parser against
+`llvm-readobj --unwind` on 11 binaries — 48 hand-written NASM
+functions plus the cxx binary's libgcc tables (189–207 functions
+depending on the mingw build), all agreeing
+(and it earned its place: it caught our validator refusing the legal
+count=0 `UNWIND_INFO` libgcc emits, fixed before any guest ran).
+Eleven guest fixtures assert every behaviour from inside the guest
+through `tests/integration/cases/test_w32_a4_unwind.sh` (finally order,
+`RaiseException` parameters, `CONTINUE_EXECUTION` with a mended
+context, the MSVC-shaped throw, the named terminations, real C++
+destructor order through libgcc's personality, the VNC-shot dialog),
+with the old `sehtest` receipts moved unchanged into
+`w32a4_try/filter/crash.exe` behind `test_w32_crt.sh`. The integration
+gate passes 27/27 (the A3 gate it re-validates passes 34/34).
+Delivered as `patches/W32A4_unwind.patch`, which also carries the
+W32A-3 repair fallout (dispatch frame off the mmap'd TEB onto the heap
+thread, `register_exe` after relocations, exe-as-builtin-with-base in
+the module layer, the A3 import recount 45/17 → 44/16, the post-switch
+GS-shadow assert retarget in the scheduler, HIGHLOW-free fixture
+addressing, worker shadow space).
 
 ---
 

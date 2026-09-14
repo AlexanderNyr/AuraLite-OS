@@ -137,6 +137,9 @@ W32ABI W32_HWND    CreateWindowExA(W32_DWORD exstyle, const char *cls,
 W32ABI W32_BOOL    ShowWindow(W32_HWND hwnd, int32_t cmd);
 W32ABI W32_BOOL    UpdateWindow(W32_HWND hwnd);
 W32ABI W32_BOOL    DestroyWindow(W32_HWND hwnd);
+
+/* W32A-4: live windows, for the unwinder's GUI-or-console decision. */
+int w32_user_window_count(void);
 W32ABI W32_BOOL    GetMessageA(W32_MSG *msg, W32_HWND hwnd,
                                W32_UINT min, W32_UINT max);
 W32ABI W32_BOOL    PeekMessageA(W32_MSG *msg, W32_HWND hwnd,

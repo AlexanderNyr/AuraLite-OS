@@ -1093,6 +1093,7 @@ W32ABI void      FreeLibraryAndExitThread(void *mod, W32_DWORD code);
 W32ABI W32_BOOL  TerminateThread(W32_HANDLE h, W32_DWORD code);
 W32ABI W32_HANDLE GetCurrentThread(void);
 W32ABI W32_DWORD GetCurrentThreadId(void);
+W32ABI W32_DWORD GetThreadId(W32_HANDLE h);
 W32ABI W32_DWORD ResumeThread(W32_HANDLE h);
 W32ABI W32_BOOL  GetThreadTimes(W32_HANDLE h, W32_FILETIME *creation,
                                 W32_FILETIME *exit, W32_FILETIME *kernel,
@@ -1114,6 +1115,7 @@ W32ABI W32_BOOL  InitializeCriticalSectionAndSpinCount(W32_CRITICAL_SECTION *cs,
 W32ABI W32_BOOL  InitializeCriticalSectionEx(W32_CRITICAL_SECTION *cs,
                                              W32_DWORD spin, W32_DWORD flags);
 W32ABI void      EnterCriticalSection(W32_CRITICAL_SECTION *cs);
+W32ABI W32_BOOL TryEnterCriticalSection(W32_CRITICAL_SECTION *cs);
 W32ABI void      LeaveCriticalSection(W32_CRITICAL_SECTION *cs);
 W32ABI void      DeleteCriticalSection(W32_CRITICAL_SECTION *cs);
 W32ABI void      AcquireSRWLockExclusive(W32_SRWLOCK *lock);

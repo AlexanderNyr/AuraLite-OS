@@ -832,6 +832,10 @@ static int cmd_run_argv(const char *prog, char *const argv[]) {
         return 127;
     }
     prog = resolved;
+    /* W32A-4: the attributed name for the exit line below.  A PE that runs
+     * via w32run is reported under its own path (not the binder's), so
+     * integration statuses name the PE directly. */
+    const char *exit_label = prog;
 
     /* A PE with imports needs the user-space binder; see pe_needs_w32run().
      *
@@ -890,6 +894,8 @@ static int cmd_run_argv(const char *prog, char *const argv[]) {
     } else {
         printf("[shell] child exited\n");
         rc = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + WTERMSIG(status);
+        printf("[shell] '%s' (tid %lld) exited (code=%d)\n",
+               exit_label, (long long)pid, rc);
     }
     fflush(stdout);
     return rc;

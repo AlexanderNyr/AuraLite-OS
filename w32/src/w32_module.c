@@ -752,6 +752,53 @@ int W32ABI w32_FreeLibrary(W32_HMODULE mod) {
     return 1;
 }
 
+/* W32A-4: the exe slot.  Builtin (never unmapped/detached) but WITH a
+ * mapping, unlike the loader-code built-ins: the unwinder must resolve
+ * fault PCs inside it. */
+void w32_module_register_exe(uint8_t *base, size_t span) {
+    int i, free = -1;
+    if (!base || span == 0)
+        return;
+    w32_module_init();
+    for (i = 0; i < W32_MODULE_MAX; i++) {
+        if (!modules[i].used) {
+            if (free < 0) free = i;
+            continue;
+        }
+        if (modules[i].base == base)
+            return;     /* idempotent */
+    }
+    if (free < 0)
+        return;         /* table full: the unwinder sees DLLs only */
+    memset(&modules[free], 0, sizeof(modules[free]));
+    modules[free].used = 1;
+    modules[free].builtin = 1;
+    modules[free].refs = 1;
+    modules[free].base = base;
+    modules[free].span = span;
+    strcpy(modules[free].name, "(exe)");
+    modules[free].seq = load_seq++;
+}
+
+int w32_module_find_by_address(const void *pc, uint8_t **base, size_t *span) {
+    uintptr_t p = (uintptr_t)pc;
+    int i;
+    if (!pc)
+        return -1;
+    for (i = 0; i < W32_MODULE_MAX; i++) {
+        uintptr_t b;
+        if (!modules[i].used || !modules[i].base || modules[i].span == 0)
+            continue;
+        b = (uintptr_t)modules[i].base;
+        if (p >= b && p - b < modules[i].span) {
+            if (base) *base = modules[i].base;
+            if (span) *span = modules[i].span;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 void w32_module_detach_all(void) {
     /* Newest first: dependencies attached before their importers, so
      * reverse load order is teardown order.  References are ignored -- the

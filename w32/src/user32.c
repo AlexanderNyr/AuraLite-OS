@@ -559,3 +559,13 @@ W32ABI W32_HBRUSH CreateSolidBrush(W32_DWORD color) {
 }
 
 W32ABI W32_BOOL DeleteObject(void *obj) { (void)obj; return W32_TRUE; }
+
+/* W32A-4: live windows, for the unwinder's GUI-or-console decision.  The
+ * unhandled box shows only when this process owns a window; a console
+ * crasher gets the serial dump and the signal. */
+int w32_user_window_count(void) {
+    int n = 0;
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i].in_use) n++;
+    return n;
+}

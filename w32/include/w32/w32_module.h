@@ -78,6 +78,16 @@ W32_HMODULE W32ABI w32_GetModuleHandleA(const char *name);
  * the last error set. */
 W32_HMODULE W32ABI w32_LoadLibraryA(const char *name);
 
+/* W32A-4: register the main executable (mapped by w32run, not by this
+ * loader) so the unwinder's address queries see it.  Idempotent for the
+ * same base.  The slot is builtin: never unmapped, never detached. */
+void w32_module_register_exe(uint8_t *base, size_t span);
+
+/* W32A-4: which module owns @pc?  0 with the outs filled, else -1.
+ * Built-ins
+ * without mappings never match (the unwinder cannot walk loader code). */
+int w32_module_find_by_address(const void *pc, uint8_t **base, size_t *span);
+
 /* GetProcAddress: NULL + ERROR_PROC_NOT_FOUND for an unknown name, never a
  * crash, and never a pointer to a forwarder string. */
 void *W32ABI w32_GetProcAddress(W32_HMODULE mod, const char *name);

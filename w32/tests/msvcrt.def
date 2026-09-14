@@ -1,0 +1,7 @@
+; msvcrt.def — the msvcrt import set the gate binaries need.  W32A-4, D7:
+; exactly what the C++ fixtures import (the named terminations).
+LIBRARY msvcrt.dll
+EXPORTS
+    _CxxThrowException
+    _purecall
+    ?terminate@@YAXXZ

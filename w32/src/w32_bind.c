@@ -6,6 +6,7 @@
 #include "w32/kernel32.h"
 #include "w32/user32.h"
 #include "w32/oleaut32.h"
+#include "w32/w32_seh.h"
 #include "w32/w32_gen.h"
 
 #ifndef AURALITE_W32_HOST_TEST
@@ -32,6 +33,7 @@ static int ieq(const char *a, const char *b) {
 
 #define K32 "KERNEL32.dll"
 #define U32 "USER32.dll"
+#define MCRT "msvcrt.dll"
 #define G32 "GDI32.dll"
 #define OA32 "OLEAUT32.dll"
 
@@ -306,6 +308,7 @@ static const w32_export_t exports[] = {
     { K32, "CreateThreadpoolWork",       (void *)CreateThreadpoolWork       },
     { K32, "DeleteCriticalSection",      (void *)DeleteCriticalSection      },
     { K32, "EnterCriticalSection",       (void *)EnterCriticalSection       },
+    { K32, "TryEnterCriticalSection",    (void *)TryEnterCriticalSection    },
     { K32, "ExitThread",                 (void *)ExitThread                 },
     { K32, "FlsAlloc",                   (void *)FlsAlloc                   },
     { K32, "FlsFree",                    (void *)FlsFree                    },
@@ -314,6 +317,7 @@ static const w32_export_t exports[] = {
     { K32, "FreeLibraryAndExitThread",   (void *)FreeLibraryAndExitThread   },
     { K32, "GetCurrentThread",           (void *)GetCurrentThread           },
     { K32, "GetCurrentThreadId",         (void *)GetCurrentThreadId         },
+    { K32, "GetThreadId",                (void *)GetThreadId                },
     { K32, "GetExitCodeThread",          (void *)GetExitCodeThread          },
     { K32, "GetThreadTimes",             (void *)GetThreadTimes             },
     { K32, "InitializeCriticalSection",  (void *)InitializeCriticalSection  },
@@ -345,6 +349,30 @@ static const w32_export_t exports[] = {
     { K32, "WaitForSingleObject",        (void *)WaitForSingleObject        },
     { K32, "WaitForSingleObjectEx",      (void *)WaitForSingleObjectEx      },
     { K32, "WakeAllConditionVariable",   (void *)WakeAllConditionVariable   },
+    /* KERNEL32 (W32A-4).  The table-driven unwinder: fault dispatch
+     * consults the guest .pdata live (see w32_seh.c), and the Rtl family
+     * is how foreign personalities (libgcc's __gxx_personality_seh0)
+     * drive the same tables. */
+    { K32, "RaiseException",             (void *)RaiseException             },
+    { K32, "RtlCaptureContext",          (void *)RtlCaptureContext          },
+    { K32, "RtlLookupFunctionEntry",     (void *)RtlLookupFunctionEntry     },
+    { K32, "RtlPcToFileHeader",          (void *)RtlPcToFileHeader          },
+    { K32, "RtlUnwind",                  (void *)RtlUnwind                  },
+    { K32, "RtlUnwindEx",                (void *)RtlUnwindEx                },
+    { K32, "RtlVirtualUnwind",           (void *)RtlVirtualUnwind           },
+    { K32, "SetUnhandledExceptionFilter", (void *)SetUnhandledExceptionFilter },
+    { K32, "UnhandledExceptionFilter",   (void *)UnhandledExceptionFilter   },
+    { K32, "_XcptFilter",                (void *)_XcptFilter                },
+    { K32, "__C_specific_handler",       (void *)__C_specific_handler       },
+    /* msvcrt (W32A-4, D7).  The static table shadows the W32A-13 TODO
+     * stubs: the throw sweeps real cleanups, the two deaths are named. */
+    { MCRT, "_CxxThrowException",        (void *)_CxxThrowException        },
+    { MCRT, "?terminate@@YAXXZ",         (void *)w32_cxx_terminate          },
+    { MCRT, "_purecall",                 (void *)_purecall                 },
+    /* The CRT re-exports both handlers (every ladder binary imports them
+     * from msvcrt, not kernel32): same functions, second spelling. */
+    { MCRT, "_XcptFilter",               (void *)_XcptFilter               },
+    { MCRT, "__C_specific_handler",      (void *)__C_specific_handler      },
     { 0, 0, 0 }
 };
 

@@ -912,7 +912,7 @@ USER_CFLAGS += -I lib/libauragui/include
 # Application ELFs.
 ### RUST: add rustes.elf to the list
 USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
-             $(USER_BUILD)/w32run.elf $(USER_BUILD)/sehtest.elf \
+             $(USER_BUILD)/w32run.elf \
              $(USER_BUILD)/dlltest.elf $(USER_BUILD)/filesize.elf \
              $(USER_BUILD)/guiacl.elf \
              $(USER_BUILD)/editor.elf $(USER_BUILD)/http.elf \
@@ -1070,6 +1070,7 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_handle.o  $(USER_BUILD)/w32_bind.o \
                 $(USER_BUILD)/w32_peu.o     $(USER_BUILD)/w32_user32.o \
                 $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o \
+                $(USER_BUILD)/w32_seh.o \
                 $(USER_BUILD)/w32_module.o \
                 $(USER_BUILD)/w32_oleaut32.o $(USER_BUILD)/w32_manifest.o \
                 $(USER_BUILD)/w32_stubs_gen.o \
@@ -1095,6 +1096,9 @@ $(USER_BUILD)/w32_user32.o: w32/src/user32.c $(USER_CFLAGS_INC)
 # and Win32 command-line splitting.
 $(USER_BUILD)/w32_crt.o: w32/src/w32_crt.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32A-4: table-driven SEH (RtlVirtualUnwind and family).
+$(USER_BUILD)/w32_seh.o: w32/src/w32_seh.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -fno-builtin-setjmp -fno-builtin-longjmp -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_argv.o: w32/src/w32_argv.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 # W32-7: LoadLibrary/GetProcAddress/FreeLibrary over real DLL files.
@@ -1141,16 +1145,6 @@ $(USER_BUILD)/w32run.elf: $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
 
 # W32-6: the SEH shim exercised from native code, so a failure is the shim's
 # and not the PE loader's.
-$(USER_BUILD)/sehtest.o: userspace/apps/w32run/sehtest.c $(USER_CFLAGS_INC)
-	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
-
-$(USER_BUILD)/sehtest.elf: $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
-                           $(USER_COMMON) lib/libc/user.ld
-	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/sehtest.o $(USER_BUILD)/w32_crt.o \
-	      $(USER_COMMON_LNK) -o $@
-	@echo "[link] $@ (w32 SEH shim)"
-
 # W32-7: the module layer exercised from native code.
 # filesize: the read-path regression gate; see the file's own comment.
 $(USER_BUILD)/filesize.o: userspace/tests/filesize/filesize.c $(USER_CFLAGS_INC)
@@ -2247,7 +2241,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
-INITRD_APPS  := calc editor http weather trustinfo clock browser w32run sehtest dlltest filesize gcalc gedit gfiles gterm \
+INITRD_APPS  := calc editor http weather trustinfo clock browser w32run dlltest filesize gcalc gedit gfiles gterm \
                 gsysmon gabout gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser ota
 INITRD_DEMOS := guess snake glcube glshade glgears glrunner
 INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \
@@ -2346,6 +2340,35 @@ $(W32A3L_EXE): w32/tests/w32a3_tls.asm $(K32_IMPLIB)
 	lld-link -subsystem:console -entry:start -nodefaultlib -base:0x140000000 \
 	         $(BUILD_DIR)/user/w32a3_tls.obj $(K32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (W32A-3 TLS guest fixture)"
+
+# W32A-4: the SEH/unwind guest fixtures.  Nine NASM binaries with hand-written
+# .pdata/.xdata (the tables llvm-readobj validates in the equivalence gate),
+# linked against the in-tree kernel32.lib + msvcrt.lib; every fixture links
+# both implibs (lld-link pulls only referenced symbols, so the unused half
+# adds no imports), and the dialog fixture additionally takes user32.lib.
+W32A4_NAMES := try unwind raise continue cxthrow filter crash term purecall dialog
+W32A4_EXES := $(addprefix $(BUILD_DIR)/user/w32a4_,$(addsuffix .exe,$(W32A4_NAMES)))
+MCRT_IMPLIB := $(BUILD_DIR)/user/msvcrt.lib
+
+$(MCRT_IMPLIB): w32/tests/msvcrt.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/msvcrt.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+$(BUILD_DIR)/user/w32a4_%.exe: w32/tests/w32a4_%.asm $(K32_IMPLIB) $(MCRT_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a4_$*.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a4_$*.obj $(K32_IMPLIB) $(MCRT_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-4 guest fixture)"
+
+$(BUILD_DIR)/user/w32a4_dialog.exe: w32/tests/w32a4_dialog.asm $(K32_IMPLIB) $(MCRT_IMPLIB) $(U32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a4_dialog.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a4_dialog.obj $(K32_IMPLIB) $(MCRT_IMPLIB) $(U32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-4 dialog guest fixture)"
 
 TESTDLL := $(BUILD_DIR)/user/testdll.dll
 
@@ -2601,6 +2624,7 @@ $(BUILD_DIR)/user/mantest_bad.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) 
 # the console example is copied into the initrd so the gate can run a
 # genuinely compiler-emitted Win32 binary rather than only hand-written asm.
 MINGW_CC := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
+MINGW_CXX := $(shell command -v x86_64-w64-mingw32-g++ 2>/dev/null)
 W32_EXAMPLE_EXE := $(BUILD_DIR)/user/w32hello.exe
 W32_UNSUP_EXE   := $(BUILD_DIR)/user/w32unsup.exe
 
@@ -2651,15 +2675,36 @@ W32A2_NAMES := find time map pipes proc locale heap
 W32A2_EXES := $(addprefix $(BUILD_DIR)/user/w32a2_,$(addsuffix .exe,$(W32A2_NAMES)))
 
 ifneq ($(MINGW_CC),)
+# -lgcc supplies only ___chkstk_ms (newer mingw emits the stack probe even
+# for -nostdlib TUs; libgcc is archived per-object, so nothing else links).
 $(BUILD_DIR)/user/w32a2_%.exe: w32/tests/w32a2_%.c w32/tests/w32a2_common.h $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
 	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
-	    -nostdlib -Wl,--entry=winstart -lkernel32
+	    -nostdlib -Wl,--entry=winstart -lkernel32 -lgcc
 	@echo "  [pe] $@ (W32A-2 guest fixture)"
 else
 $(W32A2_EXES): $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
 	@echo "  [pe] skipping the W32A-2 fixtures (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
+# W32A-4: the real-C++ unwinding fixture.  -nostdlib + --entry=winstart like
+# the A2 probes (kernel32-only imports, no msvcrt.dll); libstdc++/libgcc come
+# in statically, and the TU carries every CRT shim the link needs (see the
+# header comment in w32a4_cxx.cpp for the enumerated set).
+W32A4_CXX_EXE := $(BUILD_DIR)/user/w32a4_cxx.exe
+ifneq ($(MINGW_CXX),)
+$(W32A4_CXX_EXE): w32/tests/w32a4_cxx.cpp $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CXX) -O1 -m64 -static -ffunction-sections -fdata-sections $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -Wl,--disable-auto-import -Wl,--gc-sections \
+	    -lstdc++ -lgcc_eh -lgcc -lkernel32
+	@echo "  [pe] $@ (W32A-4 C++ guest fixture)"
+else
+$(W32A4_CXX_EXE): $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the W32A-4 C++ fixture (no x86_64-w64-mingw32-g++)"
 	@: > $@
 endif
 
@@ -2849,7 +2894,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -3016,6 +3061,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
 	@cp $(W32A3T_EXE) $(INITRD_DIR)/tests/w32a3_threads.exe
 	@cp $(W32A3L_EXE) $(INITRD_DIR)/tests/w32a3_tls.exe
+	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
+	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
 # W32A-1: 7 DLLs + 15 exes.  Basenames are preserved because the
 # loader resolves dependency names against the exe's directory.
@@ -3302,6 +3349,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_argv \
                 $(BUILD_DIR)/test_w32_exports \
                 $(BUILD_DIR)/test_w32_a1 \
+                $(BUILD_DIR)/test_w32_a3 \
+                $(BUILD_DIR)/test_w32_a4 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3386,6 +3435,31 @@ $(BUILD_DIR)/test_w32_a1: tests/unit/test_w32_a1.c \
 	          w32/src/w32_pe.c w32/src/w32_manifest.c \
 	          w32/src/w32_stubs_gen.c w32/src/w32_errno.c -o $@
 
+# W32A-3: threads + TLS host suite.  Amalgamates the w32 sources like the
+# W32-1/W32-2 gates (no archive); -lpthread for the suite's own threads.
+# Sanitizers match test_w32_a1; the one raw-clone false positive is
+# suppressed in-code (__asan_default_options), so no ASAN_OPTIONS needed.
+$(BUILD_DIR)/test_w32_a3: tests/unit/test_w32_a3.c \
+                          w32/src/w32_utf.c w32/src/w32_errno.c \
+                          w32/src/w32_handle.c w32/src/kernel32.c \
+                          w32/src/kernel32_fs.c w32/src/kernel32_ps.c \
+                          w32/src/kernel32_loc.c w32/src/w32_crt.c \
+                          w32/src/kernel32_thr.c w32/src/w32_seh.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_a3.c -lpthread -o $@
+
+# W32A-4: table-driven SEH host suite.  Amalgamates w32_seh.c like the
+# W32-2 gate; PROT_EXEC synthetic images let the dispatch call real
+# personalities/funclets through in-image stubs.
+$(BUILD_DIR)/test_w32_a4: tests/unit/test_w32_a4.c \
+                          w32/src/w32_seh.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_a4.c -o $@
+
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.
 .PHONY: w32-peinfo
@@ -3396,7 +3470,20 @@ $(BUILD_DIR)/w32_peinfo: w32/tools/peinfo.c w32/src/w32_pe.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) \
 	    w32/tools/peinfo.c w32/src/w32_pe.c -o $@
 
-test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(W32A1_FIXTURES)
+# W32A-4: dump unwind info through OUR parser (w32_seh_lookup +
+# w32_seh_validate_chain per function).  Its output is what the
+# llvm-readobj equivalence gate below byte-compares.
+.PHONY: w32-unwinddump
+w32-unwinddump: $(BUILD_DIR)/w32_unwinddump
+$(BUILD_DIR)/w32_unwinddump: w32/tools/unwinddump.c w32/src/w32_seh.c \
+                         w32/src/w32_pe.c w32/include/w32/w32_seh.h \
+                         w32/include/w32/w32_pe.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_DEFAULT_SOURCE \
+	    -D_POSIX_C_SOURCE=200809L -DAURALITE_W32_HOST_TEST $(W32_INC) -I . \
+	    w32/tools/unwinddump.c w32/src/w32_seh.c w32/src/w32_pe.c -o $@
+
+test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W32A1_FIXTURES)
 # W32A-1: the harness asserts over the built fixtures, so they are	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
 # W32A-1: the committed bindreport agrees textually with a fresh one.
 	@echo "[unit] running $(BUILD_DIR)/test_w32_a1 --emit-report"
@@ -3495,6 +3582,12 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(W32A1_FIXTURES)
 # project's own BOOTX64.EFI.  Skips cleanly if either is unavailable.
 	@echo "[unit] running tests/unit/test_w32_peinfo.sh"
 	@bash tests/unit/test_w32_peinfo.sh || exit 1
+
+# W32A-4: our unwind parser agrees byte-for-byte with llvm-readobj on the
+# repo's own fixtures (hand-written tables + compiler-generated ones).
+# Skips cleanly when the fixtures or the reference reader are unavailable.
+	@echo "[unit] running tests/unit/test_w32_a4equiv.py"
+	@python3 tests/unit/test_w32_a4equiv.py || exit 1
 
 # I386_PLAN I6: the pointer-width sweep gates — three ratchets
 # ((uint64_t) casts in portable code, direct x86_64 includes, cross-arch

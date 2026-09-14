@@ -38,6 +38,19 @@
 #define W32_EXCEPTION_PRIV_INSTRUCTION      0xC0000096u
 #define W32_EXCEPTION_BREAKPOINT            0x80000003u
 #define W32_EXCEPTION_DATATYPE_MISALIGNMENT 0x80000002u
+/* W32A-4: the rest of the standard set (the default _XcptFilter table). */
+#define W32_EXCEPTION_SINGLE_STEP           0x80000004u
+#define W32_EXCEPTION_ARRAY_BOUNDS_EXCEEDED 0xC000008Cu
+#define W32_EXCEPTION_FLT_DENORMAL_OPERAND  0xC000008Du
+#define W32_EXCEPTION_FLT_INEXACT_RESULT    0xC000008Fu
+#define W32_EXCEPTION_FLT_INVALID_OPERATION 0xC0000090u
+#define W32_EXCEPTION_FLT_OVERFLOW          0xC0000091u
+#define W32_EXCEPTION_FLT_STACK_CHECK       0xC0000092u
+#define W32_EXCEPTION_FLT_UNDERFLOW         0xC0000093u
+#define W32_EXCEPTION_STACK_OVERFLOW        0xC00000FDu
+#define W32_EXCEPTION_NONCONTINUABLE_EXCEPTION 0xC0000025u
+#define W32_EXCEPTION_GUARD_PAGE_VIOLATION  0x80000001u
+#define W32_EXCEPTION_INVALID_HANDLE        0xC0000008u
 
 /* Filter return values (documented EXCEPTION_* dispositions). */
 #define W32_EXCEPTION_EXECUTE_HANDLER     1
@@ -100,58 +113,18 @@ int w32_crt_run_initializers(unsigned char *base, size_t image_size,
 
 /* ---- structured exception handling ------------------------------------ */
 
-/* Install the fault handlers that make w32_try_begin() work.
+/* Install the fault entry (the W32A-4 unwinder's signal handlers).
  *
  * Idempotent.  Returns 0 on success, -1 if the handlers could not be
- * installed (in which case __try will not catch anything, and saying so is
- * better than pretending). */
+ * installed (in which case faults die on their signals, and saying so is
+ * better than pretending).  Implemented in w32/src/w32_seh.c. */
 int w32_seh_init(void);
 
-/* The __try/__except shim.
- *
- * Usage mirrors what a compiler would emit:
- *
- *     if (w32_try_begin() == 0) {
- *         ... guarded code ...
- *         w32_try_end();
- *     } else {
- *         ... handler; w32_exception_code() says what happened ...
- *     }
- *
- * w32_try_begin() returns 0 on the initial call and the exception code when
- * control arrives via a fault.  It must be a macro, not a function: the
- * setjmp buffer has to belong to the caller's frame, and a helper function
- * that called setjmp on its own frame would return into a dead frame.
- */
-#ifndef AURALITE_W32_HOST_TEST
-#include <setjmp.h>
-#endif
-
-/* Depth of the __try nesting stack.  Deliberately small and fixed: this is
- * a shim, and an unbounded one would need allocation on the fault path. */
-#define W32_SEH_MAX_DEPTH 16
-
-/* Push a jump buffer and return it, or NULL if nesting is too deep. */
-sigjmp_buf *w32_seh_push(void);
-/* Pop the innermost buffer (the normal, non-faulting exit from a __try). */
-void        w32_seh_pop(void);
-/* The code of the exception that transferred control here. */
-uint32_t    w32_exception_code(void);
-/* The faulting address, for an access violation. */
-void       *w32_exception_address(void);
-
-#define w32_try_begin()                                                    \
-    ({ sigjmp_buf *_jb = w32_seh_push();                                   \
-       _jb ? sigsetjmp(*_jb, 1) : (int)W32_EXCEPTION_CONTINUE_SEARCH; })
-
-#define w32_try_end() w32_seh_pop()
-
-/* SetUnhandledExceptionFilter: the last-chance filter, called when a fault
- * happens with no __try active.  Returning EXCEPTION_EXECUTE_HANDLER makes
- * the process exit quietly; anything else lets it die on the signal. */
-typedef int32_t (W32ABI *w32_unhandled_filter_fn)(void *exception_info);
-
-w32_unhandled_filter_fn
-w32_SetUnhandledExceptionFilter(w32_unhandled_filter_fn filter);
+/* The W32-6 __try/__except shim (w32_try_begin/end, w32_seh_push/pop,
+ * w32_exception_code/address, w32_SetUnhandledExceptionFilter) was deleted
+ * in W32A-4: faults now dispatch through the image's own .pdata/.xdata
+ * (w32/w32_seh.h), and the shim's shadow stack would have been a second,
+ * divergent exception system.  Its receipts live on as the w32a4_try
+ * fixture's cases. */
 
 #endif /* AURALITE_W32_CRT_H */

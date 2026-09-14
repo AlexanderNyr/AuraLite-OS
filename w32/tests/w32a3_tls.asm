@@ -13,7 +13,8 @@
 ; (W32-5): RSP % 16 == 8 at every function entry, == 0 at every CALL, so
 ; pushes + sub must total 8 mod 16.  Every frame below is annotated.
 ;
-; Imports: 17 (the gate asserts the bound count).
+; Imports: 16 (direct runs do not print the bound count;
+; the gate asserts markers + exit codes).
 
 bits 64
 default rel
@@ -22,9 +23,9 @@ extern GetStdHandle
 extern WriteFile
 extern ExitProcess
 extern CreateThread
+extern GetExitCodeThread
 extern WaitForSingleObject
 extern CloseHandle
-extern Sleep
 extern TlsAlloc
 extern TlsGetValue
 extern TlsSetValue
@@ -34,7 +35,6 @@ extern FlsGetValue
 extern FlsSetValue
 extern FlsFree
 extern GetLastError
-extern SetLastError
 
 %define INFINITE           0xFFFFFFFF
 %define WAIT_OBJECT_0      0

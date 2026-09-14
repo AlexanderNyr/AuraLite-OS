@@ -460,10 +460,10 @@ EXPECTED_TOTALS = {
 # plus an independent re-parse; the plan draft said 600/558 from a superseded
 # ad-hoc text pipeline (see the W32A-0 Result).
 EXPECTED_UNION = 611
-# Current personality coverage of that union (w32/src/w32_bind.c: 264 K/U/G
-# exports after W32A-3 (215 after W32A-2); the W32A-0 baseline was
+# Current personality coverage of that union (w32/src/w32_bind.c: 275 K/U/G
+# exports after W32A-4 (264 after W32A-3); the W32A-0 baseline was
 # 44 exports, gap 569).
-EXPECTED_GAP = 350
+EXPECTED_GAP = 341
 
 KUG = {"kernel32.dll", "user32.dll", "gdi32.dll"}
 DLL_OF = {"K32": "kernel32.dll", "U32": "user32.dll", "G32": "gdi32.dll"}

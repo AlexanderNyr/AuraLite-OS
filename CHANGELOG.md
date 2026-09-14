@@ -2,6 +2,36 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-4 — the table-driven SEH unwinder] 2026-09-13 — faults unwind for real
+
+The `sigsetjmp` shim is deleted; faults and `RaiseException` now dispatch
+through the image's own `.pdata`/`.xdata`, frame by frame, cleanups
+included. `RtlVirtualUnwind`/`RtlUnwind`/`RtlUnwindEx`/
+`RtlLookupFunctionEntry`/`RtlPcToFileHeader`/`RtlCaptureContext`,
+`__C_specific_handler`, `_XcptFilter`, `RaiseException`,
+`SetUnhandledExceptionFilter`/`UnhandledExceptionFilter` are REAL, and the
+MSVC-shaped C++ surface is specified: `_CxxThrowException` sweeps real
+cleanups then terminates with the named `W32-CXX-TYPED-CATCH-GAP` (catch
+clauses are never matched), `?terminate@@YAXXZ` and `_purecall` die by
+their own names. Unhandled faults dump to serial and die on their signal
+in console sessions, or raise the modal terminate box when the process
+owns a live window. Proved by a 19/19 host suite (ASan/UBSan),
+a byte-exact `llvm-readobj --unwind` equivalence gate over 11 binaries
+(48 hand-written NASM functions + the cxx binary's libgcc tables, 189
+functions with the author's mingw, 207 with 14.x — the gate passes on
+both), and
+11 guest fixtures behind `tests/integration/cases/test_w32_a4_unwind.sh`
+(finally order, RaiseException parameters, CONTINUE_EXECUTION with a
+mended context, real C++ destructor order through libgcc's personality,
+the VNC-shot dialog); the old `sehtest` receipts moved unchanged into
+`w32a4_try/filter/crash.exe`. The patch also carries the W32A-3 repair
+fallout (dispatch frame moved from the mmap'd TEB to the heap thread,
+`register_exe` after relocations, sehtest deletion, A3 import recount,
+HIGHLOW-free fixture addressing, worker shadow space) plus one 1-spot
+kernel fix the SEH gate needs to run at all: the post-switch GS-shadow
+assert in the scheduler retargeted from the stale `next` to
+`sched_current()`.
+
 ## [W32A-3 — threads and per-thread TLS] 2026-09-13 — the one kernel change
 
 The threading API is REAL throughout, no new stubs: 48 ledger symbols

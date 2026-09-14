@@ -206,12 +206,20 @@ void schedule(void) {
         context_switch(old, next);
     }
 
-    /* W32A-3: after the switch returns we run AS next, so the
-     * KERNEL_GS_BASE shadow must be next's user GS.  The check itself
-     * is GS-independent (RDMSR + the TCB pointer, no %gs memory), so it
-     * cannot be fooled by the very corruption it guards against. */
-    if (next != NULL) {
-        ASSERT(read_kernel_gs_base() == next->user_gs_base);
+    /* W32A-3: after the switch returns we run AS the resumed thread,
+     * so the KERNEL_GS_BASE shadow must be that thread's user GS.  The
+     * check itself is GS-independent (RDMSR + the TCB pointer, no %gs
+     * memory), so it cannot be fooled by the very corruption it guards
+     * against.  W32A-4: the `next` LOCAL is the resumed frame's stale
+     * pick, not the resumed thread (each thread's kernel stack holds its
+     * own suspended schedule() frame) -- comparing against it panics on
+     * every w32run spawn/exit cycle.  local->current was set to the
+     * incoming thread before the switch, so it names the resumed one. */
+    {
+        tcb_t *cur = sched_current();
+        if (cur != NULL) {
+            ASSERT(read_kernel_gs_base() == cur->user_gs_base);
+        }
     }
 }
 

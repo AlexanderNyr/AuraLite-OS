@@ -50,11 +50,9 @@ PHASES = ["W32A-%d" % n for n in range(0, 19)]
 # App phases whose gate is guarded by a ledger's REFUSE rows:
 # phase -> ledger file whose REFUSE rows block that phase's green-DONE.
 APP_LEDGERS = {
-    "W32A-4": "putty-0.85.imports",
-    "W32A-7": "7zFM-24.09.imports",
-    "W32A-11": "notepad++-8.8.9.imports",
-    "W32A-13": "7z-24.09.imports",
-    "W32A-15": "npp-plugins-8.8.9.imports",
+    "W32A-14": "putty-0.85.imports",
+    "W32A-15": "7zFM-24.09.imports",
+    "W32A-16": "notepad++-8.8.9.imports",
 }
 
 # Durable artefacts each done phase must have (existence checks).
@@ -105,6 +103,25 @@ ARTEFACTS = {
                "tests/integration/cases/test_w32_a3.sh",
                "kernel/arch/x86_64/syscall_entry.asm",
                "patches/W32A3_threads.patch"],
+    "W32A-4": ["w32/src/w32_seh.c",
+               "w32/include/w32/w32_seh.h",
+               "tests/unit/test_w32_a4.c",
+               "w32/tools/unwinddump.c",
+               "tests/unit/test_w32_a4equiv.py",
+               "w32/tests/w32a4_try.asm",
+               "w32/tests/w32a4_unwind.asm",
+               "w32/tests/w32a4_raise.asm",
+               "w32/tests/w32a4_continue.asm",
+               "w32/tests/w32a4_cxthrow.asm",
+               "w32/tests/w32a4_filter.asm",
+               "w32/tests/w32a4_crash.asm",
+               "w32/tests/w32a4_term.asm",
+               "w32/tests/w32a4_purecall.asm",
+               "w32/tests/w32a4_dialog.asm",
+               "w32/tests/w32a4_cxx.cpp",
+               "w32/tests/msvcrt.def",
+               "tests/integration/cases/test_w32_a4_unwind.sh",
+               "patches/W32A4_unwind.patch"],
 }
 
 # Greppable receipts each done phase must carry in its plan section.
@@ -123,6 +140,9 @@ RECEIPTS = {
     "W32A-3": ["patches/W32A3_threads.patch",
                "963/0",
                "test_w32_a3"],
+    "W32A-4": ["patches/W32A4_unwind.patch",
+               "19/19",
+               "test_w32_a4_unwind"],
 }
 
 

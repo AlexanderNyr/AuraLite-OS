@@ -63,6 +63,7 @@
 #include "w32/w32_utf.h"
 #include "w32/w32_module.h"
 #include "w32/w32_crt.h"
+#include "w32/w32_seh.h"   /* W32A-4: dispatch-frame lifecycle */
 
 #include <unistd.h>
 #include <stdlib.h>
@@ -259,7 +260,7 @@ struct w32_thread {
                                   * or (for a TKILL'd thread) by the killer
                                   * once death is observed. */
     int is_main;
-    W32_DWORD exit_code;
+    volatile W32_DWORD exit_code; /* payload of exited_word (same rule). */
     uint64_t birth_ft;           /* creation time (FILETIME) */
     W32_DWORD suspend_count;     /* >0: trampoline waits before user proc */
     volatile uint32_t start_seq; /* futex word for the suspend wait */
@@ -270,6 +271,10 @@ struct w32_thread {
     uint64_t stack_size;
     struct w32_teb *teb;
     void **tls_blocks;           /* [W32_TLS_MODULES_MAX], pre-allocated */
+    void *seh_frame;             /* W32A-4: SEH dispatch frame (birth-alloc).
+                                  * Lives HERE, not in the TEB: the TEB is
+                                  * mmap'd (LSan-blind), this object is heap
+                                  * (a live thread's frame stays reachable). */
     struct thr_apc *apc_head;
     struct thr_apc *apc_tail;
     struct w32_thr_mutex *owned; /* intrusive list of held mutexes */
@@ -285,7 +290,11 @@ struct w32_thread {
                               * checkpoint with kill_code (the guest
                               * kills preemptively; Linux cannot, so the
                               * host kills cooperatively — see below). */
-    W32_DWORD kill_code;
+    volatile W32_DWORD kill_code; /* volatile WITH the flag: the checkpoint
+                              * reads both lock-free, and a plain payload
+                              * lets the compiler sink the killer's store
+                              * below the flag/unlock, so the victim can
+                              * observe pending=1 with a stale code=0. */
     int orphaned;            /* handle closed while running: nobody will
                               * reap; ExitThread frees the heap object
                               * itself (the stack/TEB mappings leak — a
@@ -293,8 +302,14 @@ struct w32_thread {
                               * on — reaped at process exit). */
 };
 
-static struct w32_thread *thr_live[THR_LIVE_MAX];
-static int thr_live_n;
+/* Volatile slots + count (W32A-3 repair): the birth path cached thr_live_n
+ * in a register across the clone window (disassembly-proven: one load at
+ * the TLS check reused at the list add ~2000 insns later), missing a
+ * concurrent worker self-remove and adding with a stale-high count over
+ * swap residue -- the twin/UAF.  Volatile forces a fresh load at each
+ * access; the spin still provides the atomicity. */
+static struct w32_thread *volatile thr_live[THR_LIVE_MAX];
+static volatile int thr_live_n;
 
 static uint64_t thr_now_ft(void) {
     /* FILETIME: 100 ns ticks since 1601-01-01.  Same epoch math as the
@@ -669,6 +684,15 @@ void w32_thr_init(void) {
         munmap(teb, 4096);
         return;
     }
+    /* W32A-4: the SEH dispatch frame (birth-allocated, never on the
+     * fault path). */
+    main_thr->seh_frame = w32_seh_frame_new();
+    if (!main_thr->seh_frame) {
+        free(main_thr->tls_blocks);
+        free(main_thr);
+        munmap(teb, 4096);
+        return;
+    }
     teb->thread_obj = main_thr;
     teb->tls_storage_ptr = (uint64_t)(uintptr_t)main_thr->tls_blocks;
 
@@ -899,6 +923,19 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
     teb->tls_storage_ptr = (uint64_t)(uintptr_t)t->tls_blocks;
     teb->nt_stack_base = (uint64_t)(uintptr_t)stack + stack_sz;
     teb->nt_stack_limit = (uint64_t)(uintptr_t)stack;
+    /* W32A-4: the SEH dispatch frame (after the memset above, which
+     * would clear it; the spin is not held here). */
+    t->seh_frame = w32_seh_frame_new();
+    if (!t->seh_frame) {
+        for (int i = 0; i < W32_TLS_MODULES_MAX; i++)
+            free(t->tls_blocks[i]);
+        free(t->tls_blocks);
+        free(t);
+        munmap(teb, 4096);
+        munmap(stack, (size_t)stack_sz);
+        w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
 
     t->start = start;
     t->param = param;
@@ -944,6 +981,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         for (int i = 0; i < W32_TLS_MODULES_MAX; i++)
             free(t->tls_blocks[i]);
         free(t->tls_blocks);
+        w32_seh_frame_free(t->seh_frame);
         free(t);
         munmap(teb, 4096);
         munmap(stack, (size_t)stack_sz);
@@ -970,6 +1008,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         for (int i = 0; i < W32_TLS_MODULES_MAX; i++)
             free(t->tls_blocks[i]);
         free(t->tls_blocks);
+        w32_seh_frame_free(t->seh_frame);
         free(t);
         munmap(teb, 4096);
         munmap(stack, (size_t)stack_sz);
@@ -995,6 +1034,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         for (int i = 0; i < W32_TLS_MODULES_MAX; i++)
             free(t->tls_blocks[i]);
         free(t->tls_blocks);
+        w32_seh_frame_free(t->seh_frame);
         free(t);
         munmap(teb, 4096);
         munmap(stack, (size_t)stack_sz);
@@ -1128,6 +1168,14 @@ static void thr_suicide(W32_DWORD code) {
                 free(t->tls_blocks);
                 t->tls_blocks = 0;
             }
+            /* W32A-4: the dispatch frame.  NULL-then-free: a TKILL
+             * landing between the two leaks (safe); free-then-NULL
+             * would let the reaper double-free. */
+            if (t->seh_frame) {
+                void *sf = t->seh_frame;
+                t->seh_frame = 0;
+                w32_seh_frame_free(sf);
+            }
             /* The stack/TEB mappings go to the closer (self-munmap is
              * death — see ExitThread step 5); an orphaned victim frees
              * the heap object itself. */
@@ -1219,6 +1267,12 @@ W32ABI void ExitThread(W32_DWORD code) {
             free(t->tls_blocks[i]);
         free(t->tls_blocks);
         t->tls_blocks = 0;
+        /* W32A-4: NULL-then-free (same TKILL reasoning as above). */
+        if (t->seh_frame) {
+            void *sf = t->seh_frame;
+            t->seh_frame = 0;
+            w32_seh_frame_free(sf);
+        }
         thr_spin_lock();
         {
             int orph = t->orphaned;
@@ -1365,6 +1419,20 @@ W32ABI W32_DWORD GetCurrentThreadId(void) {
     return (W32_DWORD)thr_gettid();
 }
 
+/* W32A-4: the mingw C++ fixture's libstdc++ asks for the id behind the
+ * pseudo-handle (single-threaded: always us). */
+W32ABI W32_DWORD GetThreadId(W32_HANDLE h) {
+    struct w32_thread *t;
+    if (h == W32_CURRENT_THREAD)
+        return (W32_DWORD)thr_gettid();
+    t = (struct w32_thread *)w32_handle_get_obj(h, W32_HANDLE_KIND_THREAD);
+    if (!t || t->tid == 0) {
+        w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    return t->tid;
+}
+
 W32ABI W32_DWORD ResumeThread(W32_HANDLE h) {
     struct w32_thread *t;
     W32_DWORD prev;
@@ -1487,6 +1555,20 @@ W32ABI uint64_t SetThreadAffinityMask(W32_HANDLE h, uint64_t mask) {
     return prev;
 }
 
+/* W32A-4: the current thread's SEH dispatch frame (NULL before init or
+ * on a foreign thread).  One hop through thread_obj: the frame lives in
+ * the heap thread object, not the mmap'd TEB. */
+void *w32_thr_current_seh_frame(void) {
+    struct w32_teb *teb = w32_teb_self();
+    struct w32_thread *t;
+    if (!teb)
+        return NULL;
+    t = (struct w32_thread *)teb->thread_obj;
+    if (!t)
+        return NULL;
+    return t->seh_frame;
+}
+
 /* CloseHandle's thread reaper (called from CloseHandle, not the table:
  * the table's free_fn for threads is NULL).  On an EXITED thread this
  * reaps everything: the live-list entry (idempotent — ExitThread
@@ -1518,8 +1600,25 @@ void w32_thread_close(void *p) {
     thr_spin_unlock();
     if (!reap)
         return;
+    /* REAP-DEATH-WATCH (W32A-3 repair): exited_word publishes the exit
+     * CODE, not kernel death -- the victim still runs its exit tail
+     * (free(apc), free(tls_blocks)) on this very stack.  Munmap'ing +
+     * free'ing here wins the race ~1/20: gdb caught the victim ret'ing
+     * to pc=0 with RSP inside a fresh zeroed remap.  CLONE_CHILD_CLEARTID
+     * zeroes tid_word at true kernel death -- wait for it, bounded (a
+     * never-scheduled victim already reads 0 and proceeds instantly). */
+    for (int i = 0; i < 2000 && t->tid_word != 0; i++) {
+        struct timespec sl = { 0, THR_POLL_NS };
+        nanosleep(&sl, 0);
+    }
     if (stack)
         munmap(stack, (size_t)stack_sz);
+    /* W32A-4: a TKILL'd victim never ran its exit tail, so its dispatch
+     * frame is still set -- free it (normal deaths NULLed it above). */
+    if (t->seh_frame) {
+        w32_seh_frame_free(t->seh_frame);
+        t->seh_frame = 0;
+    }
     if (teb)
         munmap(teb, 4096);
     free(t);
@@ -1939,6 +2038,25 @@ W32ABI void EnterCriticalSection(W32_CRITICAL_SECTION *cs) {
         (void)thr_futex_wait(&cs->lock, 2);
         __sync_fetch_and_add(&cs->waiters, (W32_DWORD)-1);
     }
+}
+
+/* W32A-4: libstdc++'s gthr-win32 guard.  Enter's fast path without the
+ * wait: nonzero taken (fresh or recursive), zero busy. */
+W32ABI W32_BOOL TryEnterCriticalSection(W32_CRITICAL_SECTION *cs) {
+    W32_DWORD me;
+    if (!cs)
+        return 0;
+    me = (W32_DWORD)thr_gettid();
+    if (__sync_bool_compare_and_swap(&cs->lock, 0, 1)) {
+        cs->owner_tid = me;
+        cs->recursion = 1;
+        return 1;
+    }
+    if (cs->owner_tid == me && cs->lock != 0) {
+        cs->recursion++;
+        return 1;
+    }
+    return 0;
 }
 
 W32ABI void LeaveCriticalSection(W32_CRITICAL_SECTION *cs) {
@@ -2996,6 +3114,7 @@ struct w32_thr_pool_work {
     void *ctx;
     int closed;
     int queued;
+    int running;
     struct w32_thr_pool_work *next;
 };
 
@@ -3011,6 +3130,7 @@ static W32_DWORD W32ABI thr_pool_worker(void *param) {
     (void)param;
     for (;;) {
         struct w32_thr_pool_work *w = 0;
+        int done = 0;
         thr_checkpoint();
         thr_spin_lock();
         w = thr_pool.head;
@@ -3019,6 +3139,7 @@ static W32_DWORD W32ABI thr_pool_worker(void *param) {
             if (!thr_pool.head)
                 thr_pool.tail = 0;
             w->queued = 0;
+            w->running = 1;
             if (!thr_pool.head && thr_pool.ev)
                 thr_pool.ev->signaled = 0;
         }
@@ -3042,6 +3163,14 @@ static W32_DWORD W32ABI thr_pool_worker(void *param) {
             continue;
         }
         w->cb(0, w->ctx, w);
+        /* Closed-while-running frees here; otherwise the item stays
+         * alive for resubmission (Windows work objects are reusable). */
+        thr_spin_lock();
+        w->running = 0;
+        done = w->closed;
+        thr_spin_unlock();
+        if (done)
+            free(w);
     }
 }
 
@@ -3132,8 +3261,15 @@ W32ABI void CloseThreadpoolWork(void *work) {
     if (!w)
         return;
     /* Detach: queued callbacks still run (documented Windows-compat:
-     * Close does not wait and does not cancel). */
+     * Close does not wait and does not cancel).  An idle item frees
+     * immediately; a queued/running one frees when its callback ends
+     * (use-after-Close is caller error, like any dead HANDLE). */
     thr_spin_lock();
     w->closed = 1;
+    if (!w->queued && !w->running) {
+        thr_spin_unlock();
+        free(w);
+        return;
+    }
     thr_spin_unlock();
 }

@@ -51,10 +51,11 @@ union 611, gap 569) and the live export count from `w32/src/w32_bind.c`.
 
 ## App-gate receipts (reserved format)
 
-Application phases (W32A-4 PuTTY, W32A-7 7-Zip FM, W32A-11 Notepad++,
-W32A-13 7z.dll, W32A-15 plugins, W32A-17 final) each end with a receipt
-block in this file. The block format is fixed now so the claim checker
-can require it later:
+Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16
+Notepad++, W32A-17 final) each end with a receipt block in this file.
+The block format is fixed now so the claim checker can require it later.
+(The 7z.dll and npp-plugins ledgers ride with their app's gate: the
+receipt prose names them; only the .exe ledger is structural.)
 
 ```
 ## W32A-<n> <app> — <date>
@@ -85,14 +86,10 @@ Empty sections the app phases fill. A section stays `AWAITING` until its
 gate lands; the claim checker fails a ✅ app phase whose section is still
 `AWAITING` (or missing).
 
-## W32A-4 putty — AWAITING
+## W32A-14 putty — AWAITING
 
-## W32A-7 7zFM — AWAITING
+## W32A-15 7zFM — AWAITING
 
-## W32A-11 notepad++ — AWAITING
-
-## W32A-13 7z.dll — AWAITING
-
-## W32A-15 npp-plugins — AWAITING
+## W32A-16 notepad++ — AWAITING
 
 ## W32A-17 final — AWAITING

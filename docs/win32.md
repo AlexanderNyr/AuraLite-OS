@@ -44,7 +44,7 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*44 functions across 3 modules. This table is generated from
+*280 functions across 4 modules. This table is generated from
 `w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
 
 **GDI32.dll** (7)
@@ -53,15 +53,92 @@ way `make sdk-check` does for the native SDK.
 - `MoveToEx` · `SetPixel` · `SetTextColor`
 - `TextOutA`
 
-**KERNEL32.dll** (20)
+**KERNEL32.dll** (251)
 
-- `CloseHandle` · `CreateFileA` · `ExitProcess`
-- `FreeLibrary` · `GetCommandLineA` · `GetLastError`
-- `GetModuleHandleA` · `GetProcAddress` · `GetProcessHeap`
-- `GetStdHandle` · `GetTickCount64` · `HeapAlloc`
-- `HeapFree` · `LoadLibraryA` · `ReadFile`
-- `SetLastError` · `Sleep` · `VirtualAlloc`
-- `VirtualFree` · `WriteFile`
+- `AcquireSRWLockExclusive` · `Beep` · `CancelIo`
+- `CloseHandle` · `CloseThreadpoolWork` · `CompareFileTime`
+- `CompareStringEx` · `CompareStringW` · `ConnectNamedPipe`
+- `CopyFileExW` · `CopyFileW` · `CreateDirectoryW`
+- `CreateEventA` · `CreateEventW` · `CreateFileA`
+- `CreateFileMappingA` · `CreateFileMappingW` · `CreateFileW`
+- `CreateHardLinkW` · `CreateMutexA` · `CreateMutexW`
+- `CreateNamedPipeA` · `CreatePipe` · `CreateProcessA`
+- `CreateProcessW` · `CreateSemaphoreW` · `CreateThread`
+- `CreateThreadpoolWork` · `CreateToolhelp32Snapshot` · `DecodePointer`
+- `DeleteCriticalSection` · `DeleteFileA` · `DeleteFileW`
+- `DeviceIoControl` · `DosDateTimeToFileTime` · `EncodePointer`
+- `EnterCriticalSection` · `EnumSystemLocalesW` · `ExitProcess`
+- `ExitThread` · `ExpandEnvironmentStringsW` · `FileTimeToDosDateTime`
+- `FileTimeToLocalFileTime` · `FileTimeToSystemTime` · `FindClose`
+- `FindCloseChangeNotification` · `FindFirstChangeNotificationW` · `FindFirstFileA`
+- `FindFirstFileExW` · `FindFirstFileW` · `FindFirstStreamW`
+- `FindNextChangeNotification` · `FindNextFileA` · `FindNextFileW`
+- `FindNextStreamW` · `FlsAlloc` · `FlsFree`
+- `FlsGetValue` · `FlsSetValue` · `FlushFileBuffers`
+- `FormatMessageA` · `FormatMessageW` · `FreeEnvironmentStringsW`
+- `FreeLibrary` · `FreeLibraryAndExitThread` · `GetACP`
+- `GetApplicationRestartSettings` · `GetCPInfo` · `GetCommandLineA`
+- `GetCommandLineW` · `GetCompressedFileSizeW` · `GetCurrentDirectoryA`
+- `GetCurrentDirectoryW` · `GetCurrentProcess` · `GetCurrentProcessId`
+- `GetCurrentThread` · `GetCurrentThreadId` · `GetDateFormatEx`
+- `GetDateFormatW` · `GetDiskFreeSpaceExW` · `GetDiskFreeSpaceW`
+- `GetDriveTypeW` · `GetEnvironmentStringsW` · `GetEnvironmentVariableA`
+- `GetExitCodeProcess` · `GetExitCodeThread` · `GetFileAttributesExW`
+- `GetFileAttributesW` · `GetFileInformationByHandle` · `GetFileSize`
+- `GetFileSizeEx` · `GetFileType` · `GetFinalPathNameByHandleW`
+- `GetFullPathNameW` · `GetLargePageMinimum` · `GetLastError`
+- `GetLocalTime` · `GetLocaleInfoA` · `GetLocaleInfoEx`
+- `GetLocaleInfoW` · `GetLogicalDriveStringsW` · `GetLongPathNameW`
+- `GetModuleFileNameA` · `GetModuleFileNameW` · `GetModuleHandleA`
+- `GetModuleHandleExW` · `GetModuleHandleW` · `GetNativeSystemInfo`
+- `GetOEMCP` · `GetOverlappedResult` · `GetProcAddress`
+- `GetProcessAffinityMask` · `GetProcessHeap` · `GetProcessTimes`
+- `GetProductInfo` · `GetStartupInfoA` · `GetStartupInfoW`
+- `GetStdHandle` · `GetStringTypeExA` · `GetStringTypeExW`
+- `GetStringTypeW` · `GetSystemDefaultLangID` · `GetSystemDirectoryA`
+- `GetSystemInfo` · `GetSystemTimeAsFileTime` · `GetTempPathA`
+- `GetTempPathW` · `GetThreadTimes` · `GetTickCount`
+- `GetTickCount64` · `GetTimeFormatEx` · `GetTimeFormatW`
+- `GetTimeZoneInformation` · `GetUserDefaultLCID` · `GetUserDefaultLangID`
+- `GetVersion` · `GetVersionExW` · `GetVolumeInformationW`
+- `GetWindowsDirectoryA` · `GetWindowsDirectoryW` · `GlobalAlloc`
+- `GlobalFree` · `GlobalLock` · `GlobalMemoryStatus`
+- `GlobalMemoryStatusEx` · `GlobalSize` · `GlobalUnlock`
+- `HeapAlloc` · `HeapFree` · `HeapReAlloc`
+- `HeapSize` · `InitOnceBeginInitialize` · `InitOnceComplete`
+- `InitializeCriticalSection` · `InitializeCriticalSectionAndSpinCount` · `InitializeCriticalSectionEx`
+- `InitializeSListHead` · `InterlockedFlushSList` · `IsDBCSLeadByteEx`
+- `IsDebuggerPresent` · `IsProcessorFeaturePresent` · `IsValidCodePage`
+- `IsValidLocale` · `LCMapStringA` · `LCMapStringEx`
+- `LCMapStringW` · `LeaveCriticalSection` · `LoadLibraryA`
+- `LoadLibraryExA` · `LoadLibraryExW` · `LoadLibraryW`
+- `LocalAlloc` · `LocalFileTimeToFileTime` · `LocalFree`
+- `MapViewOfFile` · `MoveFileExW` · `MoveFileW`
+- `MoveFileWithProgressW` · `MulDiv` · `MultiByteToWideChar`
+- `OpenProcess` · `OutputDebugStringW` · `Process32FirstW`
+- `Process32NextW` · `QueryPerformanceCounter` · `QueryPerformanceFrequency`
+- `QueueUserAPC` · `RaiseException` · `ReadFile`
+- `RegisterApplicationRestart` · `ReleaseMutex` · `ReleaseSRWLockExclusive`
+- `ReleaseSemaphore` · `RemoveDirectoryW` · `ReplaceFileW`
+- `ResetEvent` · `ResumeThread` · `RtlCaptureContext`
+- `RtlLookupFunctionEntry` · `RtlPcToFileHeader` · `RtlUnwind`
+- `RtlUnwindEx` · `RtlVirtualUnwind` · `SetCurrentDirectoryA`
+- `SetCurrentDirectoryW` · `SetEndOfFile` · `SetEnvironmentVariableW`
+- `SetEvent` · `SetFileAttributesW` · `SetFilePointer`
+- `SetFilePointerEx` · `SetFileTime` · `SetHandleInformation`
+- `SetLastError` · `SetThreadAffinityMask` · `SetUnhandledExceptionFilter`
+- `Sleep` · `SleepConditionVariableSRW` · `SleepEx`
+- `SubmitThreadpoolWork` · `SystemTimeToTzSpecificLocalTime` · `TerminateProcess`
+- `TerminateThread` · `TlsAlloc` · `TlsFree`
+- `TlsGetValue` · `TlsSetValue` · `TryAcquireSRWLockExclusive`
+- `UnhandledExceptionFilter` · `UnmapViewOfFile` · `UnregisterApplicationRestart`
+- `VirtualAlloc` · `VirtualFree` · `VirtualProtect`
+- `WaitForMultipleObjects` · `WaitForSingleObject` · `WaitForSingleObjectEx`
+- `WaitNamedPipeA` · `WakeAllConditionVariable` · `WideCharToMultiByte`
+- `WriteFile` · `_XcptFilter` · `__C_specific_handler`
+- `lstrcatW` · `lstrcmpW` · `lstrcmpiA`
+- `lstrcmpiW` · `lstrcpyW` · `lstrcpynA`
+- `lstrcpynW` · `lstrlenW`
 
 **USER32.dll** (17)
 
@@ -72,40 +149,40 @@ way `make sdk-check` does for the native SDK.
 - `PostQuitMessage` · `RegisterClassExA` · `ShowWindow`
 - `TranslateMessage` · `UpdateWindow`
 
+**msvcrt.dll** (5)
+
+- `?terminate@@YAXXZ` · `_CxxThrowException` · `_XcptFilter`
+- `__C_specific_handler` · `_purecall`
+
 <!-- END GENERATED: w32 export table -->
 
 A function absent from this list is absent from the personality: a binary
 importing it fails at load with the name reported, rather than at the first
 call. That is deliberate — see "one bounded import set" (decision D7).
 
-## Structured exception handling is not table-driven unwinding
+## Structured exception handling unwinds `.pdata`/`.xdata` for real
 
-`__try`/`__except` works: a fault inside a guarded region transfers control
-to the handler, `GetExceptionCode()` reports the documented `EXCEPTION_*`
-value, and nesting behaves (the innermost handler wins). It is implemented
-on `sigsetjmp`/`siglongjmp` over AuraLite's existing signal delivery.
+Faults and `RaiseException` dispatch through the image's own unwind tables,
+frame by frame: `__try`/`__except` filters, `__finally` cleanups, C++
+destructors (including through libgcc's `__gxx_personality_seh0`),
+`EXCEPTION_CONTINUE_EXECUTION` with a mutable fault context, and the top
+filter before the terminate box. The `sigsetjmp` shim is deleted — two
+exception systems is how a fault gets handled twice.
 
-What real Win64 SEH does and this does not:
+The specified edges:
 
-- **Frames between the fault and the handler are abandoned.** Real SEH walks
-  `.pdata`/`.xdata` and runs cleanup for each frame it unwinds past. This
-  shim jumps straight to the handler.
-- **Destructors of live C++ objects do not run.** This follows directly from
-  the point above and is the practical consequence to be aware of: a C++
-  program that relies on RAII cleanup during exception propagation will leak
-  whatever those destructors would have released.
-- **`__finally` is not implemented.** It would need the same unwind
-  machinery.
-- **`RaiseException` is not implemented**, so software-raised exceptions —
-  including C++ `throw` — are out of scope. Only faults the CPU raises
-  synchronously are caught.
-- **`EXCEPTION_CONTINUE_EXECUTION` is not supported.** Resuming at the
-  faulting instruction requires a full machine context to return to, which
-  the shim does not reconstruct.
-
-Table-driven SEH is listed as an explicit non-goal (decision D8) rather than
-as pending work: doing it properly means implementing the unwinder, and a
-half-implemented unwinder is worse than an honest `longjmp`.
+- **MSVC `catch` clauses are never matched.** `_CxxThrowException`
+  sweeps real cleanups, then terminates with the named
+  `W32-CXX-TYPED-CATCH-GAP` (decision D7): specified, tested, and
+  greppable, not a crash shaped like a mystery. `?terminate@@YAXXZ`
+  and `_purecall` die by their own names.
+- **Unhandled faults dump and die honestly.** Console sessions print
+  `W32-SEH-UNHANDLED` to serial and die on the signal the fault came
+  in on; a process with a live window gets the modal terminate box
+  first, then exits with the exception code.
+- **v2 unwind info (epilog opcodes) and chained `UNWIND_INFO` are
+  refused, never misread.** The toolchains in use emit v1 only; the
+  equivalence gate fails loudly if that ever changes.
 
 ## Thread-local storage is per-process, not per-thread
 

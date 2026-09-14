@@ -33,11 +33,11 @@ il_send "run /apps/w32run /tests/crttest.exe"
 il_send_delay 5
 il_send "run /apps/w32run /tests/crtbad.exe"
 il_send_delay 5
-il_send "run /apps/sehtest"
+il_send "run /apps/w32run /tests/w32a4_try.exe"
 il_send_delay 6
-il_send "run /apps/sehtest crash"
+il_send "run /apps/w32run /tests/w32a4_crash.exe"
 il_send_delay 5
-il_send "run /apps/sehtest filter"
+il_send "run /apps/w32run /tests/w32a4_filter.exe"
 il_send_delay 5
 il_send "exit"
 
@@ -68,7 +68,7 @@ il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=77\)" \
 il_assert_grep "$LOG" "w32run: refusing malformed TLS directory" \
     "TLS callback outside the image is refused, not called"
 
-# --- 3. __try / __except ---------------------------------------------------
+# --- 3. __try / __except (W32A-4: the w32a4_try.exe PE) ---------------------------------------------------
 il_assert_grep "$LOG" "SEH-DIV0-CAUGHT" \
     "divide by zero inside __try reached __except"
 # The mask test: a second fault must also be caught.  With plain longjmp
@@ -84,26 +84,30 @@ il_assert_grep "$LOG" "SEH-BALANCED" \
     "non-faulting __try blocks leave the nesting stack balanced"
 il_assert_grep "$LOG" "W32-SEH-OK" \
     "SEH fixture reported success"
-il_assert_grep "$LOG" "'/apps/sehtest' \(tid [0-9]+\) exited \(code=44\)" \
+il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=44\)" \
     "SEH fixture exited with its success status"
 
 # --- the same fault OUTSIDE __try ------------------------------------------
 # It must terminate the process, with the right signal, and must NOT be
-# swallowed by the shim.
+# swallowed by the unwinder.
 il_assert_grep "$LOG" "SEH-UNGUARDED-FAULT" \
     "unguarded fault path was reached"
 il_assert_no_grep "$LOG" "SEH-SURVIVED-UNGUARDED" \
     "an unguarded fault is not swallowed"
 il_assert_grep "$LOG" "\[signal\] terminate pid=[0-9]+ by signal 8" \
     "unguarded divide by zero terminates the process with SIGFPE"
-il_assert_grep "$LOG" "'/apps/sehtest' \(tid [0-9]+\) exited \(code=136\)" \
+il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=136\)" \
     "and with the conventional 128+SIGFPE status"
 
 # --- SetUnhandledExceptionFilter ------------------------------------------
 il_assert_grep "$LOG" "SEH-FILTER-CALLED" \
     "the unhandled exception filter got its last chance"
-il_assert_no_grep "$LOG" "SEH-FILTER-NOT-CALLED" \
+il_assert_no_grep "$LOG" "SEH-SURVIVED-UNGUARDED" \
     "execution did not continue past the faulting instruction"
+il_assert_grep "$LOG" "W32-SEH-FILTER-EXECUTE code=0xc0000094" \
+    "the filter's EXECUTE named the exception it owned"
+il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=-1073741676\)" \
+    "and the process exited with the full exception code (Windows errorlevel shape)"
 
 # --- nothing took the kernel with it ---------------------------------------
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION.*KERNEL|kernel panic" \

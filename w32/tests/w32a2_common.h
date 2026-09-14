@@ -11,6 +11,7 @@
  * (a subset some file does not need would warn as an unused static).
  */
 #include <windows.h>
+#include <tlhelp32.h>  /* newer mingw-w64 keeps the snapshot API out of windows.h */
 #include <stdint.h>
 
 /* The compiler may emit calls to these for struct copies and fixed
@@ -29,6 +30,13 @@ void *memcpy(void *d, const void *s, unsigned long long n) {
     while (n-- > 0)
         *p++ = *q++;
     return d;
+}
+
+unsigned long long strlen(const char *s) {
+    volatile const char *p = (volatile const char *)s;
+    unsigned long long n = 0;
+    while (*p++) n++;
+    return n;
 }
 
 int memcmp(const void *a, const void *b, unsigned long long n) {

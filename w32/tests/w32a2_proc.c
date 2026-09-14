@@ -428,13 +428,13 @@ void __stdcall winstart(void) {
         DWORD type = 0;
         memset(&osv, 0, sizeof(osv));
         osv.dwOSVersionInfoSize = sizeof(osv);
-        CHECKX(GetVersionExW(&osv), "proc-verex");
+        CHECKX(GetVersionExW((LPOSVERSIONINFOW)&osv), "proc-verex");
         CHECKX(osv.dwMajorVersion == 10, "proc-verex-major");
         CHECKX(osv.dwBuildNumber == 19045, "proc-verex-build");
         CHECKX(osv.dwPlatformId == 2, "proc-verex-platform");
         CHECKX(osv.wProductType == 1, "proc-verex-product");
         osv.dwOSVersionInfoSize = 0;
-        CHECKX(!GetVersionExW(&osv), "proc-verex-badsize");
+        CHECKX(!GetVersionExW((LPOSVERSIONINFOW)&osv), "proc-verex-badsize");
         CHECKX(GetProductInfo(10, 0, 0, 0, &type) && type == 0x30u,
             "proc-product");
         CHECKX(!GetProductInfo(6, 1, 0, 0, &type), "proc-product-bad");
@@ -465,20 +465,25 @@ void __stdcall winstart(void) {
     CHECKX(SleepEx(1, FALSE) == 0, "proc-sleepex");
     OutputDebugStringW(L"w32a2-proc-hi");
 
-    /* Restart registration round-trips in-process. */
+    /* Restart registration round-trips in-process.
+     * AuraLite implements the 3-argument current-process form; newer
+     * mingw headers prototype the real 4-argument one, so call through
+     * the 3-argument type (same import, no prototype clash). */
     {
+        typedef HRESULT (WINAPI *GARS3)(WCHAR *, DWORD *, DWORD *);
         WCHAR get[64];
+#define GARS(a, b, c) (((GARS3)GetApplicationRestartSettings)(a, b, c))
         DWORD cch, fl;
-        CHECKX(GetApplicationRestartSettings(get, &cch, &fl) ==
+        CHECKX(GARS(get, &cch, &fl) ==
             (HRESULT)0x80004005u, "proc-restart-empty");
         CHECKX(RegisterApplicationRestart(L"/restart", 0) == S_OK,
             "proc-restart-reg");
         cch = 64;
-        CHECKX(GetApplicationRestartSettings(get, &cch, &fl) == S_OK,
+        CHECKX(GARS(get, &cch, &fl) == S_OK,
             "proc-restart-get");
         CHECKX(weq(get, "/restart"), "proc-restart-value");
         cch = 2;
-        CHECKX(GetApplicationRestartSettings(get, &cch, &fl) ==
+        CHECKX(GARS(get, &cch, &fl) ==
             (HRESULT)0x8007017Au, "proc-restart-short");
         CHECKX(UnregisterApplicationRestart() == S_OK,
             "proc-restart-unreg");

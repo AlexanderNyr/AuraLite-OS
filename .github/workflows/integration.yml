@@ -200,6 +200,16 @@ jobs:
               exit 1
             fi
           done
+          for f in try unwind raise continue cxthrow filter crash term purecall dialog; do
+            if ! tar tf build/initrd.tar | grep -q "./tests/w32a4_$f.exe"; then
+              echo "w32a4_$f.exe missing from the initrd: the W32A-4"
+              echo "fixtures were not built, so test_w32_a4_unwind would"
+              echo "fail instead of testing anything."
+              exit 1
+            fi
+          done
+          # w32a4_cxx.exe is NOT asserted: mingw is optional, and the
+          # gate SKIP-guards the C++ section when the fixture is absent.
 
       # LX_COMPAT L1/L2/L5: the same vacuous-gate discipline for the Linux
       # personality -- the host gcc is always present on the runner, but

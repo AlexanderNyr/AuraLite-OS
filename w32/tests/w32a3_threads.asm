@@ -11,7 +11,8 @@
 ; (W32-5): RSP % 16 == 8 at every function entry, == 0 at every CALL, so
 ; pushes + sub must total 8 mod 16.  Every frame below is annotated.
 ;
-; Imports: 45 (the gate asserts the bound count).
+; Imports: 44 (direct runs do not print the bound count;
+; the gate asserts markers + exit codes).
 
 bits 64
 default rel
@@ -59,7 +60,6 @@ extern CreateThreadpoolWork
 extern SubmitThreadpoolWork
 extern CloseThreadpoolWork
 extern CloseHandle
-extern SetLastError
 extern GetLastError
 
 %define INFINITE            0xFFFFFFFF
@@ -278,6 +278,7 @@ pool_cb:
 
 ; --- w_flib: FreeLibraryAndExitThread(NULL, 44).  Never returns. ---
 w_flib:
+    sub  rsp, 28h
     xor  ecx, ecx
     mov  edx, 44
     call FreeLibraryAndExitThread
@@ -285,6 +286,7 @@ w_flib:
 
 ; --- w_exit33: ExitThread(33).  Never returns. ---
 w_exit33:
+    sub  rsp, 28h
     mov  ecx, 33
     call ExitThread
     ret                            ; unreachable
@@ -399,7 +401,8 @@ start:
     call spawn
     test rax, rax
     jz   .fail
-    mov  [h4+rbx*8], rax
+    lea  r10, [h4]
+    mov  [r10+rbx*8], rax
     inc  ebx
     cmp  ebx, 4
     jl   .mk4
@@ -416,7 +419,8 @@ start:
 .peekok:
     xor  ebx, ebx
 .join4:
-    mov  rcx, [h4+rbx*8]
+    lea  r10, [h4]
+    mov  rcx, [r10+rbx*8]
     call join1
     cmp  eax, WAIT_OBJECT_0
     jne  .fail
@@ -425,12 +429,14 @@ start:
     jl   .join4
     xor  ebx, ebx
 .code4:
-    mov  rcx, [h4+rbx*8]
+    lea  r10, [h4]
+    mov  rcx, [r10+rbx*8]
     lea  rdx, [ecode]
     call GetExitCodeThread
     cmp  dword [ecode], 2000
     jne  .fail
-    mov  rcx, [h4+rbx*8]
+    lea  r10, [h4]
+    mov  rcx, [r10+rbx*8]
     call CloseHandle
     inc  ebx
     cmp  ebx, 4
@@ -842,7 +848,8 @@ start:
     call spawn
     test rax, rax
     jz   .fail
-    mov  [h4+rbx*8], rax
+    lea  r10, [h4]
+    mov  [r10+rbx*8], rax
     inc  ebx
     cmp  ebx, 4
     jl   .mk4m
@@ -857,7 +864,8 @@ start:
     jne  .fail
     xor  ebx, ebx
 .cl4m:
-    mov  rcx, [h4+rbx*8]
+    lea  r10, [h4]
+    mov  rcx, [r10+rbx*8]
     call CloseHandle
     inc  ebx
     cmp  ebx, 4
@@ -1110,13 +1118,15 @@ start:
     call CreateThreadpoolWork
     test rax, rax
     jz   .fail
-    mov  [pool_w+rbx*8-8], rax
+    lea  r10, [pool_w]
+    mov  [r10+rbx*8-8], rax
     inc  ebx
     cmp  ebx, 32
     jle  .mkpool
     mov  ebx, 1
 .subpool:
-    mov  rcx, [pool_w+rbx*8-8]
+    lea  r10, [pool_w]
+    mov  rcx, [r10+rbx*8-8]
     call SubmitThreadpoolWork
     inc  ebx
     cmp  ebx, 32
@@ -1138,7 +1148,8 @@ start:
     jne  .fail
     mov  ebx, 1
 .clpool:
-    mov  rcx, [pool_w+rbx*8-8]
+    lea  r10, [pool_w]
+    mov  rcx, [r10+rbx*8-8]
     call CloseThreadpoolWork
     inc  ebx
     cmp  ebx, 32
@@ -1177,7 +1188,8 @@ start:
     call spawn
     test rax, rax
     jz   .fail
-    mov  [h4+rbx*8], rax
+    lea  r10, [h4]
+    mov  [r10+rbx*8], rax
     inc  ebx
     cmp  ebx, 4
     jl   .mkperf
@@ -1197,7 +1209,8 @@ start:
     jne  .fail
     xor  ebx, ebx
 .clperf:
-    mov  rcx, [h4+rbx*8]
+    lea  r10, [h4]
+    mov  rcx, [r10+rbx*8]
     call CloseHandle
     inc  ebx
     cmp  ebx, 4
