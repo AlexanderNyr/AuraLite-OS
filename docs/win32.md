@@ -44,7 +44,7 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*280 functions across 4 modules. This table is generated from
+*282 functions across 4 modules. This table is generated from
 `w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
 
 **GDI32.dll** (7)
@@ -53,7 +53,7 @@ way `make sdk-check` does for the native SDK.
 - `MoveToEx` · `SetPixel` · `SetTextColor`
 - `TextOutA`
 
-**KERNEL32.dll** (251)
+**KERNEL32.dll** (253)
 
 - `AcquireSRWLockExclusive` · `Beep` · `CancelIo`
 - `CloseHandle` · `CloseThreadpoolWork` · `CompareFileTime`
@@ -97,48 +97,49 @@ way `make sdk-check` does for the native SDK.
 - `GetStdHandle` · `GetStringTypeExA` · `GetStringTypeExW`
 - `GetStringTypeW` · `GetSystemDefaultLangID` · `GetSystemDirectoryA`
 - `GetSystemInfo` · `GetSystemTimeAsFileTime` · `GetTempPathA`
-- `GetTempPathW` · `GetThreadTimes` · `GetTickCount`
-- `GetTickCount64` · `GetTimeFormatEx` · `GetTimeFormatW`
-- `GetTimeZoneInformation` · `GetUserDefaultLCID` · `GetUserDefaultLangID`
-- `GetVersion` · `GetVersionExW` · `GetVolumeInformationW`
-- `GetWindowsDirectoryA` · `GetWindowsDirectoryW` · `GlobalAlloc`
-- `GlobalFree` · `GlobalLock` · `GlobalMemoryStatus`
-- `GlobalMemoryStatusEx` · `GlobalSize` · `GlobalUnlock`
-- `HeapAlloc` · `HeapFree` · `HeapReAlloc`
-- `HeapSize` · `InitOnceBeginInitialize` · `InitOnceComplete`
-- `InitializeCriticalSection` · `InitializeCriticalSectionAndSpinCount` · `InitializeCriticalSectionEx`
-- `InitializeSListHead` · `InterlockedFlushSList` · `IsDBCSLeadByteEx`
-- `IsDebuggerPresent` · `IsProcessorFeaturePresent` · `IsValidCodePage`
-- `IsValidLocale` · `LCMapStringA` · `LCMapStringEx`
-- `LCMapStringW` · `LeaveCriticalSection` · `LoadLibraryA`
-- `LoadLibraryExA` · `LoadLibraryExW` · `LoadLibraryW`
-- `LocalAlloc` · `LocalFileTimeToFileTime` · `LocalFree`
-- `MapViewOfFile` · `MoveFileExW` · `MoveFileW`
-- `MoveFileWithProgressW` · `MulDiv` · `MultiByteToWideChar`
-- `OpenProcess` · `OutputDebugStringW` · `Process32FirstW`
-- `Process32NextW` · `QueryPerformanceCounter` · `QueryPerformanceFrequency`
-- `QueueUserAPC` · `RaiseException` · `ReadFile`
-- `RegisterApplicationRestart` · `ReleaseMutex` · `ReleaseSRWLockExclusive`
-- `ReleaseSemaphore` · `RemoveDirectoryW` · `ReplaceFileW`
-- `ResetEvent` · `ResumeThread` · `RtlCaptureContext`
-- `RtlLookupFunctionEntry` · `RtlPcToFileHeader` · `RtlUnwind`
-- `RtlUnwindEx` · `RtlVirtualUnwind` · `SetCurrentDirectoryA`
-- `SetCurrentDirectoryW` · `SetEndOfFile` · `SetEnvironmentVariableW`
-- `SetEvent` · `SetFileAttributesW` · `SetFilePointer`
-- `SetFilePointerEx` · `SetFileTime` · `SetHandleInformation`
-- `SetLastError` · `SetThreadAffinityMask` · `SetUnhandledExceptionFilter`
-- `Sleep` · `SleepConditionVariableSRW` · `SleepEx`
-- `SubmitThreadpoolWork` · `SystemTimeToTzSpecificLocalTime` · `TerminateProcess`
-- `TerminateThread` · `TlsAlloc` · `TlsFree`
-- `TlsGetValue` · `TlsSetValue` · `TryAcquireSRWLockExclusive`
-- `UnhandledExceptionFilter` · `UnmapViewOfFile` · `UnregisterApplicationRestart`
-- `VirtualAlloc` · `VirtualFree` · `VirtualProtect`
-- `WaitForMultipleObjects` · `WaitForSingleObject` · `WaitForSingleObjectEx`
-- `WaitNamedPipeA` · `WakeAllConditionVariable` · `WideCharToMultiByte`
-- `WriteFile` · `_XcptFilter` · `__C_specific_handler`
-- `lstrcatW` · `lstrcmpW` · `lstrcmpiA`
-- `lstrcmpiW` · `lstrcpyW` · `lstrcpynA`
-- `lstrcpynW` · `lstrlenW`
+- `GetTempPathW` · `GetThreadId` · `GetThreadTimes`
+- `GetTickCount` · `GetTickCount64` · `GetTimeFormatEx`
+- `GetTimeFormatW` · `GetTimeZoneInformation` · `GetUserDefaultLCID`
+- `GetUserDefaultLangID` · `GetVersion` · `GetVersionExW`
+- `GetVolumeInformationW` · `GetWindowsDirectoryA` · `GetWindowsDirectoryW`
+- `GlobalAlloc` · `GlobalFree` · `GlobalLock`
+- `GlobalMemoryStatus` · `GlobalMemoryStatusEx` · `GlobalSize`
+- `GlobalUnlock` · `HeapAlloc` · `HeapFree`
+- `HeapReAlloc` · `HeapSize` · `InitOnceBeginInitialize`
+- `InitOnceComplete` · `InitializeCriticalSection` · `InitializeCriticalSectionAndSpinCount`
+- `InitializeCriticalSectionEx` · `InitializeSListHead` · `InterlockedFlushSList`
+- `IsDBCSLeadByteEx` · `IsDebuggerPresent` · `IsProcessorFeaturePresent`
+- `IsValidCodePage` · `IsValidLocale` · `LCMapStringA`
+- `LCMapStringEx` · `LCMapStringW` · `LeaveCriticalSection`
+- `LoadLibraryA` · `LoadLibraryExA` · `LoadLibraryExW`
+- `LoadLibraryW` · `LocalAlloc` · `LocalFileTimeToFileTime`
+- `LocalFree` · `MapViewOfFile` · `MoveFileExW`
+- `MoveFileW` · `MoveFileWithProgressW` · `MulDiv`
+- `MultiByteToWideChar` · `OpenProcess` · `OutputDebugStringW`
+- `Process32FirstW` · `Process32NextW` · `QueryPerformanceCounter`
+- `QueryPerformanceFrequency` · `QueueUserAPC` · `RaiseException`
+- `ReadFile` · `RegisterApplicationRestart` · `ReleaseMutex`
+- `ReleaseSRWLockExclusive` · `ReleaseSemaphore` · `RemoveDirectoryW`
+- `ReplaceFileW` · `ResetEvent` · `ResumeThread`
+- `RtlCaptureContext` · `RtlLookupFunctionEntry` · `RtlPcToFileHeader`
+- `RtlUnwind` · `RtlUnwindEx` · `RtlVirtualUnwind`
+- `SetCurrentDirectoryA` · `SetCurrentDirectoryW` · `SetEndOfFile`
+- `SetEnvironmentVariableW` · `SetEvent` · `SetFileAttributesW`
+- `SetFilePointer` · `SetFilePointerEx` · `SetFileTime`
+- `SetHandleInformation` · `SetLastError` · `SetThreadAffinityMask`
+- `SetUnhandledExceptionFilter` · `Sleep` · `SleepConditionVariableSRW`
+- `SleepEx` · `SubmitThreadpoolWork` · `SystemTimeToTzSpecificLocalTime`
+- `TerminateProcess` · `TerminateThread` · `TlsAlloc`
+- `TlsFree` · `TlsGetValue` · `TlsSetValue`
+- `TryAcquireSRWLockExclusive` · `TryEnterCriticalSection` · `UnhandledExceptionFilter`
+- `UnmapViewOfFile` · `UnregisterApplicationRestart` · `VirtualAlloc`
+- `VirtualFree` · `VirtualProtect` · `WaitForMultipleObjects`
+- `WaitForSingleObject` · `WaitForSingleObjectEx` · `WaitNamedPipeA`
+- `WakeAllConditionVariable` · `WideCharToMultiByte` · `WriteFile`
+- `_XcptFilter` · `__C_specific_handler` · `lstrcatW`
+- `lstrcmpW` · `lstrcmpiA` · `lstrcmpiW`
+- `lstrcpyW` · `lstrcpynA` · `lstrcpynW`
+- `lstrlenW`
 
 **USER32.dll** (17)
 

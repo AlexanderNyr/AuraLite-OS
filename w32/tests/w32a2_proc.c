@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_proc.c — W32A-2 guest fixture: processes and system info.
+/* w32/tests/w32a2_proc.c — W32APP_PLAN.md phase W32A-2 guest fixture: processes and system info.
  *
  * Spawn (self-spawn, redirection, refusals), process info, toolhelp
  * snapshots, module names, environment, directories, version identity,

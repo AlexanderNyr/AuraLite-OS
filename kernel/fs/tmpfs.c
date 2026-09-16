@@ -142,6 +142,19 @@ void tmpfs_init(void) {
     vol_init(&tmp_vol, "/tmp", &tmpfs_ops);
     vol_init(&opt_vol, "/opt", &optfs_ops);
     vol_init(&shm_vol, "/dev/shm", &shmfs_ops);
+    /* RESIDUE2 T1: /tmp is the world-writable scratch directory POSIX (and
+     * every Unix) requires: mode 01777, so ANY process can create files
+     * there, and the sticky bit documents that only the owner unlinks its
+     * own.  vol_init's default 0755 root:root made /tmp writable by root
+     * alone -- and because the selftest drops to uid 1000 in its P7
+     * credentials block (and SYS_SETUID correctly refuses the climb back),
+     * every later T1 open("/tmp/...", O_CREAT) died with a silent -EACCES
+     * from the parent-directory write check in vfs_open().  That is the
+     * "'#!' script execs its interpreter (no /tmp)" selftest failure.
+     * F1's execpolicy already treats /tmp as scratch-that-may-hold-temporary-
+     * executables; the directory mode now agrees with that document.
+     * /opt (apm's install target) and /dev/shm stay root-owned 0755. */
+    tmp_vol.root.mode = 01777;
     kprintf("[tmpfs] writable in-memory filesystem ready "
             "(3 volumes, %d files max each)\n", TMPFS_MAX_FILES);
 }

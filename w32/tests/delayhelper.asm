@@ -148,6 +148,7 @@ puts:
     mov rcx, r12
     mov rdx, rbx
     mov r8d, [rsp+20h]
+    mov qword [rsp+20h], 0         ; lpOverlapped (5th arg) = NULL
     lea r9, [rsp+28h]
     mov qword [rsp+28h], 0
     call WriteFile

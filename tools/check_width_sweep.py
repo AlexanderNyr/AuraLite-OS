@@ -28,6 +28,18 @@ Four ratchets, all measured against the tree:
      opening paren, so a comment MENTIONING __asm__ is not a hit).
      Migration route: kernel/arch/arch.h's irqflags block
      (arch_irq_save/restore, arch_wait_for_interrupt, arch_cpu_relax).
+     SCOPE (W32A-4): kernel/ + drivers/ only -- the same list ratchet 1
+     measures -- NOT w32/src.  The Win32 personality is x86_64-only by
+     design (PE32+ / ms_abi): the port kernels never compile w32/src
+     (KERNEL32_SHARED / KERNELRV_SHARED / KERNELA64_SHARED in the
+     Makefile carry no w32 files; only the portable PE parser
+     w32/src/w32_pe.c rides in KERNEL_SRCS), and its asm -- the TEB
+     fetch `mov %gs:0x30`, the syscall wrappers -- IS the x86_64
+     user-ABI the personality exists to serve, not portable code in a
+     costume.  arch.h's irqflags block is a KERNEL abstraction; w32
+     user-space code cannot migrate to it.  Ratchet 2 keeps w32/src in
+     scope: an x86_64-header include there would still mean the file
+     stopped being compilable as the portable C it is written in.
 
 Same shape as check_test_registry.py / check_fixes_claims.py: a
 hand-maintained claim drifts, a checked one cannot.  Run with
@@ -61,6 +73,13 @@ BASELINE_ASM_FILES    = 27    # was 33 at V6 arming; V6 batch paid 4, RESIDUE2
                               # (spinlock->C11, kprintf, time, scheduler)
 
 PORTABLE_DIRS = ["kernel", "drivers", "w32/src"]
+# Ratchet 1 (casts) and ratchet 4 (asm files) measure a narrower set than
+# ratchet 2: kernel/ + drivers/ minus kernel/arch/.  w32/src is excluded
+# from those two because the Win32 personality is x86_64-only by design --
+# the i386/riscv64/aarch64 kernels never compile a single w32/src file
+# (see the SCOPE note in the module docstring).  Ratchet 2 still sweeps
+# w32/src: an x86_64-header include there is a real portability regression
+# of the shared C, independent of which kernel links it.
 CAST_RE = re.compile(r"\(uint64_t\)")
 X64_INC_RE = re.compile(r'#include\s+"kernel/arch/x86_64/')
 I386_INC_RE = re.compile(r'#include\s+"kernel/arch/i386/')
@@ -115,7 +134,19 @@ def measure():
     cross_b, cross_b_files = count_matches(x64_files, I386_INC_RE)
 
     # Ratchet 4: FILES bearing real asm statements, portable code only.
-    _, asm_per_file = count_matches(inc_files, ASM_RE)
+    # Scope is the ratchet-1 set (kernel/ + drivers/ minus kernel/arch/),
+    # NOT PORTABLE_DIRS: w32/src is exempt because the Win32 personality
+    # is x86_64-only by design -- no port kernel or port userland ever
+    # compiles a w32/src file (KERNEL32_SHARED / KERNELRV_SHARED /
+    # KERNELA64_SHARED list none, and the w32 DLLs build with
+    # USER_CFLAGS for x86_64 alone).  Its asm (the TEB fetch via
+    # %gs:0x30 in kernel32_thr.c, the unwind probes in w32_seh.c) IS
+    # the x86_64 user ABI being implemented, not portable code with an
+    # x86 assumption smuggled in.  Ratchet 2 keeps the wider scope on
+    # purpose: an x86_64 kernel-header include in w32/src would still
+    # break the host unit-test harnesses that compile these files with
+    # host gcc.
+    _, asm_per_file = count_matches(cast_files, ASM_RE)
     asm_files = len(asm_per_file)
 
     return (casts, x64_incs, cross_a + cross_b,

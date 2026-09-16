@@ -100,9 +100,14 @@ filter_raise:
 filter_raise_end:
 
 except_raise:
-    ; Entry rsp is the catcher's LIVE rsp (post-prologue, call-ready):
-    ; no shadow alloc (the dead frame below is scratch).  On exit restore
-    ; the 40-byte frame (push rbp + sub 20h) and ret to the catcher's caller.
+    ; Funclet-entry convention (w32a4_try.asm header, = the x64 Windows
+    ; rule): entry rsp == the catcher's establisher frame, so the catcher's
+    ; return address is at [rsp] and rsp%16 == 8 like any post-call entry.
+    ; (This body used to document the LIVE-rsp entry the unwinder had --
+    ; off by 8 from the ABI.  Same shape as every except_* in
+    ; w32a4_try.asm now.)  On exit: tear the scratch frame and `ret` pops
+    ; the catcher's own return address -- straight back into start.
+    sub  rsp, 40
     lea  rsi, [msg_ok]
     mov  edi, msg_ok_l
     call puts_raw
@@ -152,8 +157,10 @@ filter_raise_xdata:
     db 5, 0x32
     db 1, 0x50
 
-except_raise_xdata:
-    db 0x01, 0, 0, 0x00
+except_raise_xdata:             ; sub rsp,40 (same shape as try.asm's except_*)
+    db 0x01, 4, 1, 0x00
+    db 4, 0x42                  ; ALLOC_SMALL(4)
+    db 0, 0
 
 start_xdata:
     db 0x01, 5, 2, 0x00

@@ -24,6 +24,7 @@
 #include "w32/w32_abi.h"
 #include "w32/w32_handle.h"
 #include "w32/w32_errno.h"
+#include "w32/w32_teb.h"
 
 static int passed = 0, failed = 0, tn = 0;
 #define RUN(f) do { int b = failed; f(); tn++; \
@@ -135,6 +136,27 @@ typedef long ssize_t;
  * future longjmp-based test can observe the call. */
 static int saw_detach_all;
 void w32_module_detach_all(void) { saw_detach_all = 1; (void)saw_detach_all; }
+
+/* W32A-3 moved the thread/TEB layer into kernel32_thr.c, which is
+ * guest-only by construction (raw SYS_CLONE, ARCH_SET_GS, the %gs:0x30
+ * TEB fetch).  This harness stubs what it does not link, and the thread
+ * side gets the same treatment as the libc side above:
+ *   - w32_teb_self returns NULL, which routes Set/GetLastError through
+ *     w32_errno.c's process-wide fallback slot -- the exact pre-init
+ *     path, so the failure-path assertions below observe real code, not
+ *     a fake TEB.
+ *   - the thr_* hooks are never called (no test spawns a thread), and
+ *     the *_close hooks are only reachable through CloseHandle on a
+ *     live sync/thread handle, which this test never holds; they exist
+ *     for the link, and a call would be a harness bug. */
+struct w32_teb *w32_teb_self(void) { return 0; }
+void w32_thr_init(void) {}
+void w32_thr_checkpoint(void) {}
+void w32_thr_kill_all(void) {}
+void w32_sem_close(void *s) { (void)s; }
+void w32_event_close(void *ev) { (void)ev; }
+void w32_mutex_close(void *m) { (void)m; }
+void w32_thread_close(void *t) { (void)t; }
 
 /* ---- handle table --------------------------------------------------------- */
 

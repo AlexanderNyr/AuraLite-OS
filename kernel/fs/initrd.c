@@ -62,6 +62,7 @@ struct initrd_file {
     char     name[VFS_PATH_MAX];
     uint64_t size;
     uint64_t data_offset;   /* offset from initrd base to file data */
+    uint32_t mode;          /* RESIDUE2 T1: permission bits from the tar header */
 };
 
 /* A derived directory.  `path` is relative to the mount root with no leading
@@ -193,6 +194,7 @@ int initrd_init(uint64_t address, uint64_t size) {
                 f->name[VFS_PATH_MAX - 1] = '\0';
                 f->size        = src->size;
                 f->data_offset = src->data_offset;
+                f->mode        = src->mode;   /* a link wears its target's bits */
                 initrd.file_count++;
                 initrd_register_prefixes(f->name);
             } else {
@@ -206,6 +208,16 @@ int initrd_init(uint64_t address, uint64_t size) {
                 f->name[VFS_PATH_MAX - 1] = '\0';
                 f->size        = fsize;
                 f->data_offset = offset + 512;   /* data follows the header */
+                /* RESIDUE2 T1: the permission bits live in the tar header
+                 * (octal ASCII at offset 100, 8 bytes).  They used to be
+                 * dropped on the floor, and the file vnodes below were
+                 * memset to mode 0 -- which root never notices (uid 0
+                 * bypasses vfs_check_perm) but which makes EVERY initrd
+                 * file unreadable to any other uid.  The selftest drops
+                 * to uid 1000 in P7 and never climbs back (SYS_SETUID is
+                 * correctly one-way), so its T1 execve("/bin/sh") died
+                 * with EACCES: a mode-0 vnode grants nothing to "other". */
+                f->mode        = (uint32_t)parse_octal(hdr + 100, 8);
                 initrd.file_count++;
                 initrd_register_prefixes(f->name);
             } else {
@@ -238,6 +250,18 @@ int initrd_init(uint64_t address, uint64_t size) {
             initrd_vnodes[i].name[0] = '\0';
             initrd_vnodes[i].type    = VFS_TYPE_FILE;
             initrd_vnodes[i].size    = initrd.files[i].size;
+            /* RESIDUE2 T1: carry the tar mode onto the vnode, minus every
+             * write bit -- the image is read-only, matching the 0555 the
+             * directory vnodes below have always worn.  A tar that stored
+             * no mode at all (all-zero field) falls back to world-readable
+             * rather than to mode 0, which would lock out every non-root
+             * process. */
+            {
+                uint32_t m = initrd.files[i].mode & 07777u;
+                m &= ~0222u;
+                if ((m & 0777u) == 0) m |= 0444u;
+                initrd_vnodes[i].mode = m;
+            }
             initrd_vnodes[i].ops     = &initrd_ops;
             initrd_vnodes[i].fs_data = (void *)&initrd.files[i];
             /* LX_COMPAT L4: each file needs a unique, NON-ZERO inode.

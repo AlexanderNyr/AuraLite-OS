@@ -64,7 +64,7 @@ extern void gdt_flush(uint64_t gdtr_ptr);
  * project (Stage 2 sits at 0x8000..~0x9200 during BIOS boot, but that code
  * has already handed off to the kernel and its bytes are dead weight we are
  * free to overwrite by the time smp_init() runs), and inside
- * PMM_EARLY_BOOT_RESERVE (see kernel/mm/pmm.c, reserves the first 32 MiB)
+ * PMM_EARLY_BOOT_RESERVE (see kernel/mm/pmm.c, reserves the first 56 MiB)
  * so the physical-memory allocator can never hand these same frames to
  * something else while an AP might still be reading them. */
 #define SMP_TRAMPOLINE_DATA_PHYS 0x7000ULL

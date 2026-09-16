@@ -1,4 +1,4 @@
-/* w32/src/kernel32_fs.c — W32A-2 file breadth.
+/* w32/src/kernel32_fs.c — W32APP_PLAN.md phase W32A-2: file breadth.
  *
  * Five models a reader needs before touching this file:
  *

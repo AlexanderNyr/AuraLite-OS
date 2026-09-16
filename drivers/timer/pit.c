@@ -18,6 +18,7 @@
 #include "kernel/proc/signal.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/fs/buffer_cache.h"   /* RESIDUE2 T3: bc_tick() 1 Hz drain */
+#include "kernel/time.h"              /* RESIDUE2 T1: itimer_account_cpu() */
 
 #define TIMER_TAG "[timer] "
 
@@ -58,7 +59,6 @@ static uint32_t          timer_freq_hz  = 0;
  * bumps it; AP ticks drive their own cpu's scheduler (preemption, per-cpu
  * usage accounting) without touching the shared time base. */
 static void timer_irq_handler(struct registers *regs) {
-    (void)regs;
     struct cpu_local *me = cpu_local_ready ? get_cpu_local() : NULL;
     if (!me || me->cpu_id == 0) {
         timer_ticks++;
@@ -79,6 +79,20 @@ static void timer_irq_handler(struct registers *regs) {
         }
     }
     if (sched_is_ready()) {
+        /* RESIDUE2 T1: per-thread CPU accounting.  This vector fires at
+         * 100 Hz on EVERY cpu (BSP: PIT; APs: their LAPIC timers, both
+         * calibrated to the same rate), so each tick charges one tick to
+         * this cpu's current thread: tcb_t::cpu_ticks, which is what
+         * wait4's rusage reports as ru_utime (see the SYS_WAIT4 arm in
+         * kernel/arch/x86_64/syscall.c) and what ITIMER_VIRTUAL/PROF
+         * deadlines measure against.  itimer_account_cpu existed since
+         * RESIDUE2 T1 but had NO caller, so cpu_ticks never moved and
+         * wait4's rusage always reported zero -- the T1 selftest check
+         * "wait4 rusage reports child user time" failed from birth.
+         * in_kernel comes from the interrupted frame's CPL: only
+         * ITIMER_VIRTUAL cares (cpu_ticks itself is total RUNNING time,
+         * user + kernel, which is the documented granularity). */
+        itimer_account_cpu(1, (regs->cs & 3) != 3);
         sched_tick();
     }
 }

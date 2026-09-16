@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_find.c — W32A-2 guest fixture: files and volumes.
+/* w32/tests/w32a2_find.c — W32APP_PLAN.md phase W32A-2 guest fixture: files and volumes.
  *
  * Groups find/enumerate + attributes/time + the volume/path half of
  * handles/files.  Asserts REAL behaviour and every refusal by name, exits

@@ -1,4 +1,4 @@
-/* w32/src/kernel32_ps.c — W32A-2 processes.
+/* w32/src/kernel32_ps.c — W32APP_PLAN.md phase W32A-2: processes.
  *
  * Four models a reader needs before touching this file:
  *

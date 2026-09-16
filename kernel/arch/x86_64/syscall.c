@@ -971,10 +971,18 @@ void syscall_check_signals(uint64_t retval) {
 }
 
 int is_restartable(uint64_t num) {
+    /* NOT restartable, deliberately: SYS_WAIT4.  POSIX puts the wait family
+     * in the never-restarted class -- a caught signal makes waitpid/wait4
+     * fail with EINTR even when the handler was installed with SA_RESTART
+     * (Linux agrees: do_wait unwinds as ERESTARTNOHAND).  It was listed
+     * here from the T1 landing, and because libc's signal() installs
+     * SA_RESTART (glibc/BSD semantics), the RESIDUE2 T1 selftest check
+     * "caught signal interrupts wait with EINTR" could never observe the
+     * EINTR: the kernel restarted the wait and it collected the child as
+     * if nothing had arrived. */
     switch (num) {
         case SYS_READ:
         case SYS_WRITE:
-        case SYS_WAIT4:
         case SYS_NANOSLEEP:
         case SYS_SELECT:
         case SYS_FUTEX:

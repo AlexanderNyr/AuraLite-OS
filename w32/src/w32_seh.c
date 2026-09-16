@@ -1381,12 +1381,25 @@ static void seh_unwind_to(struct w32_seh_dispatch *f, uint64_t target_frame,
     if (had_target) {
         f->resume = f->live;
         f->resume.rip = target_ip;
-        /* RSP stays live (not target_frame): the pad/catch runs inside
-         * the target frame (its locals addressed off the live RSP), and
-         * the establisher's pre-prologue value misaligns the ABI by the
-         * frame size (libgcc's cleanup pad #GPs in the first movaps
-         * otherwise).  target_frame is the stop condition, not a value
-         * to install. */
+        /* RESIDUE2 fix (W32A-4 runtime): a FUNCLET transfer (target_ip != 0)
+         * resumes with RSP = the establisher frame, per the documented x64
+         * funclet-entry convention this image set was written against (see
+         * w32a4_try.asm's header): the faulted frame's return address sits
+         * at [RSP], RSP%16 == 8 like any post-call entry, the funclet's own
+         * `ret` returns straight into the target frame's caller, and parent
+         * locals are reached through the establisher value the personality
+         * passes as an argument -- never through the raw RSP.  Resuming with
+         * the live (mid-frame) RSP instead -- what this code used to do,
+         * rationalised by a comment about libgcc cleanup pads -- put the
+         * funclet 8 bytes out of ABI alignment: its call chain reached
+         * WriteFile with RSP%16 == 0 and the callee-saved xmm spill
+         * (`movaps`) #GP'd before the handler could print a single receipt
+         * (that was the w32a4_try/crash/filter gui-shard failure).  The
+         * libgcc paths are untouched by construction: their cleanup sweeps
+         * run with target_ip == 0 (RtlUnwindEx returns to _Unwind_Resume),
+         * and the sweep-to-bottom has no target at all. */
+        if (target_ip != 0)
+            f->resume.rsp = target_frame;
         if (ret_value)
             f->resume.rax = ret_value;
         f->resume_valid = 1;

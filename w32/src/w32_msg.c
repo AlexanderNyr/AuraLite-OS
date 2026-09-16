@@ -1,4 +1,4 @@
-/* w32/src/w32_msg.c — W32A-2 message table and FormatMessage.
+/* w32/src/w32_msg.c — W32APP_PLAN.md phase W32A-2: message table and FormatMessage.
  *
  * Every Win32 code this personality can set has one English sentence here,
  * written fresh for this file (never copied from vendor documentation), so

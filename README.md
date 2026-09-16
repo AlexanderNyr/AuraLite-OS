@@ -605,7 +605,7 @@ make test-integration-fast  # QEMU smoke/integration subset
 make test-integration       # full QEMU integration suite
 ```
 
-The full suite currently registers 162 black-box QEMU cases (10 thematic CI
+The full suite currently registers 192 black-box QEMU cases (12 thematic CI
 shards), including AHCI, FAT32 persistence, ext2 cross-OS round-trips, the
 ext4/f2fs/btrfs/exFAT/NTFS interop lanes, USB MSC/HID/hub/xHCI rings,
 networking (DNS failover, TCP x5, TLS/HTTPS, IPv6), SMP, selfhost closures,

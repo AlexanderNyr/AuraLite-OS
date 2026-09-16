@@ -336,9 +336,10 @@ int mkiso_build(const struct mk_opts *o) {
         fprintf(stderr, "mkiso: MBR must be 512 B with 0x55AA signature\n");
         goto done;
     }
-    /* initrd slot bound (mirrors the BIOS loader's 16 MiB reservation). */
-    if (initrd.present && initrd.size > (long)(16 * 1024 * 1024)) {
-        fprintf(stderr, "mkiso: initrd is %ld bytes (BIOS loader max 16 MiB)\n",
+    /* initrd slot bound (mirrors the BIOS loader's 32 MiB reservation:
+     * INITRD_MAX_BYTES in boot/bios/stage2/stage2_start.asm). */
+    if (initrd.present && initrd.size > (long)(32 * 1024 * 1024)) {
+        fprintf(stderr, "mkiso: initrd is %ld bytes (BIOS loader max 32 MiB)\n",
                 initrd.size);
         goto done;
     }

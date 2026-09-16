@@ -2599,7 +2599,28 @@ static int sh_exec_line(struct sh_src *src, char *line)
 
 static void dummy_handler(int s) { (void)s; }
 
-int main(void) {
+int main(int argc, char **argv) {
+    /* RESIDUE2 T1: script mode -- `sh <file> [args...]` as a PROGRAM.
+     *
+     * The `sh` builtin (cmd_sh) has run script files in-process since
+     * SELFHOST SH6a, but only from an already-running prompt: the kernel's
+     * binfmt_script ("#!") rewrites execve("/tmp/x.sh") into
+     * execve("/bin/sh", ["/bin/sh", "/tmp/x.sh"]), and until now there was
+     * no /bin/sh at all -- and this main() took no arguments, so even a
+     * link to init would have ignored the script and opened an interactive
+     * prompt on the tty.  /bin/sh is now a hard link to init (Makefile),
+     * and an argv[1] that is not an option runs cmd_sh() over it and exits
+     * with the script's status, exactly like the builtin does at a prompt.
+     * The T1 selftest check "'#!' script execs its interpreter" needs the
+     * whole chain: writable /tmp (tmpfs 01777), kernel shebang execve,
+     * and this entry point.  No banner, no /dev/tty0 takeover, no SIGTSTP
+     * ignore: a script run is a child job, so ^Z must stay able to
+     * suspend it, and its stdio must stay whatever the caller set up. */
+    if (argc >= 2 && argv[1] && argv[1][0] && argv[1][0] != '-') {
+        int st = cmd_sh(argc, argv);
+        _exit(st & 0xFF);
+    }
+
     signal(SIGALRM, dummy_handler);
 
     /* An interactive shell must not be stoppable from its own keyboard:

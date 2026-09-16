@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_pipes.c — W32A-2 guest fixture: pipes.
+/* w32/tests/w32a2_pipes.c — W32APP_PLAN.md phase W32A-2 guest fixture: pipes.
  *
  * Anonymous pipe round-trips plus the named-pipe rendezvous over the VFS
  * fifo layer: single-instance semantics, the connected/not-connected

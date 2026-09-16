@@ -49,8 +49,11 @@ check_tree() {
         fi
         # A licence/provenance header must appear near the top.  Vendored
         # files carry their upstream notice; ours name the spec they follow.
+        # W32APP_PLAN joined WIN32_PLAN when the application ladder (W32A-0
+        # onward) became its own plan document: the A2/A3/A4 sources name
+        # their phase there, which is the same declaration under a new roof.
         if ! head -n 25 "$f" | grep -qiE \
-             "WIN32_PLAN|public domain|Apache|ZPL|BSD|MIT|Copyright"; then
+             "WIN32_PLAN|W32APP_PLAN|public domain|Apache|ZPL|BSD|MIT|Copyright"; then
             bad "$rel has no licence/provenance header in its first 25 lines"
         fi
     done < <(find "$w32" -type f \( -name '*.c' -o -name '*.h' \) | sort)

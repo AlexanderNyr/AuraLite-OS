@@ -20,11 +20,19 @@
 #include "w32/w32_manifest.h"
 #include "w32/w32_module.h"
 #include "w32/kernel32.h"
+#include "w32/w32_teb.h"
 #include "w32_a1_tables.h"
 
 int a1_checks = 0;
 int a1_failures = 0;
 const char *a1_dir = "build/user";
+
+/* W32A-3 moved LastError into the TEB; w32_teb_self lives in
+ * kernel32_thr.c, which the harness does not link (raw clone + %gs TEB
+ * fetch are guest-only).  NULL routes Set/GetLastError through
+ * w32_errno.c's process-wide fallback slot -- the pre-init path -- and
+ * no binder-side check depends on a live TEB. */
+struct w32_teb *w32_teb_self(void) { return 0; }
 
 /* The generated stubs call the real ExitProcess (the msvcrt exit family).
  * The harness never runs stub bodies, but the link needs the symbol; a

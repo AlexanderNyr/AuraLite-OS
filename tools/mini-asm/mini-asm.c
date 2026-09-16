@@ -1766,6 +1766,11 @@ static int encode_instr(AsmLine *L, int emit, int *changed) {
         if (!strcmp(m, "iretq")) { if (emit) { out_byte(0x48); out_byte(0xCF); } return 2; }
         if (!strcmp(m, "retfq")) { if (emit) { out_byte(0x48); out_byte(0xCB); } return 2; }
         if (!strcmp(m, "fninit")) { if (emit) { out_byte(0xDB); out_byte(0xE3); } return 2; }
+        /* W32A-3: the kernel entry/exit paths swap GS (the Ring-3 TEB
+         * protocol), so the elf64 parity set grew `swapgs`.  Measured from
+         * nasm: 0F 01 F8 (three bytes -- a /0 ModRM form, not a 0F two-byte
+         * like syscall/sysret, which is why it sits here and not in z2). */
+        if (!strcmp(m, "swapgs")) { if (emit) { out_byte(0x0F); out_byte(0x01); out_byte(0xF8); } return 3; }
 
         if (!strcmp(m, "pusha") || !strcmp(m, "pushad") ||
             !strcmp(m, "popa")  || !strcmp(m, "popad")) {

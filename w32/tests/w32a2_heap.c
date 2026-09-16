@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_heap.c — W32A-2 guest fixture: heaps and memory.
+/* w32/tests/w32a2_heap.c — W32APP_PLAN.md phase W32A-2 guest fixture: heaps and memory.
  *
  * HeapAlloc/ReAlloc/Size/Free, Global*, Local*, VirtualProtect, and
  * GetLargePageMinimum.  Exits 55/1.

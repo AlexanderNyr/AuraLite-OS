@@ -1,4 +1,4 @@
-/* w32/src/kernel32_loc.c — W32A-2 locales and strings.
+/* w32/src/kernel32_loc.c — W32APP_PLAN.md phase W32A-2: locales and strings.
  *
  * Three models a reader needs before touching this file:
  *

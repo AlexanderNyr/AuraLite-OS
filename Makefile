@@ -1973,11 +1973,15 @@ DUAL_ISO_IMAGE := $(BUILD_DIR)/auralite-dual.iso
 
 # Size of the FAT32 ESP inside the hybrid image, in MiB.  The final image is
 # ESP_MB + 1 MiB (the extra MiB holds the MBR, Stage 2 and the GPT areas).
-# Default 48 MiB is the smallest size that still yields >65525 FAT32 clusters
-# (below that OVMF rejects the volume as FAT16) while fitting kernel + initrd,
-# each of which is stored twice for the BIOS and UEFI lookup paths.
-# Override for a roomier image:  make iso ESP_MB=256
-ESP_MB ?= 48
+# The FAT32 floor is >65525 data clusters (below that OVMF rejects the
+# volume as FAT16); 48 MiB was the smallest size clearing it while fitting
+# kernel + initrd, each stored twice for the BIOS and UEFI lookup paths.
+# The self-hosting closure outgrew 48: with /bin/tcc + /src staged, the
+# initrd is ~20 MiB, and 2x(20 MiB initrd + ~4 MiB kernel) + the kernel32
+# twin no longer fit.  80 MiB keeps the whole 32 MiB initrd slot storable
+# twice (2x32 + kernels + EFI < 80) at any initrd size the BIOS loader
+# still accepts.  Override for a roomier image:  make iso ESP_MB=256
+ESP_MB ?= 80
 export ESP_MB
 
 .PHONY: iso-dual
@@ -2898,11 +2902,18 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
-# Binaries are stripped into the image: the BIOS boot path reserves a 16 MiB
+# Binaries are stripped into the image: the BIOS boot path reserves a 32 MiB
 # slot for initrd.tar (see mkisoimage_dual.sh) and the full userland with
-# symbol tables no longer fits.  Unstripped ELFs stay in build/user for
+# symbol tables -- plus the self-host closure when staged -- does not fit it.
+# Unstripped ELFs stay in build/user for
 # debugging; nothing in the OS reads user-space symtabs at runtime.
 	@strip -s $(INIT_ELF) -o $(INITRD_DIR)/bin/init
+# RESIDUE2 T1: /bin/sh is init in script mode (see main() in init.c).  The
+# kernel's "#!" binfmt_script rewrites script execve into an execve of the
+# named interpreter, and every script in the tree names /bin/sh; a hard link
+# keeps it one inode (the initrd tar stores it as a type-'1' entry, exactly
+# like /linux/bin/sh -> dash).
+	@ln -f $(INITRD_DIR)/bin/init $(INITRD_DIR)/bin/sh
 	@strip -s $(HELLO_ELF) -o $(INITRD_DIR)/bin/hello
 	@strip -s $(SHMAKE_ELF) -o $(INITRD_DIR)/bin/shmake
 	@strip -s $(SH6E_STAMP_ELF) -o $(INITRD_DIR)/tests/sh6e_stamp
@@ -3042,7 +3053,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@printf 'X' | dd of=$(INITRD_DIR)/pkg/broken.apkg bs=1 seek=200 conv=notrunc \
 	              status=none
 # The PE32+ loader fixture (W32-3).  Not stripped: `strip` does not handle PE,
-# and at 3 KiB it costs nothing in the 16 MiB initrd slot.
+# and at 3 KiB it costs nothing in the 32 MiB initrd slot.
 	@cp $(PETEST_EXE) $(INITRD_DIR)/tests/petest.exe
 # The same image with its subsystem field forced to EFI_APPLICATION (10), so
 # the integration test can prove a firmware binary is REFUSED rather than run.
@@ -4865,9 +4876,10 @@ $(DOOM_ELF): $(DOOM_SRC) doom/doomgeneric_auralite.c $(USER_COMMON)             
 
 # The WAD travels on its own FAT32 disk, not in the initrd.
 #
-# Not a preference -- a constraint.  The BIOS loader reserves a 16 MiB slot
+# Not a preference -- a constraint.  The BIOS loader reserves a 32 MiB slot
 # for initrd.tar (tools/mkisoimage_dual.sh enforces it), the initrd is
-# already ~7.6 MiB, and the smallest Freedoom IWAD is 22 MiB.  The kernel
+# already ~8 MiB (~20 MiB with the self-host closure staged), and the
+# smallest Freedoom IWAD is 22 MiB.  The kernel
 # already mounts a FAT32 volume found at LBA 64 of the first AHCI disk as
 # /fat, so the image below is built to exactly that layout: 64 empty sectors
 # and then the filesystem.  Getting that offset wrong is not a mount
@@ -4884,7 +4896,8 @@ $(DOOM_DISK): $(DOOM_WAD) $(DOOM_ELF)
 	@mcopy -i $(DOOM_DIR)/fatpart.img $(DOOM_WAD) ::/doom/freedoom1.wad
 # The binary rides on the same disk as its data, rather than in the initrd.
 # Two reasons, and the first is decisive: doom.elf is ~490 KiB and the
-# initrd is already ~8.0 MiB of a 16 MiB BIOS-loader budget that
+# initrd is already ~8 MiB (~20 MiB with the self-host closure) of a
+# 32 MiB BIOS-loader budget that
 # mkisoimage_dual.sh enforces, so it simply does not fit.  The second is
 # that it keeps GPL-2.0-derived build output out of the default image
 # entirely -- `make iso` produces exactly what it did before.

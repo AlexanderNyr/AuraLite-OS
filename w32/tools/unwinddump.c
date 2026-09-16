@@ -1,4 +1,4 @@
-/* unwinddump.c — dump Win64 unwind info through OUR parser, W32A-4.
+/* unwinddump.c — dump Win64 unwind info through OUR parser.  W32APP_PLAN.md phase W32A-4.
  *
  * A host tool: it maps a PE32+ image (headers + sections at their VAs),
  * registers it with the w32 SEH image table, and walks .pdata the way the

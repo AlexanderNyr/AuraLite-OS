@@ -634,6 +634,40 @@ int64_t do_fork(void) {
 
 /* ---- execve() ---- */
 
+/* RESIDUE2 T1: the "#!" line tokenizer, shared by execve_image() (the
+ * execve(2) binfmt_script path) and process_spawn_argv() (the SYS_SPAWN
+ * path the shell uses for every external command).  @buf holds the first
+ * @total bytes of the candidate image.
+ *
+ * Returns:  1 = script; @interp (and optionally @iarg) filled.
+ *           0 = not a script (no "#!" magic) -- leave it to the ELF loader.
+ *          -1 = bare "#!" with no interpreter token (callers map to ENOEXEC).
+ *
+ * Token rules match Linux's binfmt_script: the first whitespace-delimited
+ * token after "#!" is the interpreter; the rest of the line, minus leading
+ * and trailing blanks, is ONE optional argument. */
+static int shebang_parse(const uint8_t *buf, int64_t total,
+                         char *interp, size_t isz, char *iarg, size_t asz) {
+    if (total < 2 || buf[0] != '#' || buf[1] != '!') return 0;
+    interp[0] = '\0';
+    iarg[0]   = '\0';
+    size_t li = 0, la = 0, pos = 2;
+    int in_arg = 0;
+    while (pos < (size_t)total && buf[pos] != '\n' && li + 1 < isz) {
+        char c = (char)buf[pos++];
+        if (c == ' ' || c == '\t') {
+            if (li > 0) in_arg = 1;      /* interpreter token ended */
+            continue;
+        }
+        if (!in_arg) interp[li++] = c;
+        else if (la + 1 < asz) iarg[la++] = c;
+        else break;
+    }
+    interp[li] = '\0';
+    iarg[la]   = '\0';
+    return li ? 1 : -1;
+}
+
 /* RESIDUE2 T1: the execve tail (image teardown + load), split out so the
  * "#!" script path can re-enter with a rebuilt argv without a second user
  * capture.  Takes ownership of @ea (frees it on every return path). */
@@ -750,23 +784,8 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
             return -ELOOP;
         }
         char interp[128]; char iarg[128];
-        size_t li = 0, la = 0;
-        size_t pos = 2;
-        int in_arg = 0;
-        interp[0] = '\0'; iarg[0] = '\0';
-        while (pos < (size_t)total && buf[pos] != '\n' && li + 1 < sizeof(interp)) {
-            char c = (char)buf[pos++];
-            if (c == ' ' || c == '\t') {
-                if (li > 0) in_arg = 1;      /* interpreter token ended */
-                continue;
-            }
-            if (!in_arg) interp[li++] = c;
-            else if (la + 1 < sizeof(iarg)) iarg[la++] = c;
-            else break;
-        }
-        interp[li] = '\0';
-        iarg[la]  = '\0';
-        if (li == 0) {
+        if (shebang_parse(buf, total, interp, sizeof interp,
+                          iarg, sizeof iarg) < 0) {
             kfree(buf);
             exec_args_free(ea); kfree(ea);
             return -ENOEXEC;   /* bare "#!" with no interpreter */
@@ -779,6 +798,8 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
             return -ENOMEM;
         }
         int k = 0;
+        size_t li = strlen(interp);
+        size_t la = strlen(iarg);
         ea2->argv[k] = kmalloc(li + 1);
         if (!ea2->argv[k]) goto script_oom;
         memcpy(ea2->argv[k], interp, li + 1);
@@ -1064,9 +1085,88 @@ static void spawn_thread(void *arg) {
  * dangerous part of this, execve already gets it right, and a second
  * implementation would be a second place to get it subtly wrong. */
 int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
+    /* RESIDUE2 T1 (spawn half): "#!" binfmt_script.  The shell runs every
+     * external command through SYS_SPAWN, and spawn builds a fresh address
+     * space WITHOUT passing execve_image() -- so after the execve(2) path
+     * learned scripts, typing /tmp/s.sh at the prompt still handed a
+     * 17-byte script to the ELF loader ("[elf] too small") and exited 0.
+     * Apply the same rewrite here, before any address space exists: the
+     * interpreter is spawned with argv = [interp, (optional-arg), script,
+     * caller's argv[1..]], and the script's text is never mapped -- the
+     * interpreter reads it by name, exactly as binfmt_script works on the
+     * execve path.  The rewrite is one step (no recursion): if the named
+     * interpreter is itself a script, the ELF loader rejects it, same as
+     * before.  The probe runs in the CALLER's context, so the user argv
+     * capture below stays valid for both paths. */
+    char *script_path = NULL;            /* heap: rewritten spawn path (interpreter) */
+    struct exec_args *script_ea = NULL;  /* heap: rebuilt argv, owned like a captured ea */
+    {
+        int hbfd = vfs_open(path, O_RDONLY, 0);
+        if (hbfd >= 0) {
+            uint8_t hb[256];
+            int64_t hn = vfs_read(hbfd, hb, sizeof hb);
+            vfs_close(hbfd);
+            char interp[128], iarg[128];
+            int sb = (hn > 0) ? shebang_parse(hb, hn, interp, sizeof interp,
+                                              iarg, sizeof iarg) : 0;
+            if (sb < 0) return -ENOEXEC;   /* bare "#!" with no interpreter */
+            if (sb > 0) {
+                script_path = kmalloc(strlen(interp) + 1);
+                script_ea   = kmalloc(sizeof(struct exec_args));
+                if (!script_path || !script_ea) {
+                    if (script_path) kfree(script_path);
+                    if (script_ea) kfree(script_ea);
+                    return -ENOMEM;
+                }
+                strcpy(script_path, interp);
+                memset(script_ea, 0, sizeof(*script_ea));
+                int k = 0;
+                const char *toks[3]; int ntoks = 0;
+                toks[ntoks++] = interp;
+                if (iarg[0]) toks[ntoks++] = iarg;
+                toks[ntoks++] = path;              /* the script itself */
+                for (int i = 0; i < ntoks; i++) {
+                    size_t l = strlen(toks[i]) + 1;
+                    char *d = kmalloc(l);
+                    if (!d) goto spawn_script_oom;
+                    memcpy(d, toks[i], l);
+                    script_ea->argv[k++] = d;
+                    script_ea->argc = k;   /* keep in sync so cleanup frees all */
+                }
+                if (user_argv) {
+                    struct exec_args tmp;
+                    memset(&tmp, 0, sizeof tmp);
+                    int64_t cap = exec_args_capture(&tmp, user_argv, 0);
+                    if (cap != 0) {
+                        exec_args_free(script_ea);
+                        kfree(script_ea);
+                        kfree(script_path);
+                        return cap;   /* -EFAULT / -E2BIG / -ENOMEM, native */
+                    }
+                    for (int i = 1; i < tmp.argc && k < EXEC_MAX_ARGS; i++) {
+                        size_t l = strlen(tmp.argv[i]) + 1;
+                        char *d = kmalloc(l);
+                        if (!d) { exec_args_free(&tmp); goto spawn_script_oom; }
+                        memcpy(d, tmp.argv[i], l);
+                        script_ea->argv[k++] = d;
+                        script_ea->argc = k;
+                    }
+                    exec_args_free(&tmp);
+                }
+                script_ea->argv[k] = NULL;
+                script_ea->argc = k;
+                script_ea->envp[0] = NULL;
+                script_ea->envc = 0;
+                kprintf("[proc] spawn: '#!' -> %s\n", interp);
+                path = script_path;   /* everything below spawns the interpreter */
+            }
+        }
+    }
+
     /* Create a new address space. */
     uint64_t new_pml4 = paging_new_address_space();
     if (new_pml4 == 0) {
+        if (script_ea || script_path) goto spawn_script_oom;
         return -ENOMEM;
     }
     /* If we are spawning from a thread that has a VMA list, 
@@ -1097,14 +1197,24 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     /* Allocate a copy of the path string (the caller's stack might change). */
     char *path_copy = kmalloc(strlen(path) + 1);
     if (!path_copy) {
+        if (script_ea) { exec_args_free(script_ea); kfree(script_ea); }
+        if (script_path) kfree(script_path);
         (void)paging_free_address_space(new_pml4);
         return -ENOMEM;
     }
     strcpy(path_copy, path);
+    /* path_copy now owns the spawn path: rebind `path` to it BEFORE dropping
+     * the scratch copy, so the thread-name and the /linux persona rule below
+     * read a live string (the shebang rewrite reassigned `path` to
+     * script_path, which this kfree retires).
+     * (script_ea stays alive: it becomes the payload's args below.) */
+    if (script_path) { kfree(script_path); script_path = NULL; path = path_copy; }
 
-    /* Capture argv while we are still in the CALLER's address space. */
-    struct exec_args *ea = NULL;
-    if (user_argv) {
+    /* Capture argv while we are still in the CALLER's address space.  A
+     * shebang rewrite already captured and rebuilt the caller's argv into
+     * script_ea above, so the direct capture only runs for real images. */
+    struct exec_args *ea = script_ea;
+    if (!ea && user_argv) {
         ea = kmalloc(sizeof(struct exec_args));
         if (!ea) {
             kfree(path_copy);
@@ -1197,6 +1307,15 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     kthread_start(child);
 
     return (int64_t)child->id;
+
+    /* Shebang-rewrite allocation failure.  Placed AFTER the success return:
+     * a label in the straight-line path would make every spawn fall through
+     * into it (and every spawn return -ENOMEM, which is exactly the bug this
+     * placement note exists to prevent from ever being "simplified" back). */
+spawn_script_oom:
+    if (script_ea) { exec_args_free(script_ea); kfree(script_ea); }
+    if (script_path) kfree(script_path);
+    return -ENOMEM;
 }
 
 /* ---- Self-test ---- */

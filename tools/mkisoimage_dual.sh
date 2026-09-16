@@ -43,9 +43,11 @@ BUILD="$ROOT/build"
 # Microsoft's spec (and OVMF's strict FatPkg driver) classify it as FAT16 and
 # refuse to mount it.  We format with -c 1 (1 sector = 512 B per cluster), so
 # the floor is 65525 * 512 = ~32 MiB of *data* plus FAT/reserved overhead.
-# 48 MiB clears that comfortably (~98k clusters) while leaving ~36 MiB free
-# for a kernel + initrd that currently total ~12 MiB (each stored twice).
-ESP_MB="${ESP_MB:-48}"
+# 80 MiB clears that with room for the worst legal payload: the kernel and
+# the initrd are each stored twice (BIOS root + UEFI ESP paths), and with
+# the self-host closure staged the initrd alone is ~20 MiB -- 2x(20+4) plus
+# the kernel32 twin overflows the old 48 MiB default.
+ESP_MB="${ESP_MB:-80}"
 
 if [ "$ESP_MB" -lt 40 ]; then
     echo "[mkiso-dual] ERROR: ESP_MB=$ESP_MB is below the 40 MiB FAT32 floor" >&2
@@ -177,13 +179,13 @@ if [ -s "$BUILD/kernel32.elf" ]; then
 fi
 if [ -f "$BUILD/initrd.tar" ]; then
     # BIOS Stage 2 loads the archive at 24 MiB inside the kernel's fixed
-    # 0..40 MiB early-boot reservation (PMM_EARLY_BOOT_RESERVE), leaving a
-    # 16 MiB slot.  Keep this bound in step with INITRD_MAX_BYTES in
+    # 0..56 MiB early-boot reservation (PMM_EARLY_BOOT_RESERVE), leaving a
+    # 32 MiB slot.  Keep this bound in step with INITRD_MAX_BYTES in
     # boot/bios/stage2/stage2_start.asm.  Fail the build rather than
     # shipping an image whose BIOS path silently omits userspace.
     initrd_size=$(wc -c < "$BUILD/initrd.tar")
-    if [ "$initrd_size" -gt $((16 * 1024 * 1024)) ]; then
-        echo "[mkiso-dual] ERROR: initrd.tar is $initrd_size bytes (BIOS loader max: 16 MiB)" >&2
+    if [ "$initrd_size" -gt $((32 * 1024 * 1024)) ]; then
+        echo "[mkiso-dual] ERROR: initrd.tar is $initrd_size bytes (BIOS loader max: 32 MiB)" >&2
         exit 1
     fi
     mcopy -i "$FAT_IMG" "$BUILD/initrd.tar" ::/EFI/BOOT/INITRD.TAR

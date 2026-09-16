@@ -9,10 +9,10 @@ tests/integration/
 ├── README.md                 ← this file
 ├── run_all.sh                ← top-level orchestrator (+ ALL_CASES registry)
 ├── lib/lib.sh                ← shared helpers (qemu launcher, asserts, colors)
-└── cases/                    ← 162 case scripts, one per behaviour
+└── cases/                    ← 192 case scripts, one per behaviour
 ```
 
-The 162 cases are partitioned into **10 thematic CI shards** so they run in
+The 192 cases are partitioned into **12 thematic CI shards** so they run in
 parallel instead of one ~2 h job. The partition lives in `run_all.sh`
 (`GROUP_NAMES` / `group_re()`) and is **self-checked on every invocation**:
 each registered case must match exactly one shard regex — a case that matches
@@ -30,6 +30,8 @@ none (or two) refuses to run rather than silently dropping out of CI.
 | `selfhost-script` | `test_selfhost_script`, `test_selfhost_pipe`, `test_selfhost_shmake`, `test_selfhost_build` (SH6) |
 | `selfhost-closure` | `test_selfhost_tcc`, `test_selfhost_kernel_guest`, `test_selfhost_closure` (SH8 — the only shard needing the guest `/bin/tcc`) |
 | `selfhost-img` | `test_selfhost_mkinitrd`, `test_selfhost_mkiso`, `test_selfhost_iso` (SH7 image twins) |
+| `ota` | `test_ota_apply`, `test_ota_bootvol`, `test_ota_fallback`, `test_ota_reboot` |
+| `lx` | `test_lx_hello`, `test_lx_dynamic`, `test_lx_shell`, `test_lx_busybox`, `test_lx_lua` |
 
 ## Running
 

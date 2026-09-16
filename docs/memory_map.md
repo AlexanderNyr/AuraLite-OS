@@ -68,7 +68,7 @@ The kernel latches it in `boot_info_init()` and reads it through the
 
 ### The low-memory early-boot reserve
 
-`pmm_init()` marks the first **40 MiB** of physical RAM as permanently used
+`pmm_init()` marks the first **56 MiB** of physical RAM as permanently used
 (`PMM_EARLY_BOOT_RESERVE`, `kernel/mm/pmm.c`) so the allocator can never hand
 out a frame the loader is still using:
 
@@ -79,14 +79,18 @@ out a frame the loader is still using:
 | `0x00100000` | Kernel `PT_LOAD` segments |
 | `0x00200000` | `kernel.elf` staging buffer (BL4, temporary) |
 | `0x01000000` | Boot page tables (BL4) |
-| `0x01800000` | `initrd.tar` — **16 MiB slot**, ends at the 40 MiB ceiling |
+| `0x01800000` | `initrd.tar` — **32 MiB slot**, ends at the 56 MiB ceiling |
 
 The reserve ceiling is what caps the initrd. It was 32 MiB, giving the archive
 exactly 8 MiB; the initrd had grown to ~8.0 MiB, so a marginally larger build
-on another host overflowed it and failed `make iso`. The bound is encoded in
-three places that must stay in step: `PMM_EARLY_BOOT_RESERVE`,
+on another host overflowed it and failed `make iso`. The raise to 40 MiB
+bought a 16 MiB slot; the self-host closure (`/bin/tcc` + `/src`, SELFHOST
+SH8) then grew the archive to ~19.9 MiB and overflowed that in turn, so the
+ceiling is now 56 MiB (a 32 MiB slot). The bound is encoded in
+places that must stay in step: `PMM_EARLY_BOOT_RESERVE` (and the i386 twin
+`EARLY_RESERVE` in `kernel/arch/i386/pmm32.c`),
 `INITRD_MAX_BYTES` (`boot/bios/stage2/stage2_start.asm`) and the build-time
-check in `tools/mkisoimage_dual.sh`.
+checks in `tools/mkisoimage_dual.sh` / `tools/selfhost/mkiso.c`.
 
 The HHDM is a direct map of **all physical RAM** at a fixed virtual offset.
 The kernel reaches any physical address as `physical + HHDM_offset`.

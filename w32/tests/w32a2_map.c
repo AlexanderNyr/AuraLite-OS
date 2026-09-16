@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_map.c — W32A-2 guest fixture: file ops and mappings.
+/* w32/tests/w32a2_map.c — W32APP_PLAN.md phase W32A-2 guest fixture: file ops and mappings.
  *
  * The create/seek/mapping half of handles/files: CreateFile breadth,
  * pointers, truncation, completed overlapped I/O (true async is

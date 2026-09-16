@@ -57,6 +57,13 @@ if [ ! -f "$BUILD/boot_offsets.inc" ] && [ -f tools/gen_boot_offsets.c ]; then
 fi
 INC="-I . -I build/"
 
+# FAILED is per-lane (the summaries below report each lane separately, so it
+# resets before each one); ANY_FAILED accumulates across lanes.  The exit
+# code must not forget an earlier lane: an elf64 FAIL was once swallowed by
+# exactly that reset (the W32A-3 `swapgs` gap passed CI-silently because
+# elf32, the last lane, was green).  A gate that prints FAIL and exits 0 is
+# worse than no gate.
+ANY_FAILED=0
 FAILED=0
 IDENTICAL=0
 for src in "${COVERED[@]}"; do
@@ -96,6 +103,7 @@ if [ "$FAILED" -eq 0 ]; then
     echo "[selfhost] asm PASS (bin): $IDENTICAL/$FLAT_TOTAL flat objects byte-identical"
 else
     echo "[selfhost] asm FAIL (bin): $IDENTICAL/$FLAT_TOTAL flat objects byte-identical"
+    ANY_FAILED=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -209,6 +217,7 @@ if [ "$FAILED" -eq 0 ]; then
     echo "[selfhost] asm PASS (elf64): $IDENTICAL/$ELF_TOTAL objects readelf-parity"
 else
     echo "[selfhost] asm FAIL (elf64): $IDENTICAL/$ELF_TOTAL objects readelf-parity"
+    ANY_FAILED=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -291,5 +300,6 @@ if [ "$FAILED" -eq 0 ]; then
     echo "[selfhost] asm PASS (elf32): $IDENTICAL/$ELF32_TOTAL objects readelf-parity"
 else
     echo "[selfhost] asm FAIL (elf32): $IDENTICAL/$ELF32_TOTAL objects readelf-parity"
+    ANY_FAILED=1
 fi
-exit $([ "$FAILED" -eq 0 ] && echo 0 || echo 1)
+exit $([ "$ANY_FAILED" -eq 0 ] && echo 0 || echo 1)

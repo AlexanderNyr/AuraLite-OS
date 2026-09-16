@@ -72,6 +72,28 @@ ReactOS.
 | `tests/fwdtest.asm`, `tests/fwdtest.def`, `tests/fwdstatic.asm`, `tests/fwdmain.asm` | Forwarder-refusal fixtures (W32A-1) |
 | `tests/mantest.asm`, `tests/mantest_*.manifest`, `tests/mantest_*.rc` | Manifest fixtures: v5/v6/admin/bad (W32A-1) |
 | `tests/W32A1.bindreport` | Committed ledger-harness report, refreshed by the A1 unit test (W32A-1) |
+| `src/kernel32_fs.c` | KERNEL32 file breadth: find/enumerate, volumes, attributes (W32A-2) |
+| `src/kernel32_loc.c` | Locale, code-page and string-type breadth (W32A-2) |
+| `src/kernel32_ps.c` | Process and system-info breadth: spawn, toolhelp (W32A-2) |
+| `src/w32_msg.c` | The message table behind FormatMessage (W32A-2) |
+| `tests/w32a2_common.h` | Shared harness for the A2 mingw-w64 guest fixtures (W32A-2) |
+| `tests/w32a2_find.c` | Guest fixture: find/enumerate, attributes, volumes (W32A-2) |
+| `tests/w32a2_heap.c` | Guest fixture: heaps, Global/Local, VirtualProtect (W32A-2) |
+| `tests/w32a2_locale.c` | Guest fixture: code pages, locales, string types (W32A-2) |
+| `tests/w32a2_map.c` | Guest fixture: CreateFile breadth and file mappings (W32A-2) |
+| `tests/w32a2_pipes.c` | Guest fixture: anonymous and named pipes (W32A-2) |
+| `tests/w32a2_proc.c` | Guest fixture: spawn, process info, toolhelp (W32A-2) |
+| `tests/w32a2_time.c` | Guest fixture: file/system time, DOS formats (W32A-2) |
+| `include/w32/w32_teb.h` | TEB-lite layout reached through GS; thread-init API (W32A-3) |
+| `src/kernel32_thr.c` | Threads, TLS/FLS, synchronisation objects, APCs (W32A-3) |
+| `tests/w32a3_threads.asm`, `tests/w32a3_tls.asm` | Guest fixtures: threads + sync, TLS + FLS (W32A-3) |
+| `include/w32/w32_seh.h` | Win64 SEH: unwind-info structures and dispatch API (W32A-4) |
+| `src/w32_seh.c` | Table-driven RtlVirtualUnwind and the `__try` dispatch (W32A-4) |
+| `tools/unwinddump.c` | Host tool: dump `.pdata`/`.xdata` through our parser (W32A-4) |
+| `tests/msvcrt.def` | The msvcrt import set the C++ fixtures need (W32A-4, D7) |
+| `tests/w32a4_try.asm`, `tests/w32a4_unwind.asm`, `tests/w32a4_raise.asm`, `tests/w32a4_continue.asm` | SEH guest fixtures: nested `__try`, `__finally` order, RaiseException parameters, mended CONTINUE_EXECUTION (W32A-4) |
+| `tests/w32a4_crash.asm`, `tests/w32a4_filter.asm`, `tests/w32a4_dialog.asm` | The unguarded-fault lane: crash, SetUnhandledExceptionFilter, the GUI-or-console dialog (W32A-4) |
+| `tests/w32a4_term.asm`, `tests/w32a4_purecall.asm`, `tests/w32a4_cxthrow.asm`, `tests/w32a4_cxx.cpp` | The C++ termination surface: `?terminate`, `_purecall`, `_CxxThrowException`, and a real libgcc-personality throw/catch (W32A-4) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

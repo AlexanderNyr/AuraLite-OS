@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_time.c — W32A-2 guest fixture: time and formats.
+/* w32/tests/w32a2_time.c — W32APP_PLAN.md phase W32A-2 guest fixture: time and formats.
  *
  * The time half of attributes/time: file/system time conversion, DOS
  * dates, time zones, the performance counter, ticks, SetFileTime, and

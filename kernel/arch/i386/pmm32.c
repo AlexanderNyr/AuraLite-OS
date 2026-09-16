@@ -17,9 +17,9 @@
 #include "kernel/lib/bitmap.h"
 
 /* Same reasoning as pmm.c's PMM_EARLY_BOOT_RESERVE: the loader parked
- * the kernel image, boot_info and the initrd below 40 MiB; keep all of
+ * the kernel image, boot_info and the initrd below 56 MiB; keep all of
  * it allocated until the VFS has copied what it needs. */
-#define EARLY_RESERVE (40u * 1024u * 1024u)
+#define EARLY_RESERVE (56u * 1024u * 1024u)
 
 /* The bitmap lives in .bss: 896 MiB / 4 KiB = 229376 frames = 28 KiB.
  * Static rather than heap-carved because the heap does not exist yet

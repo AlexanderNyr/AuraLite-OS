@@ -1,4 +1,4 @@
-/* w32/tests/w32a2_locale.c — W32A-2 guest fixture: locales and strings.
+/* w32/tests/w32a2_locale.c — W32APP_PLAN.md phase W32A-2 guest fixture: locales and strings.
  *
  * Code pages, locale info, string types, comparison, case mapping,
  * conversions, and the lstr family.  Exits 55/1.
