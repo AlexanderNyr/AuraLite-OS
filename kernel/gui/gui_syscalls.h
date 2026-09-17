@@ -52,6 +52,21 @@ enum {
     GUI_OP_NOTIFY,          /* a2=text*, a3=color, a4=duration_ms (0=default) */
     /* Window flags query. */
     GUI_OP_GET_FLAGS,       /* a2=wid → returns flags */
+
+    /* ---- W32APP_PLAN.md W32A-5: USER32's window core ----
+     * The personality owns Win32 semantics; these give it the compositor's
+     * own answers for Z-order, topmost flags, capture, metrics and the
+     * pointer, instead of the personality keeping a second, drifting copy. */
+    GUI_OP_LOWER,           /* a2=wid → to the bottom of the stack */
+    GUI_OP_SET_FLAGS,       /* a2=wid, a3=flags (WS_EX_TOPMOST ↔ AG_WIN_ALWAYS_TOP) */
+    GUI_OP_GET_Z,           /* a2=wid → z value */
+    GUI_OP_SET_CAPTURE,     /* a2=wid (-1 releases) → previous owner */
+    GUI_OP_GET_CAPTURE,     /* → capturing wid, or -1 */
+    GUI_OP_GET_SCREEN,      /* a2=user u32*[2] (w, h) */
+    GUI_OP_GET_FOCUSED,     /* → focused wid if the caller owns it, else -1 */
+    GUI_OP_TOP_WINDOW,      /* → topmost visible wid if owned, else -1 */
+    GUI_OP_GET_MOUSE,       /* a2=user i32*[2] (x, y) */
+    GUI_OP_INVAL_RECT,      /* a2=wid, a3=x|y<<32, a4=w|h<<32 */
 };
 
 /* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.

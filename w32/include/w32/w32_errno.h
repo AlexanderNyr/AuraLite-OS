@@ -66,6 +66,9 @@
 #define W32_ERROR_DIRECTORY             267u   /* ps: SetCurrentDirectory(file) */
 #define W32_ERROR_NO_UNICODE_TRANSLATION 1113u /* loc: strict conversion fails */
 #define W32_ERROR_OPERATION_ABORTED 995u  /* fs: copy/move cancelled */
+#define W32_ERROR_BUSY                  170u  /* user32: class in use/locked */
+#define W32_ERROR_CALL_NOT_IMPLEMENTED  120u  /* user32: refused by name */
+#define W32_ERROR_CLASS_DOES_NOT_EXIST 1410u  /* user32: no such class */
 #define W32_ERROR_SEM_TIMEOUT 121u        /* fs: WaitNamedPipe timed out */
 #define W32_ERROR_PIPE_CONNECTED 535u     /* fs: ConnectNamedPipe, already */
 

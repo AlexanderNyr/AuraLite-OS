@@ -255,6 +255,33 @@ int  gui_get_window_rect(int wid, int32_t *x, int32_t *y, uint32_t *w, uint32_t 
 /* Get window flags. */
 uint32_t gui_get_window_flags(int wid);
 
+/* ---- W32APP_PLAN.md W32A-5: what USER32 needs from the compositor ----
+ *
+ * The Win32 personality owns the windowing semantics (classes, message
+ * queues, subclass chains); the compositor keeps owning pixels, Z, focus
+ * and input routing.  These four entry points are the whole of what the
+ * phase needed on the kernel side: Z-order queries and re-stacking, a
+ * replaceable flag word (WS_EX_TOPMOST), the capture contract, and the
+ * screen/metrics reads. */
+int  gui_lower_window(int wid);                 /* to the bottom of the stack */
+int  gui_set_window_flags(int wid, uint32_t flags);
+int  gui_get_window_z(int wid);                 /* z value, or -1 if gone */
+int  gui_top_window(void);                      /* topmost window, or -1 */
+
+/* Mouse capture: while set, every mouse event is routed to wid's client
+ * area regardless of what is under the cursor.  wid < 0 releases.  Returns
+ * the previous capture owner, or -1. */
+int  gui_set_capture(int wid);
+int  gui_get_capture(void);
+
+/* Metrics: the framebuffer is the single monitor, and the mouse position
+ * is the hardware pointer (see GetSystemMetrics/GetCursorPos in
+ * w32/src/user32_win.c). */
+uint32_t gui_screen_width(void);
+uint32_t gui_screen_height(void);
+int  gui_focused_window(void);                  /* focused wid, or -1 */
+int  gui_mouse_position(int32_t *x, int32_t *y);
+
 /* Back-buffer access for in-kernel apps. */
 uint32_t *gui_window_buffer(int wid, uint32_t *out_pitch_pixels);
 

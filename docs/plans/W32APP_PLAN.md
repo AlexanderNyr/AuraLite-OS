@@ -220,10 +220,11 @@ plus the W32A-10/W32A-11 modules suffices for the shipped plugins.
 
 **The KERNEL32/USER32/GDI32 union:** the three applications jointly need
 **611** distinct `KERNEL32`/`USER32`/`GDI32` symbols. The current
-personality exports 275 functions, of which **270** are in the union. The
-gap is **341 symbols**, tagged per application in the W32A-0 ledger. (The
+personality exports 419 functions, of which **402** are in the union. The
+gap is **209 symbols**, tagged per application in the W32A-0 ledger. (The
 W32A-0 baseline was 44 exports, 42 in the union, gap 569; W32A-2 closed
-171 ledger symbols; W32A-3 closed 48; W32A-4 closed 9 — the eleventh and
+171 ledger symbols; W32A-3 closed 48; W32A-4 closed 9; W32A-5 closed 132 —
+the eleventh and
 twelfth SEH rows are `_XcptFilter`/`__C_specific_handler` under
 `KERNEL32`, which the ladders import from `msvcrt` instead, so they join
 the non-union rows.) The five current exports no ladder binary imports
@@ -684,7 +685,10 @@ runs dependencies-first and detaches in reverse. Data exports bind as
 addresses the loader never calls. Type-24 manifests select comctl32,
 record asInvoker/dpi, refuse requireAdministrator by name, and log
 supportedOS loudly. The guest suite passes 34/34; the binder-only
-harness binds the five pinned tables (782 stubs, 3 data cells) and the
+harness binds the five pinned tables (782 stubs, 3 data cells when this
+phase landed; 422 today -- the W32A-2/W32A-5 catch-up regenerations in
+`w32/stub_map.tsv` moved the unimplemented surface down as the phases
+implemented it) and the
 committed `w32/tests/W32A1.bindreport` agrees textually with a fresh
 one. Delivered as `patches/W32A1_loader.patch`. Amendment: the bind-to-stub semantic superseded the W32-8 gate's load-time refusal assertions; the gate and its fixture moved to the stub contract in `patches/W32A2_kernel32fs.patch`.
 
@@ -1052,6 +1056,16 @@ cleanups frame by frame. No app gate before this (D7).
 ported `sehtest`, `tests/integration/cases/test_w32_a4_unwind.sh`,
 `patches/W32A4_unwind.patch`.
 
+Amendment (carried by `patches/W32A5_user32win.patch`): 68929e3 ("Bugfix
+update") moved the funclet-transfer `resume.rsp` onto the establisher frame
+(the x64 funclet-entry convention, documented in `w32/src/w32_seh.c`), which
+left two expectations in `tests/unit/test_w32_a4.c` asserting the old live-RSP
+behaviour -- and nothing noticed, because the `UNIT_TESTS` loop in the
+Makefile had been glued to the end of a comment line, so the whole C corpus
+was built and never run.  W32A-5's patch un-glued the loop, updated the two
+expectations to the pinned convention, and `build/test_w32_a4` is back to
+19/19 with the corpus running for real.
+
 **Result:** the shim is gone (`userspace/apps/w32run/sehtest.c` deleted,
 `w32_try_begin/end` with it) and the unwinder is the only exception
 system. The host suite pins 19/19 under ASan/UBSan, including
@@ -1079,14 +1093,14 @@ addressing, worker shadow space).
 
 ---
 
-### Phase W32A-5 — `USER32` breadth I: windows and messages, the `W` core ⬜ PLANNED
+### Phase W32A-5 — `USER32` breadth I: windows and messages, the `W` core ✅ DONE
 
 **Objective:** the window/message core all three gates stand on, `W`-first
 per D6, over the compositor (no second window manager — D5).
 
 #### Tasks
 
-- [ ] Class/window lifecycle, `W` primary: `RegisterClassW`/
+- [x] Class/window lifecycle, `W` primary: `RegisterClassW`/
       `RegisterClassExW`/`UnregisterClassW`/`GetClassInfoW`/
       `GetClassNameW`/`GetClassNameA`, `CreateWindowExW` (all styles and
       ex-styles the ledger shows; unsupported styles refuse by name at
@@ -1095,7 +1109,7 @@ per D6, over the compositor (no second window manager — D5).
       `CallWindowProcW`, `GetWindowLongPtrW`/`SetWindowLongPtrW`/
       `GetWindowLongW` (subclassing REAL — the ladder subclasses its own
       controls), `GetPropW`/`SetPropW`/`RemovePropW`, `GetDlgCtrlID`.
-- [ ] Messages: `SendMessageW`/`SendMessageA`/`PostMessageW`/
+- [x] Messages: `SendMessageW`/`SendMessageA`/`PostMessageW`/
       `PostMessageA`/`GetMessageW`/`PeekMessageW`/`DispatchMessageW`/
       `TranslateMessage`, `SendDlgItemMessageW`/`SendDlgItemMessageA`,
       `RegisterWindowMessageW`/`RegisterWindowMessageA`,
@@ -1104,7 +1118,7 @@ per D6, over the compositor (no second window manager — D5).
       (ledger). `WM_NOTIFY`/`WM_COMMAND` routing REAL (controls speak
       through these; W32A-8 depends on it). Cross-thread `SendMessage`
       blocks correctly (W32A-3 waits).
-- [ ] Geometry/placement/visibility: `GetWindowRect`/`GetClientRect`/
+- [x] Geometry/placement/visibility: `GetWindowRect`/`GetClientRect`/
       `GetWindowPlacement`/`SetWindowPlacement`/`ShowWindow` breadth/
       `IsWindowVisible`/`IsIconic`/`IsZoomed`/`BringWindowToTop`/
       `SetWindowPos` (Z-order/topmost/move/size/show flags REAL against
@@ -1120,7 +1134,7 @@ per D6, over the compositor (no second window manager — D5).
       (layered-alpha REAL where the compositor supports per-pixel alpha,
       documented approximation where it does not — the ledger's one
       NPP call is `SetLayeredWindowAttributes`, measured).
-- [ ] Painting/scroll: `BeginPaint`/`EndPaint`/`GetUpdateRgn`/
+- [x] Painting/scroll: `BeginPaint`/`EndPaint`/`GetUpdateRgn`/
       `ValidateRect`/`RedrawWindow`/`UpdateWindow`/`InvalidateRect`
       breadth/`LockWindowUpdate`, `GetScrollInfo`/`SetScrollInfo`/
       `GetScrollPos`/`SetScrollPos`/`GetScrollRange`/`SetScrollRange`/
@@ -1128,28 +1142,28 @@ per D6, over the compositor (no second window manager — D5).
       scroll areas), `GetDC`/`GetDCEx`/`GetWindowDC`/`ReleaseDC`
       (handles into the W32A-7 DC model — this phase mints them, W32A-7
       implements drawing).
-- [ ] Rect/region helpers (pure, REAL): `EqualRect`/`InflateRect`/
+- [x] Rect/region helpers (pure, REAL): `EqualRect`/`InflateRect`/
       `IntersectRect`/`OffsetRect`/`PtInRect`/`SetRectEmpty`/
       `IsRectEmpty`? (ledger).
-- [ ] System metrics/colours (REAL from the compositor theme):
+- [x] System metrics/colours (REAL from the compositor theme):
       `GetSystemMetrics` (full ledger set — `SM_CXSCREEN` etc. from the
       framebuffer, `SM_CMONITORS`=1 documented), `GetSysColor`/
       `GetSysColorBrush`, `SystemParametersInfoA`/`SystemParametersInfoW`
       (the ledger's SPIs REAL — mouse/keyboard/UI-effect values from the
       compositor config; unlisted SPIs refuse by number), `GetDoubleClickTime`/
       `GetCaretBlinkTime`/`GetKeyboardType`? (ledger).
-- [ ] Monitors (single-monitor REAL, documented): `EnumDisplayMonitors`/
+- [x] Monitors (single-monitor REAL, documented): `EnumDisplayMonitors`/
       `GetMonitorInfoA`/`GetMonitorInfoW`/`MonitorFromWindow`/
       `MonitorFromRect`/`MonitorFromPoint` (one monitor, the framebuffer;
       multi-monitor is §7, and the functions say `1` rather than
       pretending).
-- [ ] Keyboard/mouse input state: `GetKeyState`/`GetKeyboardState`/
+- [x] Keyboard/mouse input state: `GetKeyState`/`GetKeyboardState`/
       `SetKeyboardState`/`GetKeyboardLayout`/`MapVirtualKeyW`/
       `ToAscii`/`ToAsciiEx`/`GetCursorPos`/`SetCursorPos`? (ledger)/
       `mouse_event` (REAL into the input queue — synthesised input, the
       honesty note: it is genuinely injected, not drawn), `TrackMouseEvent`
       (REAL hover/leave tracking), `GetMessagePos`? (ledger).
-- [ ] `EndDialog`-adjacent windowing leftovers owned here (not W32A-6):
+- [x] `EndDialog`-adjacent windowing leftovers owned here (not W32A-6):
       `GetDesktopWindow`, `GetShellWindow`? (ledger decides; likely
       FAIL-CLEAN — there is no shell window).
 
@@ -1162,6 +1176,77 @@ per D6, over the compositor (no second window manager — D5).
   metrics/colours asserted against the compositor theme (change the
   theme, the values change — proves REAL, not constants).
 - Full `make test` green.
+
+**Deliverable:** `w32/src/user32_win.c` (or equivalent split), fixtures,
+`tests/integration/cases/test_w32a5_user32win.sh`,
+`patches/W32A5_user32win.patch`.
+
+#### Done
+
+The personality grew a real window/message core over the compositor, split
+into `w32/src/user32_win.c` (the W core) and the mapped GDI half that was
+already `w32/src/user32.c`, with `w32/include/w32/user32_priv.h` as the
+seam between them (DC minting, the handle↔slot map, the client rect and
+the live-window count).  Every function the phase lists is declared and
+implemented; the guest fixture drives all of it through `w32run`.
+
+The host harness `tests/unit/test_w32_a5.c` pins **121/0** checks under
+ASan/UBSan, including a real-pthread cross-thread `SendMessageW` against a
+fake compositor, the class registry's refusal codes, the update region's
+accumulate/validate rules, capture and focus ownership, scroll clamping
+and the theme-derived metrics.
+
+The phase gate `tests/integration/cases/test_w32a5_user32win.sh` passes
+**30/30** assertions over three boots, and the fixture binds **62 imports**
+through `w32run`:
+
+- boot 1 (default theme): `w32/tests/w32a5_win.asm` walks twelve sections
+  and prints one marker per section, then `W32A5-WIN-OK`; a failure prints
+  `A5-<SECTION>-FAIL-<n>` with the reported numbers hexdumped next to it
+  (`A5-GEOMETRY-AS-REPORTED`, `A5-INPUT-AS-REPORTED`,
+  `A5-THREAD-AS-REPORTED`) and exits 79;
+- boot 2 (same disk, after `gtheme --save 0x00AA3311`): the dotfile
+  survives the reboot, `glaunch` applies it to the live compositor, and
+  `GetSysColor(COLOR_ACTIVECAPTION)` reports the saved accent --
+  00c0602f -> 001133aa, so the colour is read from the compositor, not
+  hard-coded;
+- boot 3 (OVMF/GOP, the only lane with a linear framebuffer): the fixture
+  fills its client with `SetBrush`-green through a real DC, and the VNC
+  screenshot's pixel (300,242) is that colour, delta 0.
+
+What the fixture asserts, section by section: class registration and
+duplicate refusal (183); `WM_NCCREATE` before `WM_CREATE`; refusal by name
+for `WS_CHILD` (120) and an unknown style bit (87); geometry agreeing with
+the compositor's own `SM_CXFRAME`/`SM_CYCAPTION` and `ClientToScreen`
+landing on the window corner; subclassing through `GWL_WNDPROC` with
+`CallWindowProcW` reaching the class procedure below it; window text;
+`InvalidateRect` -> `GetUpdateRgn` -> `BeginPaint`'s `rcPaint` ->
+`EndPaint` validating, and `RedrawWindow(RDW_UPDATENOW)` painting inside
+the call; `SetScrollInfo`/`SetScrollPos` clamping and a scrolling
+`ScrollWindow` baring a strip; capture/focus/topmost Z-order;
+`GetSystemMetrics`/`GetSysColor`/`SystemParametersInfoW` against the
+theme; the single monitor; input state (`MapVirtualKeyW`, `ToAscii` with
+shift down, `GetCursorPos`); and the headline: a worker thread's window
+answering a cross-thread `SendMessageW`, with the procedure's tid, the
+sender's tid and the returned value all asserted.
+
+Two product bugs the gate found and the phase fixed rather than asserted
+around: `GUI_OP_GET_MOUSE` treated the pointer driver's success value
+(1 = driver up) as failure, so `GetCursorPos` had never once returned
+`TRUE` in guest; and the C++-free fixture bug that hid it (an ANSI class
+name handed to `CreateWindowExW`, which answers 1410).
+
+Two gate repairs came with the phase, because a phase gate that does not
+run is not a gate: the `UNIT_TESTS` loop in `Makefile` (recipe glued to a
+comment line since W32A-1, so 159 unit binaries were built and never
+executed -- `make test-unit` was green while asserting nothing) now runs,
+and with it running `build/test_w32_a4` is back to 19/19 after its two
+funclet expectations were updated to the convention 68929e3 pinned.
+
+The width sweep ratchet moved honestly: `tools/check_width_sweep.py`
+`BASELINE_UINT64_CASTS` 370 -> 388, paid by the ten new `GUI_OP_*` arms in
+`kernel/gui/gui_syscalls.c`, each of which returns one syscall word in the
+same idiom as the arms above it (ABI words, not addresses).
 
 **Deliverable:** `w32/src/user32_win.c` (or equivalent split), fixtures,
 `tests/integration/cases/test_w32a5_user32win.sh`,

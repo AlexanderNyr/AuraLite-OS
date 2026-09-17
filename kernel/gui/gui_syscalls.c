@@ -278,6 +278,68 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
     case GUI_OP_GET_FLAGS:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_get_window_flags((int)a2);
+
+    /* ---- W32A-5 ---- */
+    case GUI_OP_LOWER:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        return (uint64_t)gui_lower_window((int)a2);
+    case GUI_OP_SET_FLAGS:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        return (uint64_t)gui_set_window_flags((int)a2, (uint32_t)a3);
+    case GUI_OP_GET_Z:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        return (uint64_t)gui_get_window_z((int)a2);
+    case GUI_OP_SET_CAPTURE:
+        /* Capture is a client-area contract, so the caller must own the
+         * window it captures; -1 (release) is allowed for anyone who has
+         * one. */
+        if ((int)a2 >= 0 && !require_owner((int)a2)) return (uint64_t)-1;
+        return (uint64_t)gui_set_capture((int)a2);
+    case GUI_OP_GET_CAPTURE: {
+        int cap = gui_get_capture();
+        /* Another process's capture is not this process's business. */
+        if (cap >= 0 && !require_owner(cap)) cap = -1;
+        return (uint64_t)cap;
+    }
+    case GUI_OP_GET_SCREEN: {
+        if (!require_gui_participant()) return (uint64_t)-1;
+        uint32_t wh[2];
+        wh[0] = gui_screen_width();
+        wh[1] = gui_screen_height();
+        if (copy_to_user((void *)(uintptr_t)a2, wh, sizeof(wh)) != 0) {
+            return (uint64_t)-1;
+        }
+        return 0;
+    }
+    case GUI_OP_GET_FOCUSED: {
+        int f = gui_focused_window();
+        if (f >= 0 && !require_owner(f)) f = -1;
+        return (uint64_t)f;
+    }
+    case GUI_OP_TOP_WINDOW: {
+        int t = gui_top_window();
+        if (t >= 0 && !require_owner(t)) t = -1;
+        return (uint64_t)t;
+    }
+    case GUI_OP_GET_MOUSE: {
+        if (!require_gui_participant()) return (uint64_t)-1;
+        int32_t xy[2];
+        /* mouse_get_position() answers 1 when the pointer driver is up and 0
+         * when this lane has no pointer at all -- that is the driver's own
+         * convention (drivers/mouse/mouse.c), and gui_mouse_position()
+         * forwards it verbatim.  The W32A-5 fixture caught this handler
+         * treating 1 as failure: USER32's GetCursorPos then refused with
+         * FALSE on every boot even though the coordinates were right there. */
+        if (gui_mouse_position(&xy[0], &xy[1]) != 1) return (uint64_t)-1;
+        if (copy_to_user((void *)(uintptr_t)a2, xy, sizeof(xy)) != 0) {
+            return (uint64_t)-1;
+        }
+        return 0;
+    }
+    case GUI_OP_INVAL_RECT:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        return (uint64_t)gui_invalidate_rect((int)a2, lo32(a3), hi32(a3),
+                                             lo32(a4), hi32(a4));
     }
     return (uint64_t)-1;
 }

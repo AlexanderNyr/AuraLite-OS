@@ -152,6 +152,10 @@ typedef struct gui_win {
 static gui_win_t windows[GUI_MAX_WINDOWS];
 static spinlock_t gui_lock;
 static int focused = -1;
+/* W32A-5: SetCapture.  -1 = nobody; otherwise the wid that receives every
+ * mouse event until it releases.  Cleared when the owner dies (see
+ * gui_cleanup_process). */
+static int captured = -1;
 static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 
 /* Software cursor underlay.  The sprite is stamped onto the back buffer
@@ -378,6 +382,83 @@ int gui_raise_window(int wid) {
 
 int gui_focus_window(int wid) { return gui_raise_window(wid); }
 
+/* ---- W32A-5: Z-order, flags, capture and metrics ------------------------ */
+
+/* To the bottom of the stack.  Z values are ordinary ints that only ever
+ * grow (raise takes max+1), so lowering means min-1; the renormalisation
+ * below keeps them from drifting negative forever, which matters because
+ * the compositor sorts on them. */
+int gui_lower_window(int wid) {
+    if (!win_alive(wid)) return -1;
+    spinlock_acquire(&gui_lock);
+    int minz = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+        if (windows[i].in_use && windows[i].z < minz) minz = windows[i].z;
+    windows[wid].z = minz - 1;
+    if (minz <= -0x40000000) {
+        for (int i = 0; i < GUI_MAX_WINDOWS; i++)
+            if (windows[i].in_use) windows[i].z -= minz;
+    }
+    recompute_focus();
+    mark_window_dirty(&windows[wid]);
+    spinlock_release(&gui_lock);
+    return 0;
+}
+
+int gui_set_window_flags(int wid, uint32_t flags) {
+    if (!win_alive(wid)) return -1;
+    spinlock_acquire(&gui_lock);
+    windows[wid].flags = flags;
+    mark_window_dirty(&windows[wid]);
+    full_dirty = 1;
+    spinlock_release(&gui_lock);
+    return 0;
+}
+
+int gui_get_window_z(int wid) {
+    if (!win_alive(wid)) return -1;
+    return windows[wid].z;
+}
+
+/* The topmost visible window.  Used for GetForegroundWindow's honesty note:
+ * the personality reports the focused window, and this is how a caller can
+ * see the compositor's own answer without guessing. */
+int gui_top_window(void) {
+    int best = -1, bestz = 0x80000000;
+    spinlock_acquire(&gui_lock);
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use || !windows[i].visible || windows[i].minimized) continue;
+        if (best < 0 || windows[i].z > bestz) { best = i; bestz = windows[i].z; }
+    }
+    spinlock_release(&gui_lock);
+    return best;
+}
+
+int gui_set_capture(int wid) {
+    if (wid >= 0 && !win_alive(wid)) return -1;
+    spinlock_acquire(&gui_lock);
+    int prev = captured;
+    captured = wid;
+    spinlock_release(&gui_lock);
+    return prev;
+}
+
+int gui_get_capture(void) { return captured; }
+
+uint32_t gui_screen_width(void)  { return gfx_get_width(); }
+uint32_t gui_screen_height(void) { return gfx_get_height(); }
+
+int gui_focused_window(void) { return focused; }
+
+/* Pointer position, in the driver's own convention: 1 when the mouse driver
+ * is up, 0 when there is no pointer on this lane, -1 for bad arguments.
+ * GUI_OP_GET_MOUSE forwards it, so the syscall layer's success test is
+ * `== 1` rather than `!= 0`. */
+int gui_mouse_position(int32_t *x, int32_t *y) {
+    if (!x || !y) return -1;
+    return mouse_get_position((int *)x, (int *)y);
+}
+
 /* A decoration close action should make the window disappear immediately.
  * User-owned applications still receive GUI_EVT_CLOSE_REQ first, so cooperative
  * apps can run their normal shutdown path and destroy the already-hidden
@@ -482,6 +563,7 @@ int gui_destroy_window(int wid) {
     if (w->front) { kfree(w->front); w->front = NULL; }
     memset(w, 0, sizeof(*w));
     if (focused == wid) focused = -1;
+    if (captured == wid) captured = -1;    /* W32A-5 */
     if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
     if (last_hover_wid == wid) last_hover_wid = -1;
     recompute_focus();
@@ -533,6 +615,7 @@ void gui_cleanup_process(uint64_t owner_pid) {
         if (windows[i].back) kfree(windows[i].back);
         memset(&windows[i], 0, sizeof(windows[i]));
         if (focused == i) focused = -1;
+        if (captured == i) captured = -1;
         if (drag_wid == i) { drag_wid = -1; drag_mode = 0; }
         if (last_hover_wid == i) last_hover_wid = -1;
         cleaned++;
@@ -1992,6 +2075,21 @@ static void route_mouse_event(const mouse_event_t *ev) {
     int wid = hit_window(mx, my);
     gui_cursor_t target_cursor = GUI_CURSOR_ARROW;
 
+    /* W32A-5: a live capture redirects every mouse event to the capturing
+     * window's client area, whatever is under the cursor.  Release is
+     * explicit (SetCapture/ReleaseCapture); button-up does not clear it --
+     * the implicit capture of a title-bar drag is the drag_mode branch
+     * below and is unaffected. */
+    int capture_redirect = 0;
+    if (captured >= 0) {
+        if (!win_alive(captured)) {
+            captured = -1;
+        } else if (!drag_mode) {
+            wid = captured;
+            capture_redirect = 1;
+        }
+    }
+
     /* ---- Active drag/resize ---- */
     if (drag_mode) {
         gui_win_t *w = &windows[drag_wid];
@@ -2156,6 +2254,9 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
     gui_win_t *w = &windows[wid];
     int part = hit_part(w, mx, my);
+    /* A captured window sees client-area events only: no title-bar drag, no
+     * resize edges (SetCapture is a client-area contract). */
+    if (capture_redirect) part = 0;
 
     /* Cursor shape from hover. */
     switch (part) {

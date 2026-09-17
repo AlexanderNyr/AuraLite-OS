@@ -94,6 +94,9 @@ ReactOS.
 | `tests/w32a4_try.asm`, `tests/w32a4_unwind.asm`, `tests/w32a4_raise.asm`, `tests/w32a4_continue.asm` | SEH guest fixtures: nested `__try`, `__finally` order, RaiseException parameters, mended CONTINUE_EXECUTION (W32A-4) |
 | `tests/w32a4_crash.asm`, `tests/w32a4_filter.asm`, `tests/w32a4_dialog.asm` | The unguarded-fault lane: crash, SetUnhandledExceptionFilter, the GUI-or-console dialog (W32A-4) |
 | `tests/w32a4_term.asm`, `tests/w32a4_purecall.asm`, `tests/w32a4_cxthrow.asm`, `tests/w32a4_cxx.cpp` | The C++ termination surface: `?terminate`, `_purecall`, `_CxxThrowException`, and a real libgcc-personality throw/catch (W32A-4) |
+| `include/w32/user32_priv.h` | The seam between the two USER32 translation units: DC handles, the window index↔handle map, client rect/bg colour and the live-window count (W32A-5) |
+| `src/user32_win.c` | USER32's window and message core over the compositor: class registry, window table, queues and cross-thread `SendMessage`, Z-order/placement/focus/capture, paint/update region, scroll, metrics/colours from the theme, monitors, input state (W32A-5) |
+| `tests/w32a5_win.asm` | The W32A-5 guest fixture: twelve sections through one subclassed window and a second thread (62 imports, exit 78) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

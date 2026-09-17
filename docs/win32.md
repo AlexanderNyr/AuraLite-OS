@@ -44,7 +44,7 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*282 functions across 4 modules. This table is generated from
+*424 functions across 4 modules. This table is generated from
 `w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
 
 **GDI32.dll** (7)
@@ -141,14 +141,61 @@ way `make sdk-check` does for the native SDK.
 - `lstrcpyW` · `lstrcpynA` · `lstrcpynW`
 - `lstrlenW`
 
-**USER32.dll** (17)
+**USER32.dll** (159)
 
-- `BeginPaint` · `CreateWindowExA` · `DefWindowProcA`
-- `DestroyWindow` · `DispatchMessageA` · `EndPaint`
-- `FillRect` · `GetClientRect` · `GetMessageA`
-- `InvalidateRect` · `MessageBoxA` · `PeekMessageA`
-- `PostQuitMessage` · `RegisterClassExA` · `ShowWindow`
-- `TranslateMessage` · `UpdateWindow`
+- `AdjustWindowRectEx` · `BeginPaint` · `BringWindowToTop`
+- `CallWindowProcW` · `CharLowerW` · `CharUpperW`
+- `ChildWindowFromPointEx` · `ClientToScreen` · `CreateWindowExA`
+- `CreateWindowExW` · `DefWindowProcA` · `DefWindowProcW`
+- `DestroyWindow` · `DispatchMessageA` · `DispatchMessageW`
+- `EnableWindow` · `EndPaint` · `EnumChildWindows`
+- `EnumDisplayMonitors` · `EnumThreadWindows` · `EqualRect`
+- `FillRect` · `FindWindowA` · `FindWindowExW`
+- `FindWindowW` · `FlashWindow` · `FlashWindowEx`
+- `GetActiveWindow` · `GetAncestor` · `GetCapture`
+- `GetCaretBlinkTime` · `GetClassInfoW` · `GetClassNameA`
+- `GetClassNameW` · `GetClientRect` · `GetCursorPos`
+- `GetDC` · `GetDCEx` · `GetDesktopWindow`
+- `GetDlgCtrlID` · `GetDoubleClickTime` · `GetFocus`
+- `GetForegroundWindow` · `GetKeyState` · `GetKeyboardLayout`
+- `GetKeyboardState` · `GetKeyboardType` · `GetLastActivePopup`
+- `GetMessageA` · `GetMessagePos` · `GetMessageTime`
+- `GetMessageW` · `GetMonitorInfoA` · `GetMonitorInfoW`
+- `GetParent` · `GetPropW` · `GetQueueStatus`
+- `GetScrollInfo` · `GetScrollPos` · `GetScrollRange`
+- `GetShellWindow` · `GetSysColor` · `GetSysColorBrush`
+- `GetSystemMetrics` · `GetUpdateRgn` · `GetWindow`
+- `GetWindowDC` · `GetWindowLongPtrA` · `GetWindowLongPtrW`
+- `GetWindowLongW` · `GetWindowPlacement` · `GetWindowRect`
+- `GetWindowTextA` · `GetWindowTextLengthA` · `GetWindowTextLengthW`
+- `GetWindowTextW` · `GetWindowThreadProcessId` · `InSendMessage`
+- `InflateRect` · `IntersectRect` · `InvalidateRect`
+- `IsCharAlphaNumericW` · `IsCharAlphaW` · `IsCharLowerW`
+- `IsCharUpperW` · `IsChild` · `IsIconic`
+- `IsRectEmpty` · `IsWindow` · `IsWindowEnabled`
+- `IsWindowVisible` · `IsZoomed` · `LockWindowUpdate`
+- `MapVirtualKeyW` · `MapWindowPoints` · `MessageBoxA`
+- `MessageBoxW` · `MonitorFromPoint` · `MonitorFromRect`
+- `MonitorFromWindow` · `MoveWindow` · `MsgWaitForMultipleObjects`
+- `OffsetRect` · `PeekMessageA` · `PeekMessageW`
+- `PostMessageA` · `PostMessageW` · `PostQuitMessage`
+- `PtInRect` · `RedrawWindow` · `RegisterClassA`
+- `RegisterClassExA` · `RegisterClassExW` · `RegisterClassW`
+- `RegisterWindowMessageA` · `RegisterWindowMessageW` · `ReleaseCapture`
+- `ReleaseDC` · `RemovePropW` · `ReplyMessage`
+- `ScreenToClient` · `ScrollWindow` · `SendDlgItemMessageA`
+- `SendDlgItemMessageW` · `SendMessageA` · `SendMessageW`
+- `SetActiveWindow` · `SetCapture` · `SetCursorPos`
+- `SetFocus` · `SetForegroundWindow` · `SetKeyboardState`
+- `SetLayeredWindowAttributes` · `SetParent` · `SetPropW`
+- `SetRectEmpty` · `SetScrollInfo` · `SetScrollPos`
+- `SetScrollRange` · `SetWindowLongPtrA` · `SetWindowLongPtrW`
+- `SetWindowLongW` · `SetWindowPlacement` · `SetWindowPos`
+- `SetWindowTextA` · `SetWindowTextW` · `ShowScrollBar`
+- `ShowWindow` · `SystemParametersInfoA` · `SystemParametersInfoW`
+- `ToAscii` · `ToAsciiEx` · `TrackMouseEvent`
+- `TranslateMessage` · `UnregisterClassW` · `UpdateWindow`
+- `ValidateRect` · `WindowFromPoint` · `mouse_event`
 
 **msvcrt.dll** (5)
 

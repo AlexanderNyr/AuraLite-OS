@@ -831,7 +831,15 @@ static void test_dispatch_exec(void) {
         /* Resumed at JumpTarget with the outer frame intact. */
         CHECK_EQ(f->resume_valid, 1);
         CHECK_EQ(f->resume.rip, base + CODE_RVA + 0x300);
-        CHECK_EQ(f->resume.rsp, out_est - 8); /* out live rsp */
+        /* A funclet transfer (target_ip != 0) resumes ON the establisher
+         * frame, not on the live mid-frame RSP -- the x64 funclet-entry
+         * convention 68929e3 ("Bugfix update") pinned in w32_seh.c, where
+         * the live RSP left the funclet's call chain 8 bytes out of ABI
+         * alignment and the callee's movaps #GP'd before a receipt could
+         * print.  out_est IS that establisher frame: the slot holding
+         * out's return address, with out's locals reached through the
+         * establisher value, never through the raw RSP. */
+        CHECK_EQ(f->resume.rsp, out_est);
         CHECK_EQ(filt_calls, 1);
         CHECK_EQ(pers_calls, 2);    /* mid: first pass + unwind pass */
         /* Mid's cleanup ran on the way out (tag "MID"). */
@@ -847,7 +855,9 @@ static void test_dispatch_exec(void) {
 }
 
 /* RtlUnwindEx to a mid-stack target: stops AT the target (its handler
- * does not run), resumes at TargetIp on the target's LIVE rsp. */
+ * does not run), resumes at TargetIp ON the target's establisher frame
+ * (the x64 funclet-entry convention 68929e3 pinned in w32_seh.c; the
+ * live mid-frame RSP is what the pre-fix code installed). */
 static void test_unwind_with_cleanup(void) {
     uint8_t *b = make_image();
     uint64_t base = (uint64_t)(uintptr_t)b;
@@ -891,7 +901,7 @@ static void test_unwind_with_cleanup(void) {
     } else {
         CHECK_EQ(f->resume_valid, 1);
         CHECK_EQ(f->resume.rip, base + 0x700);
-        CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[32]); /* mid live */
+        CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[33]); /* mid establisher */
     }
     w32_seh_test_set_frame(NULL);
     w32_seh_frame_free(f);

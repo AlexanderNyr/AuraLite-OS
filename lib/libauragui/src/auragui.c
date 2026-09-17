@@ -27,6 +27,10 @@ enum {
     GUI_OP_ADD_ICON, GUI_OP_REMOVE_ICON,
     GUI_OP_NOTIFY,
     GUI_OP_GET_FLAGS,
+    /* W32A-5 */ GUI_OP_LOWER, GUI_OP_SET_FLAGS, GUI_OP_GET_Z,
+    GUI_OP_SET_CAPTURE, GUI_OP_GET_CAPTURE, GUI_OP_GET_SCREEN,
+    GUI_OP_GET_FOCUSED, GUI_OP_TOP_WINDOW, GUI_OP_GET_MOUSE,
+    GUI_OP_INVAL_RECT,
 };
 
 #define SYS_GUI_CALL_NUM    200
@@ -74,6 +78,44 @@ int ag_window_get_pos(int wid, int32_t *x, int32_t *y) {
     static int32_t out[2];
     out[0] = out[1] = 0;
     int r = (int)gui_call(GUI_OP_GET_POS, wid, (uint64_t)out, 0, 0);
+    if (r == 0) { if (x) *x = out[0]; if (y) *y = out[1]; }
+    return r;
+}
+
+/* ---- W32A-5: compositor surface for USER32 ---- */
+
+int ag_window_focus(int wid) { return (int)gui_call(GUI_OP_FOCUS, wid, 0, 0, 0); }
+int ag_window_minimize(int wid) { return (int)gui_call(GUI_OP_MINIMIZE, wid, 0, 0, 0); }
+int ag_window_maximize(int wid) { return (int)gui_call(GUI_OP_MAXIMIZE, wid, 0, 0, 0); }
+int ag_window_restore(int wid) { return (int)gui_call(GUI_OP_RESTORE, wid, 0, 0, 0); }
+int ag_window_lower(int wid) { return (int)gui_call(GUI_OP_LOWER, wid, 0, 0, 0); }
+int ag_window_set_flags(int wid, uint32_t flags) {
+    return (int)gui_call(GUI_OP_SET_FLAGS, wid, flags, 0, 0);
+}
+uint32_t ag_window_get_flags(int wid) {
+    return (uint32_t)gui_call(GUI_OP_GET_FLAGS, wid, 0, 0, 0);
+}
+int ag_window_get_z(int wid) { return (int)gui_call(GUI_OP_GET_Z, wid, 0, 0, 0); }
+int ag_window_invalidate_rect(int wid, int32_t x, int32_t y,
+                              uint32_t w, uint32_t h) {
+    return (int)gui_call(GUI_OP_INVAL_RECT, wid, pack2(x, y),
+                         pack2((int32_t)w, (int32_t)h), 0);
+}
+int ag_window_capture(int wid) { return (int)gui_call(GUI_OP_SET_CAPTURE, wid, 0, 0, 0); }
+int ag_window_get_capture(void) { return (int)gui_call(GUI_OP_GET_CAPTURE, 0, 0, 0, 0); }
+int ag_window_focused(void) { return (int)gui_call(GUI_OP_GET_FOCUSED, 0, 0, 0, 0); }
+int ag_window_top(void) { return (int)gui_call(GUI_OP_TOP_WINDOW, 0, 0, 0, 0); }
+
+int ag_screen_size(uint32_t *w, uint32_t *h) {
+    uint32_t out[2] = { 0, 0 };
+    int r = (int)gui_call(GUI_OP_GET_SCREEN, (uint64_t)out, 0, 0, 0);
+    if (r == 0) { if (w) *w = out[0]; if (h) *h = out[1]; }
+    return r;
+}
+
+int ag_mouse_position(int32_t *x, int32_t *y) {
+    int32_t out[2] = { 0, 0 };
+    int r = (int)gui_call(GUI_OP_GET_MOUSE, (uint64_t)out, 0, 0, 0);
     if (r == 0) { if (x) *x = out[0]; if (y) *y = out[1]; }
     return r;
 }

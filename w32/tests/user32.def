@@ -1,21 +1,66 @@
-; user32.def — export list for the USER32 import library.  WIN32_PLAN.md W32-5.
+; user32.def — export list for the USER32 import library.
+; WIN32_PLAN.md W32-5 created this file; W32APP_PLAN.md phase W32A-5 extended
+; it with the window/message core (the W32A-5 guest fixture imports these,
+; and every name here is a row in w32/src/w32_bind.c's static table).
 ; Names only; no Microsoft file is used and no DLL is shipped.
 LIBRARY USER32.dll
 EXPORTS
     BeginPaint
+    BringWindowToTop
+    CallWindowProcW
+    ClientToScreen
     CreateWindowExA
+    CreateWindowExW
     DefWindowProcA
+    DefWindowProcW
     DestroyWindow
     DispatchMessageA
     EndPaint
     FillRect
+    GetCapture
+    GetClassNameW
     GetClientRect
+    GetCursorPos
+    GetDC
+    GetFocus
     GetMessageA
+    GetMonitorInfoW
+    GetScrollInfo
+    GetScrollPos
+    GetSysColor
+    GetSysColorBrush
+    GetSystemMetrics
+    GetUpdateRgn
+    GetWindowLongPtrW
+    GetWindowRect
+    GetWindowTextLengthW
+    GetWindowTextW
+    GetWindowThreadProcessId
     InvalidateRect
+    IsWindow
+    MapVirtualKeyW
     MessageBoxA
+    MonitorFromWindow
     PeekMessageA
+    PostMessageW
     PostQuitMessage
+    RedrawWindow
+    RegisterClassA
     RegisterClassExA
+    RegisterClassExW
+    ReleaseCapture
+    ScrollWindow
+    SendMessageW
+    SetCapture
+    SetFocus
+    SetScrollInfo
+    SetScrollPos
+    SetWindowLongPtrW
+    SetWindowPos
+    SetWindowTextW
     ShowWindow
+    SystemParametersInfoW
+    ToAscii
     TranslateMessage
     UpdateWindow
+    ValidateRect

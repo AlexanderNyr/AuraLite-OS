@@ -1540,330 +1540,10 @@ W32ABI W32_DWORD w32_stub_imm32_ImmSetCompositionWindow(void) {
     return 0;
 }
 
-/* kernel32.dll!Beep: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_Beep(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "Beep", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CancelIo: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CancelIo(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CancelIo", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!ClearCommBreak: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_ClearCommBreak(void) {
     static int once = 0;
     note_todo("kernel32.dll", "ClearCommBreak", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CompareFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CompareFileTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CompareFileTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CompareStringEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CompareStringEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CompareStringEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CompareStringW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CompareStringW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CompareStringW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!ConnectNamedPipe: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ConnectNamedPipe(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ConnectNamedPipe", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CopyFileExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CopyFileExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CopyFileExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CopyFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CopyFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CopyFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateDirectoryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CreateDirectoryW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateDirectoryW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateFileMappingA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateFileMappingA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateFileMappingA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateFileMappingW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateFileMappingW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateFileMappingW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!CreateHardLinkW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CreateHardLinkW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateHardLinkW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateNamedPipeA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateNamedPipeA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateNamedPipeA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!CreatePipe: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CreatePipe(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreatePipe", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateProcessA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CreateProcessA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateProcessA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateProcessW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_CreateProcessW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateProcessW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!CreateToolhelp32Snapshot: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_CreateToolhelp32Snapshot(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "CreateToolhelp32Snapshot", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!DecodePointer: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_DecodePointer(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "DecodePointer", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!DeleteFileA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_DeleteFileA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "DeleteFileA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!DeleteFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_DeleteFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "DeleteFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!DeviceIoControl: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_DeviceIoControl(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "DeviceIoControl", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!DosDateTimeToFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_DosDateTimeToFileTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "DosDateTimeToFileTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!EncodePointer: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_EncodePointer(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "EncodePointer", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!EnumSystemLocalesW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_EnumSystemLocalesW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "EnumSystemLocalesW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!ExpandEnvironmentStringsW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ExpandEnvironmentStringsW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ExpandEnvironmentStringsW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FileTimeToDosDateTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FileTimeToDosDateTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FileTimeToDosDateTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FileTimeToLocalFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FileTimeToLocalFileTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FileTimeToLocalFileTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FileTimeToSystemTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FileTimeToSystemTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FileTimeToSystemTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FindClose: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FindClose(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindClose", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FindCloseChangeNotification: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FindCloseChangeNotification(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindCloseChangeNotification", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FindFirstChangeNotificationW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_FindFirstChangeNotificationW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindFirstChangeNotificationW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!FindFirstFileA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_FindFirstFileA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindFirstFileA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!FindFirstFileExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_FindFirstFileExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindFirstFileExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!FindFirstFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_FindFirstFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindFirstFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!FindFirstStreamW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_FindFirstStreamW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindFirstStreamW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!FindNextChangeNotification: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FindNextChangeNotification(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindNextChangeNotification", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FindNextFileA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FindNextFileA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindNextFileA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FindNextFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FindNextFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindNextFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FindNextStreamW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FindNextStreamW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FindNextStreamW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -1884,38 +1564,6 @@ W32ABI W32_DWORD w32_stub_kernel32_FindResourceW(void) {
     return 0;
 }
 
-/* kernel32.dll!FlushFileBuffers: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FlushFileBuffers(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FlushFileBuffers", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FormatMessageA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FormatMessageA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FormatMessageA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FormatMessageW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FormatMessageW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FormatMessageW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!FreeEnvironmentStringsW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_FreeEnvironmentStringsW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "FreeEnvironmentStringsW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!FreeLibraryWhenCallbackReturns: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI void w32_stub_kernel32_FreeLibraryWhenCallbackReturns(void) {
     static int once = 0;
@@ -1924,50 +1572,10 @@ W32ABI void w32_stub_kernel32_FreeLibraryWhenCallbackReturns(void) {
     return;
 }
 
-/* kernel32.dll!GetACP: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetACP(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetACP", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetApplicationRestartSettings: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetApplicationRestartSettings(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetApplicationRestartSettings", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* kernel32.dll!GetCPInfo: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCPInfo(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCPInfo", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!GetCommState: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_GetCommState(void) {
     static int once = 0;
     note_todo("kernel32.dll", "GetCommState", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetCommandLineW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCommandLineW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCommandLineW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetCompressedFileSizeW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCompressedFileSizeW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCompressedFileSizeW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -1988,278 +1596,6 @@ W32ABI W32_DWORD w32_stub_kernel32_GetConsoleOutputCP(void) {
     return 0;
 }
 
-/* kernel32.dll!GetCurrentDirectoryA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCurrentDirectoryA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCurrentDirectoryA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetCurrentDirectoryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCurrentDirectoryW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCurrentDirectoryW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetCurrentProcess: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_GetCurrentProcess(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCurrentProcess", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return (void *)(intptr_t)-1;
-}
-
-/* kernel32.dll!GetCurrentProcessId: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetCurrentProcessId(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetCurrentProcessId", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetDateFormatEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetDateFormatEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetDateFormatEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetDateFormatW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetDateFormatW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetDateFormatW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetDiskFreeSpaceExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetDiskFreeSpaceExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetDiskFreeSpaceExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetDiskFreeSpaceW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetDiskFreeSpaceW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetDiskFreeSpaceW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetDriveTypeW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetDriveTypeW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetDriveTypeW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetEnvironmentStringsW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetEnvironmentStringsW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetEnvironmentStringsW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetEnvironmentVariableA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetEnvironmentVariableA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetEnvironmentVariableA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetExitCodeProcess: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetExitCodeProcess(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetExitCodeProcess", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFileAttributesExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFileAttributesExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFileAttributesExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFileAttributesW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFileAttributesW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFileAttributesW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFileInformationByHandle: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFileInformationByHandle(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFileInformationByHandle", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFileSize: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFileSize(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFileSize", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFileSizeEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFileSizeEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFileSizeEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFileType: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFileType(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFileType", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFinalPathNameByHandleW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFinalPathNameByHandleW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFinalPathNameByHandleW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetFullPathNameW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetFullPathNameW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetFullPathNameW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetLargePageMinimum: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_GetLargePageMinimum(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLargePageMinimum", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetLocalTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GetLocalTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLocalTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GetLocaleInfoA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetLocaleInfoA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLocaleInfoA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetLocaleInfoEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetLocaleInfoEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLocaleInfoEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetLocaleInfoW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetLocaleInfoW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLocaleInfoW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetLogicalDriveStringsW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetLogicalDriveStringsW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLogicalDriveStringsW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetLongPathNameW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetLongPathNameW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetLongPathNameW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetModuleFileNameA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetModuleFileNameA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetModuleFileNameA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetModuleFileNameW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetModuleFileNameW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetModuleFileNameW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetModuleHandleExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetModuleHandleExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetModuleHandleExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetModuleHandleW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_GetModuleHandleW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetModuleHandleW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetNativeSystemInfo: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GetNativeSystemInfo(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetNativeSystemInfo", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GetOEMCP: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetOEMCP(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetOEMCP", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetOverlappedResult: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetOverlappedResult(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetOverlappedResult", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!GetPrivateProfileIntW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_GetPrivateProfileIntW(void) {
     static int once = 0;
@@ -2276,394 +1612,10 @@ W32ABI W32_DWORD w32_stub_kernel32_GetPrivateProfileSectionNamesW(void) {
     return 0;
 }
 
-/* kernel32.dll!GetProcessAffinityMask: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetProcessAffinityMask(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetProcessAffinityMask", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetProcessTimes: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetProcessTimes(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetProcessTimes", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetProductInfo: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetProductInfo(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetProductInfo", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetStartupInfoA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GetStartupInfoA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetStartupInfoA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GetStartupInfoW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GetStartupInfoW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetStartupInfoW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GetStringTypeExA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetStringTypeExA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetStringTypeExA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetStringTypeExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetStringTypeExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetStringTypeExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetStringTypeW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetStringTypeW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetStringTypeW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetSystemDefaultLangID: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetSystemDefaultLangID(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetSystemDefaultLangID", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetSystemDirectoryA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetSystemDirectoryA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetSystemDirectoryA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetSystemInfo: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GetSystemInfo(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetSystemInfo", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GetSystemTimeAsFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GetSystemTimeAsFileTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetSystemTimeAsFileTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GetTempPathA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetTempPathA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetTempPathA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetTempPathW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetTempPathW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetTempPathW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetTickCount: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetTickCount(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetTickCount", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetTimeFormatEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetTimeFormatEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetTimeFormatEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetTimeFormatW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetTimeFormatW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetTimeFormatW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetTimeZoneInformation: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetTimeZoneInformation(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetTimeZoneInformation", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetUserDefaultLCID: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetUserDefaultLCID(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetUserDefaultLCID", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetUserDefaultLangID: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetUserDefaultLangID(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetUserDefaultLangID", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetVersion: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetVersion(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetVersion", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetVersionExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetVersionExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetVersionExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetVolumeInformationW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetVolumeInformationW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetVolumeInformationW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetWindowsDirectoryA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetWindowsDirectoryA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetWindowsDirectoryA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GetWindowsDirectoryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GetWindowsDirectoryW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GetWindowsDirectoryW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GlobalAlloc: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GlobalAlloc(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalAlloc", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GlobalFree: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GlobalFree(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalFree", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GlobalLock: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_GlobalLock(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalLock", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GlobalMemoryStatus: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_GlobalMemoryStatus(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalMemoryStatus", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!GlobalMemoryStatusEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GlobalMemoryStatusEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalMemoryStatusEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GlobalSize: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_GlobalSize(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalSize", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!GlobalUnlock: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_GlobalUnlock(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "GlobalUnlock", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!HeapReAlloc: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_HeapReAlloc(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "HeapReAlloc", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!HeapSize: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_HeapSize(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "HeapSize", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!IsDBCSLeadByteEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_IsDBCSLeadByteEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "IsDBCSLeadByteEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!IsDebuggerPresent: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_IsDebuggerPresent(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "IsDebuggerPresent", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!IsProcessorFeaturePresent: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_IsProcessorFeaturePresent(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "IsProcessorFeaturePresent", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!IsValidCodePage: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_IsValidCodePage(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "IsValidCodePage", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!IsValidLocale: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_IsValidLocale(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "IsValidLocale", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LCMapStringA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_LCMapStringA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LCMapStringA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LCMapStringEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_LCMapStringEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LCMapStringEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LCMapStringW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_LCMapStringW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LCMapStringW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LoadLibraryExA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_LoadLibraryExA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LoadLibraryExA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LoadLibraryExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_LoadLibraryExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LoadLibraryExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LoadLibraryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_LoadLibraryW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LoadLibraryW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!LoadResource: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_LoadResource(void) {
     static int once = 0;
     note_todo("kernel32.dll", "LoadResource", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LocalAlloc: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_LocalAlloc(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LocalAlloc", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LocalFileTimeToFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_LocalFileTimeToFileTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LocalFileTimeToFileTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!LocalFree: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_LocalFree(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "LocalFree", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2674,110 +1626,6 @@ W32ABI void *w32_stub_kernel32_LockResource(void) {
     note_todo("kernel32.dll", "LockResource", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* kernel32.dll!MapViewOfFile: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_MapViewOfFile(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "MapViewOfFile", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!MoveFileExW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_MoveFileExW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "MoveFileExW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!MoveFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_MoveFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "MoveFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!MoveFileWithProgressW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_MoveFileWithProgressW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "MoveFileWithProgressW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!MulDiv: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_MulDiv(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "MulDiv", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!MultiByteToWideChar: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_MultiByteToWideChar(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "MultiByteToWideChar", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!OpenProcess: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_OpenProcess(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "OpenProcess", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!OutputDebugStringW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_OutputDebugStringW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "OutputDebugStringW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!Process32FirstW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_Process32FirstW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "Process32FirstW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!Process32NextW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_Process32NextW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "Process32NextW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!QueryPerformanceCounter: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_QueryPerformanceCounter(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "QueryPerformanceCounter", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!QueryPerformanceFrequency: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_QueryPerformanceFrequency(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "QueryPerformanceFrequency", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!RaiseException: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_RaiseException(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RaiseException", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* kernel32.dll!ReadConsoleW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -2792,78 +1640,6 @@ W32ABI W32_DWORD w32_stub_kernel32_ReadConsoleW(void) {
 W32ABI W32_DWORD w32_stub_kernel32_ReadDirectoryChangesW(void) {
     static int once = 0;
     note_todo("kernel32.dll", "ReadDirectoryChangesW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!RegisterApplicationRestart: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_RegisterApplicationRestart(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RegisterApplicationRestart", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* kernel32.dll!RemoveDirectoryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_RemoveDirectoryW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RemoveDirectoryW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!ReplaceFileW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_ReplaceFileW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "ReplaceFileW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!RtlCaptureContext: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_RtlCaptureContext(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RtlCaptureContext", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!RtlLookupFunctionEntry: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_RtlLookupFunctionEntry(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RtlLookupFunctionEntry", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!RtlPcToFileHeader: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_RtlPcToFileHeader(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RtlPcToFileHeader", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!RtlUnwind: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_RtlUnwind(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RtlUnwind", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!RtlUnwindEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void w32_stub_kernel32_RtlUnwindEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RtlUnwindEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* kernel32.dll!RtlVirtualUnwind: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI void *w32_stub_kernel32_RtlVirtualUnwind(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "RtlVirtualUnwind", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2892,78 +1668,6 @@ W32ABI W32_DWORD w32_stub_kernel32_SetCommTimeouts(void) {
     return 0;
 }
 
-/* kernel32.dll!SetCurrentDirectoryA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetCurrentDirectoryA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetCurrentDirectoryA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetCurrentDirectoryW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetCurrentDirectoryW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetCurrentDirectoryW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetEndOfFile: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetEndOfFile(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetEndOfFile", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetEnvironmentVariableW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetEnvironmentVariableW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetEnvironmentVariableW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetFileAttributesW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetFileAttributesW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetFileAttributesW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetFilePointer: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetFilePointer(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetFilePointer", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetFilePointerEx: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetFilePointerEx(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetFilePointerEx", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetFileTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetFileTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetFileTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!SetHandleInformation: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetHandleInformation(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetHandleInformation", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!SetPriorityClass: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_SetPriorityClass(void) {
     static int once = 0;
@@ -2980,14 +1684,6 @@ W32ABI W32_DWORD w32_stub_kernel32_SetStdHandle(void) {
     return 0;
 }
 
-/* kernel32.dll!SetUnhandledExceptionFilter: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SetUnhandledExceptionFilter(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SetUnhandledExceptionFilter", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!SizeofResource: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_SizeofResource(void) {
     static int once = 0;
@@ -2996,138 +1692,10 @@ W32ABI W32_DWORD w32_stub_kernel32_SizeofResource(void) {
     return 0;
 }
 
-/* kernel32.dll!SystemTimeToTzSpecificLocalTime: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_SystemTimeToTzSpecificLocalTime(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "SystemTimeToTzSpecificLocalTime", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!TerminateProcess: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_TerminateProcess(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "TerminateProcess", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!UnhandledExceptionFilter: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_UnhandledExceptionFilter(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "UnhandledExceptionFilter", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!UnmapViewOfFile: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_UnmapViewOfFile(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "UnmapViewOfFile", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!UnregisterApplicationRestart: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_UnregisterApplicationRestart(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "UnregisterApplicationRestart", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* kernel32.dll!VirtualProtect: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_VirtualProtect(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "VirtualProtect", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!WaitNamedPipeA: TODO (phase-owned).  Fails loudly until W32A-3 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_WaitNamedPipeA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "WaitNamedPipeA", "W32A-3", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!WideCharToMultiByte: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_WideCharToMultiByte(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "WideCharToMultiByte", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* kernel32.dll!WriteConsoleW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_WriteConsoleW(void) {
     static int once = 0;
     note_todo("kernel32.dll", "WriteConsoleW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcatW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcatW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcatW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcmpW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcmpW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcmpW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcmpiA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcmpiA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcmpiA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcmpiW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcmpiW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcmpiW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcpyW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcpyW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcpyW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcpynA: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcpynA(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcpynA", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrcpynW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrcpynW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrcpynW", "W32A-2", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* kernel32.dll!lstrlenW: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
-W32ABI W32_DWORD w32_stub_kernel32_lstrlenW(void) {
-    static int once = 0;
-    note_todo("kernel32.dll", "lstrlenW", "W32A-2", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3855,14 +2423,6 @@ W32ABI void w32_stub_shlwapi_PathStripPathW(void) {
     return;
 }
 
-/* user32.dll!AdjustWindowRectEx: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_AdjustWindowRectEx(void) {
-    static int once = 0;
-    note_todo("user32.dll", "AdjustWindowRectEx", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!AppendMenuA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_AppendMenuA(void) {
     static int once = 0;
@@ -3887,26 +2447,10 @@ W32ABI W32_DWORD w32_stub_user32_BeginDeferWindowPos(void) {
     return 0;
 }
 
-/* user32.dll!BringWindowToTop: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_BringWindowToTop(void) {
-    static int once = 0;
-    note_todo("user32.dll", "BringWindowToTop", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!CallNextHookEx: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI void *w32_stub_user32_CallNextHookEx(void) {
     static int once = 0;
     note_todo("user32.dll", "CallNextHookEx", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CallWindowProcW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_CallWindowProcW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CallWindowProcW", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3919,26 +2463,10 @@ W32ABI W32_DWORD w32_stub_user32_ChangeClipboardChain(void) {
     return 0;
 }
 
-/* user32.dll!CharLowerW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_CharLowerW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CharLowerW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!CharPrevExA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_CharPrevExA(void) {
     static int once = 0;
     note_todo("user32.dll", "CharPrevExA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CharUpperW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_CharUpperW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CharUpperW", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3971,22 +2499,6 @@ W32ABI W32_DWORD w32_stub_user32_CheckMenuRadioItem(void) {
 W32ABI W32_DWORD w32_stub_user32_CheckRadioButton(void) {
     static int once = 0;
     note_todo("user32.dll", "CheckRadioButton", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ChildWindowFromPointEx: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_ChildWindowFromPointEx(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ChildWindowFromPointEx", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ClientToScreen: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ClientToScreen(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ClientToScreen", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4063,26 +2575,10 @@ W32ABI void *w32_stub_user32_CreatePopupMenu(void) {
     return 0;
 }
 
-/* user32.dll!CreateWindowExW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_CreateWindowExW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CreateWindowExW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!DefDlgProcA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI void *w32_stub_user32_DefDlgProcA(void) {
     static int once = 0;
     note_todo("user32.dll", "DefDlgProcA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!DefWindowProcW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_DefWindowProcW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DefWindowProcW", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4167,14 +2663,6 @@ W32ABI void *w32_stub_user32_DialogBoxParamW(void) {
     return 0;
 }
 
-/* user32.dll!DispatchMessageW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_DispatchMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DispatchMessageW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!DrawEdge: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_DrawEdge(void) {
     static int once = 0;
@@ -4247,14 +2735,6 @@ W32ABI W32_DWORD w32_stub_user32_EnableMenuItem(void) {
     return 0;
 }
 
-/* user32.dll!EnableWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_EnableWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EnableWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!EndDeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_EndDeferWindowPos(void) {
     static int once = 0;
@@ -4271,138 +2751,10 @@ W32ABI W32_DWORD w32_stub_user32_EndDialog(void) {
     return 0;
 }
 
-/* user32.dll!EnumChildWindows: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_EnumChildWindows(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EnumChildWindows", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!EnumDisplayMonitors: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_EnumDisplayMonitors(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EnumDisplayMonitors", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!EnumThreadWindows: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_EnumThreadWindows(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EnumThreadWindows", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!EqualRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_EqualRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EqualRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!FindWindowA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_FindWindowA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "FindWindowA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!FindWindowExW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_FindWindowExW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "FindWindowExW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!FindWindowW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_FindWindowW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "FindWindowW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!FlashWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_FlashWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "FlashWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!FlashWindowEx: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_FlashWindowEx(void) {
-    static int once = 0;
-    note_todo("user32.dll", "FlashWindowEx", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!FrameRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_FrameRect(void) {
     static int once = 0;
     note_todo("user32.dll", "FrameRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetActiveWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetActiveWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetActiveWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetAncestor: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetAncestor(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetAncestor", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetCapture: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetCapture(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetCapture", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetCaretBlinkTime: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetCaretBlinkTime(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetCaretBlinkTime", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetClassInfoW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetClassInfoW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetClassInfoW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetClassNameA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetClassNameA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetClassNameA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetClassNameW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetClassNameW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetClassNameW", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4431,50 +2783,10 @@ W32ABI W32_DWORD w32_stub_user32_GetComboBoxInfo(void) {
     return 0;
 }
 
-/* user32.dll!GetCursorPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetCursorPos(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetCursorPos", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDC: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetDC(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDC", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDCEx: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetDCEx(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDCEx", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDesktopWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetDesktopWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDesktopWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!GetDialogBaseUnits: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_GetDialogBaseUnits(void) {
     static int once = 0;
     note_todo("user32.dll", "GetDialogBaseUnits", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDlgCtrlID: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetDlgCtrlID(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDlgCtrlID", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4511,66 +2823,10 @@ W32ABI W32_DWORD w32_stub_user32_GetDlgItemTextW(void) {
     return 0;
 }
 
-/* user32.dll!GetDoubleClickTime: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetDoubleClickTime(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDoubleClickTime", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetFocus: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetFocus(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetFocus", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetForegroundWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetForegroundWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetForegroundWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!GetIconInfo: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_GetIconInfo(void) {
     static int once = 0;
     note_todo("user32.dll", "GetIconInfo", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetKeyState: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetKeyState(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetKeyState", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetKeyboardLayout: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetKeyboardLayout(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetKeyboardLayout", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetKeyboardState: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetKeyboardState(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetKeyboardState", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetLastActivePopup: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetLastActivePopup(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetLastActivePopup", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4631,106 +2887,10 @@ W32ABI W32_DWORD w32_stub_user32_GetMenuStringW(void) {
     return 0;
 }
 
-/* user32.dll!GetMessageTime: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMessageTime(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMessageTime", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMessageW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMessageW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMonitorInfoA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMonitorInfoA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMonitorInfoA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMonitorInfoW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMonitorInfoW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMonitorInfoW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetParent: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetParent(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetParent", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetPropW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetPropW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetPropW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetQueueStatus: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetQueueStatus(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetQueueStatus", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetScrollInfo: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetScrollInfo(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetScrollInfo", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetScrollPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetScrollPos(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetScrollPos", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetScrollRange: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetScrollRange(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetScrollRange", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!GetSubMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI void *w32_stub_user32_GetSubMenu(void) {
     static int once = 0;
     note_todo("user32.dll", "GetSubMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetSysColor: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetSysColor(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetSysColor", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetSysColorBrush: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetSysColorBrush(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetSysColorBrush", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4743,122 +2903,10 @@ W32ABI void *w32_stub_user32_GetSystemMenu(void) {
     return 0;
 }
 
-/* user32.dll!GetSystemMetrics: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetSystemMetrics(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetSystemMetrics", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetUpdateRgn: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetUpdateRgn(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetUpdateRgn", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowDC: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetWindowDC(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowDC", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowLongPtrA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetWindowLongPtrA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowLongPtrA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowLongPtrW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_GetWindowLongPtrW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowLongPtrW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowLongW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowLongW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowLongW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowPlacement: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowPlacement(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowPlacement", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowTextA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowTextA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowTextA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowTextLengthA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowTextLengthA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowTextLengthA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowTextLengthW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowTextLengthW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowTextLengthW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetWindowTextW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetWindowTextW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetWindowTextW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!HideCaret: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_HideCaret(void) {
     static int once = 0;
     note_todo("user32.dll", "HideCaret", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!InflateRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_InflateRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "InflateRect", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4883,46 +2931,6 @@ W32ABI W32_DWORD w32_stub_user32_InsertMenuItemW(void) {
 W32ABI W32_DWORD w32_stub_user32_InsertMenuW(void) {
     static int once = 0;
     note_todo("user32.dll", "InsertMenuW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IntersectRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IntersectRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IntersectRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsCharAlphaNumericW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsCharAlphaNumericW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsCharAlphaNumericW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsCharAlphaW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsCharAlphaW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsCharAlphaW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsCharLowerW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsCharLowerW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsCharLowerW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsChild: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsChild(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsChild", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -4955,46 +2963,6 @@ W32ABI W32_DWORD w32_stub_user32_IsDialogMessageW(void) {
 W32ABI W32_DWORD w32_stub_user32_IsDlgButtonChecked(void) {
     static int once = 0;
     note_todo("user32.dll", "IsDlgButtonChecked", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsIconic: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsIconic(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsIconic", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsWindowEnabled: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsWindowEnabled(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsWindowEnabled", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsWindowVisible: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsWindowVisible(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsWindowVisible", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsZoomed: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsZoomed(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsZoomed", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5095,34 +3063,10 @@ W32ABI W32_DWORD w32_stub_user32_LoadStringW(void) {
     return 0;
 }
 
-/* user32.dll!LockWindowUpdate: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_LockWindowUpdate(void) {
-    static int once = 0;
-    note_todo("user32.dll", "LockWindowUpdate", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!MapDialogRect: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_MapDialogRect(void) {
     static int once = 0;
     note_todo("user32.dll", "MapDialogRect", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MapVirtualKeyW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MapVirtualKeyW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MapVirtualKeyW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MapWindowPoints: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MapWindowPoints(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MapWindowPoints", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5143,58 +3087,10 @@ W32ABI W32_DWORD w32_stub_user32_MessageBoxIndirectW(void) {
     return 0;
 }
 
-/* user32.dll!MessageBoxW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_MessageBoxW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MessageBoxW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!ModifyMenuW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_ModifyMenuW(void) {
     static int once = 0;
     note_todo("user32.dll", "ModifyMenuW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MonitorFromPoint: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MonitorFromPoint(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MonitorFromPoint", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MonitorFromRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MonitorFromRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MonitorFromRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MonitorFromWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MonitorFromWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MonitorFromWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MoveWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MoveWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MoveWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MsgWaitForMultipleObjects: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_MsgWaitForMultipleObjects(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MsgWaitForMultipleObjects", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5207,82 +3103,10 @@ W32ABI void w32_stub_user32_NotifyWinEvent(void) {
     return;
 }
 
-/* user32.dll!OffsetRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_OffsetRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "OffsetRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!OpenClipboard: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_OpenClipboard(void) {
     static int once = 0;
     note_todo("user32.dll", "OpenClipboard", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!PeekMessageW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_PeekMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "PeekMessageW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!PostMessageA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_PostMessageA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "PostMessageA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!PostMessageW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_PostMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "PostMessageW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!PtInRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_PtInRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "PtInRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RedrawWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_RedrawWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RedrawWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RegisterClassA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterClassA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterClassA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RegisterClassExW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterClassExW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterClassExW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RegisterClassW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterClassW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterClassW", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5303,114 +3127,10 @@ W32ABI W32_DWORD w32_stub_user32_RegisterClipboardFormatW(void) {
     return 0;
 }
 
-/* user32.dll!RegisterWindowMessageA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterWindowMessageA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterWindowMessageA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RegisterWindowMessageW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterWindowMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterWindowMessageW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ReleaseCapture: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ReleaseCapture(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ReleaseCapture", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ReleaseDC: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ReleaseDC(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ReleaseDC", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!RemoveMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_RemoveMenu(void) {
     static int once = 0;
     note_todo("user32.dll", "RemoveMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RemovePropW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_RemovePropW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RemovePropW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ScreenToClient: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ScreenToClient(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ScreenToClient", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ScrollWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ScrollWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ScrollWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SendDlgItemMessageA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_SendDlgItemMessageA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SendDlgItemMessageA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SendDlgItemMessageW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_SendDlgItemMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SendDlgItemMessageW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SendMessageA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SendMessageA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SendMessageA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SendMessageW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SendMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SendMessageW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetActiveWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SetActiveWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetActiveWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetCapture: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SetCapture(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetCapture", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5479,38 +3199,6 @@ W32ABI W32_DWORD w32_stub_user32_SetDlgItemTextW(void) {
     return 0;
 }
 
-/* user32.dll!SetFocus: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SetFocus(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetFocus", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetForegroundWindow: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetForegroundWindow(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetForegroundWindow", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetKeyboardState: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetKeyboardState(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetKeyboardState", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetLayeredWindowAttributes: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetLayeredWindowAttributes(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetLayeredWindowAttributes", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!SetMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
 W32ABI W32_DWORD w32_stub_user32_SetMenu(void) {
     static int once = 0;
@@ -5535,106 +3223,10 @@ W32ABI W32_DWORD w32_stub_user32_SetMenuItemInfoW(void) {
     return 0;
 }
 
-/* user32.dll!SetParent: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SetParent(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetParent", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetPropW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetPropW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetPropW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetRectEmpty: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetRectEmpty(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetRectEmpty", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetScrollInfo: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetScrollInfo(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetScrollInfo", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetScrollPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetScrollPos(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetScrollPos", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetScrollRange: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetScrollRange(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetScrollRange", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!SetTimer: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI void *w32_stub_user32_SetTimer(void) {
     static int once = 0;
     note_todo("user32.dll", "SetTimer", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetWindowLongPtrA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SetWindowLongPtrA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetWindowLongPtrA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetWindowLongPtrW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_SetWindowLongPtrW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetWindowLongPtrW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetWindowPlacement: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetWindowPlacement(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetWindowPlacement", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetWindowPos(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetWindowPos", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetWindowTextA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetWindowTextA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetWindowTextA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetWindowTextW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetWindowTextW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetWindowTextW", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5659,54 +3251,6 @@ W32ABI W32_DWORD w32_stub_user32_ShowCaret(void) {
 W32ABI W32_DWORD w32_stub_user32_ShowCursor(void) {
     static int once = 0;
     note_todo("user32.dll", "ShowCursor", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ShowScrollBar: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ShowScrollBar(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ShowScrollBar", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SystemParametersInfoA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SystemParametersInfoA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SystemParametersInfoA", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SystemParametersInfoW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_SystemParametersInfoW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SystemParametersInfoW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ToAscii: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ToAscii(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ToAscii", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ToAsciiEx: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ToAsciiEx(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ToAsciiEx", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!TrackMouseEvent: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_TrackMouseEvent(void) {
-    static int once = 0;
-    note_todo("user32.dll", "TrackMouseEvent", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -5741,38 +3285,6 @@ W32ABI W32_DWORD w32_stub_user32_UnhookWindowsHookEx(void) {
     note_todo("user32.dll", "UnhookWindowsHookEx", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* user32.dll!UnregisterClassW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_UnregisterClassW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "UnregisterClassW", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ValidateRect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI W32_DWORD w32_stub_user32_ValidateRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ValidateRect", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!WindowFromPoint: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void *w32_stub_user32_WindowFromPoint(void) {
-    static int once = 0;
-    note_todo("user32.dll", "WindowFromPoint", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!mouse_event: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
-W32ABI void w32_stub_user32_mouse_event(void) {
-    static int once = 0;
-    note_todo("user32.dll", "mouse_event", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* user32.dll!wsprintfW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
@@ -6128,205 +3640,26 @@ static const w32_export_t gen_exports[] = {
     { "imm32.dll", "ImmSetCompositionFontW", (void *)&w32_stub_imm32_ImmSetCompositionFontW },
     { "imm32.dll", "ImmSetCompositionStringW", (void *)&w32_stub_imm32_ImmSetCompositionStringW },
     { "imm32.dll", "ImmSetCompositionWindow", (void *)&w32_stub_imm32_ImmSetCompositionWindow },
-    { "kernel32.dll", "Beep", (void *)&w32_stub_kernel32_Beep },
-    { "kernel32.dll", "CancelIo", (void *)&w32_stub_kernel32_CancelIo },
     { "kernel32.dll", "ClearCommBreak", (void *)&w32_stub_kernel32_ClearCommBreak },
-    { "kernel32.dll", "CompareFileTime", (void *)&w32_stub_kernel32_CompareFileTime },
-    { "kernel32.dll", "CompareStringEx", (void *)&w32_stub_kernel32_CompareStringEx },
-    { "kernel32.dll", "CompareStringW", (void *)&w32_stub_kernel32_CompareStringW },
-    { "kernel32.dll", "ConnectNamedPipe", (void *)&w32_stub_kernel32_ConnectNamedPipe },
-    { "kernel32.dll", "CopyFileExW", (void *)&w32_stub_kernel32_CopyFileExW },
-    { "kernel32.dll", "CopyFileW", (void *)&w32_stub_kernel32_CopyFileW },
-    { "kernel32.dll", "CreateDirectoryW", (void *)&w32_stub_kernel32_CreateDirectoryW },
-    { "kernel32.dll", "CreateFileMappingA", (void *)&w32_stub_kernel32_CreateFileMappingA },
-    { "kernel32.dll", "CreateFileMappingW", (void *)&w32_stub_kernel32_CreateFileMappingW },
-    { "kernel32.dll", "CreateFileW", (void *)&w32_stub_kernel32_CreateFileW },
-    { "kernel32.dll", "CreateHardLinkW", (void *)&w32_stub_kernel32_CreateHardLinkW },
-    { "kernel32.dll", "CreateNamedPipeA", (void *)&w32_stub_kernel32_CreateNamedPipeA },
-    { "kernel32.dll", "CreatePipe", (void *)&w32_stub_kernel32_CreatePipe },
-    { "kernel32.dll", "CreateProcessA", (void *)&w32_stub_kernel32_CreateProcessA },
-    { "kernel32.dll", "CreateProcessW", (void *)&w32_stub_kernel32_CreateProcessW },
-    { "kernel32.dll", "CreateToolhelp32Snapshot", (void *)&w32_stub_kernel32_CreateToolhelp32Snapshot },
-    { "kernel32.dll", "DecodePointer", (void *)&w32_stub_kernel32_DecodePointer },
-    { "kernel32.dll", "DeleteFileA", (void *)&w32_stub_kernel32_DeleteFileA },
-    { "kernel32.dll", "DeleteFileW", (void *)&w32_stub_kernel32_DeleteFileW },
-    { "kernel32.dll", "DeviceIoControl", (void *)&w32_stub_kernel32_DeviceIoControl },
-    { "kernel32.dll", "DosDateTimeToFileTime", (void *)&w32_stub_kernel32_DosDateTimeToFileTime },
-    { "kernel32.dll", "EncodePointer", (void *)&w32_stub_kernel32_EncodePointer },
-    { "kernel32.dll", "EnumSystemLocalesW", (void *)&w32_stub_kernel32_EnumSystemLocalesW },
-    { "kernel32.dll", "ExpandEnvironmentStringsW", (void *)&w32_stub_kernel32_ExpandEnvironmentStringsW },
-    { "kernel32.dll", "FileTimeToDosDateTime", (void *)&w32_stub_kernel32_FileTimeToDosDateTime },
-    { "kernel32.dll", "FileTimeToLocalFileTime", (void *)&w32_stub_kernel32_FileTimeToLocalFileTime },
-    { "kernel32.dll", "FileTimeToSystemTime", (void *)&w32_stub_kernel32_FileTimeToSystemTime },
-    { "kernel32.dll", "FindClose", (void *)&w32_stub_kernel32_FindClose },
-    { "kernel32.dll", "FindCloseChangeNotification", (void *)&w32_stub_kernel32_FindCloseChangeNotification },
-    { "kernel32.dll", "FindFirstChangeNotificationW", (void *)&w32_stub_kernel32_FindFirstChangeNotificationW },
-    { "kernel32.dll", "FindFirstFileA", (void *)&w32_stub_kernel32_FindFirstFileA },
-    { "kernel32.dll", "FindFirstFileExW", (void *)&w32_stub_kernel32_FindFirstFileExW },
-    { "kernel32.dll", "FindFirstFileW", (void *)&w32_stub_kernel32_FindFirstFileW },
-    { "kernel32.dll", "FindFirstStreamW", (void *)&w32_stub_kernel32_FindFirstStreamW },
-    { "kernel32.dll", "FindNextChangeNotification", (void *)&w32_stub_kernel32_FindNextChangeNotification },
-    { "kernel32.dll", "FindNextFileA", (void *)&w32_stub_kernel32_FindNextFileA },
-    { "kernel32.dll", "FindNextFileW", (void *)&w32_stub_kernel32_FindNextFileW },
-    { "kernel32.dll", "FindNextStreamW", (void *)&w32_stub_kernel32_FindNextStreamW },
     { "kernel32.dll", "FindResourceA", (void *)&w32_stub_kernel32_FindResourceA },
     { "kernel32.dll", "FindResourceW", (void *)&w32_stub_kernel32_FindResourceW },
-    { "kernel32.dll", "FlushFileBuffers", (void *)&w32_stub_kernel32_FlushFileBuffers },
-    { "kernel32.dll", "FormatMessageA", (void *)&w32_stub_kernel32_FormatMessageA },
-    { "kernel32.dll", "FormatMessageW", (void *)&w32_stub_kernel32_FormatMessageW },
-    { "kernel32.dll", "FreeEnvironmentStringsW", (void *)&w32_stub_kernel32_FreeEnvironmentStringsW },
     { "kernel32.dll", "FreeLibraryWhenCallbackReturns", (void *)&w32_stub_kernel32_FreeLibraryWhenCallbackReturns },
-    { "kernel32.dll", "GetACP", (void *)&w32_stub_kernel32_GetACP },
-    { "kernel32.dll", "GetApplicationRestartSettings", (void *)&w32_stub_kernel32_GetApplicationRestartSettings },
-    { "kernel32.dll", "GetCPInfo", (void *)&w32_stub_kernel32_GetCPInfo },
     { "kernel32.dll", "GetCommState", (void *)&w32_stub_kernel32_GetCommState },
-    { "kernel32.dll", "GetCommandLineW", (void *)&w32_stub_kernel32_GetCommandLineW },
-    { "kernel32.dll", "GetCompressedFileSizeW", (void *)&w32_stub_kernel32_GetCompressedFileSizeW },
     { "kernel32.dll", "GetConsoleMode", (void *)&w32_stub_kernel32_GetConsoleMode },
     { "kernel32.dll", "GetConsoleOutputCP", (void *)&w32_stub_kernel32_GetConsoleOutputCP },
-    { "kernel32.dll", "GetCurrentDirectoryA", (void *)&w32_stub_kernel32_GetCurrentDirectoryA },
-    { "kernel32.dll", "GetCurrentDirectoryW", (void *)&w32_stub_kernel32_GetCurrentDirectoryW },
-    { "kernel32.dll", "GetCurrentProcess", (void *)&w32_stub_kernel32_GetCurrentProcess },
-    { "kernel32.dll", "GetCurrentProcessId", (void *)&w32_stub_kernel32_GetCurrentProcessId },
-    { "kernel32.dll", "GetDateFormatEx", (void *)&w32_stub_kernel32_GetDateFormatEx },
-    { "kernel32.dll", "GetDateFormatW", (void *)&w32_stub_kernel32_GetDateFormatW },
-    { "kernel32.dll", "GetDiskFreeSpaceExW", (void *)&w32_stub_kernel32_GetDiskFreeSpaceExW },
-    { "kernel32.dll", "GetDiskFreeSpaceW", (void *)&w32_stub_kernel32_GetDiskFreeSpaceW },
-    { "kernel32.dll", "GetDriveTypeW", (void *)&w32_stub_kernel32_GetDriveTypeW },
-    { "kernel32.dll", "GetEnvironmentStringsW", (void *)&w32_stub_kernel32_GetEnvironmentStringsW },
-    { "kernel32.dll", "GetEnvironmentVariableA", (void *)&w32_stub_kernel32_GetEnvironmentVariableA },
-    { "kernel32.dll", "GetExitCodeProcess", (void *)&w32_stub_kernel32_GetExitCodeProcess },
-    { "kernel32.dll", "GetFileAttributesExW", (void *)&w32_stub_kernel32_GetFileAttributesExW },
-    { "kernel32.dll", "GetFileAttributesW", (void *)&w32_stub_kernel32_GetFileAttributesW },
-    { "kernel32.dll", "GetFileInformationByHandle", (void *)&w32_stub_kernel32_GetFileInformationByHandle },
-    { "kernel32.dll", "GetFileSize", (void *)&w32_stub_kernel32_GetFileSize },
-    { "kernel32.dll", "GetFileSizeEx", (void *)&w32_stub_kernel32_GetFileSizeEx },
-    { "kernel32.dll", "GetFileType", (void *)&w32_stub_kernel32_GetFileType },
-    { "kernel32.dll", "GetFinalPathNameByHandleW", (void *)&w32_stub_kernel32_GetFinalPathNameByHandleW },
-    { "kernel32.dll", "GetFullPathNameW", (void *)&w32_stub_kernel32_GetFullPathNameW },
-    { "kernel32.dll", "GetLargePageMinimum", (void *)&w32_stub_kernel32_GetLargePageMinimum },
-    { "kernel32.dll", "GetLocalTime", (void *)&w32_stub_kernel32_GetLocalTime },
-    { "kernel32.dll", "GetLocaleInfoA", (void *)&w32_stub_kernel32_GetLocaleInfoA },
-    { "kernel32.dll", "GetLocaleInfoEx", (void *)&w32_stub_kernel32_GetLocaleInfoEx },
-    { "kernel32.dll", "GetLocaleInfoW", (void *)&w32_stub_kernel32_GetLocaleInfoW },
-    { "kernel32.dll", "GetLogicalDriveStringsW", (void *)&w32_stub_kernel32_GetLogicalDriveStringsW },
-    { "kernel32.dll", "GetLongPathNameW", (void *)&w32_stub_kernel32_GetLongPathNameW },
-    { "kernel32.dll", "GetModuleFileNameA", (void *)&w32_stub_kernel32_GetModuleFileNameA },
-    { "kernel32.dll", "GetModuleFileNameW", (void *)&w32_stub_kernel32_GetModuleFileNameW },
-    { "kernel32.dll", "GetModuleHandleExW", (void *)&w32_stub_kernel32_GetModuleHandleExW },
-    { "kernel32.dll", "GetModuleHandleW", (void *)&w32_stub_kernel32_GetModuleHandleW },
-    { "kernel32.dll", "GetNativeSystemInfo", (void *)&w32_stub_kernel32_GetNativeSystemInfo },
-    { "kernel32.dll", "GetOEMCP", (void *)&w32_stub_kernel32_GetOEMCP },
-    { "kernel32.dll", "GetOverlappedResult", (void *)&w32_stub_kernel32_GetOverlappedResult },
     { "kernel32.dll", "GetPrivateProfileIntW", (void *)&w32_stub_kernel32_GetPrivateProfileIntW },
     { "kernel32.dll", "GetPrivateProfileSectionNamesW", (void *)&w32_stub_kernel32_GetPrivateProfileSectionNamesW },
-    { "kernel32.dll", "GetProcessAffinityMask", (void *)&w32_stub_kernel32_GetProcessAffinityMask },
-    { "kernel32.dll", "GetProcessTimes", (void *)&w32_stub_kernel32_GetProcessTimes },
-    { "kernel32.dll", "GetProductInfo", (void *)&w32_stub_kernel32_GetProductInfo },
-    { "kernel32.dll", "GetStartupInfoA", (void *)&w32_stub_kernel32_GetStartupInfoA },
-    { "kernel32.dll", "GetStartupInfoW", (void *)&w32_stub_kernel32_GetStartupInfoW },
-    { "kernel32.dll", "GetStringTypeExA", (void *)&w32_stub_kernel32_GetStringTypeExA },
-    { "kernel32.dll", "GetStringTypeExW", (void *)&w32_stub_kernel32_GetStringTypeExW },
-    { "kernel32.dll", "GetStringTypeW", (void *)&w32_stub_kernel32_GetStringTypeW },
-    { "kernel32.dll", "GetSystemDefaultLangID", (void *)&w32_stub_kernel32_GetSystemDefaultLangID },
-    { "kernel32.dll", "GetSystemDirectoryA", (void *)&w32_stub_kernel32_GetSystemDirectoryA },
-    { "kernel32.dll", "GetSystemInfo", (void *)&w32_stub_kernel32_GetSystemInfo },
-    { "kernel32.dll", "GetSystemTimeAsFileTime", (void *)&w32_stub_kernel32_GetSystemTimeAsFileTime },
-    { "kernel32.dll", "GetTempPathA", (void *)&w32_stub_kernel32_GetTempPathA },
-    { "kernel32.dll", "GetTempPathW", (void *)&w32_stub_kernel32_GetTempPathW },
-    { "kernel32.dll", "GetTickCount", (void *)&w32_stub_kernel32_GetTickCount },
-    { "kernel32.dll", "GetTimeFormatEx", (void *)&w32_stub_kernel32_GetTimeFormatEx },
-    { "kernel32.dll", "GetTimeFormatW", (void *)&w32_stub_kernel32_GetTimeFormatW },
-    { "kernel32.dll", "GetTimeZoneInformation", (void *)&w32_stub_kernel32_GetTimeZoneInformation },
-    { "kernel32.dll", "GetUserDefaultLCID", (void *)&w32_stub_kernel32_GetUserDefaultLCID },
-    { "kernel32.dll", "GetUserDefaultLangID", (void *)&w32_stub_kernel32_GetUserDefaultLangID },
-    { "kernel32.dll", "GetVersion", (void *)&w32_stub_kernel32_GetVersion },
-    { "kernel32.dll", "GetVersionExW", (void *)&w32_stub_kernel32_GetVersionExW },
-    { "kernel32.dll", "GetVolumeInformationW", (void *)&w32_stub_kernel32_GetVolumeInformationW },
-    { "kernel32.dll", "GetWindowsDirectoryA", (void *)&w32_stub_kernel32_GetWindowsDirectoryA },
-    { "kernel32.dll", "GetWindowsDirectoryW", (void *)&w32_stub_kernel32_GetWindowsDirectoryW },
-    { "kernel32.dll", "GlobalAlloc", (void *)&w32_stub_kernel32_GlobalAlloc },
-    { "kernel32.dll", "GlobalFree", (void *)&w32_stub_kernel32_GlobalFree },
-    { "kernel32.dll", "GlobalLock", (void *)&w32_stub_kernel32_GlobalLock },
-    { "kernel32.dll", "GlobalMemoryStatus", (void *)&w32_stub_kernel32_GlobalMemoryStatus },
-    { "kernel32.dll", "GlobalMemoryStatusEx", (void *)&w32_stub_kernel32_GlobalMemoryStatusEx },
-    { "kernel32.dll", "GlobalSize", (void *)&w32_stub_kernel32_GlobalSize },
-    { "kernel32.dll", "GlobalUnlock", (void *)&w32_stub_kernel32_GlobalUnlock },
-    { "kernel32.dll", "HeapReAlloc", (void *)&w32_stub_kernel32_HeapReAlloc },
-    { "kernel32.dll", "HeapSize", (void *)&w32_stub_kernel32_HeapSize },
-    { "kernel32.dll", "IsDBCSLeadByteEx", (void *)&w32_stub_kernel32_IsDBCSLeadByteEx },
-    { "kernel32.dll", "IsDebuggerPresent", (void *)&w32_stub_kernel32_IsDebuggerPresent },
-    { "kernel32.dll", "IsProcessorFeaturePresent", (void *)&w32_stub_kernel32_IsProcessorFeaturePresent },
-    { "kernel32.dll", "IsValidCodePage", (void *)&w32_stub_kernel32_IsValidCodePage },
-    { "kernel32.dll", "IsValidLocale", (void *)&w32_stub_kernel32_IsValidLocale },
-    { "kernel32.dll", "LCMapStringA", (void *)&w32_stub_kernel32_LCMapStringA },
-    { "kernel32.dll", "LCMapStringEx", (void *)&w32_stub_kernel32_LCMapStringEx },
-    { "kernel32.dll", "LCMapStringW", (void *)&w32_stub_kernel32_LCMapStringW },
-    { "kernel32.dll", "LoadLibraryExA", (void *)&w32_stub_kernel32_LoadLibraryExA },
-    { "kernel32.dll", "LoadLibraryExW", (void *)&w32_stub_kernel32_LoadLibraryExW },
-    { "kernel32.dll", "LoadLibraryW", (void *)&w32_stub_kernel32_LoadLibraryW },
     { "kernel32.dll", "LoadResource", (void *)&w32_stub_kernel32_LoadResource },
-    { "kernel32.dll", "LocalAlloc", (void *)&w32_stub_kernel32_LocalAlloc },
-    { "kernel32.dll", "LocalFileTimeToFileTime", (void *)&w32_stub_kernel32_LocalFileTimeToFileTime },
-    { "kernel32.dll", "LocalFree", (void *)&w32_stub_kernel32_LocalFree },
     { "kernel32.dll", "LockResource", (void *)&w32_stub_kernel32_LockResource },
-    { "kernel32.dll", "MapViewOfFile", (void *)&w32_stub_kernel32_MapViewOfFile },
-    { "kernel32.dll", "MoveFileExW", (void *)&w32_stub_kernel32_MoveFileExW },
-    { "kernel32.dll", "MoveFileW", (void *)&w32_stub_kernel32_MoveFileW },
-    { "kernel32.dll", "MoveFileWithProgressW", (void *)&w32_stub_kernel32_MoveFileWithProgressW },
-    { "kernel32.dll", "MulDiv", (void *)&w32_stub_kernel32_MulDiv },
-    { "kernel32.dll", "MultiByteToWideChar", (void *)&w32_stub_kernel32_MultiByteToWideChar },
-    { "kernel32.dll", "OpenProcess", (void *)&w32_stub_kernel32_OpenProcess },
-    { "kernel32.dll", "OutputDebugStringW", (void *)&w32_stub_kernel32_OutputDebugStringW },
-    { "kernel32.dll", "Process32FirstW", (void *)&w32_stub_kernel32_Process32FirstW },
-    { "kernel32.dll", "Process32NextW", (void *)&w32_stub_kernel32_Process32NextW },
-    { "kernel32.dll", "QueryPerformanceCounter", (void *)&w32_stub_kernel32_QueryPerformanceCounter },
-    { "kernel32.dll", "QueryPerformanceFrequency", (void *)&w32_stub_kernel32_QueryPerformanceFrequency },
-    { "kernel32.dll", "RaiseException", (void *)&w32_stub_kernel32_RaiseException },
     { "kernel32.dll", "ReadConsoleW", (void *)&w32_stub_kernel32_ReadConsoleW },
     { "kernel32.dll", "ReadDirectoryChangesW", (void *)&w32_stub_kernel32_ReadDirectoryChangesW },
-    { "kernel32.dll", "RegisterApplicationRestart", (void *)&w32_stub_kernel32_RegisterApplicationRestart },
-    { "kernel32.dll", "RemoveDirectoryW", (void *)&w32_stub_kernel32_RemoveDirectoryW },
-    { "kernel32.dll", "ReplaceFileW", (void *)&w32_stub_kernel32_ReplaceFileW },
-    { "kernel32.dll", "RtlCaptureContext", (void *)&w32_stub_kernel32_RtlCaptureContext },
-    { "kernel32.dll", "RtlLookupFunctionEntry", (void *)&w32_stub_kernel32_RtlLookupFunctionEntry },
-    { "kernel32.dll", "RtlPcToFileHeader", (void *)&w32_stub_kernel32_RtlPcToFileHeader },
-    { "kernel32.dll", "RtlUnwind", (void *)&w32_stub_kernel32_RtlUnwind },
-    { "kernel32.dll", "RtlUnwindEx", (void *)&w32_stub_kernel32_RtlUnwindEx },
-    { "kernel32.dll", "RtlVirtualUnwind", (void *)&w32_stub_kernel32_RtlVirtualUnwind },
     { "kernel32.dll", "SetCommBreak", (void *)&w32_stub_kernel32_SetCommBreak },
     { "kernel32.dll", "SetCommState", (void *)&w32_stub_kernel32_SetCommState },
     { "kernel32.dll", "SetCommTimeouts", (void *)&w32_stub_kernel32_SetCommTimeouts },
-    { "kernel32.dll", "SetCurrentDirectoryA", (void *)&w32_stub_kernel32_SetCurrentDirectoryA },
-    { "kernel32.dll", "SetCurrentDirectoryW", (void *)&w32_stub_kernel32_SetCurrentDirectoryW },
-    { "kernel32.dll", "SetEndOfFile", (void *)&w32_stub_kernel32_SetEndOfFile },
-    { "kernel32.dll", "SetEnvironmentVariableW", (void *)&w32_stub_kernel32_SetEnvironmentVariableW },
-    { "kernel32.dll", "SetFileAttributesW", (void *)&w32_stub_kernel32_SetFileAttributesW },
-    { "kernel32.dll", "SetFilePointer", (void *)&w32_stub_kernel32_SetFilePointer },
-    { "kernel32.dll", "SetFilePointerEx", (void *)&w32_stub_kernel32_SetFilePointerEx },
-    { "kernel32.dll", "SetFileTime", (void *)&w32_stub_kernel32_SetFileTime },
-    { "kernel32.dll", "SetHandleInformation", (void *)&w32_stub_kernel32_SetHandleInformation },
     { "kernel32.dll", "SetPriorityClass", (void *)&w32_stub_kernel32_SetPriorityClass },
     { "kernel32.dll", "SetStdHandle", (void *)&w32_stub_kernel32_SetStdHandle },
-    { "kernel32.dll", "SetUnhandledExceptionFilter", (void *)&w32_stub_kernel32_SetUnhandledExceptionFilter },
     { "kernel32.dll", "SizeofResource", (void *)&w32_stub_kernel32_SizeofResource },
-    { "kernel32.dll", "SystemTimeToTzSpecificLocalTime", (void *)&w32_stub_kernel32_SystemTimeToTzSpecificLocalTime },
-    { "kernel32.dll", "TerminateProcess", (void *)&w32_stub_kernel32_TerminateProcess },
-    { "kernel32.dll", "UnhandledExceptionFilter", (void *)&w32_stub_kernel32_UnhandledExceptionFilter },
-    { "kernel32.dll", "UnmapViewOfFile", (void *)&w32_stub_kernel32_UnmapViewOfFile },
-    { "kernel32.dll", "UnregisterApplicationRestart", (void *)&w32_stub_kernel32_UnregisterApplicationRestart },
-    { "kernel32.dll", "VirtualProtect", (void *)&w32_stub_kernel32_VirtualProtect },
-    { "kernel32.dll", "WaitNamedPipeA", (void *)&w32_stub_kernel32_WaitNamedPipeA },
-    { "kernel32.dll", "WideCharToMultiByte", (void *)&w32_stub_kernel32_WideCharToMultiByte },
     { "kernel32.dll", "WriteConsoleW", (void *)&w32_stub_kernel32_WriteConsoleW },
-    { "kernel32.dll", "lstrcatW", (void *)&w32_stub_kernel32_lstrcatW },
-    { "kernel32.dll", "lstrcmpW", (void *)&w32_stub_kernel32_lstrcmpW },
-    { "kernel32.dll", "lstrcmpiA", (void *)&w32_stub_kernel32_lstrcmpiA },
-    { "kernel32.dll", "lstrcmpiW", (void *)&w32_stub_kernel32_lstrcmpiW },
-    { "kernel32.dll", "lstrcpyW", (void *)&w32_stub_kernel32_lstrcpyW },
-    { "kernel32.dll", "lstrcpynA", (void *)&w32_stub_kernel32_lstrcpynA },
-    { "kernel32.dll", "lstrcpynW", (void *)&w32_stub_kernel32_lstrcpynW },
-    { "kernel32.dll", "lstrlenW", (void *)&w32_stub_kernel32_lstrlenW },
     { "mpr.dll", "WNetAddConnection2W", (void *)&w32_stub_mpr_WNetAddConnection2W },
     { "mpr.dll", "WNetCloseEnum", (void *)&w32_stub_mpr_WNetCloseEnum },
     { "mpr.dll", "WNetEnumResourceW", (void *)&w32_stub_mpr_WNetEnumResourceW },
@@ -6421,23 +3754,16 @@ static const w32_export_t gen_exports[] = {
     { "shlwapi.dll", "PathRemoveExtensionW", (void *)&w32_stub_shlwapi_PathRemoveExtensionW },
     { "shlwapi.dll", "PathRemoveFileSpecW", (void *)&w32_stub_shlwapi_PathRemoveFileSpecW },
     { "shlwapi.dll", "PathStripPathW", (void *)&w32_stub_shlwapi_PathStripPathW },
-    { "user32.dll", "AdjustWindowRectEx", (void *)&w32_stub_user32_AdjustWindowRectEx },
     { "user32.dll", "AppendMenuA", (void *)&w32_stub_user32_AppendMenuA },
     { "user32.dll", "AppendMenuW", (void *)&w32_stub_user32_AppendMenuW },
     { "user32.dll", "BeginDeferWindowPos", (void *)&w32_stub_user32_BeginDeferWindowPos },
-    { "user32.dll", "BringWindowToTop", (void *)&w32_stub_user32_BringWindowToTop },
     { "user32.dll", "CallNextHookEx", (void *)&w32_stub_user32_CallNextHookEx },
-    { "user32.dll", "CallWindowProcW", (void *)&w32_stub_user32_CallWindowProcW },
     { "user32.dll", "ChangeClipboardChain", (void *)&w32_stub_user32_ChangeClipboardChain },
-    { "user32.dll", "CharLowerW", (void *)&w32_stub_user32_CharLowerW },
     { "user32.dll", "CharPrevExA", (void *)&w32_stub_user32_CharPrevExA },
-    { "user32.dll", "CharUpperW", (void *)&w32_stub_user32_CharUpperW },
     { "user32.dll", "CheckDlgButton", (void *)&w32_stub_user32_CheckDlgButton },
     { "user32.dll", "CheckMenuItem", (void *)&w32_stub_user32_CheckMenuItem },
     { "user32.dll", "CheckMenuRadioItem", (void *)&w32_stub_user32_CheckMenuRadioItem },
     { "user32.dll", "CheckRadioButton", (void *)&w32_stub_user32_CheckRadioButton },
-    { "user32.dll", "ChildWindowFromPointEx", (void *)&w32_stub_user32_ChildWindowFromPointEx },
-    { "user32.dll", "ClientToScreen", (void *)&w32_stub_user32_ClientToScreen },
     { "user32.dll", "CloseClipboard", (void *)&w32_stub_user32_CloseClipboard },
     { "user32.dll", "CreateAcceleratorTableW", (void *)&w32_stub_user32_CreateAcceleratorTableW },
     { "user32.dll", "CreateCaret", (void *)&w32_stub_user32_CreateCaret },
@@ -6447,9 +3773,7 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "CreateIconIndirect", (void *)&w32_stub_user32_CreateIconIndirect },
     { "user32.dll", "CreateMenu", (void *)&w32_stub_user32_CreateMenu },
     { "user32.dll", "CreatePopupMenu", (void *)&w32_stub_user32_CreatePopupMenu },
-    { "user32.dll", "CreateWindowExW", (void *)&w32_stub_user32_CreateWindowExW },
     { "user32.dll", "DefDlgProcA", (void *)&w32_stub_user32_DefDlgProcA },
-    { "user32.dll", "DefWindowProcW", (void *)&w32_stub_user32_DefWindowProcW },
     { "user32.dll", "DeferWindowPos", (void *)&w32_stub_user32_DeferWindowPos },
     { "user32.dll", "DeleteMenu", (void *)&w32_stub_user32_DeleteMenu },
     { "user32.dll", "DestroyAcceleratorTable", (void *)&w32_stub_user32_DestroyAcceleratorTable },
@@ -6460,7 +3784,6 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "DialogBoxIndirectParamW", (void *)&w32_stub_user32_DialogBoxIndirectParamW },
     { "user32.dll", "DialogBoxParamA", (void *)&w32_stub_user32_DialogBoxParamA },
     { "user32.dll", "DialogBoxParamW", (void *)&w32_stub_user32_DialogBoxParamW },
-    { "user32.dll", "DispatchMessageW", (void *)&w32_stub_user32_DispatchMessageW },
     { "user32.dll", "DrawEdge", (void *)&w32_stub_user32_DrawEdge },
     { "user32.dll", "DrawFocusRect", (void *)&w32_stub_user32_DrawFocusRect },
     { "user32.dll", "DrawFrameControl", (void *)&w32_stub_user32_DrawFrameControl },
@@ -6470,47 +3793,18 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "DrawTextW", (void *)&w32_stub_user32_DrawTextW },
     { "user32.dll", "EmptyClipboard", (void *)&w32_stub_user32_EmptyClipboard },
     { "user32.dll", "EnableMenuItem", (void *)&w32_stub_user32_EnableMenuItem },
-    { "user32.dll", "EnableWindow", (void *)&w32_stub_user32_EnableWindow },
     { "user32.dll", "EndDeferWindowPos", (void *)&w32_stub_user32_EndDeferWindowPos },
     { "user32.dll", "EndDialog", (void *)&w32_stub_user32_EndDialog },
-    { "user32.dll", "EnumChildWindows", (void *)&w32_stub_user32_EnumChildWindows },
-    { "user32.dll", "EnumDisplayMonitors", (void *)&w32_stub_user32_EnumDisplayMonitors },
-    { "user32.dll", "EnumThreadWindows", (void *)&w32_stub_user32_EnumThreadWindows },
-    { "user32.dll", "EqualRect", (void *)&w32_stub_user32_EqualRect },
-    { "user32.dll", "FindWindowA", (void *)&w32_stub_user32_FindWindowA },
-    { "user32.dll", "FindWindowExW", (void *)&w32_stub_user32_FindWindowExW },
-    { "user32.dll", "FindWindowW", (void *)&w32_stub_user32_FindWindowW },
-    { "user32.dll", "FlashWindow", (void *)&w32_stub_user32_FlashWindow },
-    { "user32.dll", "FlashWindowEx", (void *)&w32_stub_user32_FlashWindowEx },
     { "user32.dll", "FrameRect", (void *)&w32_stub_user32_FrameRect },
-    { "user32.dll", "GetActiveWindow", (void *)&w32_stub_user32_GetActiveWindow },
-    { "user32.dll", "GetAncestor", (void *)&w32_stub_user32_GetAncestor },
-    { "user32.dll", "GetCapture", (void *)&w32_stub_user32_GetCapture },
-    { "user32.dll", "GetCaretBlinkTime", (void *)&w32_stub_user32_GetCaretBlinkTime },
-    { "user32.dll", "GetClassInfoW", (void *)&w32_stub_user32_GetClassInfoW },
-    { "user32.dll", "GetClassNameA", (void *)&w32_stub_user32_GetClassNameA },
-    { "user32.dll", "GetClassNameW", (void *)&w32_stub_user32_GetClassNameW },
     { "user32.dll", "GetClipboardData", (void *)&w32_stub_user32_GetClipboardData },
     { "user32.dll", "GetClipboardOwner", (void *)&w32_stub_user32_GetClipboardOwner },
     { "user32.dll", "GetComboBoxInfo", (void *)&w32_stub_user32_GetComboBoxInfo },
-    { "user32.dll", "GetCursorPos", (void *)&w32_stub_user32_GetCursorPos },
-    { "user32.dll", "GetDC", (void *)&w32_stub_user32_GetDC },
-    { "user32.dll", "GetDCEx", (void *)&w32_stub_user32_GetDCEx },
-    { "user32.dll", "GetDesktopWindow", (void *)&w32_stub_user32_GetDesktopWindow },
     { "user32.dll", "GetDialogBaseUnits", (void *)&w32_stub_user32_GetDialogBaseUnits },
-    { "user32.dll", "GetDlgCtrlID", (void *)&w32_stub_user32_GetDlgCtrlID },
     { "user32.dll", "GetDlgItem", (void *)&w32_stub_user32_GetDlgItem },
     { "user32.dll", "GetDlgItemInt", (void *)&w32_stub_user32_GetDlgItemInt },
     { "user32.dll", "GetDlgItemTextA", (void *)&w32_stub_user32_GetDlgItemTextA },
     { "user32.dll", "GetDlgItemTextW", (void *)&w32_stub_user32_GetDlgItemTextW },
-    { "user32.dll", "GetDoubleClickTime", (void *)&w32_stub_user32_GetDoubleClickTime },
-    { "user32.dll", "GetFocus", (void *)&w32_stub_user32_GetFocus },
-    { "user32.dll", "GetForegroundWindow", (void *)&w32_stub_user32_GetForegroundWindow },
     { "user32.dll", "GetIconInfo", (void *)&w32_stub_user32_GetIconInfo },
-    { "user32.dll", "GetKeyState", (void *)&w32_stub_user32_GetKeyState },
-    { "user32.dll", "GetKeyboardLayout", (void *)&w32_stub_user32_GetKeyboardLayout },
-    { "user32.dll", "GetKeyboardState", (void *)&w32_stub_user32_GetKeyboardState },
-    { "user32.dll", "GetLastActivePopup", (void *)&w32_stub_user32_GetLastActivePopup },
     { "user32.dll", "GetMenu", (void *)&w32_stub_user32_GetMenu },
     { "user32.dll", "GetMenuBarInfo", (void *)&w32_stub_user32_GetMenuBarInfo },
     { "user32.dll", "GetMenuItemCount", (void *)&w32_stub_user32_GetMenuItemCount },
@@ -6518,52 +3812,16 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "GetMenuItemInfoW", (void *)&w32_stub_user32_GetMenuItemInfoW },
     { "user32.dll", "GetMenuState", (void *)&w32_stub_user32_GetMenuState },
     { "user32.dll", "GetMenuStringW", (void *)&w32_stub_user32_GetMenuStringW },
-    { "user32.dll", "GetMessageTime", (void *)&w32_stub_user32_GetMessageTime },
-    { "user32.dll", "GetMessageW", (void *)&w32_stub_user32_GetMessageW },
-    { "user32.dll", "GetMonitorInfoA", (void *)&w32_stub_user32_GetMonitorInfoA },
-    { "user32.dll", "GetMonitorInfoW", (void *)&w32_stub_user32_GetMonitorInfoW },
-    { "user32.dll", "GetParent", (void *)&w32_stub_user32_GetParent },
-    { "user32.dll", "GetPropW", (void *)&w32_stub_user32_GetPropW },
-    { "user32.dll", "GetQueueStatus", (void *)&w32_stub_user32_GetQueueStatus },
-    { "user32.dll", "GetScrollInfo", (void *)&w32_stub_user32_GetScrollInfo },
-    { "user32.dll", "GetScrollPos", (void *)&w32_stub_user32_GetScrollPos },
-    { "user32.dll", "GetScrollRange", (void *)&w32_stub_user32_GetScrollRange },
     { "user32.dll", "GetSubMenu", (void *)&w32_stub_user32_GetSubMenu },
-    { "user32.dll", "GetSysColor", (void *)&w32_stub_user32_GetSysColor },
-    { "user32.dll", "GetSysColorBrush", (void *)&w32_stub_user32_GetSysColorBrush },
     { "user32.dll", "GetSystemMenu", (void *)&w32_stub_user32_GetSystemMenu },
-    { "user32.dll", "GetSystemMetrics", (void *)&w32_stub_user32_GetSystemMetrics },
-    { "user32.dll", "GetUpdateRgn", (void *)&w32_stub_user32_GetUpdateRgn },
-    { "user32.dll", "GetWindow", (void *)&w32_stub_user32_GetWindow },
-    { "user32.dll", "GetWindowDC", (void *)&w32_stub_user32_GetWindowDC },
-    { "user32.dll", "GetWindowLongPtrA", (void *)&w32_stub_user32_GetWindowLongPtrA },
-    { "user32.dll", "GetWindowLongPtrW", (void *)&w32_stub_user32_GetWindowLongPtrW },
-    { "user32.dll", "GetWindowLongW", (void *)&w32_stub_user32_GetWindowLongW },
-    { "user32.dll", "GetWindowPlacement", (void *)&w32_stub_user32_GetWindowPlacement },
-    { "user32.dll", "GetWindowRect", (void *)&w32_stub_user32_GetWindowRect },
-    { "user32.dll", "GetWindowTextA", (void *)&w32_stub_user32_GetWindowTextA },
-    { "user32.dll", "GetWindowTextLengthA", (void *)&w32_stub_user32_GetWindowTextLengthA },
-    { "user32.dll", "GetWindowTextLengthW", (void *)&w32_stub_user32_GetWindowTextLengthW },
-    { "user32.dll", "GetWindowTextW", (void *)&w32_stub_user32_GetWindowTextW },
     { "user32.dll", "HideCaret", (void *)&w32_stub_user32_HideCaret },
-    { "user32.dll", "InflateRect", (void *)&w32_stub_user32_InflateRect },
     { "user32.dll", "InsertMenuA", (void *)&w32_stub_user32_InsertMenuA },
     { "user32.dll", "InsertMenuItemW", (void *)&w32_stub_user32_InsertMenuItemW },
     { "user32.dll", "InsertMenuW", (void *)&w32_stub_user32_InsertMenuW },
-    { "user32.dll", "IntersectRect", (void *)&w32_stub_user32_IntersectRect },
-    { "user32.dll", "IsCharAlphaNumericW", (void *)&w32_stub_user32_IsCharAlphaNumericW },
-    { "user32.dll", "IsCharAlphaW", (void *)&w32_stub_user32_IsCharAlphaW },
-    { "user32.dll", "IsCharLowerW", (void *)&w32_stub_user32_IsCharLowerW },
-    { "user32.dll", "IsChild", (void *)&w32_stub_user32_IsChild },
     { "user32.dll", "IsClipboardFormatAvailable", (void *)&w32_stub_user32_IsClipboardFormatAvailable },
     { "user32.dll", "IsDialogMessageA", (void *)&w32_stub_user32_IsDialogMessageA },
     { "user32.dll", "IsDialogMessageW", (void *)&w32_stub_user32_IsDialogMessageW },
     { "user32.dll", "IsDlgButtonChecked", (void *)&w32_stub_user32_IsDlgButtonChecked },
-    { "user32.dll", "IsIconic", (void *)&w32_stub_user32_IsIconic },
-    { "user32.dll", "IsWindow", (void *)&w32_stub_user32_IsWindow },
-    { "user32.dll", "IsWindowEnabled", (void *)&w32_stub_user32_IsWindowEnabled },
-    { "user32.dll", "IsWindowVisible", (void *)&w32_stub_user32_IsWindowVisible },
-    { "user32.dll", "IsZoomed", (void *)&w32_stub_user32_IsZoomed },
     { "user32.dll", "KillTimer", (void *)&w32_stub_user32_KillTimer },
     { "user32.dll", "LoadAcceleratorsW", (void *)&w32_stub_user32_LoadAcceleratorsW },
     { "user32.dll", "LoadBitmapW", (void *)&w32_stub_user32_LoadBitmapW },
@@ -6576,46 +3834,15 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "LoadMenuW", (void *)&w32_stub_user32_LoadMenuW },
     { "user32.dll", "LoadStringA", (void *)&w32_stub_user32_LoadStringA },
     { "user32.dll", "LoadStringW", (void *)&w32_stub_user32_LoadStringW },
-    { "user32.dll", "LockWindowUpdate", (void *)&w32_stub_user32_LockWindowUpdate },
     { "user32.dll", "MapDialogRect", (void *)&w32_stub_user32_MapDialogRect },
-    { "user32.dll", "MapVirtualKeyW", (void *)&w32_stub_user32_MapVirtualKeyW },
-    { "user32.dll", "MapWindowPoints", (void *)&w32_stub_user32_MapWindowPoints },
     { "user32.dll", "MessageBeep", (void *)&w32_stub_user32_MessageBeep },
     { "user32.dll", "MessageBoxIndirectW", (void *)&w32_stub_user32_MessageBoxIndirectW },
-    { "user32.dll", "MessageBoxW", (void *)&w32_stub_user32_MessageBoxW },
     { "user32.dll", "ModifyMenuW", (void *)&w32_stub_user32_ModifyMenuW },
-    { "user32.dll", "MonitorFromPoint", (void *)&w32_stub_user32_MonitorFromPoint },
-    { "user32.dll", "MonitorFromRect", (void *)&w32_stub_user32_MonitorFromRect },
-    { "user32.dll", "MonitorFromWindow", (void *)&w32_stub_user32_MonitorFromWindow },
-    { "user32.dll", "MoveWindow", (void *)&w32_stub_user32_MoveWindow },
-    { "user32.dll", "MsgWaitForMultipleObjects", (void *)&w32_stub_user32_MsgWaitForMultipleObjects },
     { "user32.dll", "NotifyWinEvent", (void *)&w32_stub_user32_NotifyWinEvent },
-    { "user32.dll", "OffsetRect", (void *)&w32_stub_user32_OffsetRect },
     { "user32.dll", "OpenClipboard", (void *)&w32_stub_user32_OpenClipboard },
-    { "user32.dll", "PeekMessageW", (void *)&w32_stub_user32_PeekMessageW },
-    { "user32.dll", "PostMessageA", (void *)&w32_stub_user32_PostMessageA },
-    { "user32.dll", "PostMessageW", (void *)&w32_stub_user32_PostMessageW },
-    { "user32.dll", "PtInRect", (void *)&w32_stub_user32_PtInRect },
-    { "user32.dll", "RedrawWindow", (void *)&w32_stub_user32_RedrawWindow },
-    { "user32.dll", "RegisterClassA", (void *)&w32_stub_user32_RegisterClassA },
-    { "user32.dll", "RegisterClassExW", (void *)&w32_stub_user32_RegisterClassExW },
-    { "user32.dll", "RegisterClassW", (void *)&w32_stub_user32_RegisterClassW },
     { "user32.dll", "RegisterClipboardFormatA", (void *)&w32_stub_user32_RegisterClipboardFormatA },
     { "user32.dll", "RegisterClipboardFormatW", (void *)&w32_stub_user32_RegisterClipboardFormatW },
-    { "user32.dll", "RegisterWindowMessageA", (void *)&w32_stub_user32_RegisterWindowMessageA },
-    { "user32.dll", "RegisterWindowMessageW", (void *)&w32_stub_user32_RegisterWindowMessageW },
-    { "user32.dll", "ReleaseCapture", (void *)&w32_stub_user32_ReleaseCapture },
-    { "user32.dll", "ReleaseDC", (void *)&w32_stub_user32_ReleaseDC },
     { "user32.dll", "RemoveMenu", (void *)&w32_stub_user32_RemoveMenu },
-    { "user32.dll", "RemovePropW", (void *)&w32_stub_user32_RemovePropW },
-    { "user32.dll", "ScreenToClient", (void *)&w32_stub_user32_ScreenToClient },
-    { "user32.dll", "ScrollWindow", (void *)&w32_stub_user32_ScrollWindow },
-    { "user32.dll", "SendDlgItemMessageA", (void *)&w32_stub_user32_SendDlgItemMessageA },
-    { "user32.dll", "SendDlgItemMessageW", (void *)&w32_stub_user32_SendDlgItemMessageW },
-    { "user32.dll", "SendMessageA", (void *)&w32_stub_user32_SendMessageA },
-    { "user32.dll", "SendMessageW", (void *)&w32_stub_user32_SendMessageW },
-    { "user32.dll", "SetActiveWindow", (void *)&w32_stub_user32_SetActiveWindow },
-    { "user32.dll", "SetCapture", (void *)&w32_stub_user32_SetCapture },
     { "user32.dll", "SetCaretPos", (void *)&w32_stub_user32_SetCaretPos },
     { "user32.dll", "SetClassLongPtrA", (void *)&w32_stub_user32_SetClassLongPtrA },
     { "user32.dll", "SetClipboardData", (void *)&w32_stub_user32_SetClipboardData },
@@ -6624,43 +3851,17 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "SetDlgItemInt", (void *)&w32_stub_user32_SetDlgItemInt },
     { "user32.dll", "SetDlgItemTextA", (void *)&w32_stub_user32_SetDlgItemTextA },
     { "user32.dll", "SetDlgItemTextW", (void *)&w32_stub_user32_SetDlgItemTextW },
-    { "user32.dll", "SetFocus", (void *)&w32_stub_user32_SetFocus },
-    { "user32.dll", "SetForegroundWindow", (void *)&w32_stub_user32_SetForegroundWindow },
-    { "user32.dll", "SetKeyboardState", (void *)&w32_stub_user32_SetKeyboardState },
-    { "user32.dll", "SetLayeredWindowAttributes", (void *)&w32_stub_user32_SetLayeredWindowAttributes },
     { "user32.dll", "SetMenu", (void *)&w32_stub_user32_SetMenu },
     { "user32.dll", "SetMenuItemBitmaps", (void *)&w32_stub_user32_SetMenuItemBitmaps },
     { "user32.dll", "SetMenuItemInfoW", (void *)&w32_stub_user32_SetMenuItemInfoW },
-    { "user32.dll", "SetParent", (void *)&w32_stub_user32_SetParent },
-    { "user32.dll", "SetPropW", (void *)&w32_stub_user32_SetPropW },
-    { "user32.dll", "SetRectEmpty", (void *)&w32_stub_user32_SetRectEmpty },
-    { "user32.dll", "SetScrollInfo", (void *)&w32_stub_user32_SetScrollInfo },
-    { "user32.dll", "SetScrollPos", (void *)&w32_stub_user32_SetScrollPos },
-    { "user32.dll", "SetScrollRange", (void *)&w32_stub_user32_SetScrollRange },
     { "user32.dll", "SetTimer", (void *)&w32_stub_user32_SetTimer },
-    { "user32.dll", "SetWindowLongPtrA", (void *)&w32_stub_user32_SetWindowLongPtrA },
-    { "user32.dll", "SetWindowLongPtrW", (void *)&w32_stub_user32_SetWindowLongPtrW },
-    { "user32.dll", "SetWindowPlacement", (void *)&w32_stub_user32_SetWindowPlacement },
-    { "user32.dll", "SetWindowPos", (void *)&w32_stub_user32_SetWindowPos },
-    { "user32.dll", "SetWindowTextA", (void *)&w32_stub_user32_SetWindowTextA },
-    { "user32.dll", "SetWindowTextW", (void *)&w32_stub_user32_SetWindowTextW },
     { "user32.dll", "SetWindowsHookExW", (void *)&w32_stub_user32_SetWindowsHookExW },
     { "user32.dll", "ShowCaret", (void *)&w32_stub_user32_ShowCaret },
     { "user32.dll", "ShowCursor", (void *)&w32_stub_user32_ShowCursor },
-    { "user32.dll", "ShowScrollBar", (void *)&w32_stub_user32_ShowScrollBar },
-    { "user32.dll", "SystemParametersInfoA", (void *)&w32_stub_user32_SystemParametersInfoA },
-    { "user32.dll", "SystemParametersInfoW", (void *)&w32_stub_user32_SystemParametersInfoW },
-    { "user32.dll", "ToAscii", (void *)&w32_stub_user32_ToAscii },
-    { "user32.dll", "ToAsciiEx", (void *)&w32_stub_user32_ToAsciiEx },
-    { "user32.dll", "TrackMouseEvent", (void *)&w32_stub_user32_TrackMouseEvent },
     { "user32.dll", "TrackPopupMenu", (void *)&w32_stub_user32_TrackPopupMenu },
     { "user32.dll", "TrackPopupMenuEx", (void *)&w32_stub_user32_TrackPopupMenuEx },
     { "user32.dll", "TranslateAcceleratorW", (void *)&w32_stub_user32_TranslateAcceleratorW },
     { "user32.dll", "UnhookWindowsHookEx", (void *)&w32_stub_user32_UnhookWindowsHookEx },
-    { "user32.dll", "UnregisterClassW", (void *)&w32_stub_user32_UnregisterClassW },
-    { "user32.dll", "ValidateRect", (void *)&w32_stub_user32_ValidateRect },
-    { "user32.dll", "WindowFromPoint", (void *)&w32_stub_user32_WindowFromPoint },
-    { "user32.dll", "mouse_event", (void *)&w32_stub_user32_mouse_event },
     { "user32.dll", "wsprintfW", (void *)&w32_stub_user32_wsprintfW },
     { "uxtheme.dll", "BeginBufferedAnimation", (void *)&w32_stub_uxtheme_BeginBufferedAnimation },
     { "uxtheme.dll", "BufferedPaintRenderAnimation", (void *)&w32_stub_uxtheme_BufferedPaintRenderAnimation },

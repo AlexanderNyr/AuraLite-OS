@@ -139,6 +139,29 @@ int  ag_window_get_pos(int wid, int32_t *x, int32_t *y);
 int  ag_window_snap(int wid, int snap_type);
 void ag_render_now(void);
 void ag_set_cursor(int cursor);
+
+/* ---- W32APP_PLAN.md W32A-5: the compositor surface USER32 stands on ----
+ *
+ * Z-order, topmost, capture, metrics and the pointer are the compositor's
+ * own state; USER32 asks rather than keeping a second copy that would drift
+ * the moment the user drags a title bar.  All of these are owner-checked in
+ * the kernel (see kernel/gui/gui_syscalls.c) except the two global reads. */
+int      ag_window_focus(int wid);           /* raise + focus (Win32's raise) */
+int      ag_window_minimize(int wid);
+int      ag_window_maximize(int wid);
+int      ag_window_restore(int wid);
+int      ag_window_lower(int wid);
+int      ag_window_set_flags(int wid, uint32_t flags);
+uint32_t ag_window_get_flags(int wid);        /* -1 (as uint32 -1) if gone */
+int      ag_window_get_z(int wid);
+int      ag_window_invalidate_rect(int wid, int32_t x, int32_t y,
+                                   uint32_t w, uint32_t h);
+int      ag_window_capture(int wid);          /* wid<0 releases; prev owner */
+int      ag_window_get_capture(void);         /* -1 = nobody, or not ours */
+int      ag_window_focused(void);             /* -1 = none of ours */
+int      ag_window_top(void);                 /* -1 = none of ours */
+int      ag_screen_size(uint32_t *w, uint32_t *h);
+int      ag_mouse_position(int32_t *x, int32_t *y);
 int  ag_set_clipboard(const char *text);
 int  ag_get_clipboard(char *buf, uint32_t size);
 

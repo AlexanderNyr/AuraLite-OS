@@ -1076,7 +1076,8 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_stubs_gen.o \
                 $(USER_BUILD)/w32_kernel32_fs.o $(USER_BUILD)/w32_kernel32_ps.o \
                 $(USER_BUILD)/w32_kernel32_loc.o $(USER_BUILD)/w32_msg.o \
-                $(USER_BUILD)/w32_utf.o $(USER_BUILD)/w32_kernel32_thr.o
+                $(USER_BUILD)/w32_utf.o $(USER_BUILD)/w32_kernel32_thr.o \
+                $(USER_BUILD)/w32_user32_win.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1090,6 +1091,12 @@ $(USER_BUILD)/w32_peu.o: w32/src/w32_pe.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 # W32-5: USER32/GDI32 need the libauragui headers as well.
 $(USER_BUILD)/w32_user32.o: w32/src/user32.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-5: the W-first window/message core.  user32.c keeps the
+# DC half and calls into it; both translation units must be listed in
+# W32_USER_OBJ above (the host suite amalgamates the .c files directly, so it
+# cannot catch a missing object -- CI #385's lesson).
+$(USER_BUILD)/w32_user32_win.o: w32/src/user32_win.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -2352,6 +2359,19 @@ $(W32A3L_EXE): w32/tests/w32a3_tls.asm $(K32_IMPLIB)
 # adds no imports), and the dialog fixture additionally takes user32.lib.
 W32A4_NAMES := try unwind raise continue cxthrow filter crash term purecall dialog
 W32A4_EXES := $(addprefix $(BUILD_DIR)/user/w32a4_,$(addsuffix .exe,$(W32A4_NAMES)))
+
+# W32APP_PLAN.md phase W32A-5: the USER32 window/message guest fixture.  It is
+# the only guest binary that links user32.lib without GDI, and the only one
+# whose WNDPROC runs on a second thread (the cross-thread SendMessage claim).
+W32A5_EXE := $(BUILD_DIR)/user/w32a5_win.exe
+
+$(W32A5_EXE): w32/tests/w32a5_win.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a5_win.obj
+	lld-link -subsystem:console -entry:start -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a5_win.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(G32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-5 USER32 window/message fixture)"
 MCRT_IMPLIB := $(BUILD_DIR)/user/msvcrt.lib
 
 $(MCRT_IMPLIB): w32/tests/msvcrt.def
@@ -2898,7 +2918,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -3072,6 +3092,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
 	@cp $(W32A3T_EXE) $(INITRD_DIR)/tests/w32a3_threads.exe
 	@cp $(W32A3L_EXE) $(INITRD_DIR)/tests/w32a3_tls.exe
+	@cp $(W32A5_EXE) $(INITRD_DIR)/tests/w32a5_win.exe
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3362,6 +3383,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a1 \
                 $(BUILD_DIR)/test_w32_a3 \
                 $(BUILD_DIR)/test_w32_a4 \
+                $(BUILD_DIR)/test_w32_a5 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3471,6 +3493,19 @@ $(BUILD_DIR)/test_w32_a4: tests/unit/test_w32_a4.c \
 	          -fsanitize=address,undefined $(W32_INC) -I . \
 	          tests/unit/test_w32_a4.c -o $@
 
+# W32A-5: the USER32 window/message core.  The suite #includes the two
+# implementation files (user32_win.c and the DC half) and supplies its own
+# compositor, like the W32A-3 gate does for the kernel32 primitives.  Real
+# pthreads: the cross-thread SendMessage path is the phase's claim, so it is
+# exercised against a production scheduler.  Sanitizers match W32A-3/W32A-4.
+$(BUILD_DIR)/test_w32_a5: tests/unit/test_w32_a5.c \
+                          w32/src/user32_win.c w32/src/user32.c \
+                          w32/src/w32_utf.c w32/src/w32_errno.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_a5.c -lpthread -o $@
+
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.
 .PHONY: w32-peinfo
@@ -3495,7 +3530,15 @@ $(BUILD_DIR)/w32_unwinddump: w32/tools/unwinddump.c w32/src/w32_seh.c \
 	    w32/tools/unwinddump.c w32/src/w32_seh.c w32/src/w32_pe.c -o $@
 
 test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W32A1_FIXTURES)
-# W32A-1: the harness asserts over the built fixtures, so they are	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+# W32A-1: the harness asserts over the built fixtures, so they are
+# built first (the $(W32A1_FIXTURES) dependency above).
+#
+# W32A-5 repair: this loop used to be glued to the end of a comment
+# line ("...so they are<TAB>@for t in ..."), so make read the whole
+# recipe as a comment and the entire C unit-test corpus was built and
+# never run -- every make test-unit in that window was green while
+# asserting nothing.  Recipe on its own line, one tab, as make wants.
+	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
 # W32A-1: the committed bindreport agrees textually with a fresh one.
 	@echo "[unit] running $(BUILD_DIR)/test_w32_a1 --emit-report"
 	@$(BUILD_DIR)/test_w32_a1 --emit-report $(BUILD_DIR)/user > \
