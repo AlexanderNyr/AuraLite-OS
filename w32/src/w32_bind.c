@@ -5,9 +5,11 @@
 #include "w32/w32_pe.h"
 #include "w32/kernel32.h"
 #include "w32/user32.h"
+#include "w32/w32_rsrc.h"
 #include "w32/oleaut32.h"
 #include "w32/w32_seh.h"
 #include "w32/w32_gen.h"
+#include "w32/w32_utf.h"
 
 #ifndef AURALITE_W32_HOST_TEST
 #include <stdio.h>
@@ -546,6 +548,142 @@ static const w32_export_t exports[] = {
      * from msvcrt, not kernel32): same functions, second spelling. */
     { MCRT, "_XcptFilter",               (void *)_XcptFilter               },
     { MCRT, "__C_specific_handler",      (void *)__C_specific_handler      },
+
+    /* W32A-6: USER32 breadth II — dialogs, menus, timers, carets,
+     * accelerators, clipboard, hooks, DrawText family, and the resource
+     * APIs.  Functions are defined in w32/src/w32_dlg.c (dialogs/menus/
+     * timers/caret/accel/clipboard/hooks/draw) and w32/src/w32_rsrc.c
+     * (FindResource/LoadString/LoadIcon/etc.). */
+    /* Resources (mostly USER32, plus a few KERNEL32 spellings kept here
+     * because every binary imports them from whichever DLL it guessed). */
+    { K32, "FindResourceW",             (void *)FindResourceW             },
+    { K32, "FindResourceA",             (void *)FindResourceA             },
+    { K32, "FindResourceExW",           (void *)FindResourceExW           },
+    { K32, "FindResourceExA",           (void *)FindResourceExA           },
+    { K32, "LoadResource",              (void *)LoadResource              },
+    { K32, "LockResource",              (void *)LockResource              },
+    { K32, "SizeofResource",            (void *)SizeofResource            },
+    { K32, "FreeResource",              (void *)FreeResource              },
+    { K32, "LoadStringW",               (void *)LoadStringW               },
+    { K32, "LoadStringA",               (void *)LoadStringA               },
+    { K32, "EnumResourceNamesW",        (void *)EnumResourceNamesW        },
+    { K32, "EnumResourceNamesA",        (void *)EnumResourceNamesA        },
+    { U32, "FindResourceW",             (void *)FindResourceW             },
+    { U32, "FindResourceA",             (void *)FindResourceA             },
+    { U32, "FindResourceExW",           (void *)FindResourceExW           },
+    { U32, "FindResourceExA",           (void *)FindResourceExA           },
+    { U32, "LoadResource",              (void *)LoadResource              },
+    { U32, "LockResource",              (void *)LockResource              },
+    { U32, "SizeofResource",            (void *)SizeofResource            },
+    { U32, "FreeResource",              (void *)FreeResource              },
+    { U32, "LoadStringW",               (void *)LoadStringW               },
+    { U32, "LoadStringA",               (void *)LoadStringA               },
+    { U32, "LoadIconW",                 (void *)LoadIconW                 },
+    { U32, "LoadIconA",                 (void *)LoadIconA                 },
+    { U32, "LoadCursorW",               (void *)LoadCursorW               },
+    { U32, "LoadCursorA",               (void *)LoadCursorA               },
+    { U32, "LoadImageW",                (void *)LoadImageW                },
+    { U32, "LoadImageA",                (void *)LoadImageA                },
+    { U32, "DestroyIcon",               (void *)DestroyIcon               },
+    { U32, "DestroyCursor",             (void *)DestroyCursor             },
+    { U32, "EnumResourceNamesW",        (void *)EnumResourceNamesW        },
+    { U32, "EnumResourceNamesA",        (void *)EnumResourceNamesA        },
+    /* Dialogs */
+    { U32, "DialogBoxParamW",           (void *)DialogBoxParamW           },
+    { U32, "DialogBoxParamA",           (void *)DialogBoxParamA           },
+    { U32, "DialogBoxIndirectParamW",   (void *)DialogBoxIndirectParamW   },
+    { U32, "DialogBoxIndirectParamA",   (void *)DialogBoxIndirectParamA   },
+    { U32, "DialogBoxW",                (void *)DialogBoxW                },
+    { U32, "DialogBoxA",                (void *)DialogBoxA                },
+    { U32, "EndDialog",                 (void *)EndDialog                 },
+    { U32, "IsDialogMessageW",          (void *)IsDialogMessageW          },
+    { U32, "IsDialogMessageA",          (void *)IsDialogMessageA          },
+    { U32, "MapDialogRect",             (void *)MapDialogRect             },
+    { U32, "GetDialogBaseUnits",        (void *)GetDialogBaseUnits        },
+    { U32, "GetDlgItem",                (void *)GetDlgItem                },
+    { U32, "GetDlgItemInt",             (void *)GetDlgItemInt             },
+    { U32, "GetDlgItemTextW",           (void *)GetDlgItemTextW           },
+    { U32, "GetDlgItemTextA",           (void *)GetDlgItemTextA           },
+    { U32, "SetDlgItemInt",             (void *)SetDlgItemInt             },
+    { U32, "SetDlgItemTextW",           (void *)SetDlgItemTextW           },
+    { U32, "SetDlgItemTextA",           (void *)SetDlgItemTextA           },
+    { U32, "IsDlgButtonChecked",        (void *)IsDlgButtonChecked        },
+    { U32, "CheckDlgButton",            (void *)CheckDlgButton            },
+    { U32, "CheckRadioButton",          (void *)CheckRadioButton          },
+    /* Menus */
+    { U32, "CreateMenu",                (void *)CreateMenu                },
+    { U32, "CreatePopupMenu",           (void *)CreatePopupMenu           },
+    { U32, "DestroyMenu",               (void *)DestroyMenu               },
+    { U32, "AppendMenuW",               (void *)AppendMenuW               },
+    { U32, "AppendMenuA",               (void *)AppendMenuA               },
+    { U32, "InsertMenuW",               (void *)InsertMenuW               },
+    { U32, "InsertMenuA",               (void *)InsertMenuA               },
+    { U32, "TrackPopupMenu",            (void *)TrackPopupMenu            },
+    { U32, "TrackPopupMenuEx",          (void *)TrackPopupMenuEx          },
+    { U32, "GetMenu",                   (void *)GetMenu                   },
+    { U32, "GetSubMenu",                (void *)GetSubMenu                },
+    { U32, "GetSystemMenu",             (void *)GetSystemMenu             },
+    { U32, "SetMenu",                   (void *)SetMenu                   },
+    { U32, "CheckMenuItem",             (void *)CheckMenuItem             },
+    { U32, "LoadMenuW",                 (void *)LoadMenuW                 },
+    { U32, "LoadMenuA",                 (void *)LoadMenuA                 },
+    { U32, "GetMenuItemCount",          (void *)GetMenuItemCount          },
+    { U32, "GetMenuItemID",             (void *)GetMenuItemID             },
+    { U32, "DrawMenuBar",               (void *)DrawMenuBar               },
+    { U32, "RemoveMenu",                (void *)RemoveMenu                },
+    { U32, "DeleteMenu",                (void *)DeleteMenu                },
+    { U32, "EnableMenuItem",            (void *)EnableMenuItem            },
+    { U32, "GetMenuBarInfo",            (void *)GetMenuBarInfo            },
+    /* Timers */
+    { U32, "SetTimer",                  (void *)SetTimer                  },
+    { U32, "KillTimer",                 (void *)KillTimer                 },
+    /* Caret */
+    { U32, "CreateCaret",               (void *)CreateCaret               },
+    { U32, "DestroyCaret",              (void *)DestroyCaret              },
+    { U32, "SetCaretPos",               (void *)SetCaretPos               },
+    { U32, "GetCaretPos",               (void *)GetCaretPos               },
+    { U32, "ShowCaret",                 (void *)ShowCaret                 },
+    { U32, "HideCaret",                 (void *)HideCaret                 },
+    /* Accelerators */
+    { U32, "LoadAcceleratorsW",         (void *)LoadAcceleratorsW         },
+    { U32, "LoadAcceleratorsA",         (void *)LoadAcceleratorsA         },
+    { U32, "TranslateAcceleratorW",     (void *)TranslateAcceleratorW     },
+    { U32, "TranslateAcceleratorA",     (void *)TranslateAcceleratorA     },
+    { U32, "DestroyAcceleratorTable",   (void *)DestroyAcceleratorTable   },
+    { U32, "CreateAcceleratorTableW",   (void *)CreateAcceleratorTableW   },
+    { U32, "CopyAcceleratorTableW",     (void *)CopyAcceleratorTableW     },
+    /* Clipboard */
+    { U32, "OpenClipboard",             (void *)OpenClipboard             },
+    { U32, "CloseClipboard",            (void *)CloseClipboard            },
+    { U32, "EmptyClipboard",            (void *)EmptyClipboard            },
+    { U32, "SetClipboardData",          (void *)SetClipboardData          },
+    { U32, "GetClipboardData",          (void *)GetClipboardData          },
+    { U32, "IsClipboardFormatAvailable",(void *)IsClipboardFormatAvailable},
+    { U32, "RegisterClipboardFormatW",  (void *)RegisterClipboardFormatW  },
+    { U32, "RegisterClipboardFormatA",  (void *)RegisterClipboardFormatA  },
+    { U32, "CountClipboardFormats",     (void *)CountClipboardFormats     },
+    { U32, "EnumClipboardFormats",      (void *)EnumClipboardFormats      },
+    { U32, "GetClipboardOwner",         (void *)GetClipboardOwner         },
+    { U32, "GetOpenClipboardWindow",    (void *)GetOpenClipboardWindow    },
+    { U32, "SetClipboardViewer",        (void *)SetClipboardViewer        },
+    { U32, "ChangeClipboardChain",      (void *)ChangeClipboardChain      },
+    { U32, "GetClipboardViewer",        (void *)GetClipboardViewer        },
+    /* Hooks */
+    { U32, "SetWindowsHookExW",         (void *)SetWindowsHookExW         },
+    { U32, "SetWindowsHookExA",         (void *)SetWindowsHookExA         },
+    { U32, "UnhookWindowsHookEx",       (void *)UnhookWindowsHookEx       },
+    { U32, "CallNextHookEx",            (void *)CallNextHookEx            },
+    /* DrawText + focus/edge/frame/icon/notify */
+    { U32, "DrawTextW",                 (void *)DrawTextW                 },
+    { U32, "DrawTextA",                 (void *)DrawTextA                 },
+    { U32, "DrawTextExW",               (void *)DrawTextExW               },
+    { U32, "DrawFocusRect",             (void *)DrawFocusRect             },
+    { U32, "DrawEdge",                  (void *)DrawEdge                  },
+    { U32, "DrawFrameControl",          (void *)DrawFrameControl          },
+    { U32, "DrawIconEx",                (void *)DrawIconEx                },
+    { U32, "DrawIcon",                  (void *)DrawIcon                  },
+    { U32, "NotifyWinEvent",            (void *)NotifyWinEvent            },
+
     { 0, 0, 0 }
 };
 

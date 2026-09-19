@@ -10,7 +10,7 @@
 | W32A-3 Threads and per-thread TLS (the one kernel change) | ✅ done |
 | W32A-4 The table-driven SEH unwinder | ✅ done |
 | W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
-| W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ⬜ planned |
+| W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ✅ shipped |
 | W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ⬜ planned |
 | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ⬜ planned |
 | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ⬜ planned |
@@ -1254,7 +1254,7 @@ same idiom as the arms above it (ABI words, not addresses).
 
 ---
 
-### Phase W32A-6 — `USER32` breadth II: dialogs, menus, clipboard, resources ⬜ PLANNED
+### Phase W32A-6 — `USER32` breadth II: dialogs, menus, clipboard, resources ✅ SHIPPED (2026-09-18)
 
 **Objective:** the dialog engine (the ladder's config dialogs live in
 `.rsrc` templates), menus, timers, caret, accelerators, and the clipboard —

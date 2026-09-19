@@ -828,3 +828,30 @@ int w32_module_count(void) {
     for (int i = 0; i < W32_MODULE_MAX; i++) if (modules[i].used) n++;
     return n;
 }
+
+/* W32A-6: return the raw file bytes and mapped base for a module so the
+ * resource layer can reparse the PE and resolve RVAs into pointers.
+ * NULL module (GetModuleHandle(0)) returns the main EXE, registered in
+ * slot 0 by w32_module_register_exe().  Built-in modules have no file
+ * bytes and refuse (return 0). */
+int w32_module_file_bytes(void *hModule, const uint8_t **data_out, size_t *size_out) {
+    /* Resolve NULL → exe handle. */
+    if (!hModule) hModule = w32_GetModuleHandleA(0);
+    w32_module_t *m = handle_to_slot(hModule);
+    if (!m || !m->used) return 0;
+    /* File modules have file/file_size set after load. */
+    if (m->file && m->file_size) {
+        if (data_out) *data_out = m->file;
+        if (size_out) *size_out = m->file_size;
+        return 1;
+    }
+    /* Builtin with base != NULL: the main EXE registered by
+     * w32_module_register_exe() sets base/span but keeps file=NULL.
+     * The EXE is mapped in-place, so base points at the PE header. */
+    if (m->base && m->span) {
+        if (data_out) *data_out = m->base;
+        if (size_out) *size_out = m->span;
+        return 1;
+    }
+    return 0;
+}

@@ -141,7 +141,7 @@ way `make sdk-check` does for the native SDK.
 - `lstrcpyW` · `lstrcpynA` · `lstrcpynW`
 - `lstrlenW`
 
-**USER32.dll** (159)
+**USER32.dll** (257)
 
 - `AdjustWindowRectEx` · `BeginPaint` · `BringWindowToTop`
 - `CallWindowProcW` · `CharLowerW` · `CharUpperW`
@@ -196,6 +196,11 @@ way `make sdk-check` does for the native SDK.
 - `ToAscii` · `ToAsciiEx` · `TrackMouseEvent`
 - `TranslateMessage` · `UnregisterClassW` · `UpdateWindow`
 - `ValidateRect` · `WindowFromPoint` · `mouse_event`
+- Dialog family: `DialogBoxParamW/A`, `DialogBoxW/A`, `DialogBoxIndirectParamW/A`, `EndDialog`, `IsDialogMessageW/A`, `MapDialogRect`, `GetDialogBaseUnits`, `GetDlgItem`, `GetDlgItemInt`, `GetDlgItemTextW/A`, `SetDlgItemInt`, `SetDlgItemTextW/A`, `CheckDlgButton`, `CheckRadioButton`, `IsDlgButtonChecked`
+- Resources: `FindResourceW/A`, `FindResourceExW/A`, `LoadResource`, `LockResource`, `SizeofResource`, `FreeResource`, `LoadStringW/A`, `LoadIconW/A`, `LoadCursorW/A`, `LoadImageW/A`, `DestroyIcon`, `DestroyCursor`, `EnumResourceNamesW/A`
+- Menus: `CreateMenu`, `CreatePopupMenu`, `DestroyMenu`, `AppendMenuW/A`, `InsertMenuW/A`, `CheckMenuItem`, `GetMenu`, `SetMenu`, `GetSubMenu`, `GetSystemMenu`, `RemoveMenu`, `DeleteMenu`, `TrackPopupMenu(Ex)`, `GetMenuItemCount`, `GetMenuItemID`, `EnableMenuItem`, `GetMenuBarInfo`, `DrawMenuBar`, `LoadMenuW/A`
+- Timers, caret, accelerators, clipboard, hooks: `SetTimer`, `KillTimer`, `CreateCaret`, `DestroyCaret`, `SetCaretPos`, `GetCaretPos`, `ShowCaret`, `HideCaret`, `CreateAcceleratorTableW`, `CopyAcceleratorTableW`, `DestroyAcceleratorTable`, `LoadAcceleratorsW/A`, `TranslateAcceleratorW/A`, `OpenClipboard`, `CloseClipboard`, `EmptyClipboard`, `SetClipboardData`, `GetClipboardData`, `IsClipboardFormatAvailable`, `SetClipboardViewer`, `ChangeClipboardChain`, `GetClipboardOwner`, `GetOpenClipboardWindow`, `GetClipboardViewer`, `CountClipboardFormats`, `EnumClipboardFormats`, `RegisterClipboardFormatW/A`, `SetWindowsHookExW/A`, `UnhookWindowsHookEx`, `CallNextHookEx`
+- Drawing helpers: `DrawTextW/A/ExW`, `DrawFocusRect`, `DrawEdge`, `DrawFrameControl`, `DrawIcon(Ex)`, `NotifyWinEvent`
 
 **msvcrt.dll** (5)
 

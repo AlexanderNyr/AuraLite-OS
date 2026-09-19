@@ -565,8 +565,14 @@ int pe_delay_imports(const pe_image_t *img, pe_delay_import_t *out, size_t max,
 }
 
 /* Read one resource-directory table and resolve a single level of the walk:
- * find the entry for `want` (an integer id; string entries are skipped) and
- * return the offset of the table or data it points at, plus which kind. */
+ * find the entry for `want` (an integer id; string entries are matched when
+ * want == WANT_STRING and the entry is a string name -- caller then walks
+ * into the string via rsrc_read_name) and return the offset of the table or
+ * data it points at, plus which kind.
+ *
+ * want_id == 0 with first_ok=1 returns the first entry (original behaviour,
+ * used by pe_find_resource and by callers taking first-name/first-lang). */
+#define PE_RSRC_WANT_STRING 0xFFFFFFFFu
 static int rsrc_level(const pe_image_t *img, uint32_t base, uint32_t tab_rva,
                       uint32_t want, int first_ok,
                       uint32_t *out_rva, int *out_is_dir) {
@@ -575,7 +581,9 @@ static int rsrc_level(const pe_image_t *img, uint32_t base, uint32_t tab_rva,
     if (rc != PE_OK) return rc;
 
     const uint8_t *t = img->data + off;
-    uint32_t n = (uint32_t)rd16(t + 12) + (uint32_t)rd16(t + 14);
+    uint32_t nnames = (uint32_t)rd16(t + 12);
+    uint32_t nids   = (uint32_t)rd16(t + 14);
+    uint32_t n = nnames + nids;
     if (n > PE_MAX_RESOURCE_ENTRIES) return PE_ERR_MALFORMED;
 
     for (uint32_t i = 0; i < n; i++) {
@@ -587,11 +595,17 @@ static int rsrc_level(const pe_image_t *img, uint32_t base, uint32_t tab_rva,
 
         uint32_t id  = rd32(img->data + eoff);
         uint32_t ptr = rd32(img->data + eoff + 4);
-        if (id & 0x80000000u) continue;    /* string entry: not our id */
-        if (!first_ok && id != want) continue;
+        int is_str = (id & 0x80000000u) ? 1 : 0;
+        uint32_t id_clean = id & 0x7FFFFFFFu;
+        if (first_ok) {
+            /* take the first entry */
+        } else if (want == PE_RSRC_WANT_STRING) {
+            if (!is_str) continue;
+        } else {
+            if (is_str) continue;
+            if (id_clean != want) continue;
+        }
 
-        /* The offset is relative to the resource section base, and must
-         * stay inside the resource directory's own span. */
         uint32_t target = ptr & 0x7FFFFFFFu;
         if ((uint64_t)base + target > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
         *out_rva = base + target;
@@ -601,44 +615,39 @@ static int rsrc_level(const pe_image_t *img, uint32_t base, uint32_t tab_rva,
     return 1;   /* level walked, nothing matched */
 }
 
-int pe_find_resource(const pe_image_t *img, uint32_t type_id,
-                     uint32_t *rva_out, uint32_t *len_out) {
+/* Internal helper that matches a specific name_id/lang_id. */
+int pe_find_resource_ex(const pe_image_t *img, uint32_t type_id,
+                               uint32_t name_id, uint16_t lang_id,
+                               uint32_t *rva_out, uint32_t *len_out) {
     if (!img || !rva_out || !len_out) return PE_ERR_ARG;
-    *rva_out = 0;
-    *len_out = 0;
-
+    *rva_out = 0; *len_out = 0;
     if (img->num_directories <= PE_DIR_RESOURCE) return PE_OK;
     pe_dir_t d = img->dir[PE_DIR_RESOURCE];
     if (d.rva == 0 || d.size == 0) return PE_OK;
-
-    uint32_t base = d.rva;
-    uint32_t next = 0;
-    int is_dir = 0;
-
-    /* Type level: match the id. */
-    int rc = rsrc_level(img, base, base, type_id, 0, &next, &is_dir);
-    if (rc == 1) return PE_OK;             /* type absent: legal */
+    uint32_t base = d.rva, next = 0; int is_dir = 0, rc;
+    rc = rsrc_level(img, base, base, type_id, 0, &next, &is_dir);
+    if (rc == 1) return PE_OK;
     if (rc != PE_OK) return rc;
-    if (!is_dir) return PE_ERR_MALFORMED;  /* a type must be a table */
-
-    /* Name level: first entry wins. */
-    rc = rsrc_level(img, base, next, 0, 1, &next, &is_dir);
-    if (rc == 1) return PE_OK;             /* empty type: nothing in it */
+    if (!is_dir) return PE_ERR_MALFORMED;
+    rc = rsrc_level(img, base, next, name_id, name_id ? 0 : 1, &next, &is_dir);
+    if (rc == 1) return PE_OK;
     if (rc != PE_OK) return rc;
-    if (!is_dir) return PE_ERR_MALFORMED;  /* a name must be a table */
-
-    /* Language level: first entry wins; it must be data, not a table. */
-    rc = rsrc_level(img, base, next, 0, 1, &next, &is_dir);
+    if (!is_dir) return PE_ERR_MALFORMED;
+    rc = rsrc_level(img, base, next, (uint32_t)lang_id, lang_id ? 0 : 1, &next, &is_dir);
     if (rc == 1) return PE_OK;
     if (rc != PE_OK) return rc;
     if (is_dir) return PE_ERR_MALFORMED;
-
     uint32_t doff;
     rc = pe_rva_to_offset(img, next, 16, &doff);
     if (rc != PE_OK) return rc;
     *rva_out = rd32(img->data + doff);
     *len_out = rd32(img->data + doff + 4);
     return PE_OK;
+}
+
+int pe_find_resource(const pe_image_t *img, uint32_t type_id,
+                     uint32_t *rva_out, uint32_t *len_out) {
+    return pe_find_resource_ex(img, type_id, 0, 0, rva_out, len_out);
 }
 
 int pe_check_loadable(const pe_image_t *img) {

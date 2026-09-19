@@ -222,6 +222,13 @@ int pe_delay_imports(const pe_image_t *img, pe_delay_import_t *out, size_t max,
 int pe_find_resource(const pe_image_t *img, uint32_t type_id,
                      uint32_t *rva_out, uint32_t *len_out);
 
+/* W32A-6: arbitrary (type, name, lang) lookup.  name_id / lang_id of 0 mean
+ * "take the first entry at that level", which is the Win32 convention for
+ * resources addressed by MAKEINTRESOURCE with no language override. */
+int pe_find_resource_ex(const pe_image_t *img, uint32_t type_id,
+                        uint32_t name_id, uint16_t lang_id,
+                        uint32_t *rva_out, uint32_t *len_out);
+
 /* Is this image loadable as a w32 process?  Separated from pe_parse() so the
  * kernel can apply policy without re-parsing, and so the EFI refusal has one
  * home.  Returns PE_OK or a PE_ERR_* explaining the refusal. */

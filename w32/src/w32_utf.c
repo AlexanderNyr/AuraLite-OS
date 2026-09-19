@@ -139,3 +139,29 @@ int w32_utf8_to_utf16(const char *src, size_t srclen,
     if (out > dstcap) return W32_UTF_ERR_SPACE;
     return W32_UTF_OK;
 }
+
+/* Null-terminated conveniences used by resource and dialog code. */
+int w32_utf16z_to_utf8(const uint16_t *s, char *out, int outcap) {
+    size_t n = 0;
+    if (s) while (s[n]) n++;
+    if (outcap <= 0) return (int)n;
+    size_t need = 0;
+    w32_utf16_to_utf8(s, n, 0, 0, &need);
+    if ((int)need > outcap - 1) need = (size_t)(outcap - 1);
+    size_t got = 0;
+    w32_utf16_to_utf8(s, n, out, need, &got);
+    out[got] = 0;
+    return (int)got;
+}
+int w32_utf8z_to_utf16(const char *s, uint16_t *out, int outcap) {
+    size_t n = 0;
+    if (s) while (s[n]) n++;
+    if (outcap <= 0) return (int)n;
+    size_t need = 0;
+    w32_utf8_to_utf16(s, n, 0, 0, &need);
+    if ((int)need > outcap - 1) need = (size_t)(outcap - 1);
+    size_t got = 0;
+    w32_utf8_to_utf16(s, n, out, need, &got);
+    out[got] = 0;
+    return (int)got;
+}

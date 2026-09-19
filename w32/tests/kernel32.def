@@ -86,3 +86,20 @@ EXPORTS
     WaitForMultipleObjects
     WaitForSingleObject
     WakeAllConditionVariable
+; -- W32A-6: resource-walk and module-handle spellings.  Bound under K32
+; (w32_bind.c) because binaries import these from whichever DLL they
+; guessed; the canonical home is USER32. --
+    EnumResourceNamesA
+    EnumResourceNamesW
+    FindResourceA
+    FindResourceExA
+    FindResourceExW
+    FindResourceW
+    FreeResource
+    GetModuleHandleW
+    GetTickCount
+    LoadResource
+    LoadStringA
+    LoadStringW
+    LockResource
+    SizeofResource

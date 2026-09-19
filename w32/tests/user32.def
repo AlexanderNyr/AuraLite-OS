@@ -1,7 +1,9 @@
 ; user32.def — export list for the USER32 import library.
 ; WIN32_PLAN.md W32-5 created this file; W32APP_PLAN.md phase W32A-5 extended
-; it with the window/message core (the W32A-5 guest fixture imports these,
-; and every name here is a row in w32/src/w32_bind.c's static table).
+; it with the window/message core, and W32A-6 adds dialogs, menus,
+; clipboard, timers, accelerators, hooks, resources and the Draw* family
+; (the W32A-6 guest fixture imports these, and every name here is a row in
+; w32/src/w32_bind.c's static table).
 ; Names only; no Microsoft file is used and no DLL is shipped.
 LIBRARY USER32.dll
 EXPORTS
@@ -64,3 +66,121 @@ EXPORTS
     TranslateMessage
     UpdateWindow
     ValidateRect
+; -- W32A-6: dialogs / menus / clipboard / resources / timers / caret / hooks --
+    AppendMenuW
+    CallNextHookEx
+    ChangeClipboardChain
+    CheckDlgButton
+    CheckMenuItem
+    CheckRadioButton
+    CloseClipboard
+    CopyAcceleratorTableW
+    CreateAcceleratorTableW
+    CreateCaret
+    CreateMenu
+    CreatePopupMenu
+    DestroyAcceleratorTable
+    DestroyCaret
+    DestroyCursor
+    DestroyIcon
+    DestroyMenu
+    DialogBoxIndirectParamW
+    DialogBoxParamW
+    DialogBoxW
+    DrawEdge
+    DrawFocusRect
+    DrawFrameControl
+    DrawIcon
+    DrawIconEx
+    DrawMenuBar
+    DrawTextW
+    EmptyClipboard
+    EndDialog
+    FindResourceW
+    GetCaretPos
+    GetClipboardData
+    GetClipboardOwner
+    GetClipboardViewer
+    GetDialogBaseUnits
+    GetDlgItem
+    GetDlgItemInt
+    GetDlgItemTextW
+    GetMenu
+    GetMenuItemCount
+    GetMenuItemID
+    GetMessageW
+    GetSubMenu
+    GetSystemMenu
+    HideCaret
+    InsertMenuW
+    IsClipboardFormatAvailable
+    IsDialogMessageW
+    KillTimer
+    LoadAcceleratorsW
+    LoadCursorW
+    LoadIconW
+    LoadImageW
+    LoadMenuW
+    LoadResource
+    LoadStringW
+    LockResource
+    MapDialogRect
+    MessageBoxW
+    NotifyWinEvent
+    OpenClipboard
+    PeekMessageW
+    RegisterClipboardFormatW
+    RegisterClassExW
+    RemoveMenu
+    SetCaretPos
+    SetClipboardData
+    SetDlgItemInt
+    SetDlgItemTextW
+    SetMenu
+    SetTimer
+    SetWindowsHookExW
+    ShowCaret
+    SizeofResource
+    TrackPopupMenu
+    TranslateAcceleratorW
+    UnhookWindowsHookEx
+    UpdateWindow
+; -- W32A-6 (continued): A-variants and the remaining bound surface --
+    AppendMenuA
+    CountClipboardFormats
+    DeleteMenu
+    DialogBoxA
+    DialogBoxIndirectParamA
+    DialogBoxParamA
+    DispatchMessageW
+    DrawTextA
+    DrawTextExW
+    EnableMenuItem
+    EnableWindow
+    EnumClipboardFormats
+    EnumResourceNamesA
+    EnumResourceNamesW
+    FindResourceA
+    FindResourceExA
+    FindResourceExW
+    FreeResource
+    GetDlgItemTextA
+    GetMenuBarInfo
+    GetOpenClipboardWindow
+    GetParent
+    GetWindow
+    InsertMenuA
+    IsDialogMessageA
+    IsDlgButtonChecked
+    LoadAcceleratorsA
+    LoadCursorA
+    LoadIconA
+    LoadImageA
+    LoadMenuA
+    LoadStringA
+    RegisterClipboardFormatA
+    SetClipboardViewer
+    SetDlgItemTextA
+    SetWindowsHookExA
+    TrackPopupMenuEx
+    TranslateAcceleratorA

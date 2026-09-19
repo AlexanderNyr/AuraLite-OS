@@ -97,6 +97,10 @@ ReactOS.
 | `include/w32/user32_priv.h` | The seam between the two USER32 translation units: DC handles, the window index↔handle map, client rect/bg colour and the live-window count (W32A-5) |
 | `src/user32_win.c` | USER32's window and message core over the compositor: class registry, window table, queues and cross-thread `SendMessage`, Z-order/placement/focus/capture, paint/update region, scroll, metrics/colours from the theme, monitors, input state (W32A-5) |
 | `tests/w32a5_win.asm` | The W32A-5 guest fixture: twelve sections through one subclassed window and a second thread (62 imports, exit 78) |
+| `include/w32/w32_pe.h`, `src/w32_pe.c` | PE resource-directory walker extended with arbitrary (type,name,lang) lookup (`pe_find_resource_ex`) and bounds-checked data-entry decode used by FindResource/LoadResource/LoadString (W32A-6) |
+| `include/w32/w32_rsrc.h`, `src/w32_rsrc.c` | FindResourceW/A/ExW/ExA, LoadResource/LockResource/SizeofResource/FreeResource, LoadStringW/A RT_STRING block walker, LoadIcon/Cursor/Image (returns the LockResource pointer per D5), DestroyIcon/Cursor; EnumResourceNamesW/A stub returning 1 (W32A-6) |
+| `src/w32_dlg.c` | Dialog engine (DialogBoxParam/IndirectParam(A/W), EndDialog, IsDialogMessage, MapDialogRect, GetDialogBaseUnits, DlgItem(Int/Text) walkers), HMENU table (Create/Append/Insert/Check/Remove/Track/Get/Sub/Set/LoadMenu), Set/KillTimer with weak-link pump hook, caret, accelerators (Create/Copy/Destroy/Load/Translate), clipboard mapped to ag_set/get_clipboard for CF_TEXT/CF_UNICODETEXT, thread-local hooks (global hooks refused ERROR_CALL_NOT_IMPLEMENTED per D9), DrawText(W/A/Ex)/DrawFocusRect/DrawEdge/DrawFrameControl/DrawIcon(Ex)/NotifyWinEvent (W32A-6) |
+| `tests/w32a6_dlg.asm` | The W32A-6 guest fixture: hand-emitted .rsrc (RT_DIALOG/1 + RT_STRING/1), resource walk, LoadStringW, DialogBoxIndirectParamW modal with DlgItem round-trips, popup menu, accelerators, thread-local hook, timer-closed modal loop, caret, CF_TEXT clipboard round-trip, DrawTextW/DrawFocusRect paint (W32A-6) |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

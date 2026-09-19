@@ -32,6 +32,8 @@ typedef void *W32_HICON;
 typedef void *W32_HCURSOR;
 typedef void *W32_HBRUSH;
 typedef void *W32_HMENU;
+typedef void *W32_HACCEL;
+typedef void *W32_HHOOK;
 
 typedef uint64_t W32_WPARAM;
 typedef int64_t  W32_LPARAM;
@@ -700,5 +702,261 @@ W32ABI W32_LRESULT MessageBoxW(W32_HWND owner, const uint16_t *text,
  * export table instead of writing a second copy; their prototypes live in
  * w32/kernel32.h (CharUpperW, CharLowerW, IsCharAlphaW,
  * IsCharAlphaNumericW, IsCharUpperW, IsCharLowerW). */
+
+/* =====================================================================
+ * W32A-6: USER32 breadth II — dialogs, menus, timers, carets,
+ * accelerators, clipboard, hooks, and the resource/DrawText helpers
+ * owned by this layer.
+ *
+ * See W32APP_PLAN.md §W32A-6 for the acceptance gate.  Raster work
+ * (DrawText glyph placement, real ICO/BMP decode, real compositor
+ * menus) is deferred to W32A-7 per decision D5; the A6 surface maps
+ * calls onto the existing ag_* primitives and into kernel clipboard
+ * state.
+ * ===================================================================== */
+
+/* Dialog styles (subset the loader parses). */
+#define W32_DS_ABSALIGN       0x0001u
+#define W32_DS_SYSMODAL       0x0002u
+#define W32_DS_3DLOOK         0x0004u
+#define W32_DS_FIXEDSYS       0x0008u
+#define W32_DS_NOFAILCREATE   0x0010u
+#define W32_DS_CONTROL        0x0400u
+#define W32_DS_CENTER         0x0800u
+#define W32_DS_CENTERMOUSE    0x1000u
+#define W32_DS_CONTEXTHELP    0x2000u
+#define W32_DS_MODALFRAME     0x0080u
+#define W32_DS_SETFONT        0x0040u
+
+/* Dialog-template structures (packed 16-bit widths like on-disk). */
+typedef struct { uint32_t style, exStyle; uint32_t items; int16_t x,y,cx,cy;
+                 /* menu|class|title|font follow, aligned per Win32. */ } W32_DLGTEMPLATE;
+
+typedef intptr_t W32_INT_PTR;
+
+/* IDOK/IDCANCEL/IDABORT/IDRETRY/IDIGNORE/IDYES/IDNO: standard dialog returns. */
+#define W32_IDOK       1
+#define W32_IDCANCEL   2
+#define W32_IDABORT    3
+#define W32_IDRETRY    4
+#define W32_IDIGNORE   5
+#define W32_IDYES      6
+#define W32_IDNO       7
+#define W32_IDCLOSE    8
+#define W32_IDHELP     9
+
+/* Dialog API. */
+W32ABI W32_INT_PTR DialogBoxParamW(W32_HINSTANCE inst, const uint16_t *name,
+                                   W32_HWND owner, void *dlgproc, W32_LPARAM init);
+W32ABI W32_INT_PTR DialogBoxParamA(W32_HINSTANCE inst, const char *name,
+                                   W32_HWND owner, void *dlgproc, W32_LPARAM init);
+W32ABI W32_INT_PTR DialogBoxIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMPLATE *tmpl,
+                                           W32_HWND owner, void *dlgproc, W32_LPARAM init);
+W32ABI W32_INT_PTR DialogBoxIndirectParamA(W32_HINSTANCE inst, const void *tmpl,
+                                           W32_HWND owner, void *dlgproc, W32_LPARAM init);
+W32ABI W32_INT_PTR DialogBoxW(W32_HINSTANCE inst, const uint16_t *name,
+                              W32_HWND owner, void *dlgproc);
+W32ABI W32_INT_PTR DialogBoxA(W32_HINSTANCE inst, const char *name,
+                              W32_HWND owner, void *dlgproc);
+W32ABI W32_BOOL EndDialog(W32_HWND dlg, W32_INT_PTR result);
+W32ABI W32_BOOL IsDialogMessageW(W32_HWND dlg, W32_MSG *msg);
+W32ABI W32_BOOL IsDialogMessageA(W32_HWND dlg, W32_MSG *msg);
+W32ABI W32_BOOL MapDialogRect(W32_HWND dlg, W32_RECT *r);
+W32ABI W32_DWORD GetDialogBaseUnits(void);
+
+/* DlgItem accessors. */
+W32ABI W32_HWND GetDlgItem(W32_HWND dlg, int32_t id);
+W32ABI uint32_t GetDlgItemInt(W32_HWND dlg, int32_t id, W32_BOOL *translated, W32_BOOL signed_);
+W32ABI W32_UINT GetDlgItemTextW(W32_HWND dlg, int32_t id, uint16_t *buf, int32_t cch);
+W32ABI W32_UINT GetDlgItemTextA(W32_HWND dlg, int32_t id, char *buf, int32_t cch);
+W32ABI W32_BOOL SetDlgItemInt(W32_HWND dlg, int32_t id, uint32_t val, W32_BOOL signed_);
+W32ABI W32_BOOL SetDlgItemTextW(W32_HWND dlg, int32_t id, const uint16_t *text);
+W32ABI W32_BOOL SetDlgItemTextA(W32_HWND dlg, int32_t id, const char *text);
+W32ABI W32_UINT IsDlgButtonChecked(W32_HWND dlg, int32_t id);
+W32ABI W32_BOOL CheckDlgButton(W32_HWND dlg, int32_t id, W32_UINT check);
+W32ABI W32_BOOL CheckRadioButton(W32_HWND dlg, int32_t first, int32_t last, int32_t check);
+
+/* Menus. */
+#define W32_MF_STRING        0x00000000u
+#define W32_MF_SEPARATOR     0x00000800u
+#define W32_MF_POPUP         0x00000010u
+#define W32_MF_GRAYED        0x00000001u
+#define W32_MF_DISABLED      0x00000002u
+#define W32_MF_CHECKED       0x00000008u
+#define W32_MF_BREAK         0x00000040u
+#define W32_MF_BARBREAK      0x00000020u
+#define W32_MF_ENABLED       0x00000000u
+#define W32_MF_UNCHECKED     0x00000000u
+#define W32_MF_BYCOMMAND     0x00000000u
+#define W32_MF_BYPOSITION    0x00000400u
+#define W32_MF_REMOVE        0x00001000u
+#define W32_TPM_LEFTALIGN    0x0000u
+#define W32_TPM_CENTERALIGN  0x0004u
+#define W32_TPM_RIGHTALIGN   0x0008u
+#define W32_TPM_TOPALIGN     0x0000u
+#define W32_TPM_BOTTOMALIGN  0x0020u
+#define W32_TPM_RETURNCMD    0x0100u
+#define W32_TPM_RIGHTBUTTON  0x0002u
+
+W32ABI W32_HMENU CreateMenu(void);
+W32ABI W32_HMENU CreatePopupMenu(void);
+W32ABI W32_BOOL DestroyMenu(W32_HMENU m);
+W32ABI W32_BOOL AppendMenuW(W32_HMENU m, W32_UINT flags, uintptr_t id, const uint16_t *text);
+W32ABI W32_BOOL AppendMenuA(W32_HMENU m, W32_UINT flags, uintptr_t id, const char *text);
+W32ABI W32_BOOL InsertMenuW(W32_HMENU m, uint32_t pos, W32_UINT flags, uintptr_t id, const uint16_t *text);
+W32ABI W32_BOOL InsertMenuA(W32_HMENU m, uint32_t pos, W32_UINT flags, uintptr_t id, const char *text);
+W32ABI W32_BOOL TrackPopupMenu(W32_HMENU m, W32_UINT flags, int32_t x, int32_t y,
+                              int32_t reserved, W32_HWND owner, const W32_RECT *rect);
+W32ABI W32_BOOL TrackPopupMenuEx(W32_HMENU m, W32_UINT flags, int32_t x, int32_t y,
+                                 W32_HWND owner, void *lptpm);
+W32ABI W32_HMENU GetMenu(W32_HWND w);
+W32ABI W32_HMENU GetSubMenu(W32_HMENU m, int pos);
+W32ABI W32_HMENU GetSystemMenu(W32_HWND w, W32_BOOL revert);
+W32ABI W32_BOOL SetMenu(W32_HWND w, W32_HMENU m);
+W32ABI W32_BOOL CheckMenuItem(W32_HMENU m, uint32_t item, W32_UINT flags);
+W32ABI W32_HMENU LoadMenuW(W32_HINSTANCE inst, const uint16_t *name);
+W32ABI W32_HMENU LoadMenuA(W32_HINSTANCE inst, const char *name);
+W32ABI int      GetMenuItemCount(W32_HMENU m);
+W32ABI uint32_t GetMenuItemID(W32_HMENU m, int pos);
+W32ABI W32_BOOL GetMenuBarInfo(W32_HWND w, long obj, long item, void*);
+W32ABI W32_BOOL DrawMenuBar(W32_HWND w);
+W32ABI W32_BOOL RemoveMenu(W32_HMENU m, uint32_t item, W32_UINT flags);
+W32ABI W32_BOOL DeleteMenu(W32_HMENU m, uint32_t item, W32_UINT flags);
+W32ABI W32_BOOL EnableMenuItem(W32_HMENU m, uint32_t item, W32_UINT flags);
+
+/* Timers. */
+W32ABI uintptr_t SetTimer(W32_HWND w, uintptr_t id, W32_UINT ms, void *cb);
+W32ABI W32_BOOL  KillTimer(W32_HWND w, uintptr_t id);
+
+/* Caret. */
+W32ABI W32_BOOL CreateCaret(W32_HWND w, void *bmp, int32_t wd, int32_t ht);
+W32ABI W32_BOOL DestroyCaret(void);
+W32ABI W32_BOOL SetCaretPos(int32_t x, int32_t y);
+W32ABI W32_BOOL GetCaretPos(W32_POINT *pt);
+W32ABI W32_BOOL ShowCaret(W32_HWND w);
+W32ABI W32_BOOL HideCaret(W32_HWND w);
+
+/* Accelerators. */
+#define W32_FVIRTKEY  0x01u
+#define W32_FNOINVERT 0x02u
+#define W32_FSHIFT    0x04u
+#define W32_FCONTROL  0x08u
+#define W32_FALT      0x10u
+typedef struct { uint8_t flags; uint16_t key; uint16_t cmd; } W32_ACCEL;
+W32ABI W32_HACCEL LoadAcceleratorsW(W32_HINSTANCE inst, const uint16_t *name);
+W32ABI W32_HACCEL LoadAcceleratorsA(W32_HINSTANCE inst, const char *name);
+W32ABI int TranslateAcceleratorW(W32_HWND w, W32_HACCEL acc, W32_MSG *msg);
+W32ABI int TranslateAcceleratorA(W32_HWND w, W32_HACCEL acc, W32_MSG *msg);
+W32ABI W32_BOOL DestroyAcceleratorTable(W32_HACCEL acc);
+W32ABI int CopyAcceleratorTableW(W32_HACCEL src, W32_ACCEL *dst, int c);
+W32ABI W32_HACCEL CreateAcceleratorTableW(W32_ACCEL *acc, int c);
+
+/* Clipboard: mapped to libauragui ag_set_clipboard/ag_get_clipboard which
+ * already round-trip text through the kernel's gui_kernel_clipboard
+ * buffer (see kernel/gui/gui_syscalls.c and lib/libauragui/src/auragui.c). */
+#define W32_CF_TEXT            1u
+#define W32_CF_BITMAP          2u
+#define W32_CF_METAFILEPICT    3u
+#define W32_CF_SYLK            4u
+#define W32_CF_DIF             5u
+#define W32_CF_TIFF            6u
+#define W32_CF_OEMTEXT         7u
+#define W32_CF_DIB             8u
+#define W32_CF_PALETTE         9u
+#define W32_CF_PENDATA        10u
+#define W32_CF_RIFF           11u
+#define W32_CF_WAVE           12u
+#define W32_CF_UNICODETEXT    13u
+#define W32_CF_ENHMETAFILE    14u
+#define W32_CF_HDROP          15u
+#define W32_CF_DIBV5          17u
+
+W32ABI W32_BOOL OpenClipboard(W32_HWND w);
+W32ABI W32_BOOL CloseClipboard(void);
+W32ABI W32_BOOL EmptyClipboard(void);
+W32ABI void    *SetClipboardData(W32_UINT fmt, void *h);
+W32ABI void    *GetClipboardData(W32_UINT fmt);
+W32ABI W32_BOOL IsClipboardFormatAvailable(W32_UINT fmt);
+W32ABI W32_UINT RegisterClipboardFormatW(const uint16_t *name);
+W32ABI W32_UINT RegisterClipboardFormatA(const char *name);
+W32ABI W32_BOOL CountClipboardFormats(void);
+W32ABI W32_BOOL EnumClipboardFormats(W32_UINT);
+W32ABI W32_HWND GetClipboardOwner(void);
+W32ABI W32_HWND GetOpenClipboardWindow(void);
+W32ABI W32_BOOL SetClipboardViewer(W32_HWND);
+W32ABI W32_HWND ChangeClipboardChain(W32_HWND remove, W32_HWND next);
+W32ABI W32_HWND GetClipboardViewer(void);
+
+/* Hooks.  Thread-local only; global hooks refuse with ERROR_CALL_NOT_IMPLEMENTED. */
+#define W32_WH_MSGFILTER         (-1)
+#define W32_WH_JOURNALRECORD      0
+#define W32_WH_JOURNALPLAYBACK    1
+#define W32_WH_KEYBOARD           2
+#define W32_WH_GETMESSAGE         3
+#define W32_WH_CALLWNDPROC        4
+#define W32_WH_CBT                5
+#define W32_WH_SYSMSGFILTER       6
+#define W32_WH_MOUSE              7
+#define W32_WH_HARDWARE           8
+#define W32_WH_DEBUG              9
+#define W32_WH_SHELL             10
+#define W32_WH_FOREGROUNDIDLE    11
+#define W32_WH_CALLWNDPROCRET    12
+#define W32_WH_KEYBOARD_LL       13
+#define W32_WH_MOUSE_LL          14
+
+W32ABI W32_HHOOK SetWindowsHookExW(int32_t id, void *proc, W32_HINSTANCE mod, W32_DWORD tid);
+W32ABI W32_HHOOK SetWindowsHookExA(int32_t id, void *proc, W32_HINSTANCE mod, W32_DWORD tid);
+W32ABI W32_BOOL  UnhookWindowsHookEx(W32_HHOOK hhk);
+W32ABI W32_LRESULT CallNextHookEx(W32_HHOOK hhk, int32_t code, W32_WPARAM wp, W32_LPARAM lp);
+
+/* Messages added by A-6 (only those the engine synthesises). */
+#define W32_WM_INITDIALOG     0x0110
+#define W32_WM_COMMAND        0x0111
+#define W32_WM_INITMENUPOPUP  0x0117
+#define W32_WM_MENUSELECT     0x011F
+#define W32_WM_DRAWITEM       0x002B
+#define W32_WM_MEASUREITEM    0x002C
+#define W32_WM_CHANGECBCHAIN  0x030D
+#define W32_WM_DRAWCLIPBOARD  0x0308
+
+/* DrawText format flags + the USER32-side DrawText/DrawFocusRect/etc
+ * (glyph rastering is deferred to W32A-7; the A-6 entries route to
+ * existing ag_rect_* fill/outline primitives where possible). */
+#define W32_DT_TOP            0x00000000u
+#define W32_DT_LEFT           0x00000000u
+#define W32_DT_CENTER         0x00000001u
+#define W32_DT_RIGHT          0x00000002u
+#define W32_DT_VCENTER        0x00000004u
+#define W32_DT_BOTTOM         0x00000008u
+#define W32_DT_WORDBREAK      0x00000010u
+#define W32_DT_SINGLELINE     0x00000020u
+#define W32_DT_EXPANDTABS     0x00000040u
+#define W32_DT_TABSTOP        0x00000080u
+#define W32_DT_NOCLIP         0x00000100u
+#define W32_DT_EXTERNALLEADING 0x00000200u
+#define W32_DT_CALCRECT       0x00000400u
+#define W32_DT_NOPREFIX       0x00000800u
+#define W32_DT_INTERNAL       0x00001000u
+#define W32_DT_EDITCONTROL    0x00002000u
+#define W32_DT_PATH_ELLIPSIS  0x00004000u
+#define W32_DT_END_ELLIPSIS   0x00008000u
+#define W32_DT_MODIFYSTRING   0x00010000u
+#define W32_DT_RTLREADING     0x00020000u
+#define W32_DT_WORD_ELLIPSIS  0x00040000u
+
+W32ABI int DrawTextW(W32_HDC hdc, const uint16_t *s, int32_t len, W32_RECT *r, W32_UINT fmt);
+W32ABI int DrawTextA(W32_HDC hdc, const char *s, int32_t len, W32_RECT *r, W32_UINT fmt);
+W32ABI int DrawTextExW(W32_HDC hdc, const uint16_t *s, int32_t len,
+                       W32_RECT *r, W32_UINT fmt, void *dparams);
+W32ABI W32_BOOL DrawFocusRect(W32_HDC hdc, const W32_RECT *r);
+W32ABI W32_BOOL DrawEdge(W32_HDC hdc, W32_RECT *r, W32_UINT edge, W32_UINT grf);
+W32ABI W32_BOOL DrawFrameControl(W32_HDC hdc, W32_RECT *r, W32_UINT type, W32_UINT state);
+W32ABI W32_BOOL DrawIconEx(W32_HDC hdc, int32_t xLeft, int32_t yTop,
+                           W32_HICON hIcon, int32_t cxWidth, int32_t cyHeight,
+                           uint32_t istepIfAniCur, void *hbrFlickerFreeDraw,
+                           W32_UINT diFlags);
+W32ABI W32_BOOL DrawIcon(W32_HDC hdc, int32_t x, int32_t y, W32_HICON icon);
+W32ABI void NotifyWinEvent(W32_DWORD ev, W32_HWND w, W32_DWORD id, W32_DWORD idc);
 
 #endif /* AURALITE_W32_USER32_H */

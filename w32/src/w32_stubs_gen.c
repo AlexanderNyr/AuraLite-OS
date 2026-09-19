@@ -2423,22 +2423,6 @@ W32ABI void w32_stub_shlwapi_PathStripPathW(void) {
     return;
 }
 
-/* user32.dll!AppendMenuA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_AppendMenuA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "AppendMenuA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!AppendMenuW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_AppendMenuW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "AppendMenuW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!BeginDeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_BeginDeferWindowPos(void) {
     static int once = 0;
@@ -2455,14 +2439,6 @@ W32ABI void *w32_stub_user32_CallNextHookEx(void) {
     return 0;
 }
 
-/* user32.dll!ChangeClipboardChain: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_ChangeClipboardChain(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ChangeClipboardChain", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!CharPrevExA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_CharPrevExA(void) {
     static int once = 0;
@@ -2471,42 +2447,10 @@ W32ABI W32_DWORD w32_stub_user32_CharPrevExA(void) {
     return 0;
 }
 
-/* user32.dll!CheckDlgButton: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_CheckDlgButton(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CheckDlgButton", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CheckMenuItem: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_CheckMenuItem(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CheckMenuItem", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CheckMenuRadioItem: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_CheckMenuRadioItem(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CheckMenuRadioItem", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!CheckRadioButton: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_CheckRadioButton(void) {
     static int once = 0;
     note_todo("user32.dll", "CheckRadioButton", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CloseClipboard: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_CloseClipboard(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CloseClipboard", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2527,30 +2471,6 @@ W32ABI W32_DWORD w32_stub_user32_CreateCaret(void) {
     return 0;
 }
 
-/* user32.dll!CreateDialogIndirectParamW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_CreateDialogIndirectParamW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CreateDialogIndirectParamW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CreateDialogParamA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_CreateDialogParamA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CreateDialogParamA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CreateDialogParamW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_CreateDialogParamW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CreateDialogParamW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!CreateIconIndirect: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI void *w32_stub_user32_CreateIconIndirect(void) {
     static int once = 0;
@@ -2559,42 +2479,10 @@ W32ABI void *w32_stub_user32_CreateIconIndirect(void) {
     return 0;
 }
 
-/* user32.dll!CreateMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_CreateMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CreateMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!CreatePopupMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_CreatePopupMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "CreatePopupMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!DefDlgProcA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_DefDlgProcA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DefDlgProcA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!DeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_DeferWindowPos(void) {
     static int once = 0;
     note_todo("user32.dll", "DeferWindowPos", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!DeleteMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_DeleteMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DeleteMenu", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2631,38 +2519,6 @@ W32ABI W32_DWORD w32_stub_user32_DestroyIcon(void) {
     return 0;
 }
 
-/* user32.dll!DestroyMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_DestroyMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DestroyMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!DialogBoxIndirectParamW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_DialogBoxIndirectParamW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DialogBoxIndirectParamW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!DialogBoxParamA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_DialogBoxParamA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DialogBoxParamA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!DialogBoxParamW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_DialogBoxParamW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DialogBoxParamW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!DrawEdge: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_DrawEdge(void) {
     static int once = 0;
@@ -2695,14 +2551,6 @@ W32ABI W32_DWORD w32_stub_user32_DrawIconEx(void) {
     return 0;
 }
 
-/* user32.dll!DrawMenuBar: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_DrawMenuBar(void) {
-    static int once = 0;
-    note_todo("user32.dll", "DrawMenuBar", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!DrawTextExW: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_DrawTextExW(void) {
     static int once = 0;
@@ -2719,34 +2567,10 @@ W32ABI W32_DWORD w32_stub_user32_DrawTextW(void) {
     return 0;
 }
 
-/* user32.dll!EmptyClipboard: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_EmptyClipboard(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EmptyClipboard", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!EnableMenuItem: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_EnableMenuItem(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EnableMenuItem", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!EndDeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_EndDeferWindowPos(void) {
     static int once = 0;
     note_todo("user32.dll", "EndDeferWindowPos", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!EndDialog: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_EndDialog(void) {
-    static int once = 0;
-    note_todo("user32.dll", "EndDialog", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2759,66 +2583,10 @@ W32ABI W32_DWORD w32_stub_user32_FrameRect(void) {
     return 0;
 }
 
-/* user32.dll!GetClipboardData: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_GetClipboardData(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetClipboardData", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetClipboardOwner: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_GetClipboardOwner(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetClipboardOwner", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!GetComboBoxInfo: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_GetComboBoxInfo(void) {
     static int once = 0;
     note_todo("user32.dll", "GetComboBoxInfo", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDialogBaseUnits: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetDialogBaseUnits(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDialogBaseUnits", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDlgItem: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_GetDlgItem(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDlgItem", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDlgItemInt: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetDlgItemInt(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDlgItemInt", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDlgItemTextA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetDlgItemTextA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDlgItemTextA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetDlgItemTextW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetDlgItemTextW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetDlgItemTextW", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -2831,138 +2599,10 @@ W32ABI W32_DWORD w32_stub_user32_GetIconInfo(void) {
     return 0;
 }
 
-/* user32.dll!GetMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_GetMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMenuBarInfo: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMenuBarInfo(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenuBarInfo", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMenuItemCount: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMenuItemCount(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenuItemCount", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMenuItemID: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMenuItemID(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenuItemID", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMenuItemInfoW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMenuItemInfoW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenuItemInfoW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMenuState: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMenuState(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenuState", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetMenuStringW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_GetMenuStringW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetMenuStringW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetSubMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_GetSubMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetSubMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!GetSystemMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_GetSystemMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "GetSystemMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!HideCaret: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_HideCaret(void) {
     static int once = 0;
     note_todo("user32.dll", "HideCaret", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!InsertMenuA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_InsertMenuA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "InsertMenuA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!InsertMenuItemW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_InsertMenuItemW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "InsertMenuItemW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!InsertMenuW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_InsertMenuW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "InsertMenuW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsClipboardFormatAvailable: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsClipboardFormatAvailable(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsClipboardFormatAvailable", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsDialogMessageA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsDialogMessageA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsDialogMessageA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsDialogMessageW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsDialogMessageW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsDialogMessageW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!IsDlgButtonChecked: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_IsDlgButtonChecked(void) {
-    static int once = 0;
-    note_todo("user32.dll", "IsDlgButtonChecked", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3039,14 +2679,6 @@ W32ABI void *w32_stub_user32_LoadImageW(void) {
     return 0;
 }
 
-/* user32.dll!LoadMenuW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_LoadMenuW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "LoadMenuW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!LoadStringA: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_LoadStringA(void) {
     static int once = 0;
@@ -3063,34 +2695,10 @@ W32ABI W32_DWORD w32_stub_user32_LoadStringW(void) {
     return 0;
 }
 
-/* user32.dll!MapDialogRect: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_MapDialogRect(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MapDialogRect", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!MessageBeep: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_MessageBeep(void) {
     static int once = 0;
     note_todo("user32.dll", "MessageBeep", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!MessageBoxIndirectW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_MessageBoxIndirectW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "MessageBoxIndirectW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!ModifyMenuW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_ModifyMenuW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "ModifyMenuW", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3101,38 +2709,6 @@ W32ABI void w32_stub_user32_NotifyWinEvent(void) {
     note_todo("user32.dll", "NotifyWinEvent", "W32A-5", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return;
-}
-
-/* user32.dll!OpenClipboard: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_OpenClipboard(void) {
-    static int once = 0;
-    note_todo("user32.dll", "OpenClipboard", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RegisterClipboardFormatA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterClipboardFormatA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterClipboardFormatA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RegisterClipboardFormatW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_RegisterClipboardFormatW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RegisterClipboardFormatW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!RemoveMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_RemoveMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "RemoveMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
 }
 
 /* user32.dll!SetCaretPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
@@ -3151,74 +2727,10 @@ W32ABI void *w32_stub_user32_SetClassLongPtrA(void) {
     return 0;
 }
 
-/* user32.dll!SetClipboardData: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_SetClipboardData(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetClipboardData", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetClipboardViewer: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI void *w32_stub_user32_SetClipboardViewer(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetClipboardViewer", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* user32.dll!SetCursor: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI void *w32_stub_user32_SetCursor(void) {
     static int once = 0;
     note_todo("user32.dll", "SetCursor", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetDlgItemInt: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetDlgItemInt(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetDlgItemInt", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetDlgItemTextA: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetDlgItemTextA(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetDlgItemTextA", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetDlgItemTextW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetDlgItemTextW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetDlgItemTextW", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetMenuItemBitmaps: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetMenuItemBitmaps(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetMenuItemBitmaps", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!SetMenuItemInfoW: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_SetMenuItemInfoW(void) {
-    static int once = 0;
-    note_todo("user32.dll", "SetMenuItemInfoW", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3251,22 +2763,6 @@ W32ABI W32_DWORD w32_stub_user32_ShowCaret(void) {
 W32ABI W32_DWORD w32_stub_user32_ShowCursor(void) {
     static int once = 0;
     note_todo("user32.dll", "ShowCursor", "W32A-5", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!TrackPopupMenu: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_TrackPopupMenu(void) {
-    static int once = 0;
-    note_todo("user32.dll", "TrackPopupMenu", "W32A-6", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* user32.dll!TrackPopupMenuEx: TODO (phase-owned).  Fails loudly until W32A-6 lands. */
-W32ABI W32_DWORD w32_stub_user32_TrackPopupMenuEx(void) {
-    static int once = 0;
-    note_todo("user32.dll", "TrackPopupMenuEx", "W32A-6", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
 }
@@ -3754,74 +3250,29 @@ static const w32_export_t gen_exports[] = {
     { "shlwapi.dll", "PathRemoveExtensionW", (void *)&w32_stub_shlwapi_PathRemoveExtensionW },
     { "shlwapi.dll", "PathRemoveFileSpecW", (void *)&w32_stub_shlwapi_PathRemoveFileSpecW },
     { "shlwapi.dll", "PathStripPathW", (void *)&w32_stub_shlwapi_PathStripPathW },
-    { "user32.dll", "AppendMenuA", (void *)&w32_stub_user32_AppendMenuA },
-    { "user32.dll", "AppendMenuW", (void *)&w32_stub_user32_AppendMenuW },
     { "user32.dll", "BeginDeferWindowPos", (void *)&w32_stub_user32_BeginDeferWindowPos },
     { "user32.dll", "CallNextHookEx", (void *)&w32_stub_user32_CallNextHookEx },
-    { "user32.dll", "ChangeClipboardChain", (void *)&w32_stub_user32_ChangeClipboardChain },
     { "user32.dll", "CharPrevExA", (void *)&w32_stub_user32_CharPrevExA },
-    { "user32.dll", "CheckDlgButton", (void *)&w32_stub_user32_CheckDlgButton },
-    { "user32.dll", "CheckMenuItem", (void *)&w32_stub_user32_CheckMenuItem },
-    { "user32.dll", "CheckMenuRadioItem", (void *)&w32_stub_user32_CheckMenuRadioItem },
     { "user32.dll", "CheckRadioButton", (void *)&w32_stub_user32_CheckRadioButton },
-    { "user32.dll", "CloseClipboard", (void *)&w32_stub_user32_CloseClipboard },
     { "user32.dll", "CreateAcceleratorTableW", (void *)&w32_stub_user32_CreateAcceleratorTableW },
     { "user32.dll", "CreateCaret", (void *)&w32_stub_user32_CreateCaret },
-    { "user32.dll", "CreateDialogIndirectParamW", (void *)&w32_stub_user32_CreateDialogIndirectParamW },
-    { "user32.dll", "CreateDialogParamA", (void *)&w32_stub_user32_CreateDialogParamA },
-    { "user32.dll", "CreateDialogParamW", (void *)&w32_stub_user32_CreateDialogParamW },
     { "user32.dll", "CreateIconIndirect", (void *)&w32_stub_user32_CreateIconIndirect },
-    { "user32.dll", "CreateMenu", (void *)&w32_stub_user32_CreateMenu },
-    { "user32.dll", "CreatePopupMenu", (void *)&w32_stub_user32_CreatePopupMenu },
-    { "user32.dll", "DefDlgProcA", (void *)&w32_stub_user32_DefDlgProcA },
     { "user32.dll", "DeferWindowPos", (void *)&w32_stub_user32_DeferWindowPos },
-    { "user32.dll", "DeleteMenu", (void *)&w32_stub_user32_DeleteMenu },
     { "user32.dll", "DestroyAcceleratorTable", (void *)&w32_stub_user32_DestroyAcceleratorTable },
     { "user32.dll", "DestroyCaret", (void *)&w32_stub_user32_DestroyCaret },
     { "user32.dll", "DestroyCursor", (void *)&w32_stub_user32_DestroyCursor },
     { "user32.dll", "DestroyIcon", (void *)&w32_stub_user32_DestroyIcon },
-    { "user32.dll", "DestroyMenu", (void *)&w32_stub_user32_DestroyMenu },
-    { "user32.dll", "DialogBoxIndirectParamW", (void *)&w32_stub_user32_DialogBoxIndirectParamW },
-    { "user32.dll", "DialogBoxParamA", (void *)&w32_stub_user32_DialogBoxParamA },
-    { "user32.dll", "DialogBoxParamW", (void *)&w32_stub_user32_DialogBoxParamW },
     { "user32.dll", "DrawEdge", (void *)&w32_stub_user32_DrawEdge },
     { "user32.dll", "DrawFocusRect", (void *)&w32_stub_user32_DrawFocusRect },
     { "user32.dll", "DrawFrameControl", (void *)&w32_stub_user32_DrawFrameControl },
     { "user32.dll", "DrawIconEx", (void *)&w32_stub_user32_DrawIconEx },
-    { "user32.dll", "DrawMenuBar", (void *)&w32_stub_user32_DrawMenuBar },
     { "user32.dll", "DrawTextExW", (void *)&w32_stub_user32_DrawTextExW },
     { "user32.dll", "DrawTextW", (void *)&w32_stub_user32_DrawTextW },
-    { "user32.dll", "EmptyClipboard", (void *)&w32_stub_user32_EmptyClipboard },
-    { "user32.dll", "EnableMenuItem", (void *)&w32_stub_user32_EnableMenuItem },
     { "user32.dll", "EndDeferWindowPos", (void *)&w32_stub_user32_EndDeferWindowPos },
-    { "user32.dll", "EndDialog", (void *)&w32_stub_user32_EndDialog },
     { "user32.dll", "FrameRect", (void *)&w32_stub_user32_FrameRect },
-    { "user32.dll", "GetClipboardData", (void *)&w32_stub_user32_GetClipboardData },
-    { "user32.dll", "GetClipboardOwner", (void *)&w32_stub_user32_GetClipboardOwner },
     { "user32.dll", "GetComboBoxInfo", (void *)&w32_stub_user32_GetComboBoxInfo },
-    { "user32.dll", "GetDialogBaseUnits", (void *)&w32_stub_user32_GetDialogBaseUnits },
-    { "user32.dll", "GetDlgItem", (void *)&w32_stub_user32_GetDlgItem },
-    { "user32.dll", "GetDlgItemInt", (void *)&w32_stub_user32_GetDlgItemInt },
-    { "user32.dll", "GetDlgItemTextA", (void *)&w32_stub_user32_GetDlgItemTextA },
-    { "user32.dll", "GetDlgItemTextW", (void *)&w32_stub_user32_GetDlgItemTextW },
     { "user32.dll", "GetIconInfo", (void *)&w32_stub_user32_GetIconInfo },
-    { "user32.dll", "GetMenu", (void *)&w32_stub_user32_GetMenu },
-    { "user32.dll", "GetMenuBarInfo", (void *)&w32_stub_user32_GetMenuBarInfo },
-    { "user32.dll", "GetMenuItemCount", (void *)&w32_stub_user32_GetMenuItemCount },
-    { "user32.dll", "GetMenuItemID", (void *)&w32_stub_user32_GetMenuItemID },
-    { "user32.dll", "GetMenuItemInfoW", (void *)&w32_stub_user32_GetMenuItemInfoW },
-    { "user32.dll", "GetMenuState", (void *)&w32_stub_user32_GetMenuState },
-    { "user32.dll", "GetMenuStringW", (void *)&w32_stub_user32_GetMenuStringW },
-    { "user32.dll", "GetSubMenu", (void *)&w32_stub_user32_GetSubMenu },
-    { "user32.dll", "GetSystemMenu", (void *)&w32_stub_user32_GetSystemMenu },
     { "user32.dll", "HideCaret", (void *)&w32_stub_user32_HideCaret },
-    { "user32.dll", "InsertMenuA", (void *)&w32_stub_user32_InsertMenuA },
-    { "user32.dll", "InsertMenuItemW", (void *)&w32_stub_user32_InsertMenuItemW },
-    { "user32.dll", "InsertMenuW", (void *)&w32_stub_user32_InsertMenuW },
-    { "user32.dll", "IsClipboardFormatAvailable", (void *)&w32_stub_user32_IsClipboardFormatAvailable },
-    { "user32.dll", "IsDialogMessageA", (void *)&w32_stub_user32_IsDialogMessageA },
-    { "user32.dll", "IsDialogMessageW", (void *)&w32_stub_user32_IsDialogMessageW },
-    { "user32.dll", "IsDlgButtonChecked", (void *)&w32_stub_user32_IsDlgButtonChecked },
     { "user32.dll", "KillTimer", (void *)&w32_stub_user32_KillTimer },
     { "user32.dll", "LoadAcceleratorsW", (void *)&w32_stub_user32_LoadAcceleratorsW },
     { "user32.dll", "LoadBitmapW", (void *)&w32_stub_user32_LoadBitmapW },
@@ -3831,35 +3282,17 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "LoadIconW", (void *)&w32_stub_user32_LoadIconW },
     { "user32.dll", "LoadImageA", (void *)&w32_stub_user32_LoadImageA },
     { "user32.dll", "LoadImageW", (void *)&w32_stub_user32_LoadImageW },
-    { "user32.dll", "LoadMenuW", (void *)&w32_stub_user32_LoadMenuW },
     { "user32.dll", "LoadStringA", (void *)&w32_stub_user32_LoadStringA },
     { "user32.dll", "LoadStringW", (void *)&w32_stub_user32_LoadStringW },
-    { "user32.dll", "MapDialogRect", (void *)&w32_stub_user32_MapDialogRect },
     { "user32.dll", "MessageBeep", (void *)&w32_stub_user32_MessageBeep },
-    { "user32.dll", "MessageBoxIndirectW", (void *)&w32_stub_user32_MessageBoxIndirectW },
-    { "user32.dll", "ModifyMenuW", (void *)&w32_stub_user32_ModifyMenuW },
     { "user32.dll", "NotifyWinEvent", (void *)&w32_stub_user32_NotifyWinEvent },
-    { "user32.dll", "OpenClipboard", (void *)&w32_stub_user32_OpenClipboard },
-    { "user32.dll", "RegisterClipboardFormatA", (void *)&w32_stub_user32_RegisterClipboardFormatA },
-    { "user32.dll", "RegisterClipboardFormatW", (void *)&w32_stub_user32_RegisterClipboardFormatW },
-    { "user32.dll", "RemoveMenu", (void *)&w32_stub_user32_RemoveMenu },
     { "user32.dll", "SetCaretPos", (void *)&w32_stub_user32_SetCaretPos },
     { "user32.dll", "SetClassLongPtrA", (void *)&w32_stub_user32_SetClassLongPtrA },
-    { "user32.dll", "SetClipboardData", (void *)&w32_stub_user32_SetClipboardData },
-    { "user32.dll", "SetClipboardViewer", (void *)&w32_stub_user32_SetClipboardViewer },
     { "user32.dll", "SetCursor", (void *)&w32_stub_user32_SetCursor },
-    { "user32.dll", "SetDlgItemInt", (void *)&w32_stub_user32_SetDlgItemInt },
-    { "user32.dll", "SetDlgItemTextA", (void *)&w32_stub_user32_SetDlgItemTextA },
-    { "user32.dll", "SetDlgItemTextW", (void *)&w32_stub_user32_SetDlgItemTextW },
-    { "user32.dll", "SetMenu", (void *)&w32_stub_user32_SetMenu },
-    { "user32.dll", "SetMenuItemBitmaps", (void *)&w32_stub_user32_SetMenuItemBitmaps },
-    { "user32.dll", "SetMenuItemInfoW", (void *)&w32_stub_user32_SetMenuItemInfoW },
     { "user32.dll", "SetTimer", (void *)&w32_stub_user32_SetTimer },
     { "user32.dll", "SetWindowsHookExW", (void *)&w32_stub_user32_SetWindowsHookExW },
     { "user32.dll", "ShowCaret", (void *)&w32_stub_user32_ShowCaret },
     { "user32.dll", "ShowCursor", (void *)&w32_stub_user32_ShowCursor },
-    { "user32.dll", "TrackPopupMenu", (void *)&w32_stub_user32_TrackPopupMenu },
-    { "user32.dll", "TrackPopupMenuEx", (void *)&w32_stub_user32_TrackPopupMenuEx },
     { "user32.dll", "TranslateAcceleratorW", (void *)&w32_stub_user32_TranslateAcceleratorW },
     { "user32.dll", "UnhookWindowsHookEx", (void *)&w32_stub_user32_UnhookWindowsHookEx },
     { "user32.dll", "wsprintfW", (void *)&w32_stub_user32_wsprintfW },

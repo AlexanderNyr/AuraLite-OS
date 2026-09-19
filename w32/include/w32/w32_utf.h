@@ -66,4 +66,9 @@ int w32_utf16_to_utf8(const uint16_t *src, size_t srclen,
 int w32_utf8_to_utf16(const char *src, size_t srclen,
                       uint16_t *dst, size_t dstcap, size_t *needed);
 
+/* W32A-6: convenience NUL-terminated wrappers used by dialog/clipboard
+ * A-form helpers in w32_rsrc.c and w32_dlg.c. */
+int w32_utf16z_to_utf8(const uint16_t *s, char *out, int outcap);
+int w32_utf8z_to_utf16(const char *s, uint16_t *out, int outcap);
+
 #endif /* AURALITE_W32_UTF_H */

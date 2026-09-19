@@ -1077,7 +1077,9 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_kernel32_fs.o $(USER_BUILD)/w32_kernel32_ps.o \
                 $(USER_BUILD)/w32_kernel32_loc.o $(USER_BUILD)/w32_msg.o \
                 $(USER_BUILD)/w32_utf.o $(USER_BUILD)/w32_kernel32_thr.o \
-                $(USER_BUILD)/w32_user32_win.o
+                $(USER_BUILD)/w32_user32_win.o \
+                $(USER_BUILD)/w32_rsrc.o \
+                $(USER_BUILD)/w32_dlg.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1097,6 +1099,12 @@ $(USER_BUILD)/w32_user32.o: w32/src/user32.c $(USER_CFLAGS_INC)
 # W32_USER_OBJ above (the host suite amalgamates the .c files directly, so it
 # cannot catch a missing object -- CI #385's lesson).
 $(USER_BUILD)/w32_user32_win.o: w32/src/user32_win.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-6: resource walk (FindResource/LoadString/etc.) and
+# dialog/menu/timer/caret/clipboard/hook/DrawText breadth, respectively.
+$(USER_BUILD)/w32_rsrc.o: w32/src/w32_rsrc.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_dlg.o: w32/src/w32_dlg.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -2372,6 +2380,19 @@ $(W32A5_EXE): w32/tests/w32a5_win.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
 	         $(BUILD_DIR)/user/w32a5_win.obj $(K32_IMPLIB) $(U32_IMPLIB) \
 	         $(G32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (W32A-5 USER32 window/message fixture)"
+
+# W32APP_PLAN.md phase W32A-6: dialog/menu/timer/caret/accel/clipboard/hook/
+# DrawText/resource guest fixture.  Links K32+U32; exercises the surface
+# that landed in w32/src/w32_dlg.c and w32/src/w32_rsrc.c.
+W32A6_EXE := $(BUILD_DIR)/user/w32a6_dlg.exe
+$(W32A6_EXE): w32/tests/w32a6_dlg.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a6_dlg.obj
+	lld-link -subsystem:console -entry:main -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a6_dlg.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(G32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-6 USER32 dialog/menu/clipboard/resource fixture)"
+
 MCRT_IMPLIB := $(BUILD_DIR)/user/msvcrt.lib
 
 $(MCRT_IMPLIB): w32/tests/msvcrt.def
@@ -2918,7 +2939,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -3093,6 +3114,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(W32A3T_EXE) $(INITRD_DIR)/tests/w32a3_threads.exe
 	@cp $(W32A3L_EXE) $(INITRD_DIR)/tests/w32a3_tls.exe
 	@cp $(W32A5_EXE) $(INITRD_DIR)/tests/w32a5_win.exe
+	@cp $(W32A6_EXE) $(INITRD_DIR)/tests/w32a6_dlg.exe
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3384,6 +3406,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a3 \
                 $(BUILD_DIR)/test_w32_a4 \
                 $(BUILD_DIR)/test_w32_a5 \
+                $(BUILD_DIR)/test_w32_a6 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3505,6 +3528,16 @@ $(BUILD_DIR)/test_w32_a5: tests/unit/test_w32_a5.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I . \
 	          tests/unit/test_w32_a5.c -lpthread -o $@
+
+# W32A-6: USER32 breadth II — dialogs, menus, resources, timers, clipboard,
+# hooks, Draw* helpers.  Same inclusion style as W32A-5 (compile w32_dlg.c
+# and w32_rsrc.c alongside user32_win.c; the test itself supplies a
+# compositor stub like the a3/a4/a5 gates).
+$(BUILD_DIR)/test_w32_a6: tests/unit/test_w32_a6.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I tests/unit/glstub -I . \
+	          tests/unit/test_w32_a6.c -lpthread -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.

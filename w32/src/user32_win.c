@@ -185,7 +185,10 @@ _Static_assert(sizeof(ui_theme_t) == sizeof(ag_theme_t), "ag_theme_t drifted");
     (W32_WS_OVERLAPPED | W32_WS_CAPTION | W32_WS_SYSMENU | W32_WS_THICKFRAME | \
      W32_WS_MINIMIZEBOX | W32_WS_MAXIMIZEBOX | W32_WS_POPUP | W32_WS_VISIBLE | \
      W32_WS_BORDER | W32_WS_DLGFRAME | W32_WS_VSCROLL | W32_WS_HSCROLL | \
-     W32_WS_CHILD | W32_WS_DISABLED | W32_WS_CLIPSIBLINGS | W32_WS_CLIPCHILDREN)
+     W32_WS_CHILD | W32_WS_DISABLED | W32_WS_CLIPSIBLINGS | W32_WS_CLIPCHILDREN | \
+     W32_DS_MODALFRAME | W32_DS_SETFONT | W32_DS_CENTER | W32_DS_ABSALIGN | \
+     W32_DS_SYSMODAL | W32_DS_3DLOOK | W32_DS_FIXEDSYS | W32_DS_NOFAILCREATE | \
+     W32_DS_CONTROL | W32_DS_CENTERMOUSE | W32_DS_CONTEXTHELP)
 #define UI_EXSTYLE_KNOWN \
     (W32_WS_EX_TOPMOST | W32_WS_EX_TOOLWINDOW | W32_WS_EX_LAYERED | \
      W32_WS_EX_APPWINDOW | W32_WS_EX_CLIENTEDGE | W32_WS_EX_DLGMODALFRAME | \
@@ -1053,6 +1056,11 @@ static void ui_pump(void) {
             if (++guard > 32) break;
         }
     }
+    /* W32A-6: let the dialog/timer layer fire due timers each pump tick.
+     * A weak alias means the symbol resolves to a no-op when w32_dlg.o is
+     * not linked (host unit tests that don't pull w32_dlg.o). */
+    extern __attribute__((weak)) void w32_dlg_fire_timers(void);
+    if (w32_dlg_fire_timers) w32_dlg_fire_timers();
 }
 
 /* ---- dispatch ------------------------------------------------------------ */
@@ -2980,4 +2988,20 @@ W32ABI int32_t MessageBoxA(W32_HWND owner, const char *text,
     (void)owner; (void)type;
     ag_alert(caption ? caption : "Message", text ? text : "");
     return 1;
+}
+
+/* Helper for dialog-item enumeration: list children of `parent` in
+ * creation order.  Used by w32_dlg.c's GetDlgItem so it can walk
+ * children regardless of the top-level z-order.  Returns the count
+ * (clamped to `max`), and fills the first `min(n,max)` entries. */
+int w32_win_count_and_list(W32_HWND parent, W32_HWND *out, int max) {
+    int pi = w32_win_index_from_hwnd(parent);
+    if (pi < 0 || max <= 0 || !out) return 0;
+    int n = 0;
+    for (int i = 0; i < UI_MAX_WINDOWS && n < max; i++) {
+        if (!windows[i].in_use) continue;
+        if (windows[i].parent != pi) continue;
+        out[n++] = idx_to_hwnd(i);
+    }
+    return n;
 }

@@ -139,4 +139,9 @@ int w32_module_refcount(W32_HMODULE mod);
 /* Number of live modules, for leak checking across load/free cycles. */
 int w32_module_count(void);
 
+/* W32A-6: return the raw file bytes (and mapped base, if desired) for a
+ * module handle.  Used by w32_rsrc.c to reparse the PE and walk .rsrc.
+ * Returns 1 on success, 0 if the module is a built-in with no mapping. */
+int w32_module_file_bytes(void *hModule, const uint8_t **data_out, size_t *size_out);
+
 #endif /* AURALITE_W32_MODULE_H */

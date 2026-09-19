@@ -463,7 +463,7 @@ EXPECTED_UNION = 611
 # Current personality coverage of that union (w32/src/w32_bind.c: 275 K/U/G
 # exports after W32A-4 (264 after W32A-3); the W32A-0 baseline was
 # 44 exports, gap 569).
-EXPECTED_GAP = 209     # W32A-5 closed 132 of the 341 the W32A-4 tree left
+EXPECTED_GAP = 122     # W32A-6 closed 87 of the 209 the W32A-5 tree left (dialogs/menus/clipboard/resources)
 
 KUG = {"kernel32.dll", "user32.dll", "gdi32.dll"}
 DLL_OF = {"K32": "kernel32.dll", "U32": "user32.dll", "G32": "gdi32.dll"}

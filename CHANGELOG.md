@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-6 — USER32 breadth II: dialogs, menus, clipboard, resources] 2026-09-18
+
+USER32 gains the modal-dialog engine, the menu HMENU surface, per-thread
+timers, the system caret, accelerator tables, a real clipboard wired to
+the compositor's ag_set_clipboard/ag_get_clipboard round-trip, thread-
+local hooks, and the DrawText/DrawFocusRect/DrawEdge/DrawFrameControl/
+DrawIconEx/NotifyWinEvent drawing helpers.  The PE resource walker in
+w32_pe.c is now exposed to applications through FindResource/W/Ex,
+LoadResource, LockResource, SizeofResource, FreeResource, and a
+LoadString/LoadIcon/LoadCursor/LoadImage front-end; a new
+w32_module_file_bytes accessor in w32_module.c exposes the EXE's raw
+file bytes so the rsrc layer can reparse without mapping a second copy.
+Per D5, raster fidelity (glyph shaping, themed menus, ICO/BMP decode)
+is deferred to W32A-7 and A-8; limitations are called out in comments
+in w32_rsrc.c and w32_dlg.c rather than silently half-supported.  The w32a6_dlg.asm fixture carries its own hand-emitted .rsrc (an
+RT_DIALOG/1 template and an RT_STRING/1 block; lld-link derives the
+resource data directory from the .rsrc section name, and the two
+data-entry RVAs are `wrt ..imagebase` relocations) and exercises
+FindResourceW/LoadResource/LockResource/SizeofResource, LoadStringW, a
+DialogBoxIndirectParamW modal driven from that template
+(SetDlgItemText/Int plus GetDlgItemText/Int round-trip,
+CheckDlgButton/CheckRadioButton/IsDlgButtonChecked, MapDialogRect,
+GetDialogBaseUnits) with a SetTimer/WM_TIMER handler whose second tick
+EndDialogs the loop, OpenClipboard/EmptyClipboard/GetClipboardOwner/
+GetOpenClipboardWindow, a CF_TEXT SetClipboardData/GetClipboardData
+round-trip, RegisterClipboardFormatW/CloseClipboard, a popup menu
+(CreatePopupMenu/AppendMenuW/CheckMenuItem/GetMenuItemCount/
+GetMenuItemID), CreateAcceleratorTableW, a thread-local
+SetWindowsHookExW/CallNextHookEx/UnhookWindowsHookEx hook, the caret
+family, and DrawTextW/DrawFocusRect from WM_PAINT; one marker per
+section, and the integration gate test_w32a6_user32dlg.sh looks for
+them.
+Global WH_* hooks refuse with ERROR_CALL_NOT_IMPLEMENTED (D9: name the
+refusal). Export bindings are added for 101 new USER32/KERNEL32
+symbols and wired through w32_bind.c.
+
+## [W32A-5 — W-first USER32 window and message core] — see prior commit
+
 ## [W32A-4 — the table-driven SEH unwinder] 2026-09-13 — faults unwind for real
 
 The `sigsetjmp` shim is deleted; faults and `RaiseException` now dispatch

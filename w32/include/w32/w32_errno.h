@@ -71,6 +71,9 @@
 #define W32_ERROR_CLASS_DOES_NOT_EXIST 1410u  /* user32: no such class */
 #define W32_ERROR_SEM_TIMEOUT 121u        /* fs: WaitNamedPipe timed out */
 #define W32_ERROR_PIPE_CONNECTED 535u     /* fs: ConnectNamedPipe, already */
+/* W32A-6: resource lookup codes. */
+#define W32_ERROR_RESOURCE_DATA_NOT_FOUND 1812u
+#define W32_ERROR_RESOURCE_TYPE_NOT_FOUND 1813u
 
 /* The per-process last-error slot.  Win32 makes this thread-local; AuraLite's
  * w32 personality is single-threaded per process for now, so a process-wide
