@@ -91,7 +91,7 @@ il_assert_no_grep "$LOG1" "A6-[A-Z-]*-FAIL" \
     "no section reported a failure"
 il_assert_grep "$LOG1" "W32A6-DLG-OK" \
     "the fixture reported the full sequence succeeded"
-il_assert_grep "$LOG1" "'/apps/w32run' (tid [0-9]*) exited (code=78)" \
+il_assert_grep "$LOG1" "'/apps/w32run' \\(tid [0-9]+\\) exited \\(code=78\\)" \
     "the PE exited with its success status (78)"
 
 il_assert_no_grep "$LOG1" "unresolved import" \

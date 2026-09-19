@@ -65,6 +65,12 @@ typedef struct {
 
 static w32_module_t modules[W32_MODULE_MAX];
 static int          modules_ready;
+/* W32A-7: the slot the registered main EXE occupies (-1 = none).  The
+ * builtins take slots 0..N in w32_module_init(), so the EXE is NOT in
+ * slot 0 -- GetModuleHandleA(NULL) used to return slot_to_handle(0),
+ * which is kernel32, and FindResource on it refused everything the
+ * image asked itself for. */
+static int          exe_slot = -1;
 
 /* W32A-1 recursion state.  Single-threaded, so globals are exact: the stack
  * of DLL names currently being loaded (the cycle detector), the main
@@ -176,10 +182,15 @@ static int slot_index(const w32_module_t *m) {
 W32_HMODULE W32ABI w32_GetModuleHandleA(const char *name) {
     w32_module_init();
 
-    /* NULL asks for the main executable.  It is not one of our modules --
-     * w32run is an ELF -- so report the process token rather than inventing
-     * a base a program might try to read headers from. */
-    if (!name) return slot_to_handle(0);
+    /* NULL asks for the main executable.  w32_module_register_exe()
+     * recorded its slot (W32A-7); before any exe is registered -- host
+     * harnesses, early startup -- the process token (slot 0) keeps the
+     * historical non-NULL contract. */
+    if (!name) {
+        if (exe_slot >= 0 && modules[exe_slot].used)
+            return slot_to_handle(exe_slot);
+        return slot_to_handle(0);
+    }
 
     w32_module_t *m = find_by_name(name);
     if (!m) {
@@ -755,7 +766,8 @@ int W32ABI w32_FreeLibrary(W32_HMODULE mod) {
 /* W32A-4: the exe slot.  Builtin (never unmapped/detached) but WITH a
  * mapping, unlike the loader-code built-ins: the unwinder must resolve
  * fault PCs inside it. */
-void w32_module_register_exe(uint8_t *base, size_t span) {
+void w32_module_register_exe(uint8_t *base, size_t span,
+                             const uint8_t *file, size_t file_size) {
     int i, free = -1;
     if (!base || span == 0)
         return;
@@ -765,8 +777,10 @@ void w32_module_register_exe(uint8_t *base, size_t span) {
             if (free < 0) free = i;
             continue;
         }
-        if (modules[i].base == base)
-            return;     /* idempotent */
+        if (modules[i].base == base) {
+            exe_slot = i;  /* idempotent */
+            return;
+        }
     }
     if (free < 0)
         return;         /* table full: the unwinder sees DLLs only */
@@ -776,8 +790,24 @@ void w32_module_register_exe(uint8_t *base, size_t span) {
     modules[free].refs = 1;
     modules[free].base = base;
     modules[free].span = span;
+    /* W32A-7: keep the file image for the resource walker (raw-offset
+     * layout); w32run's read buffer is static storage. */
+    modules[free].file = (uint8_t *)file;
+    modules[free].file_size = file_size;
     strcpy(modules[free].name, "(exe)");
+    exe_slot = free;
     modules[free].seq = load_seq++;
+}
+
+/* W32A-7: the registered main EXE's handle, 0 when none.  The PS half's
+ * GetModuleHandleW(NULL) used to hand out its own table's cookie, which
+ * no resource walk could resolve -- the A-6 gate's first machine run
+ * died on exactly that. */
+void *w32_module_exe_handle(void) {
+    w32_module_init();
+    if (exe_slot >= 0 && modules[exe_slot].used)
+        return slot_to_handle(exe_slot);
+    return 0;
 }
 
 int w32_module_find_by_address(const void *pc, uint8_t **base, size_t *span) {
@@ -845,9 +875,10 @@ int w32_module_file_bytes(void *hModule, const uint8_t **data_out, size_t *size_
         if (size_out) *size_out = m->file_size;
         return 1;
     }
-    /* Builtin with base != NULL: the main EXE registered by
-     * w32_module_register_exe() sets base/span but keeps file=NULL.
-     * The EXE is mapped in-place, so base points at the PE header. */
+    /* Builtin with base != NULL: the main EXE.  Since W32A-7 it also
+     * carries the original file bytes (see register_exe), so the first
+     * branch above takes it; this mapped-image fallback remains for
+     * images registered without a file. */
     if (m->base && m->span) {
         if (data_out) *data_out = m->base;
         if (size_out) *size_out = m->span;

@@ -1,10 +1,94 @@
-; gdi32.def — export list for the GDI32 import library.  WIN32_PLAN.md W32-5.
+; gdi32.def — export list for the GDI32 import library.
+; WIN32_PLAN.md phase W32-5 wrote the first seven (the A-5 drawing
+; core); W32APP_PLAN.md W32A-7 adds the eighty ladder-measured GDI
+; breadth symbols (DCs, blitting, regions, fonts, palettes).  Kept
+; in lockstep with the G32 rows of w32/src/w32_bind.c.
 LIBRARY GDI32.dll
 EXPORTS
+    BitBlt
+    CombineRgn
+    CreateBitmap
+    CreateCompatibleBitmap
+    CreateCompatibleDC
+    CreateDIBSection
+    CreateFontA
+    CreateFontIndirectA
+    CreateFontIndirectW
+    CreateFontW
+    CreateHatchBrush
+    CreatePalette
+    CreatePatternBrush
+    CreatePen
+    CreateRectRgn
+    CreateRectRgnIndirect
     CreateSolidBrush
+    DPtoLP
+    DeleteDC
     DeleteObject
+    Ellipse
+    EndDoc
+    EndPage
+    EnumFontFamiliesExW
+    ExcludeClipRect
+    ExtCreatePen
+    ExtTextOutA
+    ExtTextOutW
+    GdiAlphaBlend
+    GetBkMode
+    GetCharABCWidthsFloatA
+    GetCharWidth32A
+    GetCharWidth32W
+    GetCharWidthA
+    GetCharWidthW
+    GetCharacterPlacementW
+    GetClipRgn
+    GetCurrentObject
+    GetDIBits
+    GetDeviceCaps
+    GetObjectA
+    GetObjectW
+    GetOutlineTextMetricsA
+    GetPixel
+    GetROP2
+    GetStockObject
+    GetTextExtentExPointA
+    GetTextExtentExPointW
+    GetTextExtentPoint32A
+    GetTextExtentPoint32W
+    GetTextExtentPointA
+    GetTextExtentPointW
+    GetTextMetricsA
+    GetTextMetricsW
+    IntersectClipRect
     LineTo
     MoveToEx
+    OffsetWindowOrgEx
+    PatBlt
+    Polygon
+    Polyline
+    RealizePalette
+    RectVisible
+    Rectangle
+    RestoreDC
+    RoundRect
+    SaveDC
+    SelectClipRgn
+    SelectObject
+    SelectPalette
+    SetBkColor
+    SetBkMode
+    SetBrushOrgEx
+    SetDIBits
+    SetMapMode
+    SetPaletteEntries
     SetPixel
+    SetROP2
+    SetTextAlign
     SetTextColor
+    SetWindowOrgEx
+    StartDocW
+    StartPage
     TextOutA
+    TranslateCharsetInfo
+    UnrealizeObject
+    UpdateColors

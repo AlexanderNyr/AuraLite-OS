@@ -75,6 +75,7 @@ typedef struct {
 static fake_win_t fw[FAKE_WINS];
 static int fake_focused, fake_capture=-1;
 static int clears,fills,texts,outlines,renders;
+static int32_t blit_last[4];
 static char clip_buf[4096];
 static int text_last_xy[2]; static char text_last_str[256];
 static uint32_t text_last_fg, text_last_bg;
@@ -132,6 +133,7 @@ int ag_get_clipboard(char*,int);
 #include "../../w32/src/w32_errno.c"
 #include "../../w32/src/user32_win.c"
 #include "../../w32/src/user32.c"
+#include "../../w32/src/w32_gdi.c"      /* W32A-7: the DC/drawing half */
 #include "../../w32/src/w32_pe.c"
 
 int ag_theme_get(ui_theme_t *out){if(out)memset(out,0,sizeof(ui_theme_t));return 0;}
@@ -158,6 +160,23 @@ int ag_rect_outline(int wid,int x,int y,int w,int h,uint32_t c){
 void ag_render_now(void){renders++;}
 void ag_alert(const char*,const char*){}
 int ag_set_clipboard(const char *text){snprintf(clip_buf,sizeof clip_buf,"%s",text?text:"");return 0;}
+/* W32A-7 additions the raster engine calls (see w32_gdi.c's host block). */
+static int blit_alpha_calls;
+int ag_blit_alpha(int wid,int32_t x,int32_t y,uint32_t w,uint32_t h,
+                  const uint32_t *argb,uint32_t stride){
+    (void)argb;(void)stride;
+    if(wid<1||wid>FAKE_WINS)return -1;
+    blit_alpha_calls++;
+    blit_last[0]=x;blit_last[1]=y;blit_last[2]=(int32_t)w;blit_last[3]=(int32_t)h;
+    return 0;
+}
+int ag_get_pixel(int wid,int32_t x,int32_t y){
+    if(wid<1||wid>FAKE_WINS)return -1;
+    (void)x;(void)y;
+    return 0x00000000;                    /* the suite's windows are black */
+}
+static uint32_t host_theme_dpi = 96;
+uint32_t w32_gdi_host_dpi(void){return host_theme_dpi;}
 int ag_get_clipboard(char *b,int sz){if(!b||sz<=0)return-1;snprintf(b,(size_t)sz,"%s",clip_buf);return 0;}
 
 /* w32_module_file_bytes — routed to our synthetic PE. */
@@ -474,8 +493,11 @@ int main(void) {
         ok(outlines==1 && outline_last[0]==1 && outline_last[1]==2 &&
            outline_last[2]==33 && outline_last[3]==43,
            "DrawFocusRect -> ag_rect_outline");
-        ok(DrawIcon(0,0,0,0)==1,"DrawIcon");
-        ok(DrawIconEx(0,0,0,0,0,0,0,0,0)==1,"DrawIconEx");
+        /* W32A-7: a null icon is an invalid handle now -- the A-6 stub
+         * returned TRUE without drawing anything; the engine draws real
+         * icons and refuses real failures. */
+        ok(DrawIcon(0,0,0,0)==0,"DrawIcon(null) refuses");
+        ok(DrawIconEx(0,0,0,0,0,0,0,0,0)==0,"DrawIconEx(null) refuses");
         NotifyWinEvent(0,0,0,0);
         ok(1,"NotifyWinEvent is safe");
     }

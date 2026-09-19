@@ -86,6 +86,8 @@ static const gui_theme_t default_theme = {
     .icon_size       = 32,
     .icon_pad        = 8,
     .win_round       = 4,
+    /* Screen DPI (W32A-7): 96 is the system default; gtheme --dpi owns it. */
+    .dpi             = 96,
 };
 
 const gui_theme_t *gui_default_theme(void) { return &default_theme; }
@@ -1011,6 +1013,31 @@ int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
     w->back[y * (int32_t)w->back_w + x] = color;
     return 0;
 }
+
+int gui_get_pixel(int wid, int32_t x, int32_t y, uint32_t *out) {
+    if (!out) return -1;
+    if (!win_alive(wid)) return -1;
+    gui_win_t *w = &windows[wid];
+    if (x < 0 || y < 0 || (uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h) return -1;
+    *out = w->back[y * (int32_t)w->back_w + x];
+    return 0;
+}
+
+int gui_font_metrics(uint32_t *width, uint32_t *height,
+                     uint32_t *ascent, uint32_t *descent,
+                     uint32_t *num_glyphs) {
+    const struct psf_font *f = psf_get_font();
+    if (!f || f->magic != PSF2_MAGIC || f->width == 0 || f->height == 0) return -1;
+    if (width)       *width       = f->width;
+    if (height)      *height      = f->height;
+    /* The shipped VGA face keeps two descender rows (g/j/p/q/y); there is
+     * no baseline record in PSF2, so the split is measured, not guessed. */
+    if (ascent)      *ascent      = f->height - 2;
+    if (descent)     *descent     = 2;
+    if (num_glyphs)  *num_glyphs  = f->num_glyphs;
+    return 0;
+}
+
 
 int gui_fill_rect(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H, uint32_t color) {
     if (!win_alive(wid)) return -1;

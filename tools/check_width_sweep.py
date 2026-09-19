@@ -59,14 +59,14 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 388   # was 370; W32APP_PLAN.md phase W32A-5 added 18
-                              # in kernel/gui/gui_syscalls.c -- the ten new
-                              # GUI_OP_* arms (window focus/minimize/maximize/
-                              # restore, lower, flags, z, capture, screen,
-                              # focused/top, mouse, invalidate-rect) each
-                              # return one syscall word and use the same
-                              # (uint64_t)-at-the-boundary idiom as the arms
-                              # above them.  They are ABI words, not
+BASELINE_UINT64_CASTS = 394   # was 388 (W32A-5's 18, same file, same
+                              # idiom); W32APP_PLAN.md phase W32A-7 added 6
+                              # in kernel/gui/gui_syscalls.c -- the two new
+                              # GUI_OP_* arms (GET_PIXEL returning a content
+                              # pixel, FONT_INFO copying five metric words)
+                              # each return one syscall word and use the same
+                              # (uint64_t)-at-the-boundary idiom as every
+                              # arm above them.  They are ABI words, not
                               # addresses: uintptr_t would be a lie here on
                               # every lane (the syscall ABI is uint64_t), so
                               # the pin moves rather than the code

@@ -340,6 +340,26 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_invalidate_rect((int)a2, lo32(a3), hi32(a3),
                                              lo32(a4), hi32(a4));
+    case GUI_OP_GET_PIXEL: {
+        /* W32A-7: one content pixel back.  Out-of-range coordinates are
+         * an error, not pixel 0 -- the caller distinguishes them. */
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        uint32_t px = 0;
+        if (gui_get_pixel((int)a2, lo32(a3), hi32(a3), &px) != 0)
+            return (uint64_t)-1;
+        return (uint64_t)px;
+    }
+    case GUI_OP_FONT_INFO: {
+        /* W32A-7: the active font's geometry, five u32s to the caller. */
+        if (!validate_user_range((void *)(uintptr_t)a2, 5 * sizeof(uint32_t), 1))
+            return (uint64_t)-1;
+        uint32_t m[5];
+        if (gui_font_metrics(&m[0], &m[1], &m[2], &m[3], &m[4]) != 0)
+            return (uint64_t)-1;
+        if (copy_to_user((void *)(uintptr_t)a2, m, sizeof m) != 0)
+            return (uint64_t)-1;
+        return 0;
+    }
     }
     return (uint64_t)-1;
 }

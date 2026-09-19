@@ -157,22 +157,16 @@ W32ABI W32_BOOL    GetClientRect(W32_HWND hwnd, W32_RECT *r);
 W32ABI int32_t     MessageBoxA(W32_HWND owner, const char *text,
                                const char *caption, W32_UINT type);
 
-/* ---- GDI32 --------------------------------------------------------------- */
+/* ---- the GDI-adjacent calls USER32 itself exports ------------------------ *
+ * W32A-7 moved the implementations to w32/src/w32_gdi.c and its gdi32.h;
+ * these declarations stay because the calls are user32.dll exports
+ * (FillRect, the DrawText family below) or were declared here since W32-5
+ * (MoveToEx/LineTo/SetPixel/SetTextColor/TextOutA are gdi32.dll exports
+ * whose prototypes now live in gdi32.h -- which includes this file, so
+ * re-declaring them here would be redundant). */
 W32ABI W32_HDC   BeginPaint(W32_HWND hwnd, W32_PAINTSTRUCT *ps);
 W32ABI W32_BOOL  EndPaint(W32_HWND hwnd, const W32_PAINTSTRUCT *ps);
 W32ABI int32_t   FillRect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush);
-W32ABI W32_BOOL  TextOutA(W32_HDC hdc, int32_t x, int32_t y,
-                          const char *s, int32_t len);
-W32ABI W32_BOOL  MoveToEx(W32_HDC hdc, int32_t x, int32_t y, W32_POINT *old);
-W32ABI W32_BOOL  LineTo(W32_HDC hdc, int32_t x, int32_t y);
-W32ABI W32_DWORD SetPixel(W32_HDC hdc, int32_t x, int32_t y, W32_DWORD color);
-W32ABI W32_DWORD SetTextColor(W32_HDC hdc, W32_DWORD color);
-
-/* CreateSolidBrush returns a brush whose "handle" encodes the colour, so no
- * allocation and no object table are needed for the one GDI object this
- * phase uses.  DeleteObject accepts it and does nothing. */
-W32ABI W32_HBRUSH CreateSolidBrush(W32_DWORD color);
-W32ABI W32_BOOL   DeleteObject(void *obj);
 
 /* Win32 packs colours as 0x00BBGGRR; AuraLite uses 0x00RRGGBB.  Exposed so the
  * test can assert the swap rather than infer it from pixels. */

@@ -177,11 +177,11 @@ il_assert_grep "$LOG" "w32run: refused: malformed application manifest" \
 # Eight fixtures prove their claims (0), six loader/gate refusals (1), one
 # delay miss (77).  Attributed to w32run so the shell's own exit cannot
 # miscount; 3 must never appear anywhere.
-a1_assert_exact "$LOG" "'/apps/w32run' \\(tid [0-9]+\\) exited \\(code=0\\)" 8 \
+a1_assert_exact "$LOG" "\\[shell\\] '/apps/w32run' \\(tid [0-9]+\\) exited \\(code=0\\)" 8 \
     "eight runs proved their claims"
-a1_assert_exact "$LOG" "'/apps/w32run' \\(tid [0-9]+\\) exited \\(code=1\\)" 6 \
+a1_assert_exact "$LOG" "\\[shell\\] '/apps/w32run' \\(tid [0-9]+\\) exited \\(code=1\\)" 6 \
     "six runs refused cleanly"
-a1_assert_exact "$LOG" "'/apps/w32run' \\(tid [0-9]+\\) exited \\(code=77\\)" 1 \
+a1_assert_exact "$LOG" "\\[shell\\] '/apps/w32run' \\(tid [0-9]+\\) exited \\(code=77\\)" 1 \
     "one delay miss exited 77"
 il_assert_no_grep "$LOG" "exited \\(code=3\\)" \
     "no fixture failed its own assertions"

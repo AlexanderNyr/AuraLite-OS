@@ -13,6 +13,7 @@
  *
  * Headless CLI (windowless -- note these touch NO gated syscall):
  *   gtheme --save 0xRRGGBB   persist accent to the dotfile (fsync'd)
+ *   gtheme --dpi N           persist screen DPI (W32A-7 GDI LOGPIXELSX/Y)
  *   gtheme --show            print the persisted accent (or DEFAULT)
  *   gtheme --selftest        save/load round-trip on /tmp, all fields
  */
@@ -118,6 +119,23 @@ static int cli_save(const char *hex) {
     return 0;
 }
 
+static int cli_dpi(const char *num) {
+    /* W32A-7: the screen-DPI knob GDI's LOGPIXELSX/Y honour for
+     * DPI-aware Win32 processes.  Like --save: dotfile only, the next
+     * desktop start (glaunch) applies it. */
+    int dpi = atoi(num);
+    if (dpi < 48 || dpi > 480) {
+        printf("GTHEME ERROR: dpi '%s' out of range 48..480\n", num);
+        return 1;
+    }
+    ag_theme_t t;
+    if (ag_theme_get(&t) != 0) { printf("GTHEME ERROR: theme read\n"); return 1; }
+    t.dpi = (uint32_t)dpi;
+    if (ag_theme_save2(DOTFILE, &t) != 0) { printf("GTHEME ERROR: save\n"); return 1; }
+    printf("GTHEME DPI %d (applies at next desktop start)\n", dpi);
+    return 0;
+}
+
 static int cli_show(void) {
     ag_theme_t t;
     if (ag_theme_load(DOTFILE, &t) != 0) {
@@ -155,7 +173,8 @@ int main(int argc, char **argv) {
         if (strcmp(argv[1], "--show") == 0)     return cli_show();
         if (strcmp(argv[1], "--selftest") == 0) return cli_selftest();
         if (strcmp(argv[1], "--save") == 0 && argc > 2) return cli_save(argv[2]);
-        printf("usage: gtheme [--save 0xRRGGBB | --show | --selftest]\n");
+        if (strcmp(argv[1], "--dpi") == 0 && argc > 2) return cli_dpi(argv[2]);
+        printf("usage: gtheme [--save 0xRRGGBB | --dpi N | --show | --selftest]\n");
         return 1;
     }
 

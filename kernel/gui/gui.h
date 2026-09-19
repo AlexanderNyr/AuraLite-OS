@@ -73,6 +73,12 @@ typedef struct gui_theme {
     uint32_t icon_pad;
     /* Rounding (0 = off). */
     uint32_t win_round;
+    /* Screen DPI (W32APP_PLAN.md W32A-7).  The compositor has no EDID
+     * path, so the system's truth is theme-owned: 96 by default, changed
+     * by gtheme --dpi.  GDI's LOGPIXELSX/Y report it to DPI-aware Win32
+     * processes (unaware ones get Win32's compatibility 96 -- the w32
+     * personality's call, not the kernel's). */
+    uint32_t dpi;
 } gui_theme_t;
 
 /* Default theme accessor. */
@@ -313,6 +319,22 @@ int gui_draw_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_
 int gui_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t color);
 int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color);
 int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
+
+/* Read one content pixel back (W32A-7: GetPixel on a window DC).  The
+ * compositor owns window pixels, so the read crosses the boundary here
+ * rather than the personality keeping a second, drifting copy.  Returns
+ * 0 with *out set, -1 when the window is dead or the point is outside
+ * the content area. */
+int gui_get_pixel(int wid, int32_t x, int32_t y, uint32_t *out);
+
+/* The active font's metrics (W32A-7: GDI font layer truth).  Fills the
+ * PSF geometry the shipped font actually has -- width/height in pixels,
+ * ascent/descent in rows (the VGA 8x16 face keeps 2 descender rows), and
+ * the glyph count.  Returns 0, or -1 when no font is loaded yet. */
+int gui_font_metrics(uint32_t *width, uint32_t *height,
+                     uint32_t *ascent, uint32_t *descent,
+                     uint32_t *num_glyphs);
+
 void gui_frame_begin(int wid);
 void gui_frame_end(int wid);
 int gui_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,

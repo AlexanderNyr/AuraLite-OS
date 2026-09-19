@@ -31,6 +31,7 @@ enum {
     GUI_OP_SET_CAPTURE, GUI_OP_GET_CAPTURE, GUI_OP_GET_SCREEN,
     GUI_OP_GET_FOCUSED, GUI_OP_TOP_WINDOW, GUI_OP_GET_MOUSE,
     GUI_OP_INVAL_RECT,
+    /* W32A-7 */ GUI_OP_GET_PIXEL, GUI_OP_FONT_INFO,
 };
 
 #define SYS_GUI_CALL_NUM    200
@@ -145,6 +146,59 @@ int ag_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) {
 int ag_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
     return (int)gui_call(GUI_OP_DRAW_PIXEL, wid, pack2(x, y), color, 0);
 }
+int ag_get_pixel(int wid, int32_t x, int32_t y) {
+    /* The kernel returns the raw 0xAARRGGBB pixel on success and a
+     * 64-bit -1 on error.  An opaque pixel (A=255) has bit 31 set, so
+     * a blind (int) cast turns every opaque read-back into a negative
+     * "error" -- exactly what the W32A-7 gate caught in guest: the
+     * GDI engine's GetPixel read CLR_INVALID for pixels it had just
+     * blitted.  Errors are anything above 32 bits; the colour comes
+     * back alpha-stripped (the engine converts to COLORREF, which has
+     * no alpha, anyway). */
+    uint64_t r = gui_call(GUI_OP_GET_PIXEL, wid, pack2(x, y), 0, 0);
+    if (r > 0xFFFFFFFFull) return -1;
+    return (int)(uint32_t)(r & 0x00FFFFFFull);
+}
+int ag_font_metrics(uint32_t *width, uint32_t *height,
+                    uint32_t *ascent, uint32_t *descent,
+                    uint32_t *num_glyphs) {
+    uint32_t m[5];
+    int r = (int)gui_call(GUI_OP_FONT_INFO, (uint64_t)(uintptr_t)m, 0, 0, 0);
+    if (r != 0) return -1;
+    if (width)      *width      = m[0];
+    if (height)     *height     = m[1];
+    if (ascent)     *ascent     = m[2];
+    if (descent)    *descent    = m[3];
+    if (num_glyphs) *num_glyphs = m[4];
+    return 0;
+}
+
+/* ---- Opaque text / rect outline (W32A-7) ----
+ * Built from the primitives above: an opaque text line is a background
+ * box sized by the font metrics plus the compositor's own glyph pass,
+ * an outline is four fill rects.  No second font copy -- the metrics
+ * come from the kernel through ag_font_metrics. */
+int ag_text(int wid, const char *text, int x, int y,
+            uint32_t fg, uint32_t bg) {
+    if (!text) return -1;
+    if (wid < 0) return 0;
+    uint32_t fw = 8, fh = 16;
+    ag_font_metrics(&fw, &fh, 0, 0, 0);
+    size_t n = 0;
+    while (text[n]) n++;
+    if (n) ag_fill_rect(wid, x, y, (uint32_t)n * fw, fh, bg);
+    return ag_draw_text(wid, x, y, text, fg);
+}
+
+int ag_rect_outline(int wid, int x, int y, int w, int h, uint32_t color) {
+    if (wid < 0) return 0;
+    if (w <= 0 || h <= 0) return 0;
+    ag_fill_rect(wid, x, y, (uint32_t)w, 1, color);
+    ag_fill_rect(wid, x, y + h - 1, (uint32_t)w, 1, color);
+    ag_fill_rect(wid, x, y, 1, (uint32_t)h, color);
+    ag_fill_rect(wid, x + w - 1, y, 1, (uint32_t)h, color);
+    return 0;
+}
 
 /* ---- Bulk pixel transfer ----
  *
@@ -247,6 +301,7 @@ static const theme_field_t theme_fields[] = {
     TF(shadow_color), TF(shadow_offset),
     TF(taskbar_h), TF(titlebar_h), TF(border_w), TF(resize_grip),
     TF(icon_size), TF(icon_pad), TF(win_round),
+    TF(dpi),
 };
 #define THEME_FIELD_N (int)(sizeof(theme_fields) / sizeof(theme_fields[0]))
 

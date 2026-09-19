@@ -2,6 +2,87 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-7 — GDI32 breadth: DCs, blitting, regions, fonts] 2026-09-19
+
+The personality grows a real GDI raster engine (w32/src/w32_gdi.c, the
+first file of the phase): a typed handle table (bitmaps, pens, brushes,
+fonts, palettes, regions, icons, memory DCs) with the W32A-5 raw-colour
+convention kept as documented legacy; memory DCs and DIB sections
+(CreateCompatibleDC/CreateCompatibleBitmap/CreateDIBSection with
+top-down and bottom-up row order, GetDIBits/SetDIBits round-trips
+including the positive-height flip, 1/8/24/32bpp, CreateBitmap +
+CreatePatternBrush); blitting (BitBlt/PatBlt with the ledger's raster
+ops implemented in software and unsupported ROPs refusing by
+ERROR_CALL_NOT_IMPLEMENTED, GdiAlphaBlend per-pixel over the compositor
+blit); real rasterisation for Rectangle/Ellipse/RoundRect/Polygon/
+Polyline/FrameRect/FillRect with hatch and pattern brushes, brush
+origins, ROP2, save/restore DC state stacks, and region clipping
+(CreateRectRgn/CombineRgn/SelectClipRgn/GetClipRgn/ExcludeClipRect/
+IntersectClipRect/RectVisible); the font layer measured against the
+shipped PSF2 file (CreateFontA/W + Indirect, GetTextMetricsA/W,
+GetTextExtentPoint32/Ex, GetCharWidth*, GetCharABCWidthsFloat,
+GetOutlineTextMetricsA, EnumFontFamiliesExW, GetCharacterPlacementW,
+TranslateCharsetInfo — every metric asserted against the font bytes, not
+constants); 8-bit palettes realised into DIB colour tables
+(CreatePalette/SelectPalette/RealizePalette/SetPaletteEntries/
+UpdateColors/UnrealizeObject); DrawIconEx from the W32A-6 icon decode
+with a blob-keyed cache; printing refused fail-clean (StartDocW/
+StartPage/EndPage/EndDoc -> SP_ERROR, no printers exist); and
+GetDeviceCaps with LOGPIXELSX/Y multiplied by the manifest's dpiAware
+record from W32A-1 — unaware apps see 96, aware ones see the real
+gtheme-configured DPI (honoured, not hardcoded; the host fixture pins
+both sides).
+
+Window DCs raster into an ARGB temp and reach the screen through one
+ag_blit_alpha per call (the absolute-coordinate contract the A-5 gate
+established); GetPixel on a window DC reads back through the new
+GUI_OP_GET_PIXEL syscall, and the font layer asks GUI_OP_FONT_INFO for
+the active font's geometry instead of assuming 8x16.
+
+The host gate (tests/unit/test_w32_a7.c, 169 checks) draws a 64x48 scene
+and compares it BYTE-EXACT against an independent reference raster
+built in the test, walks ten documented ROPs (MERGECOPY refuses),
+asserts font metrics against a PSF2 parser in the test itself, proves
+the DPI contract with both a dpiAware and an unaware manifest fixture,
+and covers the object model (SelectObject round-trips, GetObjectW/A
+LOGPEN/LOGBRUSH/LOGFONT, 17 stock objects, DeleteObject idempotence),
+regions, DIBs, palettes, icons, printing refusals, and the window-DC
+compositor path (one ag_blit_alpha per FillRect/BitBlt, GetPixel
+readback). The guest fixture (w32/tests/w32a7_gdi.asm) and the
+integration gate (tests/integration/cases/test_w32a7_gdi.sh, 28
+assertions, two boots incl. the tinted-theme lane) run it all in QEMU.
+
+Running the gates for real (QEMU was absent for W32A-5/A-6) also fixed
+what the earlier phases' first machine runs exposed, all carried in
+this patch: the a6 fixture's p_fail misaligned the stack before
+WriteFile's movaps prologue; the Makefile linked w32a6_dlg.exe at
+-entry:main while the fixture exports mainCRTStartup; the a6 gate's
+exit-code pattern used unescaped ERE parens; ag_get_pixel cast a
+0xAARRGGBB pixel with bit 31 set into a negative "error"; and
+GetModuleHandleW(NULL) handed out the PS table's cookie instead of the
+loader-registered EXE, so FindResource on the image's own module
+refused everything (w32_module_register_exe now keeps the file bytes
+and both GetModuleHandle halves resolve the exe slot). The first full
+w32 suite run exposed two gate-only defects of the same kind: the
+W32A-1 exit-code triad counted the runner's receipt without anchoring
+it to the shell's attribution line, but the kernel reports every child
+exit twice ([thread] then [shell]), so all three counts read double;
+and the W32-5 user32 gate could never have passed headless — since
+W32A-4 an unhandled exception in a process that owns windows raises
+the MessageBoxA alert, which blocks on the GUI event queue until
+Enter/Esc/OK, so the hostile WNDPROC leg hung its boot until the 90s
+kill. That leg now runs in its own boot with a QEMU monitor socket,
+and the gate dismisses the alert with sendkey ret (the same key the
+A-4 gate sends through VNC) before asserting the PE died with a
+nonzero status, its window was reaped, and both shells exited
+cleanly.
+
+The width-sweep ratchet moved honestly: casts 388 -> 394, the six new
+GUI_OP_GET_PIXEL/GUI_OP_FONT_INFO arms in kernel/gui/gui_syscalls.c,
+same ABI-word idiom as the arms above them. Export bindings are added
+for 87 GDI32 symbols and wired through w32_bind.c; the import ledger
+gap closes 122 -> 41.
+
 ## [W32A-6 — USER32 breadth II: dialogs, menus, clipboard, resources] 2026-09-18
 
 USER32 gains the modal-dialog engine, the menu HMENU surface, per-thread

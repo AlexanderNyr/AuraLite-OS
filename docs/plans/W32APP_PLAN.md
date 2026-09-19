@@ -11,7 +11,7 @@
 | W32A-4 The table-driven SEH unwinder | ✅ done |
 | W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
 | W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ✅ shipped |
-| W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ⬜ planned |
+| W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ✅ shipped |
 | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ⬜ planned |
 | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ⬜ planned |
 | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ⬜ planned |
@@ -1338,7 +1338,7 @@ fixtures incl. `.rsrc`-bearing fixtures,
 
 ---
 
-### Phase W32A-7 — `GDI32` breadth: DCs, blitting, regions, fonts ⬜ PLANNED
+### Phase W32A-7 — `GDI32` breadth: DCs, blitting, regions, fonts ✅ SHIPPED (2026-09-19)
 
 **Objective:** a device-context model with memory DCs and blitting, region
 clipping, and font metrics — the drawing substrate PuTTY's terminal and

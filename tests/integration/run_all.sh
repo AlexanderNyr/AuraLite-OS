@@ -115,6 +115,7 @@ ALL_CASES=(
     test_w32_a4_unwind
     test_w32a5_user32win
     test_w32a6_user32dlg
+    test_w32a7_gdi
     test_ahci_large_read
     test_doom
     test_stack_guard

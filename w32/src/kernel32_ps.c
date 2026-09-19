@@ -1535,8 +1535,20 @@ W32ABI void *GetModuleHandleW(W32_LPCWSTR name) {
     int i;
 
     ps_mods_init_self();
-    if (!name)
+    if (!name) {
+        /* W32A-7: the main executable is the loader-registered EXE when
+         * one exists (w32run always registers it before the image runs);
+         * the PS cookie remains the answer for exe-less callers (host
+         * harnesses, early startup).  Weak-linked for the same reason
+         * as w32_dlg_fire_timers: the A-3 host harness amalgamates this
+         * file without w32_module.o. */
+        extern __attribute__((weak)) void *w32_module_exe_handle(void);
+        if (w32_module_exe_handle) {
+            void *exe = w32_module_exe_handle();
+            if (exe) return exe;
+        }
         return ps_mod_cookie(0);
+    }
     n8 = ps_w16_dup(name);
     if (!n8)
         return NULL;

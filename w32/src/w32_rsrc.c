@@ -23,6 +23,7 @@
 #include "w32/w32_pe.h"
 #include "w32/w32_module.h"
 #include "w32/w32_rsrc.h"
+#include "w32/gdi32.h"
 #include "w32/w32_errno.h"
 #include "w32/w32_utf.h"
 #include "w32/kernel32.h"
@@ -137,7 +138,13 @@ W32ABI int LoadStringA(void *m, W32_UINT id, char *buf, int cch) {
 /* ---- LoadIcon/Cursor/Image -------------------------------------------- */
 static void *load_img(void *m, const uint16_t *name, uint32_t rt) {
     void *r = FindResourceW(m, name, (const uint16_t *)(uintptr_t)rt);
-    return r ? (void *)LockResource(r) : 0;
+    if (!r) return 0;
+    const uint8_t *blob = (const uint8_t *)LockResource(r);
+    /* W32A-7: icons and cursors register here, where the size is known,
+     * so DrawIconEx can decode them from the pointer alone. */
+    if (rt == W32_RT_ICON || rt == W32_RT_CURSOR)
+        w32_gdi_icon_cache_add(blob, SizeofResource(m, r));
+    return (void *)blob;
 }
 W32ABI W32_HICON   LoadIconW(void *m, const uint16_t *n) { return (W32_HICON)load_img(m,n,W32_RT_ICON); }
 W32ABI W32_HICON   LoadIconA(void *m, const char *n)    { return (W32_HICON)load_img(m,(const uint16_t *)(uintptr_t)n,W32_RT_ICON); }

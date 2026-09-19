@@ -80,8 +80,19 @@ W32_HMODULE W32ABI w32_LoadLibraryA(const char *name);
 
 /* W32A-4: register the main executable (mapped by w32run, not by this
  * loader) so the unwinder's address queries see it.  Idempotent for the
- * same base.  The slot is builtin: never unmapped, never detached. */
-void w32_module_register_exe(uint8_t *base, size_t span);
+ * same base.  The slot is builtin: never unmapped, never detached.
+ *
+ * W32A-7: @file/@file_size are the ORIGINAL file image w32run read
+ * (static storage, valid for the process lifetime).  The resource
+ * walker parses file layout: section walks need raw offsets, which the
+ * mapped image does not have -- without the file bytes, FindResource on
+ * the exe module read past the mapping and refused everything. */
+void w32_module_register_exe(uint8_t *base, size_t span,
+                             const uint8_t *file, size_t file_size);
+/* W32A-7: the registered EXE's handle, 0 when none was registered.
+ * GetModuleHandle(NULL) resolves here first so both halves agree on
+ * which module "the main executable" is. */
+void *w32_module_exe_handle(void);
 
 /* W32A-4: which module owns @pc?  0 with the outs filled, else -1.
  * Built-ins

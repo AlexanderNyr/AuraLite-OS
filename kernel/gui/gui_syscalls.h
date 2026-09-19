@@ -67,6 +67,14 @@ enum {
     GUI_OP_TOP_WINDOW,      /* → topmost visible wid if owned, else -1 */
     GUI_OP_GET_MOUSE,       /* a2=user i32*[2] (x, y) */
     GUI_OP_INVAL_RECT,      /* a2=wid, a3=x|y<<32, a4=w|h<<32 */
+
+    /* ---- W32APP_PLAN.md W32A-7: GDI32's compositor ground truth ----
+     * The personality owns the Win32 semantics (ROPs, palettes, mapping
+     * modes); these two hand it the compositor's own answers -- one
+     * content pixel read back, and the active font's geometry -- instead
+     * of the personality keeping second, drifting copies. */
+    GUI_OP_GET_PIXEL,       /* a2=wid, a3=x|y<<32 → colour, or -1 */
+    GUI_OP_FONT_INFO,       /* a2=user u32*[5] (w,h,ascent,descent,glyphs) */
 };
 
 /* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.

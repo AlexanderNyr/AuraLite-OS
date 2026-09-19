@@ -30,6 +30,7 @@
 #include "w32/w32_crt.h"
 #include "w32/w32_module.h"
 #include "w32/w32_manifest.h"
+#include "w32/gdi32.h"
 #include "w32/kernel32.h"
 
 #ifndef PROT_READ
@@ -100,6 +101,11 @@ int main(int argc, char **argv) {
                    "(elevation is not supported)\n");
             return 1;
         }
+        /* W32A-7: the manifest's dpiAware fact is what GetDeviceCaps
+         * multiplies the desktop DPI by -- unaware apps see 96, the
+         * Windows compatibility behaviour, aware ones see the real
+         * (gtheme-configured) value. */
+        w32_gdi_set_dpi_aware(mf.dpi_aware);
         if (mf.has_manifest)
             printf("w32run: manifest: comctl v%d, exec=%s%s\n",
                    mf.comctl_major,
@@ -164,7 +170,8 @@ int main(int argc, char **argv) {
     /* W32A-4: register the exe with the module table so the unwinder's
      * address queries resolve fault PCs inside it.  Before TLS callbacks:
      * a callback can fault too, and the fault entry needs the module. */
-    w32_module_register_exe(base, (size_t)img.size_of_image);
+    w32_module_register_exe(base, (size_t)img.size_of_image,
+                            buf, (size_t)total);
 
     /* Bind the imports.  An unresolved name is fatal and named. */
     const char *mdll = 0, *mname = 0;

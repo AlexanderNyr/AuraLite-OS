@@ -1079,7 +1079,8 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_utf.o $(USER_BUILD)/w32_kernel32_thr.o \
                 $(USER_BUILD)/w32_user32_win.o \
                 $(USER_BUILD)/w32_rsrc.o \
-                $(USER_BUILD)/w32_dlg.o
+                $(USER_BUILD)/w32_dlg.o \
+                $(USER_BUILD)/w32_gdi.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1105,6 +1106,11 @@ $(USER_BUILD)/w32_user32_win.o: w32/src/user32_win.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/w32_rsrc.o: w32/src/w32_rsrc.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_dlg.o: w32/src/w32_dlg.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-7: the GDI32 engine -- DCs, blits, regions, fonts,
+# palettes, icon decode.  Listed in W32_USER_OBJ above (CI #385's lesson:
+# the host suite amalgamates .c files and cannot catch a missing object).
+$(USER_BUILD)/w32_gdi.o: w32/src/w32_gdi.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -2388,10 +2394,27 @@ W32A6_EXE := $(BUILD_DIR)/user/w32a6_dlg.exe
 $(W32A6_EXE): w32/tests/w32a6_dlg.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
 	@mkdir -p $(dir $@)
 	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a6_dlg.obj
-	lld-link -subsystem:console -entry:main -nodefaultlib \
+	lld-link -subsystem:console -entry:mainCRTStartup -nodefaultlib \
 	         $(BUILD_DIR)/user/w32a6_dlg.obj $(K32_IMPLIB) $(U32_IMPLIB) \
 	         $(G32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (W32A-6 USER32 dialog/menu/clipboard/resource fixture)"
+
+# W32APP_PLAN.md phase W32A-7: the GDI engine gate.  One window, its
+# DC, and the raster surface end to end: caps (incl. the unaware-app
+# 96-DPI contract), stock objects, pen/brush lifetimes, a compatible
+# bitmap drawn into (PatBlt/SetPixel/LineTo/shapes/ROP2/SaveDC), text
+# through the shipped PSF2 font (metrics 8x16), regions, DIB sections
+# (32bpp top-down + GetDIBits flip + SetDIBits), palettes realised into
+# an 8bpp section, and the window-DC blit path (BitBlt SRCCOPY from a
+# memory source + FillRect, each read back with GetPixel).
+W32A7_EXE := $(BUILD_DIR)/user/w32a7_gdi.exe
+$(W32A7_EXE): w32/tests/w32a7_gdi.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a7_gdi.obj
+	lld-link -subsystem:console -entry:mainCRTStartup -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a7_gdi.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(G32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-7 GDI raster engine fixture)"
 
 MCRT_IMPLIB := $(BUILD_DIR)/user/msvcrt.lib
 
@@ -3115,6 +3138,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(W32A3L_EXE) $(INITRD_DIR)/tests/w32a3_tls.exe
 	@cp $(W32A5_EXE) $(INITRD_DIR)/tests/w32a5_win.exe
 	@cp $(W32A6_EXE) $(INITRD_DIR)/tests/w32a6_dlg.exe
+	@cp $(W32A7_EXE) $(INITRD_DIR)/tests/w32a7_gdi.exe
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3407,6 +3431,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a4 \
                 $(BUILD_DIR)/test_w32_a5 \
                 $(BUILD_DIR)/test_w32_a6 \
+                $(BUILD_DIR)/test_w32_a7 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3538,6 +3563,19 @@ $(BUILD_DIR)/test_w32_a6: tests/unit/test_w32_a6.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I tests/unit/glstub -I . \
 	          tests/unit/test_w32_a6.c -lpthread -o $@
+
+# W32A-7: the GDI engine gate.  Amalgamates user32_win.c + user32.c +
+# w32_gdi.c (the a6 gate's inclusion style, extended with the DC half);
+# the suite supplies the compositor (with real content pixels, so the
+# window-DC path and GetPixel round-trip) and an INDEPENDENT reference
+# raster -- the scene compare is byte-exact, not call-counting, and the
+# font metrics are asserted against the shipped PSF2 file by the test's
+# own parser.
+$(BUILD_DIR)/test_w32_a7: tests/unit/test_w32_a7.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_a7.c -lpthread -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.

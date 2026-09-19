@@ -306,11 +306,16 @@ p_ok:
     pop  rbp
     ret
 
-; p_fail: print the marker, then exit 79.
+; p_fail: print the marker, then exit 79.  The sub 8 realigns the
+; stack for the nested call (entered with rsp%16==8, an unadjusted
+; call would misalign WriteFile's movaps prologue and fault before the
+; marker prints -- found by the W32A-7 gate, which ran this fixture's
+; failure path for the first time).
 p_fail:
+    sub  rsp, 8
     call p_ok
     mov  ecx, 79
-    call ExitProcess
+    call ExitProcess                ; never returns; the 8 stays
 
 %macro OK 2
     lea  rsi, [%1]

@@ -5,6 +5,7 @@
 #include "w32/w32_pe.h"
 #include "w32/kernel32.h"
 #include "w32/user32.h"
+#include "w32/gdi32.h"
 #include "w32/w32_rsrc.h"
 #include "w32/oleaut32.h"
 #include "w32/w32_seh.h"
@@ -263,7 +264,9 @@ static const w32_export_t exports[] = {
     { U32, "IsCharUpperW",              (void *)IsCharUpperW},
     { U32, "IsCharLowerW",              (void *)IsCharLowerW},
 
-    /* GDI32 (W32-5). */
+    { U32, "FrameRect",        (void *)FrameRect        },
+
+    /* GDI32 (W32-5): the A-5 drawing core. */
     { G32, "CreateSolidBrush", (void *)CreateSolidBrush },
     { G32, "DeleteObject",     (void *)DeleteObject     },
     { G32, "LineTo",           (void *)LineTo           },
@@ -271,6 +274,91 @@ static const w32_export_t exports[] = {
     { G32, "SetPixel",         (void *)SetPixel         },
     { G32, "SetTextColor",     (void *)SetTextColor     },
     { G32, "TextOutA",         (void *)TextOutA         },
+
+    /* GDI32 (W32A-7): DCs, blitting, regions, fonts, palettes -- the 80
+     * ladder-measured imports the ledger showed uncovered, each with a
+     * real behaviour (raster engine, object table, metrics) or a named
+     * refusal (printing). */
+    { G32, "BitBlt",                   (void *)BitBlt },
+    { G32, "CombineRgn",               (void *)CombineRgn },
+    { G32, "CreateBitmap",             (void *)CreateBitmap },
+    { G32, "CreateCompatibleBitmap",   (void *)CreateCompatibleBitmap },
+    { G32, "CreateCompatibleDC",       (void *)CreateCompatibleDC },
+    { G32, "CreateDIBSection",         (void *)CreateDIBSection },
+    { G32, "CreateFontA",              (void *)CreateFontA },
+    { G32, "CreateFontIndirectA",      (void *)CreateFontIndirectA },
+    { G32, "CreateFontIndirectW",      (void *)CreateFontIndirectW },
+    { G32, "CreateFontW",              (void *)CreateFontW },
+    { G32, "CreateHatchBrush",         (void *)CreateHatchBrush },
+    { G32, "CreatePalette",            (void *)CreatePalette },
+    { G32, "CreatePatternBrush",       (void *)CreatePatternBrush },
+    { G32, "CreatePen",                (void *)CreatePen },
+    { G32, "CreateRectRgn",            (void *)CreateRectRgn },
+    { G32, "CreateRectRgnIndirect",    (void *)CreateRectRgnIndirect },
+    { G32, "DPtoLP",                   (void *)DPtoLP },
+    { G32, "DeleteDC",                 (void *)DeleteDC },
+    { G32, "Ellipse",                  (void *)Ellipse },
+    { G32, "EndDoc",                   (void *)EndDoc },
+    { G32, "EndPage",                  (void *)EndPage },
+    { G32, "EnumFontFamiliesExW",      (void *)EnumFontFamiliesExW },
+    { G32, "ExcludeClipRect",          (void *)ExcludeClipRect },
+    { G32, "ExtCreatePen",             (void *)ExtCreatePen },
+    { G32, "ExtTextOutA",              (void *)ExtTextOutA },
+    { G32, "ExtTextOutW",              (void *)ExtTextOutW },
+    { G32, "GdiAlphaBlend",            (void *)GdiAlphaBlend },
+    { G32, "GetBkMode",                (void *)GetBkMode },
+    { G32, "GetCharABCWidthsFloatA",   (void *)GetCharABCWidthsFloatA },
+    { G32, "GetCharWidth32A",          (void *)GetCharWidth32A },
+    { G32, "GetCharWidth32W",          (void *)GetCharWidth32W },
+    { G32, "GetCharWidthA",            (void *)GetCharWidthA },
+    { G32, "GetCharWidthW",            (void *)GetCharWidthW },
+    { G32, "GetCharacterPlacementW",   (void *)GetCharacterPlacementW },
+    { G32, "GetClipRgn",               (void *)GetClipRgn },
+    { G32, "GetCurrentObject",         (void *)GetCurrentObject },
+    { G32, "GetDIBits",                (void *)GetDIBits },
+    { G32, "GetDeviceCaps",            (void *)GetDeviceCaps },
+    { G32, "GetObjectA",               (void *)GetObjectA },
+    { G32, "GetObjectW",               (void *)GetObjectW },
+    { G32, "GetOutlineTextMetricsA",   (void *)GetOutlineTextMetricsA },
+    { G32, "GetPixel",                 (void *)GetPixel },
+    { G32, "GetROP2",                  (void *)GetROP2 },
+    { G32, "GetStockObject",           (void *)GetStockObject },
+    { G32, "GetTextExtentExPointA",    (void *)GetTextExtentExPointA },
+    { G32, "GetTextExtentExPointW",    (void *)GetTextExtentExPointW },
+    { G32, "GetTextExtentPoint32A",    (void *)GetTextExtentPoint32A },
+    { G32, "GetTextExtentPoint32W",    (void *)GetTextExtentPoint32W },
+    { G32, "GetTextExtentPointA",      (void *)GetTextExtentPointA },
+    { G32, "GetTextExtentPointW",      (void *)GetTextExtentPointW },
+    { G32, "GetTextMetricsA",          (void *)GetTextMetricsA },
+    { G32, "GetTextMetricsW",          (void *)GetTextMetricsW },
+    { G32, "IntersectClipRect",        (void *)IntersectClipRect },
+    { G32, "OffsetWindowOrgEx",        (void *)OffsetWindowOrgEx },
+    { G32, "PatBlt",                   (void *)PatBlt },
+    { G32, "Polygon",                  (void *)Polygon },
+    { G32, "Polyline",                 (void *)Polyline },
+    { G32, "RealizePalette",           (void *)RealizePalette },
+    { G32, "RectVisible",              (void *)RectVisible },
+    { G32, "Rectangle",                (void *)Rectangle },
+    { G32, "RestoreDC",                (void *)RestoreDC },
+    { G32, "RoundRect",                (void *)RoundRect },
+    { G32, "SaveDC",                   (void *)SaveDC },
+    { G32, "SelectClipRgn",            (void *)SelectClipRgn },
+    { G32, "SelectObject",             (void *)SelectObject },
+    { G32, "SelectPalette",            (void *)SelectPalette },
+    { G32, "SetBkColor",               (void *)SetBkColor },
+    { G32, "SetBkMode",                (void *)SetBkMode },
+    { G32, "SetBrushOrgEx",            (void *)SetBrushOrgEx },
+    { G32, "SetDIBits",                (void *)SetDIBits },
+    { G32, "SetMapMode",               (void *)SetMapMode },
+    { G32, "SetPaletteEntries",        (void *)SetPaletteEntries },
+    { G32, "SetROP2",                  (void *)SetROP2 },
+    { G32, "SetTextAlign",             (void *)SetTextAlign },
+    { G32, "SetWindowOrgEx",           (void *)SetWindowOrgEx },
+    { G32, "StartDocW",                (void *)StartDocW },
+    { G32, "StartPage",                (void *)StartPage },
+    { G32, "TranslateCharsetInfo",     (void *)TranslateCharsetInfo },
+    { G32, "UnrealizeObject",          (void *)UnrealizeObject },
+    { G32, "UpdateColors",             (void *)UpdateColors },
 
     /* OLEAUT32 (W32A-1).  The eight ladder-measured BSTR/VARIANT functions
      * are REAL already -- pure libc with no OS surface, implemented in

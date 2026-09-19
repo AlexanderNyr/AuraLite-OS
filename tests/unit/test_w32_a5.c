@@ -122,6 +122,7 @@ W32ABI void Sleep(W32_DWORD ms) {
 #include "../../w32/src/w32_errno.c"
 #include "../../w32/src/user32_win.c"
 #include "../../w32/src/user32.c"
+#include "../../w32/src/w32_gdi.c"      /* W32A-7: the DC/drawing half */
 
 /* ---- the fake compositor ------------------------------------------------ */
 /* Signatures must match the mirror declarations in user32_win.c's host block
@@ -293,6 +294,18 @@ int ag_poll_event(int wid, ui_event_t *out) {
     return 1;
 }
 int ag_clear(int wid, uint32_t color) { (void)wid; (void)color; clears++; return 0; }
+/* W32A-7 additions the raster engine calls (see w32_gdi.c's host block). */
+int ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+                  const uint32_t *argb, uint32_t stride) {
+    (void)wid; (void)x; (void)y; (void)w; (void)h; (void)argb; (void)stride;
+    return 0;
+}
+int ag_get_pixel(int wid, int32_t x, int32_t y) {
+    (void)x; (void)y;
+    if (wid < 1 || wid > FAKE_WINS || !fw[wid-1].in_use) return -1;
+    return 0;
+}
+uint32_t w32_gdi_host_dpi(void) { return 96; }
 int ag_fill_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
                  uint32_t c) {
     (void)wid; (void)x; (void)y; (void)w; (void)h; (void)c;

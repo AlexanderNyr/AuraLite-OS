@@ -1,4 +1,4 @@
-/* w32_dlg.c — USER32 breadth II (W32A-6).
+/* w32_dlg.c — USER32 breadth II (W32APP_PLAN.md phase W32A-6).
  *
  * Implements dialog engine (DialogBoxParam(A/W)/Indirect/EndDialog/IsDialogMessage/
  * MapDialogRect/GetDialogBaseUnits/DlgItem*), menus (HMENU Create/Append/Insert/
@@ -15,6 +15,7 @@
 
 #include "w32/w32_abi.h"
 #include "w32/user32.h"
+#include "w32/gdi32.h"
 #include "w32/kernel32.h"
 #include "w32/w32_module.h"
 #include "w32/w32_rsrc.h"
@@ -668,7 +669,11 @@ W32ABI W32_BOOL DrawFocusRect(W32_HDC hdc, const W32_RECT *r) {
 }
 W32ABI W32_BOOL DrawEdge(W32_HDC h,W32_RECT *r,W32_UINT e,W32_UINT g){(void)e;(void)g;return DrawFocusRect(h,r);}
 W32ABI W32_BOOL DrawFrameControl(W32_HDC h,W32_RECT *r,W32_UINT t,W32_UINT st){(void)h;(void)r;(void)t;(void)st;return 1;}
+/* W32A-7: the icon decode and raster live in w32_gdi.c; this half only
+ * owns the export.  A null icon now fails honestly (the A-6 stub
+ * returned TRUE without drawing -- the test asserts the new contract). */
 W32ABI W32_BOOL DrawIconEx(W32_HDC h,int32_t x,int32_t y,W32_HICON i,int32_t cx,int32_t cy,uint32_t st,void*hbr,W32_UINT fl){
-    (void)h;(void)x;(void)y;(void)i;(void)cx;(void)cy;(void)st;(void)hbr;(void)fl;return 1;}
+    (void)st;(void)hbr;(void)fl;
+    return w32_gdi_draw_icon(h,x,y,i,cx,cy);}
 W32ABI W32_BOOL DrawIcon(W32_HDC h,int32_t x,int32_t y,W32_HICON i){return DrawIconEx(h,x,y,i,0,0,0,0,0);}
 W32ABI void NotifyWinEvent(W32_DWORD ev,W32_HWND w,W32_DWORD a,W32_DWORD b){(void)ev;(void)w;(void)a;(void)b;}

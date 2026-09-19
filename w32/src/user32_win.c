@@ -43,6 +43,7 @@
 #include "w32/w32_errno.h"
 #include "w32/w32_utf.h"
 #include "w32/user32_priv.h"
+#include "w32/gdi32.h"
 
 /* Mirrors of libauragui's two structs this file reads (they are the kernel's
  * gui_theme_t / gui_event_t layouts; the ABI check below pins the values in
@@ -200,6 +201,7 @@ struct ui_class {
     char      name_a[UI_CNAME_MAX * 3];
     W32_WNDPROC proc;
     uint32_t  bg;                 /* AG colour; 0 means "no background" */
+    W32_HBRUSH hbr;               /* the handle the class was registered with */
     int       has_bg;
     W32_UINT  style;
     W32_HICON icon;
@@ -428,11 +430,13 @@ static W32_WORD ui_register_class(const W32_WNDCLASSEXW *c) {
         w16_copy(k->name_w, c->lpszClassName, UI_CNAME_MAX);
         w16_to_a(k->name_a, sizeof k->name_a, k->name_w);
         k->proc   = c->lpfnWndProc;
-        /* hbrBackground carries a colour in this personality (there is no
-         * GDI brush object yet); W32-5 documented the same convention. */
+        /* W32A-7: hbrBackground may be a real brush table handle or the
+         * A-5 raw colour; w32_gdi_brush_color decodes both, and the
+         * class remembers the handle it was given. */
         k->has_bg = c->hbrBackground != 0;
+        k->hbr    = c->hbrBackground;
         k->bg     = k->has_bg
-                  ? w32_colorref_to_ag((W32_DWORD)(uintptr_t)c->hbrBackground)
+                  ? w32_colorref_to_ag(w32_gdi_brush_color(c->hbrBackground))
                   : 0;
         k->style  = c->style;
         k->icon   = c->hIcon;
@@ -496,7 +500,7 @@ W32ABI W32_BOOL GetClassInfoW(W32_HINSTANCE inst, const uint16_t *name,
     out->hInstance = 0;
     out->hIcon = k->icon;
     out->hCursor = k->cursor;
-    out->hbrBackground = k->has_bg ? (W32_HBRUSH)(uintptr_t)k->bg : 0;
+    out->hbrBackground = k->has_bg ? k->hbr : 0;
     out->lpszMenuName = 0;
     out->lpszClassName = k->name_w;
     out->hIconSm = k->icon;
@@ -2479,6 +2483,7 @@ W32ABI int32_t ScrollWindow(W32_HWND hwnd, int32_t dx, int32_t dy,
 /* ---- device contexts ----------------------------------------------------- */
 
 W32ABI W32_HDC GetDC(W32_HWND hwnd) {
+    if (!hwnd) return w32_gdi_screen_dc();  /* metrics-only screen DC */
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
     return w32_win_make_dc(i);

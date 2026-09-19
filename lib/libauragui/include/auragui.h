@@ -108,6 +108,8 @@ typedef struct {
     uint32_t taskbar_h, titlebar_h, border_w, resize_grip;
     uint32_t icon_size, icon_pad;
     uint32_t win_round;
+    /* Screen DPI (W32A-7): 96 default, gtheme --dpi owns it. */
+    uint32_t dpi;
 } ag_theme_t;
 
 /* ---- Common colors (0x00RRGGBB) ---- */
@@ -174,6 +176,28 @@ int  ag_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color);
 int  ag_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
 int  ag_draw_text_centered(int wid, int32_t x, int32_t y, uint32_t w,
                            const char *s, uint32_t color);
+
+/* Read one content pixel back (W32A-7: GDI GetPixel on a window DC).
+ * Returns the 0x00RRGGBB colour, or -1 (as int) when the window is dead
+ * or the point lies outside the content area. */
+int  ag_get_pixel(int wid, int32_t x, int32_t y);
+
+/* The active font's geometry (W32A-7): width/height in pixels,
+ * ascent/descent in rows, glyph count.  Returns 0, or -1 when no font
+ * is loaded. */
+int  ag_font_metrics(uint32_t *width, uint32_t *height,
+                     uint32_t *ascent, uint32_t *descent,
+                     uint32_t *num_glyphs);
+
+/* Opaque text with an explicit background colour and a 1-px rectangle
+ * outline (W32A-7).  These were called by the A-6 DrawText/DrawFocusRect
+ * path but never implemented -- w32run.elf failed to link at the A-6
+ * baseline, which A-7 fixes by making them real.  wid < 0 draws nothing
+ * and returns 0: there is no window -1 to draw on, and the caller (the
+ * DrawText fallback with no DC) has nothing better to do. */
+int  ag_text(int wid, const char *text, int x, int y,
+             uint32_t fg, uint32_t bg);
+int  ag_rect_outline(int wid, int x, int y, int w, int h, uint32_t color);
 
 /* Bulk pixel transfer into the window back buffer.
  *
