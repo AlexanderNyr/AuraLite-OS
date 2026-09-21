@@ -3,8 +3,11 @@
 ; Imports five functions BY ORDINAL (no names in the ILT -- see the
 ; *_ord.def files) and proves each binds to the right thing:
 ;
-;   comctl32 #17  InitCommonControls      (TODO stub: sets ERROR_NOT_SUPPORTED)
-;   comctl32 #381 LoadIconWithScaleDown   (TODO stub: returns E_NOTIMPL)
+;   comctl32 #17  InitCommonControls      (REAL since W32A-8: registers
+;                                          the control classes, no refusal)
+;   comctl32 #381 LoadIconWithScaleDown   (REAL since W32A-8: the HRESULT
+;                                          contract -- E_INVALIDARG on a
+;                                          zero cell)
 ;   oleaut32 #2   SysAllocString          (REAL: BSTR round-trip)
 ;   oleaut32 #7   SysStringLen            (REAL: length 2 for "OK")
 ;   oleaut32 #6   SysFreeString           (REAL: frees it)
@@ -38,12 +41,13 @@ start:
     push r12
     sub rsp, 38h                    ; (8-16-56) % 16 == 0, like testdll
 
-    ; comctl32 #17 through the ordinal: the TODO stub runs (no crash) and
-    ; reports NOT_SUPPORTED, which is the honest "not yet".
+    ; comctl32 #17 through the ordinal: the real W32A-8 entry registers
+    ; the control classes and reports success -- the refusal error the
+    ; TODO stub used to set is gone, and that absence is the receipt.
     call InitCommonControls
     call GetLastError
     cmp eax, 50
-    jne fail
+    je fail
 
     ; oleaut32 #2/#7/#6: a real BSTR round-trip through ordinal bindings.
     lea rcx, [u_ok]
@@ -58,13 +62,14 @@ start:
     mov rcx, rbx
     call SysFreeString
 
-    ; comctl32 #381: an HRESULT stub fails with E_NOTIMPL, never S_OK.
+    ; comctl32 #381: the real W32A-8 HRESULT contract -- a zero cell
+    ; is refused with E_INVALIDARG, not the blanket E_NOTIMPL.
     xor ecx, ecx
     xor edx, edx
     xor r8d, r8d
     xor r9d, r9d
     call LoadIconWithScaleDown
-    cmp eax, 80004001h
+    cmp eax, 80070057h
     jne fail
 
     ; The alias: name and number answer with one address.

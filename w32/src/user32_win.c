@@ -171,7 +171,12 @@ _Static_assert(sizeof(ui_theme_t) == sizeof(ag_theme_t), "ag_theme_t drifted");
 #define UI_MAX_CLASSES  32
 #define UI_MAX_WINDOWS  32
 #define UI_MAX_QUEUES   16
-#define UI_QUEUE_LEN    64
+/* 256: a message queue must absorb a burst of creation traffic (every
+ * visible CreateWindowExW posts WM_SIZE, the pump adds WM_PAINT for each
+ * invalidated window) before the caller first pumps.  64 dropped posts
+ * once a program built ~20 control windows and only then ran a modal
+ * loop -- the W32A-8 property-sheet gate found it. */
+#define UI_QUEUE_LEN    256
 #define UI_MAX_PROPS    16
 #define UI_MAX_INV      16
 #define UI_MAX_PROCS    4
@@ -206,6 +211,7 @@ struct ui_class {
     W32_UINT  style;
     W32_HICON icon;
     W32_HCURSOR cursor;
+    int       comctl;             /* W32A-8: a common-control class (WS_CHILD ok) */
 };
 
 struct ui_inv { int32_t l, t, r, b; };
@@ -447,6 +453,22 @@ static W32_WORD ui_register_class(const W32_WNDCLASSEXW *c) {
     return 0;
 }
 
+/* W32A-8: comctl32's classes register through here so the class table
+ * carries the marker that admits WS_CHILD.  The public RegisterClass*
+ * never sets it: an application class stays a top-level window class,
+ * and CreateWindowExW keeps refusing WS_CHILD for it by name. */
+W32_WORD w32_win_register_comctl_class(const W32_WNDCLASSEXW *c) {
+    W32_WORD atom = ui_register_class(c);
+    if (!atom) return 0;
+    for (int i = 0; i < UI_MAX_CLASSES; i++) {
+        if (classes[i].in_use && w16_eq(classes[i].name_w, c->lpszClassName)) {
+            classes[i].comctl = 1;
+            break;
+        }
+    }
+    return atom;
+}
+
 W32ABI W32_WORD RegisterClassW(const W32_WNDCLASSEXW *c) { return ui_register_class(c); }
 W32ABI W32_WORD RegisterClassExW(const W32_WNDCLASSEXW *c) { return ui_register_class(c); }
 
@@ -547,6 +569,7 @@ static uint32_t ui_style_to_flags(W32_DWORD style) {
     if (style & W32_WS_THICKFRAME) f |= AG_WIN_RESIZABLE | AG_WIN_MOVABLE;
     if (style & (W32_WS_MINIMIZEBOX | W32_WS_MAXIMIZEBOX)) f |= AG_WIN_HAS_MINMAX;
     if (style & W32_WS_POPUP)      f |= AG_WIN_NO_DECOR | AG_WIN_BORDERLESS;
+    if (style & W32_WS_CHILD)      f |= AG_WIN_NO_DECOR | AG_WIN_BORDERLESS;
     if (f == 0) f = AG_WIN_DEFAULT;
     return f;
 }
@@ -562,12 +585,32 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
         w32_set_last_error(W32_ERROR_CLASS_DOES_NOT_EXIST);
         return 0;
     }
-    /* Refused by name: a child window is not composited inside its parent
-     * here.  The logical parent/child tree still works (GetParent, IsChild,
-     * EnumChildWindows, SendDlgItemMessage), which is what controls use. */
-    if (style & W32_WS_CHILD) {
+    /* Refused by name for application classes: a child window is not
+     * composited inside its parent here.  The logical parent/child tree
+     * still works (GetParent, IsChild, EnumChildWindows,
+     * SendDlgItemMessage).  W32A-8 widened exactly one case: classes
+     * registered through w32_win_register_comctl_class (the common
+     * controls) accept WS_CHILD, because every real caller creates
+     * them that way.  A control still composites as its own top-level
+     * window -- there is no child embedding in the compositor -- but
+     * its x/y are read as parent-relative and translated, so a control
+     * lands inside its parent on screen.  Moving the parent does not
+     * re-clip children; that limitation is the compositor's, recorded
+     * here so the contract stays honest. */
+    if ((style & W32_WS_CHILD) && !k->comctl) {
         w32_set_last_error(W32_ERROR_CALL_NOT_IMPLEMENTED);
         return 0;
+    }
+    if (style & W32_WS_CHILD) {
+        int pi = w32_win_index_from_hwnd(parent);
+        if (pi < 0) {
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        ui_lock();
+        x += windows[pi].x;
+        y += windows[pi].y;
+        ui_unlock();
     }
     if ((style & ~UI_STYLE_KNOWN) || (exstyle & ~UI_EXSTYLE_KNOWN)) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
@@ -696,6 +739,14 @@ W32ABI W32_BOOL DestroyWindow(W32_HWND hwnd) {
      * WM_DESTROY does NOT post WM_QUIT -- posting it is the sample's own
      * handler's job, and PostQuitMessage is what does it. */
     SendMessageW(hwnd, W32_WM_NCDESTROY, 0, 0);
+
+    /* W32A-8: a common-control window dropping its state before the slot
+     * dies (weak: the A-3-style host amalgams that omit comctl32.c still
+     * link, exactly like the timer-pump hook above). */
+    {
+        extern __attribute__((weak)) void w32_comctl_window_destroyed(W32_HWND);
+        if (w32_comctl_window_destroyed) w32_comctl_window_destroyed(hwnd);
+    }
 
     int ag_wid = windows[i].ag_wid;
     ui_lock();

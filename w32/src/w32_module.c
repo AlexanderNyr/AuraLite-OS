@@ -157,6 +157,16 @@ void w32_module_init(void) {
     add_builtin("kernel32");
     add_builtin("user32");
     add_builtin("gdi32");
+    /* W32A-8: comctl32's exports are linked into the loader too (the real
+     * engine in comctl32.c), so it belongs here with the other three.  The
+     * stub regen used to register it via w32_gen_modules() ("stub-covered
+     * modules"), but W32A-8 removed every comctl32 stub and the generated
+     * list dropped the name with them -- which silently broke
+     * GetModuleHandleA("comctl32.dll") and with it the A-1 name/ordinal
+     * alias check, while IAT binding kept working because w32_resolve()
+     * never consults the module table.  Found by the full-suite rerun of
+     * test_w32_a1_loader. */
+    add_builtin("comctl32");
     /* W32A-1: every stub-covered module answers GetModuleHandle too, so a
      * program probing for mpr, comctl32 or shell32 finds a module whose
      * functions fail cleanly instead of a missing DLL.  Names already

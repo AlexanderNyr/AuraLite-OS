@@ -6,8 +6,8 @@ ordtest.exe: KERNEL32.dll!GetModuleHandleA -> REAL via static
 ordtest.exe: KERNEL32.dll!GetProcAddress -> REAL via static
 ordtest.exe: KERNEL32.dll!GetStdHandle -> REAL via static
 ordtest.exe: KERNEL32.dll!WriteFile -> REAL via static
-ordtest.exe: COMCTL32.dll!#17 -> REAL via gen:TODO [via ordmap: InitCommonControls]
-ordtest.exe: COMCTL32.dll!#381 -> REAL via gen:TODO [via ordmap: LoadIconWithScaleDown]
+ordtest.exe: COMCTL32.dll!#17 -> REAL via static [via ordmap: InitCommonControls]
+ordtest.exe: COMCTL32.dll!#381 -> REAL via static [via ordmap: LoadIconWithScaleDown]
 ordtest.exe: OLEAUT32.dll!#2 -> REAL via static [via ordmap: SysAllocString]
 ordtest.exe: OLEAUT32.dll!#6 -> REAL via static [via ordmap: SysFreeString]
 ordtest.exe: OLEAUT32.dll!#7 -> REAL via static [via ordmap: SysStringLen]

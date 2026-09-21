@@ -254,6 +254,7 @@ enum ag_widget_kind {
     AG_W_SCROLLAREA,
     AG_W_TAB,
     AG_W_CONTEXTMENU,
+    AG_W_TREE,          /* W32A-8: the treeview backing widget */
 };
 
 struct ag_widget;
@@ -263,6 +264,11 @@ typedef void (*ag_callback_t)(struct ag_widget *w, void *user);
 #define AG_MAX_LIST_ITEMS  128
 #define AG_MAX_MENU_ITEMS  16
 #define AG_MAX_TABS        8
+#define AG_MAX_TREE_NODES  64
+/* The one row-height authority for every row-shaped widget (listbox,
+ * tree, and the W32A-8 listview/treeview controls that hit-test rows
+ * with it).  render_listbox/render_tree draw at this pitch. */
+#define AG_ROW_H 14
 
 typedef struct ag_widget {
     int           kind;
@@ -299,6 +305,18 @@ typedef struct ag_widget {
     } menu_items[AG_MAX_MENU_ITEMS];
     int           menu_count;
     int           menu_visible;
+    /* Tree (W32A-8).  Nodes are stored in insertion order; `parent` is
+     * a node index (-1 = root) and sibling order is array order.  A
+     * node renders only while every ancestor is `expanded`; the walk
+     * helpers below compute the visible-row order. */
+    struct {
+        const char *label;
+        int32_t     parent;
+        int         expanded;
+        int         has_children;
+    } tree[AG_MAX_TREE_NODES];
+    int           tree_count;
+    int           tree_sel;      /* selected node index, -1 none */
 } ag_widget_t;
 
 typedef struct {
@@ -333,6 +351,22 @@ int  ag_listbox_add(ag_widget_t *lb, const char *item);
 
 /* Tab helpers. */
 int  ag_tab_add(ag_widget_t *tab, const char *label);
+void ag_tab_set_active(ag_widget_t *tab, int idx);   /* W32A-8: TCM_SETCURSEL */
+int  ag_tab_remove(ag_widget_t *tab, int idx);       /* W32A-8: TCM_DELETEITEM */
+
+/* Progress helper (W32A-8: PBM_SETPOS/SETRANGE32 land here). */
+void ag_progress_set(ag_widget_t *prog, int value, int max);
+
+/* Tree helpers (W32A-8: the WC_TREEVIEW backing). */
+ag_widget_t *ag_add_tree(ag_view_t *v, int32_t x, int32_t y, uint32_t w, uint32_t h);
+int   ag_tree_add(ag_widget_t *tree, int parent, const char *label);
+void  ag_tree_clear(ag_widget_t *tree);
+void  ag_tree_set_expanded(ag_widget_t *tree, int node, int expanded);
+int   ag_tree_select(ag_widget_t *tree, int node);   /* returns prev sel */
+int   ag_tree_selected(const ag_widget_t *tree);
+int   ag_tree_visible_rows(const ag_widget_t *tree);
+int   ag_tree_row_node(const ag_widget_t *tree, int row);  /* -1 if past end */
+int   ag_tree_node_row(const ag_widget_t *tree, int node); /* -1 if hidden */
 
 /* Context menu helpers. */
 int  ag_contextmenu_add(ag_widget_t *cm, const char *label, int id);

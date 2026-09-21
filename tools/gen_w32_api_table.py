@@ -27,6 +27,7 @@ DLL_LABEL = {
     "U32": "USER32.dll",
     "G32": "GDI32.dll",
     "MCRT": "msvcrt.dll",  # W32A-4: the named C++ surface is REAL
+    "C32": "COMCTL32.dll",  # W32A-8: the common controls, all REAL
 }
 
 
@@ -38,7 +39,7 @@ def collect():
     body = src.split("static const w32_export_t exports[] = {", 1)[1]
     body = body.split("\n};", 1)[0]
 
-    rows = re.findall(r'\{\s*(K32|U32|G32|MCRT)\s*,\s*"([^"]+)"',
+    rows = re.findall(r'\{\s*(K32|U32|G32|MCRT|C32)\s*,\s*"([^"]+)"',
                       body)
     by_dll = {}
     for macro, name in rows:

@@ -590,6 +590,8 @@ W32_HDC w32_gdi_screen_dc(void);
 /* Decode an ICO/CUR blob into an icon object; 0 + named error on a blob
  * that is not an icon directory or image.  Used by w32_rsrc.c's loader. */
 W32_HICON w32_gdi_icon_decode(const uint8_t *bytes, size_t len);
+W32_HICON w32_gdi_icon_from_argb(int32_t w, int32_t hgt, const uint32_t *argb); /* W32A-8: ImageList_GetIcon's mint */
+const uint32_t *w32_gdi_icon_pixels(W32_HICON hicon, int32_t *w, int32_t *hgt); /* W32A-8: ImageList_ReplaceIcon's read */
 /* Register a resource blob the loader handed out (it alone knows the
  * size; DrawIconEx only gets the pointer). */
 void w32_gdi_icon_cache_add(const uint8_t *blob, size_t len);

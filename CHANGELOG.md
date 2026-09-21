@@ -2,6 +2,71 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-8 — COMCTL32: toolbar, status, listview, treeview, tabs, ImageLists] 2026-09-20
+
+The personality grows its common-controls DLL (w32/src/comctl32.c, 27
+ledger-measured symbols): InitCommonControlsEx registers the eight
+documented control classes through a new comctl marker in the USER32
+class table — WS_CHILD is admitted for exactly those classes and still
+refused by name for application classes (CreateWindowExW), with
+parent-relative x/y translation so a control lands inside its parent.
+Toolbar (CreateToolbarEx, TB_* states/sizes/hit-to-WM_COMMAND), status
+(CreateStatusWindowW, SB_* parts/text), listview (LVM_* items/labels/
+state, NM_CLICK after LVN_ITEMCHANGED, hit test, deletes replayed to
+the widget), treeview riding the real ag tree widget (handles, TVGN
+walks, TVN_SELCHANGED, expand order, TVM_GETITEMRECT, the gutter
+collapse click, subtree delete with descendant compaction), tabcontrol
+(TCM_SETCURSEL silent vs strip click -> TCN_SELCHANGE), progress,
+tooltip (TTM_RELAYEVENT show / TTM_POP hide), and header (HDN_ITEMCLICKW).
+ImageList: create/add-masked (the mask colour read back through
+GetPixel), ReplaceIcon append, GetImageInfo cell rects, Draw with
+per-pixel alpha through the public DC API, and the drag window set
+(BeginDrag/DragEnter/DragMove/DragShowNolock/EndDrag over a real
+WS_POPUP). SetWindowSubclass/RemoveWindowSubclass (ordinals 410-413)
+with reference data, install order, and double-remove refusal.
+PropertySheetW accepts PSH_PROPSHEETPAGE arrays only (HPROPSHEETPAGE
+arrays refused by name — CreatePropertySheetPage is not in the 27),
+hosts each page over an in-memory DLGTEMPLATE word stream expanded
+through the W32A-6 dialog engine, rides each page's WM_INITDIALOG on
+its first activation, and drives PSN_APPLY in both lParam directions
+to IDOK/IDCANCEL. Refusals stay honest: LoadIconWithScaleDown answers
+E_INVALIDARG and a real not-found HRESULT, TB_CUSTOMIZE returns FALSE
+with ERROR_CALL_NOT_IMPLEMENTED, _TrackMouseEvent forwards to the
+W32A-5 entry. The v5/v6 selection is host-gated through the palette
+seam (0x00C0C0C0/0x00000080 vs 0x00F0F0F0/hot-accent); UxTheme calls
+stay stubbed until W32A-11. Two engine robustness fixes came out of
+the gate: the per-thread message queue grew from 64 to 256 slots (a
+program that builds ~20 control windows before its first pump lost
+posts — the property-sheet fixture found it), and the WSTR lesson is
+recorded twice: the C side keeps the class names as UTF-16 arrays
+because this toolchain's wchar_t is 4 bytes.
+
+Guest gate: w32/tests/w32a8_comctl32.asm — 14 sections, 48 imports,
+exit 78; tests/integration/cases/test_w32a8_comctl32.sh asserts every
+section marker, the exit receipt, and no unresolved imports or kernel
+faults (21/21). Host gate: tests/unit/test_w32_a8.c — 154 checks over
+the a7 fake-compositor shim extended with the widget seam, an
+independent tab/tree/listbox hit-semantics walk as the drift detector,
+and the v5/v6 palette pins. A1's ordinal expectations for
+COMCTL32#17/#381 moved from gen:TODO to real static resolution.
+
+The full-suite gate caught two regressions a phase-scoped gate cannot
+see, both fixed here. (1) Removing every comctl32 stub also removed
+comctl32 from the generated "stub-covered modules" list, so the loader
+no longer registered a comctl32 builtin and
+GetModuleHandleA("comctl32.dll") returned NULL — invisible to the A-8
+gate (IAT binding bypasses the module table) but fatal to A1's
+name/ordinal alias check; comctl32 is now registered explicitly with
+the other loader-linked modules (w32/src/w32_module.c), and A1's
+ordtest fixture asserts the real semantics (InitCommonControls leaves
+no refusal, LoadIconWithScaleDown answers E_INVALIDARG on a zero cell)
+instead of the retired TODO-stub receipts. (2) insttest's
+chmod-refusal probe depends on initrd /bin/hello arriving without
+execute bits, which was only accidentally true while the host linker
+emitted 0644; ld.lld 19 emits 0755 and the policy test flipped with
+the toolchain — the initrd rule now pins hello to 0644 (Makefile), a
+build determinism fix, not a behaviour change.
+
 ## [W32A-7 — GDI32 breadth: DCs, blitting, regions, fonts] 2026-09-19
 
 The personality grows a real GDI raster engine (w32/src/w32_gdi.c, the

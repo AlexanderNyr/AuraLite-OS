@@ -1414,7 +1414,7 @@ Notepad++'s editor paint through.
 
 ---
 
-### Phase W32A-8 — `COMCTL32`: toolbar, status, listview, treeview, tabs, ImageLists ⬜ PLANNED
+### Phase W32A-8 — `COMCTL32`: toolbar, status, listview, treeview, tabs, ImageLists ✅ SHIPPED (2026-09-20)
 
 **Objective:** the common-controls DLL the 7-Zip and Notepad++ gates are
 built from — v5 and v6 selected by the W32A-1 manifest record, controls
@@ -1422,12 +1422,12 @@ mapped onto `libauragui` widgets where they exist.
 
 #### Tasks
 
-- [ ] `InitCommonControlsEx`/`InitCommonControls` (ordinal 17 resolved —
+- [x] `InitCommonControlsEx`/`InitCommonControls` (ordinal 17 resolved —
       the measured `COMCTL32#(17)`; the map records what it is),
       version selection: v6 (themed, `UxTheme` calls issued where W32A-11
       implements them) vs v5 (unthemed) per the manifest record.
       `DllGetVersion`? (ledger).
-- [ ] Windowed controls (all REAL, message-driven through the W32A-5
+- [x] Windowed controls (all REAL, message-driven through the W32A-5
       `SendMessage` path, `WM_NOTIFY` to the parent REAL):
       toolbar (`CreateToolbarEx` + `TB_*` messages), status
       (`CreateStatusWindowW` + `SB_*`), listview (`WC_LISTVIEW` +
@@ -1443,7 +1443,7 @@ mapped onto `libauragui` widgets where they exist.
       monthcalendar/ipaddress/pager/nativetext? — ONLY if the ledger
       shows them (D1; the static tables show none — this list is the
       tripwire for receipt-probe additions, not a work list).
-- [ ] `ImageList_Create`/`ImageList_Destroy`/`ImageList_AddMasked`/
+- [x] `ImageList_Create`/`ImageList_Destroy`/`ImageList_AddMasked`/
       `ImageList_ReplaceIcon`/`ImageList_GetImageCount`/
       `ImageList_GetIcon`/`ImageList_GetIconSize`/`ImageList_GetImageInfo`/
       `ImageList_Draw`/`ImageList_SetIconSize`/`ImageList_Remove`/
@@ -1452,9 +1452,9 @@ mapped onto `libauragui` widgets where they exist.
       `ImageList_DragShowNolock` — REAL drag images during listview
       drags, asserted in screenshots), `_TrackMouseEvent` (with W32A-5),
       ordinals 381/410/411/412/413 resolved-or-refused by number.
-- [ ] `PropertySheetW` (7-Zip's options) REAL: page dialog hosting over
+- [x] `PropertySheetW` (7-Zip's options) REAL: page dialog hosting over
       the W32A-6 engine, Apply/OK/Cancel semantics, `PSN_*` notifications.
-- [ ] Theming behaviour: with v6 selected, controls issue the `UxTheme`
+- [x] Theming behaviour: with v6 selected, controls issue the `UxTheme`
       calls W32A-11 implements; with v5 (no ladder manifest selects it —
       all three pin v6 — so the fixture proves the v5 path), controls draw
       unthemed. The gate asserts both renderings differ where the theme

@@ -25,8 +25,10 @@ void a1_group_ord(void) {
     static const a1_exp_t ordtest[] = {
         KFN("GetLastError"), KFN("GetModuleHandleA"), KFN("GetProcAddress"),
         KFN("GetStdHandle"), KFN("WriteFile"), KFN("ExitProcess"),
-        ORD("COMCTL32.dll", 17, "REAL", "gen:TODO"),
-        ORD("COMCTL32.dll", 381, "REAL", "gen:TODO"),
+        /* W32A-8: the comctl32 ladder is real now, so the ordinals
+         * resolve through the ordmap to the static bindings. */
+        ORD("COMCTL32.dll", 17, "REAL", "static"),
+        ORD("COMCTL32.dll", 381, "REAL", "static"),
         ORD("OLEAUT32.dll", 2, "REAL", "static"),
         ORD("OLEAUT32.dll", 6, "REAL", "static"),
         ORD("OLEAUT32.dll", 7, "REAL", "static"),

@@ -44,8 +44,20 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*624 functions across 4 modules. This table is generated from
+*651 functions across 5 modules. This table is generated from
 `w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
+
+**COMCTL32.dll** (27)
+
+- `CreateStatusWindowW` · `CreateToolbarEx` · `DefSubclassProc`
+- `GetWindowSubclass` · `ImageList_AddMasked` · `ImageList_BeginDrag`
+- `ImageList_Create` · `ImageList_Destroy` · `ImageList_DragEnter`
+- `ImageList_DragMove` · `ImageList_DragShowNolock` · `ImageList_Draw`
+- `ImageList_EndDrag` · `ImageList_GetIcon` · `ImageList_GetIconSize`
+- `ImageList_GetImageCount` · `ImageList_GetImageInfo` · `ImageList_Remove`
+- `ImageList_ReplaceIcon` · `ImageList_SetIconSize` · `InitCommonControls`
+- `InitCommonControlsEx` · `LoadIconWithScaleDown` · `PropertySheetW`
+- `RemoveWindowSubclass` · `SetWindowSubclass` · `_TrackMouseEvent`
 
 **GDI32.dll** (87)
 

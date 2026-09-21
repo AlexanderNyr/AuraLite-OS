@@ -30,6 +30,7 @@ EXPORTS
     GetScrollInfo
     GetScrollPos
     GetSysColor
+    ReleaseDC
     GetSysColorBrush
     GetSystemMetrics
     GetUpdateRgn
@@ -39,7 +40,8 @@ EXPORTS
     GetWindowTextW
     GetWindowThreadProcessId
     InvalidateRect
-    IsWindow
+IsWindow
+IsWindowVisible
     MapVirtualKeyW
     MessageBoxA
     MonitorFromWindow

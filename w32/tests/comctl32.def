@@ -1,0 +1,37 @@
+; comctl32.def — export list for the COMCTL32 import library.
+; W32APP_PLAN.md phase W32A-8: the 27 ladder-measured symbols (the
+; ImageList set including drag, the two create helpers, PropertySheetW,
+; the subclass engine, ordinal 381 and ordinal 17's InitCommonControls).
+; Ordinal-only imports were already proven by the W32A-1 ordtest
+; fixture (comctl32_ord.def: 17/381/410-413); here every import is by
+; name, which is how 7zFM and notepad++ import them.  Kept in lockstep
+; with the C32 rows of w32/src/w32_bind.c.
+LIBRARY COMCTL32.dll
+EXPORTS
+    CreateStatusWindowW
+    CreateToolbarEx
+    DefSubclassProc
+    GetWindowSubclass
+    ImageList_AddMasked
+    ImageList_BeginDrag
+    ImageList_Create
+    ImageList_Destroy
+    ImageList_DragEnter
+    ImageList_DragMove
+    ImageList_DragShowNolock
+    ImageList_Draw
+    ImageList_EndDrag
+    ImageList_GetIcon
+    ImageList_GetIconSize
+    ImageList_GetImageCount
+    ImageList_GetImageInfo
+    ImageList_Remove
+    ImageList_ReplaceIcon
+    ImageList_SetIconSize
+    InitCommonControls
+    InitCommonControlsEx
+    LoadIconWithScaleDown
+    PropertySheetW
+    RemoveWindowSubclass
+    SetWindowSubclass
+    _TrackMouseEvent

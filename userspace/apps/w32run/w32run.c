@@ -32,6 +32,7 @@
 #include "w32/w32_manifest.h"
 #include "w32/gdi32.h"
 #include "w32/kernel32.h"
+#include "w32/comctl32.h"
 
 #ifndef PROT_READ
 #define PROT_READ  0x1
@@ -106,6 +107,11 @@ int main(int argc, char **argv) {
          * Windows compatibility behaviour, aware ones see the real
          * (gtheme-configured) value. */
         w32_gdi_set_dpi_aware(mf.dpi_aware);
+        /* W32A-8: the Common-Controls assemblyIdentity picks the
+         * version the controls answer for -- v6 paints through the
+         * live compositor theme, v5 paints the classic syscolor look.
+         * The integration gate asserts the two renderings differ. */
+        w32_comctl_set_version(mf.comctl_major);
         if (mf.has_manifest)
             printf("w32run: manifest: comctl v%d, exec=%s%s\n",
                    mf.comctl_major,

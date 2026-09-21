@@ -1080,7 +1080,8 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_user32_win.o \
                 $(USER_BUILD)/w32_rsrc.o \
                 $(USER_BUILD)/w32_dlg.o \
-                $(USER_BUILD)/w32_gdi.o
+                $(USER_BUILD)/w32_gdi.o \
+                $(USER_BUILD)/w32_comctl32.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1111,6 +1112,12 @@ $(USER_BUILD)/w32_dlg.o: w32/src/w32_dlg.c $(USER_CFLAGS_INC)
 # palettes, icon decode.  Listed in W32_USER_OBJ above (CI #385's lesson:
 # the host suite amalgamates .c files and cannot catch a missing object).
 $(USER_BUILD)/w32_gdi.o: w32/src/w32_gdi.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-8: the common controls -- WC_* classes, PropertySheetW,
+# ImageList (incl. drag), subclass ordinals, and the comctl version seam.
+# Listed in W32_USER_OBJ above (CI #385's lesson: the host suite amalgamates
+# the .c files and cannot catch a missing object).
+$(USER_BUILD)/w32_comctl32.o: w32/src/comctl32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -2416,6 +2423,31 @@ $(W32A7_EXE): w32/tests/w32a7_gdi.asm $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
 	         $(G32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (W32A-7 GDI raster engine fixture)"
 
+# W32APP_PLAN.md phase W32A-8: the common-controls gate.  Every control
+# class through the SendMessage path with WM_NOTIFY to the parent
+# (toolbar clicks -> WM_COMMAND, treeview expand/select notifications in
+# the documented order, tab switches, tooltips shown by relayed mouse
+C32_IMPLIB := $(BUILD_DIR)/user/comctl32.lib
+
+$(C32_IMPLIB): w32/tests/comctl32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/comctl32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+# moves), the ImageList set including drag, the subclass ordinals, and
+# PropertySheetW driving two in-memory-template pages to IDOK with the
+# PSN_APPLY lParam direction asserted per page.
+W32A8_EXE := $(BUILD_DIR)/user/w32a8_comctl32.exe
+$(W32A8_EXE): w32/tests/w32a8_comctl32.asm $(K32_IMPLIB) $(U32_IMPLIB) \
+              $(G32_IMPLIB) $(C32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a8_comctl32.obj
+	lld-link -subsystem:console -entry:mainCRTStartup -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a8_comctl32.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(G32_IMPLIB) $(C32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-8 COMCTL32 common controls fixture)"
+
 MCRT_IMPLIB := $(BUILD_DIR)/user/msvcrt.lib
 
 $(MCRT_IMPLIB): w32/tests/msvcrt.def
@@ -2962,7 +2994,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -2979,6 +3011,16 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # like /linux/bin/sh -> dash).
 	@ln -f $(INITRD_DIR)/bin/init $(INITRD_DIR)/bin/sh
 	@strip -s $(HELLO_ELF) -o $(INITRD_DIR)/bin/hello
+# DETERMINISM (found by the W32A-8 full-suite gate): insttest's chmod-refusal
+# probe depends on initrd /bin/hello arriving WITHOUT execute bits ("its
+# stored mode has no execute bits" -- see userspace/tests/insttest/insttest.c).
+# strip -o preserves the input mode, and the input mode is the host linker's
+# choice: ld.lld 19 emits 0755, older lld emitted 0644, so the policy test
+# flipped with the toolchain version.  Pin the documented precondition here
+# so the tar entry is 0644 (guest vnode 0444) on every host.  Exec in the
+# guest never consults the bit (initrd vnodes are 0555 for every other /bin
+# program and `run apm` works), so nothing else changes.
+	@chmod 0644 $(INITRD_DIR)/bin/hello
 	@strip -s $(SHMAKE_ELF) -o $(INITRD_DIR)/bin/shmake
 	@strip -s $(SH6E_STAMP_ELF) -o $(INITRD_DIR)/tests/sh6e_stamp
 # SELFHOST SH7a: the in-guest hash tool lands on the search PATH as a normal
@@ -3139,6 +3181,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(W32A5_EXE) $(INITRD_DIR)/tests/w32a5_win.exe
 	@cp $(W32A6_EXE) $(INITRD_DIR)/tests/w32a6_dlg.exe
 	@cp $(W32A7_EXE) $(INITRD_DIR)/tests/w32a7_gdi.exe
+	@cp $(W32A8_EXE) $(INITRD_DIR)/tests/w32a8_comctl32.exe
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3432,6 +3475,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a5 \
                 $(BUILD_DIR)/test_w32_a6 \
                 $(BUILD_DIR)/test_w32_a7 \
+                $(BUILD_DIR)/test_w32_a8 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3576,6 +3620,18 @@ $(BUILD_DIR)/test_w32_a7: tests/unit/test_w32_a7.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I . \
 	          tests/unit/test_w32_a7.c -lpthread -o $@
+
+# W32A-8: the COMCTL32 gate.  Same inclusion style as W32A-7 (the suite
+# #includes the implementation files and supplies its own compositor),
+# extended with comctl32.c; the independent hw_* widget seam mirrors the
+# tab/tree/listbox hit semantics and drift-detects the control-to-widget
+# row mapping, and the host palette knobs (v5/v6) pin the two renderings
+# the W32A-1 manifest record selects between.
+$(BUILD_DIR)/test_w32_a8: tests/unit/test_w32_a8.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_a8.c -lpthread -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.
@@ -5077,10 +5133,10 @@ sdk-check: sdk
 # exists and would go stale.
 W32_SDK_DIR := $(BUILD_DIR)/w32-sdk
 
-w32-sdk: $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB)
+w32-sdk: $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB)
 	@rm -rf $(W32_SDK_DIR)
 	@mkdir -p $(W32_SDK_DIR)/lib $(W32_SDK_DIR)/examples
-	@cp $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(W32_SDK_DIR)/lib/
+	@cp $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB) $(W32_SDK_DIR)/lib/
 	@cp -r w32/examples/. $(W32_SDK_DIR)/examples/
 	@cp docs/win32.md $(W32_SDK_DIR)/
 	@cp w32/PROVENANCE.md w32/LICENSING.md $(W32_SDK_DIR)/ 2>/dev/null || true

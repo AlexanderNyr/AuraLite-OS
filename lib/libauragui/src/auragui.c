@@ -534,6 +534,20 @@ ag_widget_t *ag_add_tab(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint32_t
     return w;
 }
 
+/* W32A-8: the tree widget WC_TREEVIEW maps onto.  Nodes live in the
+ * widget (ag_tree_add), rendering walks the expanded forest, and mouse
+ * rows map back through the same walk -- see render_tree/dispatch. */
+ag_widget_t *ag_add_tree(ag_view_t *v, int32_t x, int32_t y, uint32_t W, uint32_t H) {
+    ag_widget_t *w = alloc_widget(v);
+    if (!w) return 0;
+    w->kind = AG_W_TREE;
+    w->x = x; w->y = y; w->w = W; w->h = H;
+    w->fg = AG_BLACK; w->bg = AG_WHITE;
+    w->tree_count = 0;
+    w->tree_sel = -1;
+    return w;
+}
+
 ag_widget_t *ag_add_contextmenu(ag_view_t *v) {
     ag_widget_t *w = alloc_widget(v);
     if (!w) return 0;
@@ -559,10 +573,122 @@ int ag_listbox_add(ag_widget_t *lb, const char *item) {
 
 /* ---- Tab helpers ---- */
 
+void ag_tab_set_active(ag_widget_t *tab, int idx) {
+    if (!tab || idx < 0 || idx >= tab->tab_count) return;
+    tab->active_tab = idx;
+}
+
+int ag_tab_remove(ag_widget_t *tab, int idx) {
+    if (!tab || idx < 0 || idx >= tab->tab_count) return -1;
+    for (int i = idx; i < tab->tab_count - 1; i++)
+        tab->tab_labels[i] = tab->tab_labels[i + 1];
+    tab->tab_count--;
+    if (tab->active_tab >= tab->tab_count)
+        tab->active_tab = tab->tab_count ? tab->tab_count - 1 : 0;
+    return tab->tab_count;
+}
+
+void ag_progress_set(ag_widget_t *prog, int value, int max) {
+    if (!prog) return;
+    if (max < 1) max = 1;
+    if (value < 0) value = 0;
+    if (value > max) value = max;
+    prog->value = value;
+    prog->value_max = max;
+}
+
 int ag_tab_add(ag_widget_t *tab, const char *label) {
     if (tab->tab_count >= AG_MAX_TABS) return -1;
     tab->tab_labels[tab->tab_count] = label;
     return tab->tab_count++;
+}
+
+/* ---- Tree helpers (W32A-8) ---- */
+
+int ag_tree_add(ag_widget_t *tree, int parent, const char *label) {
+    if (!tree || tree->tree_count >= AG_MAX_TREE_NODES) return -1;
+    if (parent >= tree->tree_count) return -1;
+    int idx = tree->tree_count++;
+    tree->tree[idx].label = label;
+    tree->tree[idx].parent = parent;
+    tree->tree[idx].expanded = 0;
+    tree->tree[idx].has_children = 0;
+    if (parent >= 0) tree->tree[parent].has_children = 1;
+    return idx;
+}
+
+void ag_tree_clear(ag_widget_t *tree) {
+    if (!tree) return;
+    tree->tree_count = 0;
+    tree->tree_sel = -1;
+}
+
+void ag_tree_set_expanded(ag_widget_t *tree, int node, int expanded) {
+    if (!tree || node < 0 || node >= tree->tree_count) return;
+    tree->tree[node].expanded = expanded ? 1 : 0;
+}
+
+int ag_tree_select(ag_widget_t *tree, int node) {
+    if (!tree) return -1;
+    int prev = tree->tree_sel;
+    if (node >= -1 && node < tree->tree_count)
+        tree->tree_sel = node;
+    return prev;
+}
+
+int ag_tree_selected(const ag_widget_t *tree) {
+    return tree ? tree->tree_sel : -1;
+}
+
+/* Walk the forest depth-first, descending only into expanded nodes.
+ * row < 0 counts; otherwise returns the node at that visible row (or
+ * -1).  Both render and dispatch go through here, so a clicked row and
+ * a painted row can never disagree. */
+static int tree_walk(const ag_widget_t *w, int row) {
+    int seen = -1;
+    int stack[AG_MAX_TREE_NODES];
+    int depth[AG_MAX_TREE_NODES];
+    int sp = 0;
+    for (int i = w->tree_count - 1; i >= 0; i--) {
+        if (w->tree[i].parent == -1) { stack[sp] = i; depth[sp] = 0; sp++; }
+    }
+    while (sp > 0) {
+        sp--;
+        int n = stack[sp];
+        int d = depth[sp];
+        seen++;
+        if (row >= 0 && seen == row) return n;
+        if (w->tree[n].has_children && w->tree[n].expanded) {
+            /* push this node's children (array order) so the first
+             * child pops next; use a second stack pass for order. */
+            int kids[AG_MAX_TREE_NODES];
+            int nk = 0;
+            for (int i = 0; i < w->tree_count; i++)
+                if (w->tree[i].parent == n) kids[nk++] = i;
+            for (int i = nk - 1; i >= 0; i--) {
+                stack[sp] = kids[i]; depth[sp] = d + 1; sp++;
+            }
+        }
+    }
+    return row < 0 ? seen + 1 : -1;
+}
+
+int ag_tree_visible_rows(const ag_widget_t *tree) {
+    if (!tree) return 0;
+    return tree_walk(tree, -1);
+}
+
+int ag_tree_row_node(const ag_widget_t *tree, int row) {
+    if (!tree || row < 0) return -1;
+    return tree_walk(tree, row);
+}
+
+int ag_tree_node_row(const ag_widget_t *tree, int node) {
+    if (!tree || node < 0 || node >= tree->tree_count) return -1;
+    int rows = tree_walk(tree, -1);
+    for (int r = 0; r < rows; r++)
+        if (tree_walk(tree, r) == node) return r;
+    return -1;
 }
 
 /* ---- Context menu helpers ---- */
@@ -652,7 +778,7 @@ static void render_progress(int wid, ag_widget_t *w) {
 static void render_listbox(int wid, ag_widget_t *w) {
     ag_fill_rect(wid, w->x, w->y, w->w, w->h, w->bg);
     ag_draw_rect(wid, w->x, w->y, w->w, w->h, w->focused ? AG_ACCENT : AG_DARK);
-    int row_h = 14;
+    int row_h = AG_ROW_H;
     for (int i = 0; i < w->item_count; i++) {
         int32_t ry = w->y + 2 + i * row_h;
         if (ry + row_h > w->y + (int32_t)w->h - 2) break;
@@ -694,6 +820,41 @@ static void render_tab(int wid, ag_widget_t *w) {
     ag_draw_rect(wid, w->x, w->y + 22, w->w, w->h - 22, AG_DARK);
 }
 
+/* W32A-8: depth-indented rows, +/- toggles for parents, accent fill on
+ * the selected row.  Row order is the same tree_walk the dispatcher
+ * uses, so a click on row N always means the node painted at row N. */
+static void render_tree(int wid, ag_widget_t *w) {
+    ag_fill_rect(wid, w->x, w->y, w->w, w->h, w->bg);
+    ag_draw_rect(wid, w->x, w->y, w->w, w->h,
+                 w->focused ? AG_ACCENT : AG_DARK);
+    int row_h = AG_ROW_H;
+    int rows = ag_tree_visible_rows(w);
+    for (int r = 0; r < rows; r++) {
+        int n = ag_tree_row_node(w, r);
+        if (n < 0) break;
+        /* depth of node n */
+        int d = 0;
+        for (int p = w->tree[n].parent; p >= 0; p = w->tree[p].parent) d++;
+        int32_t rx = w->x + 2 + d * 12;
+        int32_t ry = w->y + 2 + r * row_h;
+        if (ry + row_h > w->y + (int32_t)w->h - 2) break;
+        if (w->tree[n].has_children) {
+            /* toggle box in the gutter */
+            ag_fill_rect(wid, rx, ry + 2, 10, 10, AG_GRAY);
+            ag_draw_rect(wid, rx, ry + 2, 10, 10, AG_DARK);
+            ag_draw_text(wid, rx + 3, ry + 4,
+                         w->tree[n].expanded ? "-" : "+", AG_BLACK);
+        }
+        if (n == w->tree_sel) {
+            ag_fill_rect(wid, rx + 12, ry, w->w - (uint32_t)(rx + 12 - w->x) - 2,
+                         (uint32_t)row_h, AG_ACCENT);
+            ag_draw_text(wid, rx + 15, ry + 3, w->tree[n].label, AG_WHITE);
+        } else {
+            ag_draw_text(wid, rx + 15, ry + 3, w->tree[n].label, w->fg);
+        }
+    }
+}
+
 static void render_contextmenu(int wid, ag_widget_t *w) {
     if (!w->menu_visible) return;
     int item_h = 20;
@@ -728,6 +889,7 @@ void ag_view_render(ag_view_t *v) {
             case AG_W_SCROLLAREA:  render_scrollarea(v->wid, w);  break;
             case AG_W_TAB:         render_tab(v->wid, w);         break;
             case AG_W_CONTEXTMENU: render_contextmenu(v->wid, w); break;
+            case AG_W_TREE:        render_tree(v->wid, w);         break;
         }
     }
     ag_render_now();
@@ -860,7 +1022,7 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     }
                     break;
                 case AG_W_LISTBOX: {
-                    int row_h = 14;
+                    int row_h = AG_ROW_H;
                     int row = (e->y - w->y - 2) / row_h;
                     if (row >= 0 && row < w->item_count) {
                         w->selected = row;
@@ -882,7 +1044,37 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                 case AG_W_TAB: {
                     int tab_w = (int)w->w / (w->tab_count > 0 ? w->tab_count : 1);
                     int tab = (e->x - w->x) / tab_w;
-                    if (tab >= 0 && tab < w->tab_count) w->active_tab = tab;
+                    if (tab >= 0 && tab < w->tab_count &&
+                        tab != w->active_tab) {
+                        w->active_tab = tab;
+                        /* W32A-8: a switched tab reports, so a host
+                         * (the tab control) can raise TCN_SELCHANGE. */
+                        if (w->on_change) w->on_change(w, w->user);
+                    }
+                    break;
+                }
+                case AG_W_TREE: {
+                    int row_h = AG_ROW_H;
+                    int row = (e->y - w->y - 2) / row_h;
+                    int n = ag_tree_row_node(w, row);
+                    if (n >= 0) {
+                        int d = 0;
+                        for (int p = w->tree[n].parent; p >= 0; p = w->tree[p].parent) d++;
+                        int32_t gutter = w->x + 2 + d * 12;
+                        if (w->tree[n].has_children &&
+                            e->x >= gutter && e->x < gutter + 12) {
+                            w->tree[n].expanded = !w->tree[n].expanded;
+                        } else if (e->type == AG_EVT_MOUSE_DBLCLICK &&
+                                   w->tree[n].has_children) {
+                            /* label double-click toggles, like the
+                             * Win32 treeview does */
+                            w->tree[n].expanded = !w->tree[n].expanded;
+                        } else if (n != w->tree_sel) {
+                            w->tree_sel = n;
+                            if (w->on_select) w->on_select(w, w->user);
+                        }
+                    }
+                    set_focus(v, idx);
                     break;
                 }
             }

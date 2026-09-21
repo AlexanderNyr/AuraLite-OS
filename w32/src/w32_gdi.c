@@ -2929,6 +2929,32 @@ static W32_HICON icon_obj_alloc(int32_t w, int32_t hgt, gdi_obj_t **out) {
     return hi;
 }
 
+/* W32A-8: mint an icon object straight from ARGB pixels -- the reverse
+ * of the decode, what ImageList_GetIcon needs to hand a caller an HICON
+ * for one image-list cell.  The pixels are copied into the object's own
+ * pool block, so the caller's buffer may die immediately. */
+W32_HICON w32_gdi_icon_from_argb(int32_t w, int32_t hgt, const uint32_t *argb) {
+    if (w <= 0 || hgt <= 0 || !argb) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    gdi_obj_t *o;
+    W32_HICON hi = icon_obj_alloc(w, hgt, &o);
+    if (!hi) return 0;
+    memcpy(o->u.icon.argb, argb, (size_t)w * (size_t)hgt * 4u);
+    return hi;
+}
+
+/* W32A-8: the read side of that contract -- what ImageList_ReplaceIcon
+ * needs to pull one icon's pixels into an image-list cell.  The pixels
+ * stay owned by the icon object; callers copy out immediately. */
+const uint32_t *w32_gdi_icon_pixels(W32_HICON hicon, int32_t *w, int32_t *hgt) {
+    gdi_obj_t *o = obj_from_h(hicon, GOBJ_ICON);
+    if (!o || !w || !hgt) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    *w = o->u.icon.w; *hgt = o->u.icon.h;
+    return o->u.icon.argb;
+}
+
 W32_HICON w32_gdi_icon_decode(const uint8_t *bytes, size_t len) {
     if (!bytes || len < 40) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
     /* already decoded?  the blob address is the identity */
