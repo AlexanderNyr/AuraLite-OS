@@ -44,8 +44,27 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*651 functions across 5 modules. This table is generated from
+*697 functions across 6 modules. This table is generated from
 `w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
+
+**ADVAPI32.dll** (46)
+
+- `AdjustTokenPrivileges` · `AllocateAndInitializeSid` · `CheckTokenMembership`
+- `CopySid` · `CryptAcquireContextW` · `CryptCreateHash`
+- `CryptDestroyHash` · `CryptGetHashParam` · `CryptHashData`
+- `CryptReleaseContext` · `EqualSid` · `FreeSid`
+- `GetFileSecurityW` · `GetLengthSid` · `GetUserNameA`
+- `GetUserNameW` · `InitializeSecurityDescriptor` · `IsTextUnicode`
+- `LookupAccountNameW` · `LookupPrivilegeValueW` · `LsaAddAccountRights`
+- `LsaClose` · `LsaOpenPolicy` · `OpenProcessToken`
+- `RegCloseKey` · `RegCreateKeyExA` · `RegCreateKeyExW`
+- `RegDeleteKeyA` · `RegDeleteKeyExW` · `RegDeleteKeyW`
+- `RegDeleteValueW` · `RegEnumKeyA` · `RegEnumKeyExW`
+- `RegFlushKey` · `RegGetValueW` · `RegOpenKeyExA`
+- `RegOpenKeyExW` · `RegQueryInfoKeyW` · `RegQueryValueExA`
+- `RegQueryValueExW` · `RegSetValueExA` · `RegSetValueExW`
+- `SetFileSecurityW` · `SetSecurityDescriptorDacl` · `SetSecurityDescriptorOwner`
+- `SystemFunction036`
 
 **COMCTL32.dll** (27)
 
@@ -400,12 +419,131 @@ manifests are parsed: the Common-Controls identity selects comctl32,
 refuses with the reason named), `dpiAware` is recorded, and
 `supportedOS` GUIDs are logged, not actioned.
 
+## The registry is one file, `W32HIVE1` (W32A-9)
+
+`ADVAPI32`'s `Reg*` surface is a real engine over one hive file, in a
+format that is ours and this section is its specification.
+
+**Format** (`W32HIVE1`, little-endian): a 28-byte header — offset 0
+magic `"W32HIVE1"` (8 bytes), 8 flags `u32` (0 today), 12 sequence
+`u64` (incremented per save — a stale-tail reader can tell), 20
+payload length `u32`, 24 payload CRC32 — followed by the payload:
+`u32` root count (always 2: HKCU then HKLM), then node records
+`{ u16 name_len, name UTF-16LE, u64 mtime (FILETIME), u32 value_count,
+[ u16 value_name_len, value_name, u32 type, u32 data_len, data ]×,
+u32 sub_count, sub_count× child records }`. Writes are whole-file
+(open + write + `fsync`), never in place, so a torn write can only
+shorten or corrupt the file — never present itself as valid data: the
+load path validates magic, length, and CRC over exactly `payload_len`,
+and any failure latches *hive corrupt* so every subsequent `Reg*` call
+answers `ERROR_FILE_CORRUPT` (1392) until the process exits. A
+zero-byte file means *fresh hive*, not corruption — the distinction
+matters after a first-boot `O_CREAT`. There is no `O_TRUNC` on save:
+the header's `payload_len` bounds the parse, so a stale tail after a
+shrinking write is ignored by construction.
+
+**Location:** `/disk/w32hive` when `/disk` is mounted (the diskfs
+scratch disk — settings survive a reboot), else `/tmp/w32hive` with
+the volatility logged once at first use. A host test seam
+(`w32_advapi_hive_override`) pins the engine without touching either.
+
+**Policies.** `HKEY_CURRENT_USER` is a real, freely writable root.
+`HKEY_LOCAL_MACHINE` is read-mostly: only subtrees under
+`HKLM\Software` are writable; creates, value writes, and deletes
+anywhere else answer `ERROR_ACCESS_DENIED`. `HKEY_CLASSES_ROOT` is a
+merge view of `HKCU\Software\Classes` over `HKLM\Software\Classes`
+— HKCU wins on conflicts, merged enumeration counts both sides, and
+writes through HKCR land in the HKCU half. Key-name matching folds
+ASCII case only (the documented locale-free contract). Keys with
+subkeys refuse `RegDeleteKey`/`RegDeleteKeyEx` with
+`ERROR_ACCESS_DENIED` — there is no recursive delete in `ADVAPI32`
+(the real API's contract, kept). `RegCloseKey` on a predefined key is
+a successful no-op. The seed: `HKLM\Software\AuraLite\CurrentVersion`
+carries `ProductName` "AuraLite OS (w32 personality)", `HiveFormat`
+"W32HIVE1", `CurrentVersion` "0.0.1".
+
+`RegGetValueW` (the ledger's spelling; there is no A variant) coerces
+within `RRF_RT_REG_SZ|BINARY|DWORD`: `REG_EXPAND_SZ` read as `RT_SZ`
+without `RRF_NOEXPAND` is `%ENV%`-expanded through `getenv` and
+reported as `REG_SZ` with byte size including the NUL;
+`NOEXPAND`+`EXPAND_SZ`+`RT_SZ` is `ERROR_INVALID_PARAMETER`; a type
+mismatch answers `ERROR_UNSUPPORTED_TYPE`. `RegEnumValue` is not in
+any ledger and is not exported. `RegFlushKey` is REAL — `fsync`
+exists, so it is observable, not ceremonial.
+
+**Limits** (documented, not discovered): key name 255, value name
+16383, value data 1 MiB, 512 subkeys, 1024 values per key, depth 32,
+path 1024 UTF-16 units, 64 open key handles, 16 providers, 64 hashes,
+4 MiB hash input.
+
+## SIDs, tokens, and the single-user model (W32A-9)
+
+`AllocateAndInitializeSid`/`CopySid`/`EqualSid`/`GetLengthSid`/`FreeSid`
+are a real, self-consistent SID implementation (revision 1, up to 8
+subauthorities). `GetUserNameA`/`W` answer `"user"` — the documented
+single-user name; there is no account database to ask, and the short
+buffer answers `FALSE` + needed length + `ERROR_INSUFFICIENT_BUFFER`
+like the real thing.
+
+`CheckTokenMembership` is TRUE for exactly the caller's own SID
+(`S-1-5-21-0-0-1000`) and `BUILTIN\Administrators`
+(`S-1-5-32-544`), FALSE for anything else. Administrators being TRUE
+is the one place the plan sanctions "admin", and the reason is one
+paragraph: every install and settings write in the ladder's binaries
+asks "am I elevated?" once and then proceeds; a FALSE here would turn
+every first-run of PuTTY, 7-Zip, and Notepad++ into a UAC-style
+failure loop with nothing behind it. There is no ACL engine, no
+token, and no privilege model to protect — membership is an answer,
+not an enforcement claim.
+
+`InitializeSecurityDescriptor`/`SetSecurityDescriptorDacl`/
+`SetSecurityDescriptorOwner` build real descriptors in the x64
+natural layout (revision@0, control@2, owner@8, group@16, sacl@24,
+dacl@32, sizeof 40) with the `SE_*` control bits set honestly.
+Enforcement is owner-only and documented as such;
+`Get/SetFileSecurityW` answer `ERROR_NOT_SUPPORTED` (below).
+
+`IsTextUnicode` is the base kernel32 engine (kernel32_loc.c), bound
+under `ADVAPI32` — the real DLL-forwarder shape. `*result` is the
+in-mask of tests to run (the winnls.h values; NULL flags = all
+tests); the documented STATISTICS heuristic is the null-high-byte
+count, not a locale table.
+
+## CryptoAPI is hash-only (W32A-9)
+
+`CryptAcquireContextW`/`CryptReleaseContext`/
+`CryptCreateHash`/`CryptHashData`/`CryptGetHashParam`/
+`CryptDestroyHash` are REAL over libatls: `CALG_SHA_256`, `CALG_SHA_512`,
+`CALG_SHA3_256` (0x8025), `CALG_SHA3_512` (0x8026), input buffered
+across `CryptHashData` calls (ragged feed == one-shot is asserted
+against the public "abc" vectors in both gates), digest read at
+`HP_HASHVAL`, `HP_HASHSIZE`/`HP_ALGID` answer, provider release frees
+its hashes. `CALG_SHA1`, `CALG_MD5`, and `CALG_SHA_384` answer FALSE
+with `NTE_BAD_ALGID`: no ladder receipt shows SHA-1/MD5 in a core
+flow, and libatls ships neither — the phase result the plan asked
+for. There is no `CryptDeriveKey`/`CryptEncrypt`/`CryptDecrypt` (not
+in any ledger). `SystemFunction036` (RtlGenRandom) is REAL via the
+`getrandom` syscall.
+
 ## Not implemented at all
 
-Registry, COM, .NET, DirectX, WinSock, and WOW64 (32-bit programs).
+COM, .NET, DirectX, WinSock, and WOW64 (32-bit programs).
 `BitBlt`/off-screen device contexts shipped in W32A-7 (the GDI raster
-engine); printing (`StartDocW`/`StartPage`/`EndPage`/`EndDoc`) is
+engine); the registry shipped in W32A-9 (the `W32HIVE1` section
+above); printing (`StartDocW`/`StartPage`/`EndPage`/`EndDoc`) is
 fail-clean by design — no printers exist, so the calls report
 `SP_ERROR`/`ERROR_CALL_NOT_IMPLEMENTED` instead of half-working. The `W` (UTF-16) entry points exist for `KERNEL32` where the plan
 required them and are otherwise deferred; `A` entry points are the primary
 surface today, which is the reverse of decision D6 and is noted there.
+
+The `ADVAPI32` FAIL-CLEAN set, each with one documented reason:
+`LsaOpenPolicy`/`LsaAddAccountRights` → `STATUS_ACCESS_DENIED` (no
+LSA); `LsaClose` → `STATUS_INVALID_HANDLE`; `LookupAccountNameW` →
+`FALSE` + `ERROR_NONE_MAPPED` (no account database);
+`LookupPrivilegeValueW` → `FALSE` + `ERROR_NO_SUCH_PRIVILEGE` (no
+privilege model); `OpenProcessToken` → `FALSE` +
+`ERROR_NO_TOKEN`; `AdjustTokenPrivileges` → `TRUE` +
+`ERROR_NOT_ALL_ASSIGNED` (the single-user degradation 7-Zip's backup
+path takes, asserted in the gate); `Get/SetFileSecurityW` → `FALSE` +
+`ERROR_NOT_SUPPORTED` (archive ACL preservation is the named
+casualty, recorded in the W32A-15 receipt expectations).

@@ -15,51 +15,6 @@
 #   FAILCLEAN (final W32A-1 fail-clean) | DATA (zeroed variable).
 # fail: 0 | NULL | -1 | -2 | E_NOTIMPL | <win32 code> | -.
 dll	symbol	class	kind	rettype	fail	phase	note
-advapi32.dll	AdjustTokenPrivileges	FAIL-CLEAN	TODO	WINBOOL	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	AllocateAndInitializeSid	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CheckTokenMembership	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CopySid	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CryptAcquireContextW	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CryptCreateHash	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CryptDestroyHash	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CryptGetHashParam	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CryptHashData	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	CryptReleaseContext	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	EqualSid	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	FreeSid	REAL	TODO	PTR64	0	W32A-9	phase-owned
-advapi32.dll	GetFileSecurityW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	GetLengthSid	REAL	TODO	DWORD	0	W32A-9	phase-owned
-advapi32.dll	GetUserNameA	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	GetUserNameW	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	InitializeSecurityDescriptor	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	IsTextUnicode	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	LookupAccountNameW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	LookupPrivilegeValueW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	LsaAddAccountRights	FAIL-CLEAN	TODO	NTSTATUS	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	LsaClose	FAIL-CLEAN	TODO	NTSTATUS	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	LsaOpenPolicy	FAIL-CLEAN	TODO	NTSTATUS	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	OpenProcessToken	FAIL-CLEAN	TODO	WINBOOL	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	RegCloseKey	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegCreateKeyExA	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegCreateKeyExW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegDeleteKeyA	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegDeleteKeyExW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegDeleteKeyW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegDeleteValueW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegEnumKeyA	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegEnumKeyExW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegGetValueW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegOpenKeyExA	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegOpenKeyExW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegQueryInfoKeyW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegQueryValueExA	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegQueryValueExW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegSetValueExA	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	RegSetValueExW	REAL	TODO	LONG	0	W32A-9	phase-owned
-advapi32.dll	SetFileSecurityW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-9	FAIL-CLEAN final lands in W32A-9
-advapi32.dll	SetSecurityDescriptorDacl	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	SetSecurityDescriptorOwner	REAL	TODO	WINBOOL	0	W32A-9	phase-owned
-advapi32.dll	SystemFunction036	REAL	TODO	BOOLEAN	0	W32A-9	phase-owned
 comctl32.dll	CreateStatusWindowW	REAL	REAL	PTR64	0	W32A-8	phase-owned
 comctl32.dll	CreateToolbarEx	REAL	REAL	PTR64	0	W32A-8	phase-owned
 comctl32.dll	DefSubclassProc	REAL	REAL	PTR64	0	W32A-8	phase-owned

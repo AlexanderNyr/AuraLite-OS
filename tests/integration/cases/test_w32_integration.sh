@@ -62,23 +62,25 @@ il_assert_grep "$LOG" "HeapAlloc worked" \
 il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=0\)" \
     "and it exited cleanly through ExitProcess"
 
-# --- the documented stub ------------------------------------------------------
-# The unsupported example imports ADVAPI32 (the registry -- a non-goal, D8).
-# Since W32A-1 such imports bind to loud phase-owned stubs: the program
-# runs until the first missing import, which fails loudly with the owning
-# phase named and a guest-visible error -- not a crash, not a silence.
-il_assert_grep "$LOG" "w32run: /tests/w32unsup\\.exe .* 5 import\\(s\\) bound" \
-    "all five imports bound, stubbed ones included"
-il_assert_grep "$LOG" "w32: TODO advapi32\\.dll!RegOpenKeyExA needs W32A-9" \
-    "the missing import fails loudly with its owning phase named"
-il_assert_grep "$LOG" "w32: TODO advapi32\\.dll!RegCloseKey needs W32A-9" \
-    "every touched stub reports, not just the first"
-il_assert_grep "$LOG" "w32unsup: running with stubbed ADVAPI32" \
-    "the program itself starts and runs"
-il_assert_grep "$LOG" "w32unsup: stub failed with 50, exiting" \
-    "and the stub's failure is guest-visible, not silent"
+# --- the registry example (W32A-9 retired its stubs) -------------------------
+# The example used to import ADVAPI32 onto loud TODO stubs; W32A-9 shipped
+# the registry, every ADVAPI32 ledger import went REAL, and the example
+# moved with its phase: it now opens the seeded key and reads ProductName
+# back through the real A-variant engine. The loud-stub contract itself
+# stays covered by the A-1 fixtures (still-stubbed modules live there).
+# NOTE: these assertions are source-verified (the example's strings are
+# in its own source) but not machine-verified until mingw-w64 returns to
+# the build host -- without the cross-compiler this whole case skips.
+il_assert_grep "$LOG" "w32run: /tests/w32unsup\\.exe .* [0-9][0-9]* import\\(s\\) bound" \
+    "every import bound (the count is the compiler's, the receipt is ours)"
+il_assert_grep "$LOG" "w32unsup: the registry is real \(W32A-9\)" \
+    "the example starts and announces the A-9 contract"
+il_assert_grep "$LOG" "w32unsup: ProductName = AuraLite OS \(w32 personality\)" \
+    "the seeded key answers through the real A-variant engine"
+il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=0\)" \
+    "and it exits cleanly"
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION.*KERNEL|kernel panic" \
-    "the stub path is clean, not a fault"
+    "the registry path is clean, not a fault"
 
 # --- an import-free PE still takes the kernel path -------------------------
 # That path applies per-section W^X, so it must not be given up for the

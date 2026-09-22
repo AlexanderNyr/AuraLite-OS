@@ -167,6 +167,10 @@ void w32_module_init(void) {
      * never consults the module table.  Found by the full-suite rerun of
      * test_w32_a1_loader. */
     add_builtin("comctl32");
+    /* W32A-9: same category, same reason -- advapi32's exports are linked
+     * into the loader now (the registry engine in advapi32.c), so it left
+     * the generated stub-covered list with them. */
+    add_builtin("advapi32");
     /* W32A-1: every stub-covered module answers GetModuleHandle too, so a
      * program probing for mpr, comctl32 or shell32 finds a module whose
      * functions fail cleanly instead of a missing DLL.  Names already

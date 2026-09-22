@@ -1081,7 +1081,8 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_rsrc.o \
                 $(USER_BUILD)/w32_dlg.o \
                 $(USER_BUILD)/w32_gdi.o \
-                $(USER_BUILD)/w32_comctl32.o
+                $(USER_BUILD)/w32_comctl32.o \
+                $(USER_BUILD)/w32_advapi32.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1118,6 +1119,10 @@ $(USER_BUILD)/w32_gdi.o: w32/src/w32_gdi.c $(USER_CFLAGS_INC)
 # Listed in W32_USER_OBJ above (CI #385's lesson: the host suite amalgamates
 # the .c files and cannot catch a missing object).
 $(USER_BUILD)/w32_comctl32.o: w32/src/comctl32.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-9: the registry + security engine.  Links against
+# libatls (the hash set) -- see the w32run.elf rule below.
+$(USER_BUILD)/w32_advapi32.o: w32/src/advapi32.c w32/include/w32/advapi32.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -1164,11 +1169,13 @@ $(USER_BUILD)/w32_kernel32_thr.o: w32/src/kernel32_thr.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/w32run.o: userspace/apps/w32run/w32run.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
+# W32A-9: + $(LIBATLS) -- advapi32's CryptoAPI maps onto the libatls
+# hashes (the http.elf precedent for linking it into a user program).
 $(USER_BUILD)/w32run.elf: $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
-                          $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+                          $(USER_COMMON) $(USER_GUI_OBJ) $(LIBATLS) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/w32run.o $(W32_USER_OBJ) \
-	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(LIBATLS) -o $@
 	@echo "[link] $@ (w32 personality)"
 
 # W32-6: the SEH shim exercised from native code, so a failure is the shim's
@@ -1197,10 +1204,10 @@ $(USER_BUILD)/dlltest.o: userspace/apps/w32run/dlltest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 $(USER_BUILD)/dlltest.elf: $(USER_BUILD)/dlltest.o $(W32_USER_OBJ) \
-                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+                           $(USER_COMMON) $(USER_GUI_OBJ) $(LIBATLS) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/dlltest.o $(W32_USER_OBJ) \
-	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(LIBATLS) -o $@
 	@echo "[link] $@ (w32 module loader)"
 
 # Pattern rule for linking user ELFs (each links with crt0 + syscall + libc).
@@ -2448,6 +2455,30 @@ $(W32A8_EXE): w32/tests/w32a8_comctl32.asm $(K32_IMPLIB) $(U32_IMPLIB) \
 	         $(G32_IMPLIB) $(C32_IMPLIB) -out:$@
 	@echo "  [pe] $@ (W32A-8 COMCTL32 common controls fixture)"
 
+# W32APP_PLAN.md phase W32A-9: the registry + security gate.  One NASM PE
+# (w32a9_registry.asm) drives the whole surface end to end -- hive CRUD +
+# reopen (the persistence direction in-process), the HKLM write policy,
+# the HKCR merge view, SID/descriptor building, CryptoAPI hashes against
+# known vectors, RtlGenRandom, GetUserName, IsTextUnicode, the failclean
+# refusals with their exact codes, and the torn-write refusal.  The
+# cross-boot half (write in boot 1, read in boot 2, then corrupt + refuse)
+# is the integration case; this exe is its driver.
+A32_IMPLIB := $(BUILD_DIR)/user/advapi32.lib
+
+$(A32_IMPLIB): w32/tests/advapi32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 \
+	         -out:$(BUILD_DIR)/user/advapi32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+W32A9_EXE := $(BUILD_DIR)/user/w32a9_registry.exe
+$(W32A9_EXE): w32/tests/w32a9_registry.asm $(K32_IMPLIB) $(A32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a9_registry.obj
+	lld-link -subsystem:console -entry:mainCRTStartup -nodefaultlib \
+	         $(BUILD_DIR)/user/w32a9_registry.obj $(K32_IMPLIB) $(A32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-9 registry/advapi32 fixture)"
+
 MCRT_IMPLIB := $(BUILD_DIR)/user/msvcrt.lib
 
 $(MCRT_IMPLIB): w32/tests/msvcrt.def
@@ -2994,7 +3025,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -3182,6 +3213,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(W32A6_EXE) $(INITRD_DIR)/tests/w32a6_dlg.exe
 	@cp $(W32A7_EXE) $(INITRD_DIR)/tests/w32a7_gdi.exe
 	@cp $(W32A8_EXE) $(INITRD_DIR)/tests/w32a8_comctl32.exe
+	@cp $(W32A9_EXE) $(INITRD_DIR)/tests/w32a9_registry.exe
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3476,6 +3508,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a6 \
                 $(BUILD_DIR)/test_w32_a7 \
                 $(BUILD_DIR)/test_w32_a8 \
+                $(BUILD_DIR)/test_w32_a9 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3632,6 +3665,35 @@ $(BUILD_DIR)/test_w32_a8: tests/unit/test_w32_a8.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I . \
 	          tests/unit/test_w32_a8.c -lpthread -o $@
+
+# W32APP_PLAN.md W32A-9: the registry/security host gate.  Amalgamates the
+# engine with the real libatls hash sources (the atls_hash precedent), so
+# CryptHashData is checked against atls one-shots, not against itself.
+# NOTE: the engine sources are amalgamated by #include, so they are
+# prerequisites too -- a stale-object run after an engine edit is exactly
+# the CI #385 class of false green.
+# kernel32_loc.c rides the cc line as its own TU (amalgamating it would
+# clash statics): it owns the IsTextUnicode engine the ledger binds
+# under ADVAPI32, so the host gate drives the same code the guest will.
+$(BUILD_DIR)/test_w32_a9: tests/unit/test_w32_a9.c \
+                          w32/src/advapi32.c w32/src/w32_errno.c w32/src/w32_utf.c \
+                          w32/src/kernel32_loc.c \
+                          w32/include/w32/advapi32.h w32/include/w32/kernel32.h \
+                          lib/libatls/src/atls_sha256.c \
+                          lib/libatls/src/atls_sha512.c \
+                          lib/libatls/src/atls_sha3.c \
+                          lib/libatls/src/atls_common.c \
+                          lib/libatls/include/atls/atls.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          -D_POSIX_C_SOURCE=200809L \
+	          -I lib/libatls/include \
+	          tests/unit/test_w32_a9.c \
+	          w32/src/kernel32_loc.c \
+	          lib/libatls/src/atls_sha256.c lib/libatls/src/atls_sha512.c \
+	          lib/libatls/src/atls_sha3.c lib/libatls/src/atls_common.c \
+	          -lpthread -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.
@@ -5133,10 +5195,10 @@ sdk-check: sdk
 # exists and would go stale.
 W32_SDK_DIR := $(BUILD_DIR)/w32-sdk
 
-w32-sdk: $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB)
+w32-sdk: $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB) $(A32_IMPLIB)
 	@rm -rf $(W32_SDK_DIR)
 	@mkdir -p $(W32_SDK_DIR)/lib $(W32_SDK_DIR)/examples
-	@cp $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB) $(W32_SDK_DIR)/lib/
+	@cp $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB) $(A32_IMPLIB) $(W32_SDK_DIR)/lib/
 	@cp -r w32/examples/. $(W32_SDK_DIR)/examples/
 	@cp docs/win32.md $(W32_SDK_DIR)/
 	@cp w32/PROVENANCE.md w32/LICENSING.md $(W32_SDK_DIR)/ 2>/dev/null || true

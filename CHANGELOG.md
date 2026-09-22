@@ -2,6 +2,93 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-9 — Registry and ADVAPI32: the W32HIVE1 hive, SIDs, hash-only CryptoAPI] 2026-09-21
+
+The personality grows its registry: `w32/src/advapi32.c`, a real
+engine over one hive file in a format that is ours (W32HIVE1,
+documented in docs/win32.md — magic + flags + sequence + payload
+length + CRC32, whole-file writes with fsync, a torn write latching
+every Reg* call to ERROR_FILE_CORRUPT, never a half-read). The hive
+lives at /disk/w32hive when the scratch disk exists (settings survive
+a reboot — asserted by the two-boot gate) and /tmp/w32hive with the
+volatility logged otherwise. All 18 ledger Reg* names are REAL in A
+and W as the ledger spells them (RegGetValue is W-only, RegEnumKey is
+the A spelling); RegEnumValue is in no ledger and is not exported;
+RegFlushKey is REAL because fsync makes it observable. Policies:
+HKCU freely writable; HKLM writable only under \Software; HKCR a
+merge view with HKCU winning and writes landing in the HKCU half;
+keys with subkeys refuse deletion with ERROR_ACCESS_DENIED (the real
+API's contract — no recursive delete in ADVAPI32); ASCII-only case
+folding; predefined keys close as no-ops. RegGetValueW coerces and
+expands REG_EXPAND_SZ through getenv; IsTextUnicode stays where it
+has always been implemented (kernel32_loc.c) and is bound under
+ADVAPI32 — the real DLL-forwarder shape, discovered when the build
+refused the duplicate: the bind table entry is the whole story.
+
+Identity and security, each honestly classed: a real
+AllocateAndInitializeSid/CopySid/EqualSid/GetLengthSid/FreeSid set;
+GetUserName answers "user" with the real short-buffer receipt;
+CheckTokenMembership is TRUE for the caller's S-1-5-21-0-0-1000 and
+BUILTIN\Administrators S-1-5-32-544 only — the one sanctioned
+"admin", with the one-paragraph rationale in docs/win32.md;
+InitializeSecurityDescriptor/SetSecurityDescriptorDacl/
+SetSecurityDescriptorOwner build real descriptors at the x64 natural
+layout (owner@8, dacl@32 — the pack(1) draft was caught before
+shipping). CryptoAPI is hash-only over libatls: SHA-256/512 and
+SHA3-256/512 REAL, input buffered so ragged feeds equal one-shot
+(asserted against the public "abc" vectors in both gates); SHA-1,
+MD5 and SHA-384 answer NTE_BAD_ALGID — no receipt shows them in a
+core flow, so libatls was left untouched (the plan's open question,
+answered and recorded in the plan). SystemFunction036 (7z.dll's
+single ADVAPI32 import, RtlGenRandom) rides the getrandom syscall.
+The FAIL-CLEAN set is nine documented refusals with exact codes:
+LsaOpenPolicy/LsaAddAccountRights STATUS_ACCESS_DENIED, LsaClose
+STATUS_INVALID_HANDLE, LookupAccountNameW ERROR_NONE_MAPPED,
+LookupPrivilegeValueW ERROR_NO_SUCH_PRIVILEGE, OpenProcessToken
+ERROR_NO_TOKEN, AdjustTokenPrivileges TRUE +
+ERROR_NOT_ALL_ASSIGNED (the degradation 7-Zip's backup path takes),
+Get/SetFileSecurityW ERROR_NOT_SUPPORTED.
+
+Guest gate: w32/tests/w32a9_registry.asm — 12 sections, 46 imports,
+exit 78; the NASM fixture is fully position-independent (the one
+HIGHLOW reloc an indexed bss operand produced was refused by the
+loader, rightly — rewritten as a pointer walk) and spells UTF-16LE
+one dw per character (NASM's dw 'ab' packs pairs, which is not
+UTF-16; du is gone in 2.16). tests/integration/cases/
+test_w32a9_registry.sh runs TWO boots against one persistent AHCI
+scratch disk: boot 1 writes the cross-boot marker and passes every
+section; boot 2 reads the marker back with the exact bytes (the
+hive survived the power cycle), then the shell tears the hive with
+a text write and a second fixture run must land A9-CORRUPT-OK, name
+the torn write, and still exit 78 (39/39). Host gate:
+tests/unit/test_w32_a9.c — 364 checks: value-type CRUD round-trips,
+MORE_DATA, case folding, insertion-order enums, QueryInfoKey, the
+delete contracts, persistence reload, the HKLM policy, the HKCR
+merge, RegGetValueW coercion/expansion, four torn-write shapes,
+SIDs/descriptors, the crypto vectors plus a ragged 64 KiB
+incremental against the atls one-shot, RtlGenRandom, identity, and
+the failclean finals — with kernel32_loc.c linked in so the
+forwarder's IsTextUnicode is driven with the same vectors as the
+fixture. The host gate caught three real engine bugs before any
+guest ran: parse_key's name allocations were sized in bytes for
+UTF-16 data (ASan heap-buffer-overflow), four return-ternaries
+mixed LONG error codes with sign-compare, and the first A-variant
+wrappers tested the utf8->utf16 helpers' LENGTH return for error.
+An engine fix of the gate's own making: RegQueryValueExW on
+REG_EXPAND_SZ had double-counted the terminating NUL in the needed
+size (the guest fixture's MORE_DATA check found it).
+
+The stub era for ADVAPI32 ended with the phase: stub_map.tsv now has
+zero advapi32 rows, so the loader's stub-path registration could no
+longer cover it and advapi32 is registered explicitly as a builtin
+(the A-8 lesson, applied preemptively). w32unsup.exe — the example
+that existed to demonstrate the loud TODO stubs for RegOpenKeyExA —
+moved with its phase: it now opens the seeded key and reads ProductName
+back through the real engine, and test_w32_integration.sh asserts the
+new contract (source-verified; the case still self-skips without
+mingw-w64 on the build host). The loud-stub contract itself remains
+covered by the A-1 fixtures' still-stubbed modules.
+
 ## [W32A-8 — COMCTL32: toolbar, status, listview, treeview, tabs, ImageLists] 2026-09-20
 
 The personality grows its common-controls DLL (w32/src/comctl32.c, 27

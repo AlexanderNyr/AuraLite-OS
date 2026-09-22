@@ -12,8 +12,8 @@
 | W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
 | W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ✅ shipped |
 | W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ✅ shipped |
-| W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ⬜ planned |
-| W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ⬜ planned |
+| W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ✅ shipped |
+| W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ✅ shipped |
 | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ⬜ planned |
 | W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ⬜ planned |
 | W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
@@ -1474,7 +1474,7 @@ extensions), fixtures, `tests/integration/cases/test_w32a8_comctl32.sh`,
 
 ---
 
-### Phase W32A-9 — Registry and `ADVAPI32`: the hive, SIDs, CryptoAPI, security stubs ⬜ PLANNED
+### Phase W32A-9 — Registry and `ADVAPI32`: the hive, SIDs, CryptoAPI, security stubs ✅ SHIPPED (2026-09-21)
 
 **Objective:** a registry all three gates write real settings to, in a
 hive format that is ours and documented — plus the security/CryptoAPI
@@ -1482,7 +1482,7 @@ remainder of `ADVAPI32`, each honestly classed.
 
 #### Tasks
 
-- [ ] The hive: format design (documented in `docs/win32.md`: key tree +
+- [x] The hive: format design (documented in `docs/win32.md`: key tree +
       value types `REG_SZ`/`REG_EXPAND_SZ`/`REG_DWORD`/`REG_QWORD`/
       `REG_BINARY`/`REG_MULTI_SZ`, file-backed, fsync policy,
       corruption behaviour — a torn write fails loud at next open, never
@@ -1492,12 +1492,16 @@ remainder of `ADVAPI32`, each honestly classed.
       predefined keys (`HKEY_CURRENT_USER` REAL root; `HKEY_LOCAL_MACHINE`
       REAL read-mostly with documented writable subtrees; `HKEY_CLASSES_ROOT`
       as the documented `HKLM\Software\Classes`+`HKCU` merge view).
-- [ ] Registry API, all REAL, `A` + `W`: `RegOpenKeyEx`/`RegCreateKeyEx`/
+- [x] Registry API, all REAL, `A` + `W`: `RegOpenKeyEx`/`RegCreateKeyEx`/
       `RegCloseKey`/`RegQueryValueEx`/`RegSetValueEx`/`RegDeleteValue`/
       `RegDeleteKey`/`RegDeleteKeyEx`/`RegEnumKey`/`RegEnumKeyEx`/
       `RegQueryInfoKey`/`RegGetValue`/`RegEnumValue`? (ledger)/
       `RegFlushKey`? (ledger — fsync exists, so likely REAL).
-- [ ] Identity/security: `GetUserNameA`/`GetUserNameW`
+      *Shipped decisions: `RegEnumValue` is in no ledger and is not
+      exported; `RegFlushKey` is REAL (fsync, observable); `RegGetValue`
+      is W-only and `RegEnumKey` is the A spelling — both per the
+      ledger's exact import names.*
+- [x] Identity/security: `GetUserNameA`/`GetUserNameW`
       (single-user name, documented), `AllocateAndInitializeSid`/
       `CopySid`/`EqualSid`/`GetLengthSid`/`FreeSid`/
       `CheckTokenMembership` (REAL against the single-user SID model —
@@ -1507,7 +1511,7 @@ remainder of `ADVAPI32`, each honestly classed.
       `InitializeSecurityDescriptor`/`SetSecurityDescriptorDacl`/
       `SetSecurityDescriptorOwner` (REAL descriptor building; enforcement
       is owner-only, documented), `IsTextUnicode` (REAL, pure).
-- [ ] CryptoAPI mapped onto `libatls` (all REAL): `CryptAcquireContextW`/
+- [x] CryptoAPI mapped onto `libatls` (all REAL): `CryptAcquireContextW`/
       `CryptReleaseContext`/`CryptCreateHash`/`CryptHashData`/
       `CryptGetHashParam`/`CryptDestroyHash`/`CryptDeriveKey`?/
       `CryptEncrypt`?/`CryptDecrypt`? (ledger decides — the static tables
@@ -1518,7 +1522,10 @@ remainder of `ADVAPI32`, each honestly classed.
       `libatls` (NIST-vectored, host-tested) rather than failing the
       call; if no receipt shows it, `CALG_SHA1` refuses by name. The
       phase result records which happened and cites the receipt.
-- [ ] FAIL-CLEAN security set (documented, one reason each):
+      *Result: no receipt shows SHA-1 (or MD5, or SHA-384) in a core
+      flow — all three answer FALSE + `NTE_BAD_ALGID`, and libatls is
+      untouched.*
+- [x] FAIL-CLEAN security set (documented, one reason each):
       `LsaOpenPolicy`/`LsaAddAccountRights`/`LsaClose`,
       `LookupAccountNameW`/`LookupPrivilegeValueW`,
       `OpenProcessToken`/`AdjustTokenPrivileges` (single-user, no
@@ -1527,7 +1534,7 @@ remainder of `ADVAPI32`, each honestly classed.
       `GetFileSecurityW`/`SetFileSecurityW` (owner + readonly mapping
       documented as an approximation — archive ACL preservation is the
       named casualty, recorded in the W32A-15 receipt expectations).
-- [ ] `SystemFunction036` REAL via `getrandom` (the `7z.dll` single
+- [x] `SystemFunction036` REAL via `getrandom` (the `7z.dll` single
       `ADVAPI32` import — `RtlGenRandom` semantics, documented alias).
 
 #### Test gate

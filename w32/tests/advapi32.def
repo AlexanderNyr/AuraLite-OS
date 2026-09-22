@@ -1,0 +1,56 @@
+; advapi32.def — W32APP_PLAN.md phase W32A-9: the import library surface.
+;
+; Every export of the w32 advapi32 engine (w32/src/advapi32.c): the 36
+; ledger REAL symbols, the 9 ledger FAIL-CLEAN finals, and RegFlushKey
+; (not in any ledger; the hive's caller-visible fsync point).  The .def
+; format follows comctl32.def: no Microsoft file is copied — this lists
+; OUR engine's exports so lld-link can build the import library the
+; fixtures link against (w32/LICENSING.md).
+LIBRARY ADVAPI32.dll
+EXPORTS
+    AdjustTokenPrivileges
+    AllocateAndInitializeSid
+    CheckTokenMembership
+    CopySid
+    CryptAcquireContextW
+    CryptCreateHash
+    CryptDestroyHash
+    CryptGetHashParam
+    CryptHashData
+    CryptReleaseContext
+    EqualSid
+    FreeSid
+    GetFileSecurityW
+    GetLengthSid
+    GetUserNameA
+    GetUserNameW
+    InitializeSecurityDescriptor
+    IsTextUnicode
+    LookupAccountNameW
+    LookupPrivilegeValueW
+    LsaAddAccountRights
+    LsaClose
+    LsaOpenPolicy
+    OpenProcessToken
+    RegCloseKey
+    RegCreateKeyExA
+    RegCreateKeyExW
+    RegDeleteKeyA
+    RegDeleteKeyExW
+    RegDeleteKeyW
+    RegDeleteValueW
+    RegEnumKeyA
+    RegEnumKeyExW
+    RegFlushKey
+    RegGetValueW
+    RegOpenKeyExA
+    RegOpenKeyExW
+    RegQueryInfoKeyW
+    RegQueryValueExA
+    RegQueryValueExW
+    RegSetValueExA
+    RegSetValueExW
+    SetFileSecurityW
+    SetSecurityDescriptorDacl
+    SetSecurityDescriptorOwner
+    SystemFunction036
