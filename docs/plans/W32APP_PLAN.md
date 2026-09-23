@@ -14,7 +14,7 @@
 | W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ✅ shipped |
 | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ✅ shipped |
 | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ✅ shipped |
-| W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ⬜ planned |
+| W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ✅ shipped |
 | W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ⬜ planned |
 | W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
 | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ⬜ planned |
@@ -1552,14 +1552,14 @@ fixtures, `tests/integration/cases/test_w32a9_registry.sh`,
 
 ---
 
-### Phase W32A-10 — `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` ⬜ PLANNED
+### Phase W32A-10 — `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` ✅ SHIPPED 2026-09-22
 
 **Objective:** folders, file operations, the open/save dialogs, and the
 small pure modules — the "application furniture" phases.
 
 #### Tasks
 
-- [ ] Known folders (REAL, documented mapping table):
+- [x] Known folders (REAL, documented mapping table):
       `SHGetFolderPathW`/`SHGetSpecialFolderPathW`/
       `SHGetSpecialFolderLocation` (`CSIDL_APPDATA` → the documented
       w32 data dir — Notepad++'s config home; `CSIDL_DESKTOP`/
@@ -1573,7 +1573,7 @@ small pure modules — the "application furniture" phases.
       interface answers path queries, nothing more, and says so),
       `SHGetFileInfoW` (REAL type info + icons via W32A-6 decode),
       `ExtractIconExW` (REAL from PE resources + the file-type map).
-- [ ] File operations and shell execution: `SHFileOperationW` (copy/
+- [x] File operations and shell execution: `SHFileOperationW` (copy/
       move/delete/rename REAL over the VFS, no undo — `FOF_ALLOWUNDO`
       refused by flag, progress callbacks honoured), `SHBrowseForFolderW`
       (REAL folder picker over the W32A-6 dialog engine),
@@ -1587,7 +1587,7 @@ small pure modules — the "application furniture" phases.
       a broadcast system), `DragQueryFileW`/`DragQueryPoint`/
       `DragFinish` (REAL with W32A-11), `SHELL32#(165)`
       resolved-or-refused by number.
-- [ ] Common dialogs (REAL over the W32A-6 engine):
+- [x] Common dialogs (REAL over the W32A-6 engine):
       `GetOpenFileNameW`/`GetOpenFileNameA`/`GetSaveFileNameW`/
       `GetSaveFileNameA` (multi-select, filters, initial dir, overwrite
       prompt — the ledger's flag sets REAL, exotic flags refused by
@@ -1596,7 +1596,7 @@ small pure modules — the "application furniture" phases.
       `CommDlgExtendedError` (REAL), `PrintDlgW` → FAIL-CLEAN
       ("no printers", the `PDERR_NODEFAULTPRN` shape — printing itself
       is §7, the import binds and the dialog says so).
-- [ ] Pure modules, all REAL: `SHLWAPI` `Path*` family
+- [x] Pure modules, all REAL: `SHLWAPI` `Path*` family
       (`PathCombineW`/`PathAppendW`/`PathRemoveFileSpecW`/
       `PathFindExtensionW`/`PathFindFileNameW`/`PathStripPathW`/
       `PathAddExtensionW`/`PathMatchSpecW`/`PathIsRelativeW`/
@@ -1610,7 +1610,7 @@ small pure modules — the "application furniture" phases.
       parser; fixtures carry real version resources); `WININET`
       `InternetCrackUrlW` (pure parser, REAL); `dbghelp`
       `ImageNtHeader` (trivially REAL).
-- [ ] FAIL-CLEAN network-identity set (updater-shaped, never core):
+- [x] FAIL-CLEAN network-identity set (updater-shaped, never core):
       `SensApi` `IsNetworkAlive`/`IsDestinationReachableW` (best-effort:
       attempt the documented probe — a TCP connect with a short timeout
       — and report the outcome; "assumed offline/online" is never

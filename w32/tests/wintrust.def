@@ -1,0 +1,7 @@
+; wintrust.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 wintrust engine (w32/src/wintrust.c or w32aux.c):
+; the 1 ledger symbols for WINTRUST.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY WINTRUST.dll
+EXPORTS
+    WinVerifyTrust

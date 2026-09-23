@@ -1,0 +1,25 @@
+; shell32.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 shell32 engine (w32/src/shell32.c or w32aux.c):
+; the 19 ledger symbols for SHELL32.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY SHELL32.dll
+EXPORTS
+    DragFinish
+    DragQueryFileW
+    DragQueryPoint
+    ExtractIconExW
+    SHBrowseForFolderW
+    SHChangeNotify
+    SHCreateDirectory
+    SHCreateItemFromParsingName
+    SHFileOperationW
+    SHGetDesktopFolder
+    SHGetFileInfoW
+    SHGetFolderPathW
+    SHGetPathFromIDListW
+    SHGetSpecialFolderLocation
+    SHGetSpecialFolderPathW
+    ShellExecuteA
+    ShellExecuteExW
+    ShellExecuteW
+    Shell_NotifyIconW

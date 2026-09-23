@@ -1,0 +1,9 @@
+; version.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 version engine (w32/src/version.c or w32aux.c):
+; the 3 ledger symbols for VERSION.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY VERSION.dll
+EXPORTS
+    GetFileVersionInfoSizeW
+    GetFileVersionInfoW
+    VerQueryValueW

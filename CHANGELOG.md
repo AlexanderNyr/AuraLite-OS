@@ -2,6 +2,74 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-10 — Shell furniture: SHLWAPI, SHELL32, COMDLG32, VERSION and the small modules] 2026-09-22
+
+The personality grows its furniture: five engines over one file-backed
+view of the filesystem plus real dialogs.
+
+`w32/src/shlwapi.c` — the 18-symbol Path*/Color*/Assoc surface, all
+pure: Path* string transforms (drive/UNC/slash, drive number, extension,
+FileSpec, Combine/Append, AddExtension with the documented `.exe`
+default, CompactPathEx ellipses-from-front), PathFileExistsW via
+`w32_fs_xlate`, PathMatchSpecW `*`/`?`, Color* HLS `0..240` with the
+documented luminance math, AssocQueryStringW `S_FALSE` from an empty
+table (by design).
+
+`w32/src/shell32.c` — the 19-symbol shell engine: known folders
+(`CSIDL_DESKTOP` → `/`, `APPADATA` → `<root>/w32/appdata`, the data
+root is `/disk` when the scratch disk is mounted else `/tmp` with the
+volatility logged), PIDL `{cb,csidl,path}` round-trip,
+`IShellItem` minimal, `SHGetFileInfoW`/`ExtractIconExW` via the PE icon
+decode, `SHFileOperationW` over the VFS (no undo, `FOF_ALLOWUNDO`
+refused), `ShellExecute` verb dispatch (`open` on PE/ELF via
+`CreateProcessW` → `>32`, every other verb `NOASSOC`/`ACCESSDENIED`),
+`Shell_NotifyIconW` onto `ag_notify`, drag trio model.
+
+`w32/src/comdlg32.c` — the 10-symbol common-dialog engine, real modal
+dialogs over the W32A-6 `DialogBoxIndirectParamW` (the listbox class
+`AuraCDlgLst` + edit/button, the template expander, hook precedence):
+`GetOpenFileNameW`/`Save` (filter/initial-dir/multi-select, overwrite
+prompt via `MessageBox`), `ChooseColor`/`ChooseFont` (16 colours, VGA
+8x16), `PrintDlgW` fail-clean `PDERR_NODEFAULTPRN`.
+
+`w32/src/version.c` — the 3-symbol VERSION reader: `RT_VERSION/1`
+`VS_VERSION_INFO` tree walk (`wLength`/`wValueLength`/`wType`, 32-bit
+pads, `StringFileInfo` language tables), the engine blob
+`[u16 units][resource][u16 pad]` (the prefix bounds the walk, the Win32
+API carries no length).
+
+`w32/src/w32aux.c` — the small modules: `InternetCrackUrlW` pure URL
+parser (scheme/host/port 21/80/443 defaults), `ImageNtHeader` pointer
+arithmetic, `DwmGetColorizationColor` `S_OK` + opaque black /
+`DwmSetWindowAttribute` `E_NOTIMPL`, `IsNetworkAlive`/`IsDestinationReachableW`
+(TCP connect, never hardcoded), `WinVerifyTrust` `TRUST_E_NOSIGNATURE`,
+`CryptQueryObject`/`Cert*`/`CryptMsg*` eight fail-clean.
+
+The loader now binds 65 new symbols (the 64 ledger `W32A-10` rows plus
+`ChooseFontW`'s `A` variant, which the ledger spells only as `W` but
+the engine provides both); `stub_map.tsv` drops from 64 `TODO` to 64
+`REAL`, `w32_bind.c` grows the five blocks, `w32_module.c` registers
+the 10 new built-ins so `GetModuleHandleW` keeps answering after the
+generated list drops them (the A-8 lesson).
+
+Host gate: `tests/unit/test_w32_a10.c` — 158 checks: Path*/Color*/Assoc,
+known folders/PIDL, file ops/notify/drag/execute, Version via the
+generated PE (`test_w32_a10_pe.h`: `RT_VERSION/1` 1.2.3.4 + 4 strings,
+`RT_GROUP_ICON/1` + `RT_ICON/1` 16x16), Url/ImageNtHeader,
+DWM/SensApi/Wintrust/Crypt32, comdlg validation; the gate's first run
+caught the `VS_VERSION_INFO` tree walker's `wLength` off-by-2 (the
+string nodes' `wLength` missed the post-value pad, so `ne < q` and the
+language table's children never walked) and the fixture's `wLength`
+builder that produced it, plus the `ExtractIconExW` `-1` count query
+that incorrectly required `large`/`small`/`count`.
+
+Guest gate: `w32/tests/w32a10_furniture.asm` — a minimal 12-section
+fixture (17 imports, exit 78) that proves the loader binds the 10 new
+DLLs and a representative slice (Path, folders, PIDL, comdlg, URL,
+ImageNtHeader, DWM, SensApi, Wintrust, Crypt) end-to-end;
+`tests/integration/cases/test_w32a10_furniture.sh` runs one boot and
+asserts every marker and `exit 78` (12/12).
+
 ## [W32A-9 — Registry and ADVAPI32: the W32HIVE1 hive, SIDs, hash-only CryptoAPI] 2026-09-21
 
 The personality grows its registry: `w32/src/advapi32.c`, a real

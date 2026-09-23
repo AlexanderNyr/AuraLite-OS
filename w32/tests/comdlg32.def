@@ -1,0 +1,16 @@
+; comdlg32.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 comdlg32 engine (w32/src/comdlg32.c or w32aux.c):
+; the 10 ledger symbols for COMDLG32.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY COMDLG32.dll
+EXPORTS
+    ChooseColorA
+    ChooseColorW
+    ChooseFontA
+    ChooseFontW
+    CommDlgExtendedError
+    GetOpenFileNameA
+    GetOpenFileNameW
+    GetSaveFileNameA
+    GetSaveFileNameW
+    PrintDlgW

@@ -42,26 +42,26 @@ comctl32.dll	PropertySheetW	REAL	REAL	PTR64	0	W32A-8	phase-owned
 comctl32.dll	RemoveWindowSubclass	REAL	REAL	WINBOOL	0	W32A-8	phase-owned
 comctl32.dll	SetWindowSubclass	REAL	REAL	WINBOOL	0	W32A-8	phase-owned
 comctl32.dll	_TrackMouseEvent	REAL	REAL	WINBOOL	0	W32A-8	phase-owned
-comdlg32.dll	ChooseColorA	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	ChooseColorW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	ChooseFontA	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	CommDlgExtendedError	REAL	TODO	DWORD	0	W32A-10	phase-owned
-comdlg32.dll	GetOpenFileNameA	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	GetOpenFileNameW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	GetSaveFileNameA	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	GetSaveFileNameW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-comdlg32.dll	PrintDlgW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CertCloseStore	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CertFindCertificateInStore	FAIL-CLEAN	TODO	PCCERT_CONTEXT	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CertGetCertificateContextProperty	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CertGetNameStringW	FAIL-CLEAN	TODO	DWORD	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CertNameToStrW	FAIL-CLEAN	TODO	DWORD	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CryptMsgClose	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CryptMsgGetParam	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-crypt32.dll	CryptQueryObject	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-dbghelp.dll	ImageNtHeader	REAL	TODO	PTR64	0	W32A-10	phase-owned
-dwmapi.dll	DwmGetColorizationColor	FAIL-CLEAN	TODO	HRESULT	E_NOTIMPL	W32A-10	FAIL-CLEAN final lands in W32A-10
-dwmapi.dll	DwmSetWindowAttribute	FAIL-CLEAN	TODO	HRESULT	E_NOTIMPL	W32A-10	FAIL-CLEAN final lands in W32A-10
+comdlg32.dll	ChooseColorA	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	ChooseColorW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	ChooseFontA	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	CommDlgExtendedError	REAL	REAL	DWORD	0	W32A-10	phase-owned
+comdlg32.dll	GetOpenFileNameA	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	GetOpenFileNameW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	GetSaveFileNameA	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	GetSaveFileNameW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+comdlg32.dll	PrintDlgW	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CertCloseStore	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CertFindCertificateInStore	FAIL-CLEAN	REAL	PCCERT_CONTEXT	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CertGetCertificateContextProperty	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CertGetNameStringW	FAIL-CLEAN	REAL	DWORD	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CertNameToStrW	FAIL-CLEAN	REAL	DWORD	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CryptMsgClose	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CryptMsgGetParam	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+crypt32.dll	CryptQueryObject	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+dbghelp.dll	ImageNtHeader	REAL	REAL	PTR64	0	W32A-10	phase-owned
+dwmapi.dll	DwmGetColorizationColor	FAIL-CLEAN	REAL	HRESULT	E_NOTIMPL	W32A-10	FAIL-CLEAN final lands in W32A-10
+dwmapi.dll	DwmSetWindowAttribute	FAIL-CLEAN	REAL	HRESULT	E_NOTIMPL	W32A-10	FAIL-CLEAN final lands in W32A-10
 gdi32.dll	BitBlt	REAL	REAL	WINBOOL	0	W32A-7	phase-owned
 gdi32.dll	CombineRgn	REAL	REAL	int	0	W32A-7	phase-owned
 gdi32.dll	CreateBitmap	REAL	REAL	PTR64	0	W32A-7	phase-owned
@@ -235,45 +235,45 @@ oleaut32.dll	SysStringByteLen	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
 oleaut32.dll	SysStringLen	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
 oleaut32.dll	VariantClear	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
 oleaut32.dll	VariantCopy	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
-sensapi.dll	IsDestinationReachableW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-sensapi.dll	IsNetworkAlive	FAIL-CLEAN	TODO	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
-shell32.dll	DragFinish	REAL	TODO	void	-	W32A-10	phase-owned
-shell32.dll	DragQueryFileW	REAL	TODO	UINT	0	W32A-10	phase-owned
-shell32.dll	DragQueryPoint	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shell32.dll	ExtractIconExW	REAL	TODO	UINT	0	W32A-10	phase-owned
-shell32.dll	SHBrowseForFolderW	REAL	TODO	PIDLIST_ABSOLUTE	0	W32A-10	phase-owned
-shell32.dll	SHChangeNotify	REAL	TODO	void	-	W32A-10	phase-owned
-shell32.dll	SHCreateDirectory	REAL	TODO	int	0	W32A-10	phase-owned
-shell32.dll	SHCreateItemFromParsingName	REAL	TODO	HRESULT	E_NOTIMPL	W32A-10	phase-owned
-shell32.dll	SHFileOperationW	REAL	TODO	int	0	W32A-10	phase-owned
-shell32.dll	SHGetDesktopFolder	REAL	TODO	HRESULT	E_NOTIMPL	W32A-10	phase-owned
-shell32.dll	SHGetFileInfoW	REAL	TODO	PTR64	0	W32A-10	phase-owned
-shell32.dll	SHGetFolderPathW	REAL	TODO	HRESULT	E_NOTIMPL	W32A-10	phase-owned
-shell32.dll	SHGetPathFromIDListW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shell32.dll	SHGetSpecialFolderLocation	REAL	TODO	HRESULT	E_NOTIMPL	W32A-10	phase-owned
-shell32.dll	SHGetSpecialFolderPathW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shell32.dll	ShellExecuteA	REAL	TODO	PTR64	0	W32A-10	phase-owned
-shell32.dll	ShellExecuteExW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shell32.dll	ShellExecuteW	REAL	TODO	PTR64	0	W32A-10	phase-owned
-shell32.dll	Shell_NotifyIconW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	AssocQueryStringW	REAL	TODO	HRESULT	E_NOTIMPL	W32A-10	phase-owned
-shlwapi.dll	ColorAdjustLuma	REAL	TODO	COLORREF	0	W32A-10	phase-owned
-shlwapi.dll	ColorHLSToRGB	REAL	TODO	COLORREF	0	W32A-10	phase-owned
-shlwapi.dll	ColorRGBToHLS	REAL	TODO	void	-	W32A-10	phase-owned
-shlwapi.dll	PathAddExtensionW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathAppendW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathCombineW	REAL	TODO	LPWSTR	0	W32A-10	phase-owned
-shlwapi.dll	PathCompactPathExW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathFileExistsW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathFindExtensionW	REAL	TODO	LPWSTR	0	W32A-10	phase-owned
-shlwapi.dll	PathFindFileNameW	REAL	TODO	LPWSTR	0	W32A-10	phase-owned
-shlwapi.dll	PathGetDriveNumberW	REAL	TODO	int	0	W32A-10	phase-owned
-shlwapi.dll	PathIsNetworkPathW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathIsRelativeW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathMatchSpecW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathRemoveExtensionW	REAL	TODO	void	-	W32A-10	phase-owned
-shlwapi.dll	PathRemoveFileSpecW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-shlwapi.dll	PathStripPathW	REAL	TODO	void	-	W32A-10	phase-owned
+sensapi.dll	IsDestinationReachableW	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+sensapi.dll	IsNetworkAlive	FAIL-CLEAN	REAL	WINBOOL	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+shell32.dll	DragFinish	REAL	REAL	void	-	W32A-10	phase-owned
+shell32.dll	DragQueryFileW	REAL	REAL	UINT	0	W32A-10	phase-owned
+shell32.dll	DragQueryPoint	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shell32.dll	ExtractIconExW	REAL	REAL	UINT	0	W32A-10	phase-owned
+shell32.dll	SHBrowseForFolderW	REAL	REAL	PIDLIST_ABSOLUTE	0	W32A-10	phase-owned
+shell32.dll	SHChangeNotify	REAL	REAL	void	-	W32A-10	phase-owned
+shell32.dll	SHCreateDirectory	REAL	REAL	int	0	W32A-10	phase-owned
+shell32.dll	SHCreateItemFromParsingName	REAL	REAL	HRESULT	E_NOTIMPL	W32A-10	phase-owned
+shell32.dll	SHFileOperationW	REAL	REAL	int	0	W32A-10	phase-owned
+shell32.dll	SHGetDesktopFolder	REAL	REAL	HRESULT	E_NOTIMPL	W32A-10	phase-owned
+shell32.dll	SHGetFileInfoW	REAL	REAL	PTR64	0	W32A-10	phase-owned
+shell32.dll	SHGetFolderPathW	REAL	REAL	HRESULT	E_NOTIMPL	W32A-10	phase-owned
+shell32.dll	SHGetPathFromIDListW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shell32.dll	SHGetSpecialFolderLocation	REAL	REAL	HRESULT	E_NOTIMPL	W32A-10	phase-owned
+shell32.dll	SHGetSpecialFolderPathW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shell32.dll	ShellExecuteA	REAL	REAL	PTR64	0	W32A-10	phase-owned
+shell32.dll	ShellExecuteExW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shell32.dll	ShellExecuteW	REAL	REAL	PTR64	0	W32A-10	phase-owned
+shell32.dll	Shell_NotifyIconW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	AssocQueryStringW	REAL	REAL	HRESULT	E_NOTIMPL	W32A-10	phase-owned
+shlwapi.dll	ColorAdjustLuma	REAL	REAL	COLORREF	0	W32A-10	phase-owned
+shlwapi.dll	ColorHLSToRGB	REAL	REAL	COLORREF	0	W32A-10	phase-owned
+shlwapi.dll	ColorRGBToHLS	REAL	REAL	void	-	W32A-10	phase-owned
+shlwapi.dll	PathAddExtensionW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathAppendW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathCombineW	REAL	REAL	LPWSTR	0	W32A-10	phase-owned
+shlwapi.dll	PathCompactPathExW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathFileExistsW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathFindExtensionW	REAL	REAL	LPWSTR	0	W32A-10	phase-owned
+shlwapi.dll	PathFindFileNameW	REAL	REAL	LPWSTR	0	W32A-10	phase-owned
+shlwapi.dll	PathGetDriveNumberW	REAL	REAL	int	0	W32A-10	phase-owned
+shlwapi.dll	PathIsNetworkPathW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathIsRelativeW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathMatchSpecW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathRemoveExtensionW	REAL	REAL	void	-	W32A-10	phase-owned
+shlwapi.dll	PathRemoveFileSpecW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+shlwapi.dll	PathStripPathW	REAL	REAL	void	-	W32A-10	phase-owned
 user32.dll	AppendMenuA	REAL	REAL	WINBOOL	0	W32A-6	phase-owned
 user32.dll	AppendMenuW	REAL	REAL	WINBOOL	0	W32A-6	phase-owned
 user32.dll	BeginDeferWindowPos	REAL	TODO	HDWP	0	W32A-5	phase-owned
@@ -419,8 +419,8 @@ uxtheme.dll	GetThemePartSize	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	GetThemeTransitionDuration	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	OpenThemeData	REAL	TODO	HTHEME	0	W32A-11	phase-owned
 uxtheme.dll	SetWindowTheme	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-version.dll	GetFileVersionInfoSizeW	REAL	TODO	DWORD	0	W32A-10	phase-owned
-version.dll	GetFileVersionInfoW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-version.dll	VerQueryValueW	REAL	TODO	WINBOOL	0	W32A-10	phase-owned
-wininet.dll	InternetCrackUrlW	REAL	TODO	BOOL	0	W32A-10	phase-owned
-wintrust.dll	WinVerifyTrust	FAIL-CLEAN	TODO	LONG	0	W32A-10	FAIL-CLEAN final lands in W32A-10
+version.dll	GetFileVersionInfoSizeW	REAL	REAL	DWORD	0	W32A-10	phase-owned
+version.dll	GetFileVersionInfoW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+version.dll	VerQueryValueW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
+wininet.dll	InternetCrackUrlW	REAL	REAL	BOOL	0	W32A-10	phase-owned
+wintrust.dll	WinVerifyTrust	FAIL-CLEAN	REAL	LONG	0	W32A-10	FAIL-CLEAN final lands in W32A-10

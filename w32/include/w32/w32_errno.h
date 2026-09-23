@@ -75,6 +75,15 @@
 #define W32_ERROR_RESOURCE_DATA_NOT_FOUND 1812u
 #define W32_ERROR_RESOURCE_TYPE_NOT_FOUND 1813u
 
+/* W32A-10 (version/shell readers): the image is readable but is not a
+ * loadable PE, or the resource directory is malformed.  1006,
+ * ERROR_FILE_INVALID, the documented code for "not a valid image". */
+#define W32_ERROR_FILE_INVALID         1006u
+
+/* W32A-10 (shell): the documented codes the shell surface answers with. */
+#define W32_ERROR_NO_ASSOCIATION       1165u
+#define W32_ERROR_CANNOT_MAKE            82u
+
 /* The per-process last-error slot.  Win32 makes this thread-local; AuraLite's
  * w32 personality is single-threaded per process for now, so a process-wide
  * slot is exact rather than approximate.  When threads arrive it moves to TLS,

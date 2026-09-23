@@ -1,0 +1,24 @@
+; shlwapi.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 shlwapi engine (w32/src/shlwapi.c or w32aux.c):
+; the 18 ledger symbols for SHLWAPI.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY SHLWAPI.dll
+EXPORTS
+    AssocQueryStringW
+    ColorAdjustLuma
+    ColorHLSToRGB
+    ColorRGBToHLS
+    PathAddExtensionW
+    PathAppendW
+    PathCombineW
+    PathCompactPathExW
+    PathFileExistsW
+    PathFindExtensionW
+    PathFindFileNameW
+    PathGetDriveNumberW
+    PathIsNetworkPathW
+    PathIsRelativeW
+    PathMatchSpecW
+    PathRemoveExtensionW
+    PathRemoveFileSpecW
+    PathStripPathW

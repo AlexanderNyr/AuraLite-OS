@@ -8,6 +8,11 @@
 #include "w32/gdi32.h"
 #include "w32/comctl32.h"
 #include "w32/advapi32.h"
+#include "w32/shell32.h"
+#include "w32/shlwapi.h"
+#include "w32/comdlg32.h"
+#include "w32/version.h"
+#include "w32/w32aux.h"
 #include "w32/w32_rsrc.h"
 #include "w32/oleaut32.h"
 #include "w32/w32_seh.h"
@@ -871,6 +876,82 @@ static const w32_export_t exports[] = {
     { A32, "AdjustTokenPrivileges",     (void *)AdjustTokenPrivileges     },
     { A32, "GetFileSecurityW",          (void *)GetFileSecurityW          },
     { A32, "SetFileSecurityW",          (void *)SetFileSecurityW          },
+
+    /* W32APP_PLAN.md W32A-10: comdlg32.dll — comdlg32.c */
+    { "comdlg32.dll", "ChooseColorA",                  (void *)ChooseColorA                  },
+    { "comdlg32.dll", "ChooseColorW",                  (void *)ChooseColorW                  },
+    { "comdlg32.dll", "ChooseFontA",                   (void *)ChooseFontA                   },
+    { "comdlg32.dll", "ChooseFontW",                   (void *)ChooseFontW                   },
+    { "comdlg32.dll", "CommDlgExtendedError",          (void *)CommDlgExtendedError          },
+    { "comdlg32.dll", "GetOpenFileNameA",              (void *)GetOpenFileNameA              },
+    { "comdlg32.dll", "GetOpenFileNameW",              (void *)GetOpenFileNameW              },
+    { "comdlg32.dll", "GetSaveFileNameA",              (void *)GetSaveFileNameA              },
+    { "comdlg32.dll", "GetSaveFileNameW",              (void *)GetSaveFileNameW              },
+    { "comdlg32.dll", "PrintDlgW",                     (void *)PrintDlgW                     },
+    /* W32APP_PLAN.md W32A-10: crypt32.dll — crypt32.c */
+    { "crypt32.dll", "CertCloseStore",                (void *)CertCloseStore                },
+    { "crypt32.dll", "CertFindCertificateInStore",    (void *)CertFindCertificateInStore    },
+    { "crypt32.dll", "CertGetCertificateContextProperty", (void *)CertGetCertificateContextProperty },
+    { "crypt32.dll", "CertGetNameStringW",            (void *)CertGetNameStringW            },
+    { "crypt32.dll", "CertNameToStrW",                (void *)CertNameToStrW                },
+    { "crypt32.dll", "CryptMsgClose",                 (void *)CryptMsgClose                 },
+    { "crypt32.dll", "CryptMsgGetParam",              (void *)CryptMsgGetParam              },
+    { "crypt32.dll", "CryptQueryObject",              (void *)CryptQueryObject              },
+    /* W32APP_PLAN.md W32A-10: dbghelp.dll — dbghelp.c */
+    { "dbghelp.dll", "ImageNtHeader",                 (void *)ImageNtHeader                 },
+    /* W32APP_PLAN.md W32A-10: dwmapi.dll — dwmapi.c */
+    { "dwmapi.dll", "DwmGetColorizationColor",       (void *)DwmGetColorizationColor       },
+    { "dwmapi.dll", "DwmSetWindowAttribute",         (void *)DwmSetWindowAttribute         },
+    /* W32APP_PLAN.md W32A-10: sensapi.dll — sensapi.c */
+    { "sensapi.dll", "IsDestinationReachableW",       (void *)IsDestinationReachableW       },
+    { "sensapi.dll", "IsNetworkAlive",                (void *)IsNetworkAlive                },
+    /* W32APP_PLAN.md W32A-10: shell32.dll — shell32.c (SHBrowseForFolderW lives in comdlg32.c with the dialog engine; bound here, the IsTextUnicode forwarder shape) */
+    { "shell32.dll", "DragFinish",                    (void *)DragFinish                    },
+    { "shell32.dll", "DragQueryFileW",                (void *)DragQueryFileW                },
+    { "shell32.dll", "DragQueryPoint",                (void *)DragQueryPoint                },
+    { "shell32.dll", "ExtractIconExW",                (void *)ExtractIconExW                },
+    { "shell32.dll", "SHBrowseForFolderW",            (void *)SHBrowseForFolderW            },
+    { "shell32.dll", "SHChangeNotify",                (void *)SHChangeNotify                },
+    { "shell32.dll", "SHCreateDirectory",             (void *)SHCreateDirectory             },
+    { "shell32.dll", "SHCreateItemFromParsingName",   (void *)SHCreateItemFromParsingName   },
+    { "shell32.dll", "SHFileOperationW",              (void *)SHFileOperationW              },
+    { "shell32.dll", "SHGetDesktopFolder",            (void *)SHGetDesktopFolder            },
+    { "shell32.dll", "SHGetFileInfoW",                (void *)SHGetFileInfoW                },
+    { "shell32.dll", "SHGetFolderPathW",              (void *)SHGetFolderPathW              },
+    { "shell32.dll", "SHGetPathFromIDListW",          (void *)SHGetPathFromIDListW          },
+    { "shell32.dll", "SHGetSpecialFolderLocation",    (void *)SHGetSpecialFolderLocation    },
+    { "shell32.dll", "SHGetSpecialFolderPathW",       (void *)SHGetSpecialFolderPathW       },
+    { "shell32.dll", "ShellExecuteA",                 (void *)ShellExecuteA                 },
+    { "shell32.dll", "ShellExecuteExW",               (void *)ShellExecuteExW               },
+    { "shell32.dll", "ShellExecuteW",                 (void *)ShellExecuteW                 },
+    { "shell32.dll", "Shell_NotifyIconW",             (void *)Shell_NotifyIconW             },
+    /* W32APP_PLAN.md W32A-10: shlwapi.dll — shlwapi.c */
+    { "shlwapi.dll", "AssocQueryStringW",             (void *)AssocQueryStringW             },
+    { "shlwapi.dll", "ColorAdjustLuma",               (void *)ColorAdjustLuma               },
+    { "shlwapi.dll", "ColorHLSToRGB",                 (void *)ColorHLSToRGB                 },
+    { "shlwapi.dll", "ColorRGBToHLS",                 (void *)ColorRGBToHLS                 },
+    { "shlwapi.dll", "PathAddExtensionW",             (void *)PathAddExtensionW             },
+    { "shlwapi.dll", "PathAppendW",                   (void *)PathAppendW                   },
+    { "shlwapi.dll", "PathCombineW",                  (void *)PathCombineW                  },
+    { "shlwapi.dll", "PathCompactPathExW",            (void *)PathCompactPathExW            },
+    { "shlwapi.dll", "PathFileExistsW",               (void *)PathFileExistsW               },
+    { "shlwapi.dll", "PathFindExtensionW",            (void *)PathFindExtensionW            },
+    { "shlwapi.dll", "PathFindFileNameW",             (void *)PathFindFileNameW             },
+    { "shlwapi.dll", "PathGetDriveNumberW",           (void *)PathGetDriveNumberW           },
+    { "shlwapi.dll", "PathIsNetworkPathW",            (void *)PathIsNetworkPathW            },
+    { "shlwapi.dll", "PathIsRelativeW",               (void *)PathIsRelativeW               },
+    { "shlwapi.dll", "PathMatchSpecW",                (void *)PathMatchSpecW                },
+    { "shlwapi.dll", "PathRemoveExtensionW",          (void *)PathRemoveExtensionW          },
+    { "shlwapi.dll", "PathRemoveFileSpecW",           (void *)PathRemoveFileSpecW           },
+    { "shlwapi.dll", "PathStripPathW",                (void *)PathStripPathW                },
+    /* W32APP_PLAN.md W32A-10: version.dll — version.c */
+    { "version.dll", "GetFileVersionInfoSizeW",       (void *)GetFileVersionInfoSizeW       },
+    { "version.dll", "GetFileVersionInfoW",           (void *)GetFileVersionInfoW           },
+    { "version.dll", "VerQueryValueW",                (void *)VerQueryValueW                },
+    /* W32APP_PLAN.md W32A-10: wininet.dll — wininet.c */
+    { "wininet.dll", "InternetCrackUrlW",             (void *)InternetCrackUrlW             },
+    /* W32APP_PLAN.md W32A-10: wintrust.dll — wintrust.c */
+    { "wintrust.dll", "WinVerifyTrust",                (void *)WinVerifyTrust                },
 
     { 0, 0, 0 }
 };

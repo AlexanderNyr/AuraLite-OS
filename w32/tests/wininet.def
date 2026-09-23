@@ -1,0 +1,7 @@
+; wininet.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 wininet engine (w32/src/wininet.c or w32aux.c):
+; the 1 ledger symbols for WININET.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY WININET.dll
+EXPORTS
+    InternetCrackUrlW

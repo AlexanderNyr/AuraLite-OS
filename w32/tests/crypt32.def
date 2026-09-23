@@ -1,0 +1,14 @@
+; crypt32.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 crypt32 engine (w32/src/crypt32.c or w32aux.c):
+; the 8 ledger symbols for CRYPT32.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY CRYPT32.dll
+EXPORTS
+    CertCloseStore
+    CertFindCertificateInStore
+    CertGetCertificateContextProperty
+    CertGetNameStringW
+    CertNameToStrW
+    CryptMsgClose
+    CryptMsgGetParam
+    CryptQueryObject

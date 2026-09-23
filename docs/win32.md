@@ -525,12 +525,80 @@ for. There is no `CryptDeriveKey`/`CryptEncrypt`/`CryptDecrypt` (not
 in any ledger). `SystemFunction036` (RtlGenRandom) is REAL via the
 `getrandom` syscall.
 
+## The shell is a real filesystem view plus real dialogs (W32A-10)
+
+**Known folders** (`SHGetFolderPathW`/`SHGetSpecialFolderPathW`):
+`CSIDL_DESKTOP` → `/`, `CSIDL_PROGRAMS`/`STARTMENU`/`STARTUP` → `/apps`,
+`CSIDL_PERSONAL` → the data root, `CSIDL_APPDATA` → `<root>/w32/appdata`,
+`CSIDL_FONTS` refused (the font is baked in). The data root mirrors the
+hive: `/disk` when the scratch disk is mounted (settings survive a reboot),
+else `/tmp` with the volatility logged once. `CSIDL_FLAG_CREATE` creates
+the directory.
+
+**PIDL** (`SHGetSpecialFolderLocation` + `SHGetPathFromIDListW`): one
+item `{ u16 cb, u16 csidl, u16 path_units, UTF-16 path, u16 0 }`. The two
+functions round-trip; nothing else accepts a PIDL (full PIDL algebra is
+§7). `SHGetDesktopFolder` is `E_NOTIMPL`.
+
+**IShellItem** (`SHCreateItemFromParsingName`): a minimal `IShellItem`
+for filesystem paths; `GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)`
+returns the path, every other `SIGDN` is `E_INVALIDARG`.
+
+**File info** (`SHGetFileInfoW`/`ExtractIconExW`): type names from the
+extension map (`.exe` loadable PE → Application, `.txt` → Text Document,
+directory → File Folder, else File), display names are the file-name
+component, attributes are the stat bits, icons decode from PE resources
+(`w32_gdi_icon_decode`; the generic document parchment is minted through
+the A-8 ARGB seam when the file has no icons).
+
+**File operations** (`SHFileOperationW`): copy/move/delete/rename over
+the VFS through the W32A-2 file primitives, double-null lists, wildcard
+`*`/`?` via `FindFirstFileW`, `FOF_ALLOWUNDO` refused with
+`ERROR_CALL_NOT_IMPLEMENTED` (no recycle bin), progress is the
+notification engine (`ag_notify`).
+
+**Shell execution** (`ShellExecuteW`/`A`/`ExW`): verb `open` on a PE/ELF
+executes via `CreateProcessW` and returns `>32`; every other verb
+(`runas` → `SE_ERR_ACCESSDENIED`, `print`/`edit`/unknown → `SE_ERR_NOASSOC`)
+is refused by name. Documents and directories refuse as `NOASSOC` (no
+association table, desktop namespace is §7).
+
+**Notifications** (`Shell_NotifyIconW`): 8 slots keyed `(hwnd, id)`;
+`ADD` shows `ag_notify`, `MODIFY` updates, `DELETE` removes;
+duplicate `ADD` → `ERROR_ALREADY_EXISTS`, unknown `MODIFY`/`DELETE` →
+`ERROR_INVALID_PARAMETER`.
+
+**Drag** (`DragQueryFileW`/`DragQueryPoint`/`DragFinish`): one drop
+list of 16 paths, empty until W32A-11 wires the source; `DragQueryFileW`
+with `0xFFFFFFFF` returns the count, `DragFinish` clears.
+
+**Common dialogs** (`GetOpenFileNameW`/`GetSaveFileNameW`,
+`ChooseColorW`/`ChooseFontW`): real modal dialogs over the W32A-6 engine
+(the listbox class `AuraCDlgLst` + edit/button classes, `DialogBoxIndirectParamW`
+with the hook precedence `WM_INITDIALOG` first). `PrintDlgW` is
+fail-clean: `PDERR_NODEFAULTPRN` (no printers). `CommDlgExtendedError`
+carries `CDERR_*`/`FNERR_*`.
+
+**Version** (`GetFileVersionInfoSizeW`/`GetFileVersionInfoW`/`VerQueryValueW`):
+reads `RT_VERSION/1` (`VS_VERSION_INFO`) via `pe_find_resource`; the
+engine blob is `[u16 units][resource][u16 pad]` (the prefix bounds the
+walk, the Win32 API carries no length). `VerQueryValueW` walks the
+documented tree (`wLength`/`wValueLength`/`wType`, 32-bit pads).
+
+**Small modules**: `InternetCrackUrlW` (pure URL parser, scheme/host/port
+defaults 21/80/443), `ImageNtHeader` (MZ + `e_lfanew` + `PE\0\0`),
+`DwmGetColorizationColor` → `S_OK` + opaque black (composition off),
+`DwmSetWindowAttribute` → `E_NOTIMPL`, `IsNetworkAlive`/`IsDestinationReachableW`
+(TCP connect, never hardcoded), `WinVerifyTrust` → `TRUST_E_NOSIGNATURE`,
+`CryptQueryObject`/`Cert*`/`CryptMsg*` → `CRYPT_E_NOT_FOUND`/`ERROR_INVALID_HANDLE`.
+
 ## Not implemented at all
 
 COM, .NET, DirectX, WinSock, and WOW64 (32-bit programs).
 `BitBlt`/off-screen device contexts shipped in W32A-7 (the GDI raster
 engine); the registry shipped in W32A-9 (the `W32HIVE1` section
-above); printing (`StartDocW`/`StartPage`/`EndPage`/`EndDoc`) is
+above); the shell furniture shipped in W32A-10 (the section above);
+printing (`StartDocW`/`StartPage`/`EndPage`/`EndDoc`) is
 fail-clean by design — no printers exist, so the calls report
 `SP_ERROR`/`ERROR_CALL_NOT_IMPLEMENTED` instead of half-working. The `W` (UTF-16) entry points exist for `KERNEL32` where the plan
 required them and are otherwise deferred; `A` entry points are the primary

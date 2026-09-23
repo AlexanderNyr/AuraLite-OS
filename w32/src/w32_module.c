@@ -171,6 +171,22 @@ void w32_module_init(void) {
      * into the loader now (the registry engine in advapi32.c), so it left
      * the generated stub-covered list with them. */
     add_builtin("advapi32");
+    /* W32A-10: the shell/furniture engines' exports are linked into the
+     * loader now (shlwapi.c, shell32.c, comdlg32.c, version.c, w32aux.c),
+     * so each left the generated stub-covered list with them.  Same
+     * category, same reason as comctl32/advapi32 above -- the A-8
+     * lesson: a missing row here silently breaks GetModuleHandle while
+     * IAT binding keeps working. */
+    add_builtin("shlwapi");
+    add_builtin("shell32");
+    add_builtin("comdlg32");
+    add_builtin("version");
+    add_builtin("wininet");
+    add_builtin("dbghelp");
+    add_builtin("dwmapi");
+    add_builtin("sensapi");
+    add_builtin("wintrust");
+    add_builtin("crypt32");
     /* W32A-1: every stub-covered module answers GetModuleHandle too, so a
      * program probing for mpr, comctl32 or shell32 finds a module whose
      * functions fail cleanly instead of a missing DLL.  Names already

@@ -1,0 +1,8 @@
+; sensapi.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 sensapi engine (w32/src/sensapi.c or w32aux.c):
+; the 2 ledger symbols for SENSAPI.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY SENSAPI.dll
+EXPORTS
+    IsDestinationReachableW
+    IsNetworkAlive

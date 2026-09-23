@@ -1082,7 +1082,10 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_dlg.o \
                 $(USER_BUILD)/w32_gdi.o \
                 $(USER_BUILD)/w32_comctl32.o \
-                $(USER_BUILD)/w32_advapi32.o
+                $(USER_BUILD)/w32_advapi32.o \
+                $(USER_BUILD)/w32_shlwapi.o $(USER_BUILD)/w32_shell32.o \
+                $(USER_BUILD)/w32_comdlg32.o $(USER_BUILD)/w32_version.o \
+                $(USER_BUILD)/w32_w32aux.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1123,6 +1126,23 @@ $(USER_BUILD)/w32_comctl32.o: w32/src/comctl32.c $(USER_CFLAGS_INC)
 # W32APP_PLAN.md W32A-9: the registry + security engine.  Links against
 # libatls (the hash set) -- see the w32run.elf rule below.
 $(USER_BUILD)/w32_advapi32.o: w32/src/advapi32.c w32/include/w32/advapi32.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-10: the shell furniture -- shlwapi path/colour
+# engine, shell32 (folders/PIDL/file-ops/notify/execute), the common
+# dialogs (comdlg32.c also hosts SHBrowseForFolderW for SHELL32, the
+# IsTextUnicode forwarder shape), the VERSION reader, and the small
+# modules (wininet/dbghelp/dwmapi/sensapi/wintrust/crypt32 in w32aux.c).
+# All listed in W32_USER_OBJ above (CI #385's lesson: the host suite
+# amalgamates the .c files and cannot catch a missing object).
+$(USER_BUILD)/w32_shlwapi.o: w32/src/shlwapi.c w32/include/w32/shlwapi.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_shell32.o: w32/src/shell32.c w32/include/w32/shell32.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_comdlg32.o: w32/src/comdlg32.c w32/include/w32/comdlg32.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_version.o: w32/src/version.c w32/include/w32/version.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+$(USER_BUILD)/w32_w32aux.o: w32/src/w32aux.c w32/include/w32/w32aux.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -2471,6 +2491,67 @@ $(A32_IMPLIB): w32/tests/advapi32.def
 	         -out:$(BUILD_DIR)/user/advapi32.dll -implib:$@ >/dev/null
 	@echo "  [pe] $@ (import library)"
 
+# W32APP_PLAN.md phase W32A-10: the shell furniture import libraries.
+SHLWAPI_IMPLIB := $(BUILD_DIR)/user/shlwapi.lib
+SHELL32_IMPLIB := $(BUILD_DIR)/user/shell32.lib
+COMDLG32_IMPLIB := $(BUILD_DIR)/user/comdlg32.lib
+VERSION_IMPLIB := $(BUILD_DIR)/user/version.lib
+WININET_IMPLIB := $(BUILD_DIR)/user/wininet.lib
+DBGHELP_IMPLIB := $(BUILD_DIR)/user/dbghelp.lib
+DWMAPI_IMPLIB := $(BUILD_DIR)/user/dwmapi.lib
+SENSAPI_IMPLIB := $(BUILD_DIR)/user/sensapi.lib
+WINTRUST_IMPLIB := $(BUILD_DIR)/user/wintrust.lib
+CRYPT32_IMPLIB := $(BUILD_DIR)/user/crypt32.lib
+
+$(SHLWAPI_IMPLIB): w32/tests/shlwapi.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/shlwapi.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(SHELL32_IMPLIB): w32/tests/shell32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/shell32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(COMDLG32_IMPLIB): w32/tests/comdlg32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/comdlg32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(VERSION_IMPLIB): w32/tests/version.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/version.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(WININET_IMPLIB): w32/tests/wininet.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/wininet.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(DBGHELP_IMPLIB): w32/tests/dbghelp.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/dbghelp.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(DWMAPI_IMPLIB): w32/tests/dwmapi.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/dwmapi.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(SENSAPI_IMPLIB): w32/tests/sensapi.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/sensapi.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(WINTRUST_IMPLIB): w32/tests/wintrust.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/wintrust.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+$(CRYPT32_IMPLIB): w32/tests/crypt32.def
+	@mkdir -p $(dir $@)
+	lld-link -def:$< -dll -noentry -machine:x64 -out:$(BUILD_DIR)/user/crypt32.dll -implib:$@ >/dev/null
+	@echo "  [pe] $@ (import library)"
+
+W32A10_IMPLIBS := $(SHLWAPI_IMPLIB) $(SHELL32_IMPLIB) $(COMDLG32_IMPLIB) $(VERSION_IMPLIB) $(WININET_IMPLIB) $(DBGHELP_IMPLIB) $(DWMAPI_IMPLIB) $(SENSAPI_IMPLIB) $(WINTRUST_IMPLIB) $(CRYPT32_IMPLIB)
+W32A10_EXE := $(BUILD_DIR)/user/w32a10_furniture.exe
+$(W32A10_EXE): w32/tests/w32a10_furniture.asm $(K32_IMPLIB) $(W32A10_IMPLIBS)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(BUILD_DIR)/user/w32a10_furniture.obj
+	lld-link -subsystem:console -entry:winstart -nodefaultlib $(BUILD_DIR)/user/w32a10_furniture.obj $(K32_IMPLIB) $(W32A10_IMPLIBS) -out:$@
+	@echo "  [pe] $@ (W32A-10 furniture fixture)"
+
 W32A9_EXE := $(BUILD_DIR)/user/w32a9_registry.exe
 $(W32A9_EXE): w32/tests/w32a9_registry.asm $(K32_IMPLIB) $(A32_IMPLIB)
 	@mkdir -p $(dir $@)
@@ -3025,7 +3106,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
@@ -3214,6 +3295,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 	@cp $(W32A7_EXE) $(INITRD_DIR)/tests/w32a7_gdi.exe
 	@cp $(W32A8_EXE) $(INITRD_DIR)/tests/w32a8_comctl32.exe
 	@cp $(W32A9_EXE) $(INITRD_DIR)/tests/w32a9_registry.exe
+	@cp $(W32A10_EXE) $(INITRD_DIR)/tests/w32a10_furniture.exe
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3509,6 +3591,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a7 \
                 $(BUILD_DIR)/test_w32_a8 \
                 $(BUILD_DIR)/test_w32_a9 \
+                $(BUILD_DIR)/test_w32_a10 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3694,6 +3777,21 @@ $(BUILD_DIR)/test_w32_a9: tests/unit/test_w32_a9.c \
 	          lib/libatls/src/atls_sha256.c lib/libatls/src/atls_sha512.c \
 	          lib/libatls/src/atls_sha3.c lib/libatls/src/atls_common.c \
 	          -lpthread -o $@
+
+$(BUILD_DIR)/test_w32_a10: tests/unit/test_w32_a10.c \
+                          tests/unit/test_w32_a10_pe.h \
+                          w32/src/shlwapi.c w32/src/shell32.c w32/src/comdlg32.c \
+                          w32/src/version.c w32/src/w32aux.c w32/src/w32_pe.c \
+                          w32/src/w32_handle.c w32/src/w32_errno.c w32/src/w32_utf.c \
+                          w32/src/kernel32_fs.c \
+                          w32/include/w32/shlwapi.h w32/include/w32/shell32.h \
+                          w32/include/w32/comdlg32.h w32/include/w32/version.h w32/include/w32/w32aux.h \
+                          w32/include/w32/w32_pe.h w32/include/w32/kernel32.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          -D_POSIX_C_SOURCE=200809L -DAURALITE_W32_HOST_TEST \
+	          tests/unit/test_w32_a10.c -lpthread -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.

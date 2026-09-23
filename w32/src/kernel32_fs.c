@@ -3788,3 +3788,9 @@ W32ABI W32_BOOL DeviceIoControl(W32_HANDLE h, W32_DWORD code,
             (unsigned long)code);
     return fs_fail(W32_ERROR_INVALID_FUNCTION);
 }
+
+/* W32A-10: the shell modules (shell32/shlwapi/version) translate the same
+ * Win32 paths the file API does; expose the one helper rather than
+ * duplicating the drive/UNC/rooting rules in three more places.  The
+ * result is malloc'd (last error set on refusal, like fs_xlate). */
+char *w32_fs_xlate_dup(const char *p) { return fs_xlate(p); }

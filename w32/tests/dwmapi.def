@@ -1,0 +1,8 @@
+; dwmapi.def — W32APP_PLAN.md phase W32A-10: import library surface.
+; Every export of the w32 dwmapi engine (w32/src/dwmapi.c or w32aux.c):
+; the 2 ledger symbols for DWMAPI.dll.  Kept in lockstep
+; with w32/src/w32_bind.c.
+LIBRARY DWMAPI.dll
+EXPORTS
+    DwmGetColorizationColor
+    DwmSetWindowAttribute
