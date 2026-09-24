@@ -8,8 +8,9 @@ on:
 jobs:
   qemu-integration:
     runs-on: ubuntu-latest
-    # 4 hours.  The suite is 126 registered cases, most of which boot a full
-    # QEMU guest and wait on serial output, so wall-clock time scales with
+    # 4 hours.  The suite registers 198 cases across separate parallel CI
+    # shards; this job runs boot smoke tests and host unit checks.  QEMU
+    # guests wait on serial output, so wall-clock time scales with
     # runner contention rather than with the size of the change being tested.
     # A timeout that merely fits today's suite turns every slow runner into a
     # spurious red build, and the failure mode is indistinguishable from a
@@ -60,16 +61,6 @@ jobs:
           python3 -m pip install --break-system-packages vncdotool 2>/dev/null \
             || python3 -m pip install vncdotool 2>/dev/null \
             || echo "::warning::vncdotool install failed; GUI captures will soft-skip"
-
-      # mingw-w64 is NOT in REQUIRED_TOOLS and the OS build does not need it:
-      # the Makefile detects it and skips the Win32 examples when it is
-      # absent.  But absent means test_w32_integration silently skips, and a
-      # gate that quietly does nothing is worse than no gate -- so CI installs
-      # it and the step below asserts the examples really were built.
-      - name: Install mingw-w64 (Win32 personality examples)
-        run: |
-          sudo apt-get install -y --no-install-recommends mingw-w64
-          x86_64-w64-mingw32-gcc --version | head -1
 
       - name: Install Rust bare-metal target
         run: |
@@ -165,52 +156,6 @@ jobs:
       - name: USB documentation drift check
         run: python3 tools/check_usb_claims.py --check
 
-      # WIN32_PLAN.md W32-8.  `make test-unit` already runs the provenance
-      # selftest and the generated-API-table drift check; this step adds the
-      # Win32 SDK, which is not part of the default build, and builds all
-      # three examples AGAINST THE STAGED SDK rather than the source tree.
-      - name: Win32 personality -- SDK and examples
-        run: make w32-sdk-check
-
-      # The Win32 examples must be in the ISO for test_w32_integration to do
-      # anything.  The Makefile skips them silently when mingw-w64 is
-      # missing, so assert here rather than discover a vacuous pass later.
-      - name: Win32 personality -- examples are in the image
-        run: |
-          if ! tar tf build/initrd.tar | grep -q './tests/w32hello.exe'; then
-            echo "w32hello.exe missing from the initrd: the mingw-w64"
-            echo "examples were not built, so test_w32_integration would"
-            echo "skip instead of testing anything."
-            exit 1
-          fi
-          tar tf build/initrd.tar | grep -E 'w32hello|w32unsup|testdll'
-          for f in find time map pipes proc locale heap; do
-            if ! tar tf build/initrd.tar | grep -q "./tests/w32a2_$f.exe"; then
-              echo "w32a2_$f.exe missing from the initrd: the W32A-2"
-              echo "fixtures were not built, so test_w32_a2_kernel32 would"
-              echo "skip instead of testing anything."
-              exit 1
-            fi
-          done
-          for f in threads tls; do
-            if ! tar tf build/initrd.tar | grep -q "./tests/w32a3_$f.exe"; then
-              echo "w32a3_$f.exe missing from the initrd: the W32A-3"
-              echo "fixtures were not built, so test_w32_a3 would"
-              echo "fail instead of testing anything."
-              exit 1
-            fi
-          done
-          for f in try unwind raise continue cxthrow filter crash term purecall dialog; do
-            if ! tar tf build/initrd.tar | grep -q "./tests/w32a4_$f.exe"; then
-              echo "w32a4_$f.exe missing from the initrd: the W32A-4"
-              echo "fixtures were not built, so test_w32_a4_unwind would"
-              echo "fail instead of testing anything."
-              exit 1
-            fi
-          done
-          # w32a4_cxx.exe is NOT asserted: mingw is optional, and the
-          # gate SKIP-guards the C++ section when the fixture is absent.
-
       # LX_COMPAT L1/L2/L5: the same vacuous-gate discipline for the Linux
       # personality -- the host gcc is always present on the runner, but
       # a silent Makefile regression would stage nothing and the lx
@@ -294,8 +239,8 @@ jobs:
       - name: HW -- the -cpu max feature lane (ERMS receipt + crossover)
         run: bash tests/integration/x86_cpumax_smoke.sh
 
-      # The 129-case suite used to run HERE as one ~2 h step; it now
-      # runs as six parallel thematic shards in the integration-cases
+      # The suite used to run HERE as one ~2 h step; it now
+      # runs as 13 parallel thematic shards in the integration-cases
       # matrix job below (measured 2 h 08 m at the last single-job
       # run -- longer than every other job combined).  What stays in
       # THIS job is the partition check: every registered case must
@@ -318,9 +263,9 @@ jobs:
             build/bl*.mem
           if-no-files-found: ignore
 
-  # The 129 QEMU integration cases, split into THEMATIC SHARDS
-  # running in parallel (2026-08-21; the user-visible win: ~2 h of
-  # wall clock becomes the slowest shard's ~25 min).  The partition
+  # The 198 QEMU integration cases, split into 13 THEMATIC SHARDS
+  # running in parallel; the user-visible win: ~2 h of
+  # wall clock becomes the slowest shard rather than the sum.  The partition
   # lives in run_all.sh next to the case list and is self-checked on
   # every invocation -- see the partition-check step above.
   # The selfhost arc is itself three shards (2026-08-31): the SH8
@@ -338,7 +283,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [core, posix, fs, usb, net, gui, selfhost-script, selfhost-closure, selfhost-img, fsfull, ota, lx]
+        group: [core, posix, fs, usb, net, gui, w32, selfhost-script, selfhost-closure, selfhost-img, fsfull, ota, lx]
     steps:
       - uses: actions/checkout@v4
 
@@ -355,13 +300,15 @@ jobs:
             || python3 -m pip install vncdotool 2>/dev/null \
             || echo "::warning::vncdotool install failed; GUI captures will soft-skip"
 
-      # The gui shard carries the seven w32 gates; mingw builds their
-      # example binaries.  Installed for every shard (uniform steps
-      # beat per-shard special cases; +15 s).
-      - name: Install mingw-w64
+      # Only the w32 shard needs compiler-emitted PE examples and C++ unwind
+      # fixtures.  Install MinGW before building the image so no W32 case
+      # can pass vacuously on a checkout without those programs.
+      - name: Install mingw-w64 (w32 only)
+        if: matrix.group == 'w32'
         run: |
           sudo apt-get install -y --no-install-recommends \
             mingw-w64 mingw-w64-tools
+          x86_64-w64-mingw32-gcc --version | head -1
 
       # The fsfull shard (FSFULL_PLAN.md F7) drives the F3–F5b harnesses,
       # whose external-interop lanes call host tools: exFAT needs exfatprogs
@@ -405,10 +352,83 @@ jobs:
           make deps-check
           make iso
 
+      # Exercise the real staged SDK, not just the source-tree import libs.
+      - name: Win32 personality -- SDK and examples (w32 only)
+        if: matrix.group == 'w32'
+        run: make w32-sdk-check
+
+      # The Win32 examples must be in the ISO for test_w32_integration to do
+      # anything.  The Makefile skips them silently when mingw-w64 is
+      # missing, so assert here rather than discover a vacuous pass later.
+      - name: Win32 personality -- examples are in the image
+        if: matrix.group == 'w32'
+        run: |
+          if ! tar tf build/initrd.tar | grep -q './tests/w32hello.exe'; then
+            echo "w32hello.exe missing from the initrd: the mingw-w64"
+            echo "examples were not built, so test_w32_integration would"
+            echo "skip instead of testing anything."
+            exit 1
+          fi
+          tar tf build/initrd.tar | grep -E 'w32hello|w32unsup|testdll'
+          for f in find time map pipes proc locale heap; do
+            if ! tar tf build/initrd.tar | grep -q "./tests/w32a2_$f.exe"; then
+              echo "w32a2_$f.exe missing from the initrd: the W32A-2"
+              echo "fixtures were not built, so test_w32_a2_kernel32 would"
+              echo "skip instead of testing anything."
+              exit 1
+            fi
+          done
+          for f in threads tls; do
+            if ! tar tf build/initrd.tar | grep -q "./tests/w32a3_$f.exe"; then
+              echo "w32a3_$f.exe missing from the initrd: the W32A-3"
+              echo "fixtures were not built, so test_w32_a3 would"
+              echo "fail instead of testing anything."
+              exit 1
+            fi
+          done
+          for f in try unwind raise continue cxthrow filter crash term purecall dialog; do
+            if ! tar tf build/initrd.tar | grep -q "./tests/w32a4_$f.exe"; then
+              echo "w32a4_$f.exe missing from the initrd: the W32A-4"
+              echo "fixtures were not built, so test_w32_a4_unwind would"
+              echo "fail instead of testing anything."
+              exit 1
+            fi
+          done
+          # C++ is required in this shard too: a missing fixture must not
+          # silently skip the unwind/exception compatibility section.
+          if ! tar tf build/initrd.tar | grep -q './tests/w32a4_cxx.exe'; then
+            echo "w32a4_cxx.exe missing from the Win32 image"
+            exit 1
+          fi
+
       - name: Run the ${{ matrix.group }} shard
         run: bash tests/integration/run_all.sh --group ${{ matrix.group }}
         env:
           NO_COLOR: "1"
+
+      # Some PE cases explicitly return 0 after SKIP when their optional
+      # MinGW payloads are missing.  This job installs the toolchain and
+      # checks the build inputs; also assert all 16 gates ran, so a vacuous
+      # runner PASS cannot hide a missing fixture.
+      - name: Assert all Win32 gates ran (w32 only)
+        if: ${{ !cancelled() && matrix.group == 'w32' }}
+        run: |
+          results=build/integration-logs/results-w32.txt
+          test -s "$results" || { echo '::error::Win32 shard has no results'; exit 1; }
+          cat "$results"
+          for c in test_w32_pe_loader test_w32_kernel32 test_w32_user32 \
+                   test_w32_crt test_w32_loadlibrary test_w32_integration \
+                   test_w32_a1_loader test_w32_a2_kernel32 test_w32_a3 \
+                   test_w32_a4_unwind test_w32a5_user32win \
+                   test_w32a6_user32dlg test_w32a7_gdi test_w32a8_comctl32 \
+                   test_w32a9_registry test_w32a10_furniture; do
+            if ! grep -q "^PASS $c " "$results" || \
+               grep -q '^[[:space:]]*SKIP:' "build/integration-logs/$c.out"; then
+              echo "::error::$c failed, skipped, or did not run in the w32 shard"
+              exit 1
+            fi
+          done
+          echo "all 16 Win32 gates ran and passed"
 
       # run_all.sh records only PASS/FAIL lines, so a case that skipped is
       # simply absent here.  For the selfhost shards that absence is the

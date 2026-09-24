@@ -46,8 +46,10 @@
 #include <dirent.h>
 #include <unistd.h>
 
+#include "kernel/fs/initrd.h"    /* shared kernel table bounds */
+
 #define MI_BLOCK      512
-#define MI_MAXENT     4096               /* kernel ceiling is INITRD_MAX_FILES 1024 */
+#define MI_MAXENT     4096               /* collector bound; kernel bounds checked below */
 #define MI_MAXPATH    256                /* USTAR name field is 100; keep headroom */
 #define MI_NAMEFIELD  100
 
@@ -246,6 +248,19 @@ long mkinitrd_write_stream(FILE *out, const char *indir) {
     if (!c) return -1;
 
     if (mi_collect(c, indir, "") != 0) { free(c); return -1; }
+    /* The root occupies one kernel directory slot even without an explicit
+     * tar entry.  Refuse to write an image that the kernel would truncate. */
+    int files = 0, dirs = 1;
+    for (i = 0; i < c->count; i++) {
+        if (c->ent[i].is_dir) dirs++;
+        else files++;
+    }
+    if (files > INITRD_MAX_FILES || dirs > INITRD_MAX_DIRS) {
+        fprintf(stderr, "mkinitrd: image exceeds kernel tables: %d/%d files, %d/%d dirs\n",
+                files, INITRD_MAX_FILES, dirs, INITRD_MAX_DIRS);
+        free(c);
+        return -1;
+    }
     qsort(c->ent, (size_t)c->count, sizeof(c->ent[0]), mi_cmp);
 
     for (i = 0; i < c->count; i++) {
@@ -289,8 +304,8 @@ long mkinitrd_write(const char *indir, const char *outpath) {
         return -1;
     }
     rc = mkinitrd_write_stream(out, indir);
-    if (fclose(out) != 0)
-        return -1;
+    if (fclose(out) != 0) rc = -1;
+    if (rc < 0) unlink(outpath);  /* never leave a partial boot image */
     return rc;
 }
 

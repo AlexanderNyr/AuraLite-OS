@@ -1444,7 +1444,7 @@ $(USER_BUILD)/sha256sum.elf: $(USER_BUILD)/sha256sum.o $(USER_COMMON) \
 # twin test (test_mkinitrd below) #includes this same source with
 # MKINITRD_NO_MAIN and proves GNU tar accepts the output and the kernel boots
 # it -- "the bytes the guest ships are the bytes under test".
-$(USER_BUILD)/mkinitrd.o: tools/selfhost/mkinitrd.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/mkinitrd.o: tools/selfhost/mkinitrd.c kernel/fs/initrd.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2992,14 +2992,17 @@ LX_LUA_STAMP := $(BUILD_DIR)/user/.lx_lua-ok
 
 $(LX_LUA_STAMP): Makefile
 	@mkdir -p $(dir $@) $(LX_LUA_DIR)
-	@if [ -s $(LX_LUA_BIN) ]; then \
+	@if [ -s $(LX_LUA_BIN) ] || { [ -s $(LX_LUA_TGZ) ] && \
+	    echo "$(LX_LUA_SHA)  $(LX_LUA_TGZ)" | sha256sum -c --status >/dev/null 2>&1; }; then \
 	    :; \
 	elif command -v curl >/dev/null 2>&1; then \
 	    curl -fsSL "$(LX_LUA_URL)" -o $(LX_LUA_TGZ); \
 	elif command -v wget >/dev/null 2>&1; then \
 	    wget -q -O $(LX_LUA_TGZ) "$(LX_LUA_URL)"; \
 	fi
-	@if [ -s $(LX_LUA_TGZ) ] && \
+	@if [ -s $(LX_LUA_BIN) ]; then \
+	    :; \
+	elif [ -s $(LX_LUA_TGZ) ] && \
 	    echo "$(LX_LUA_SHA)  $(LX_LUA_TGZ)" | sha256sum -c --status >/dev/null 2>&1; then \
 	    tar -xzf $(LX_LUA_TGZ) -C $(LX_LUA_DIR) && \
 	    $(MAKE) -C $(LX_LUA_SRC) linux >/dev/null 2>&1 && \
@@ -3088,7 +3091,7 @@ $(BUILD_DIR)/mini-asm: tools/mini-asm/mini-asm.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c99 -O2 -o $@ $<
 
-$(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
+$(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_DIR)/mini-asm \
                          tools/mini-asm/mini-asm.c tools/aulink/aulink.c \
                          $(MBR_DUAL_BIN) $(STAGE2_BIN) \
                          $(if $(wildcard $(SELFHOST_SRC)),$(addprefix $(SELFHOST_SRC)/,$(SELFHOST_TCC_SRCS)) $(SELFHOST_SRC)/config.h $(SELFHOST_SRC)/tccdefs_.h $(wildcard $(SELFHOST_SRC)/*.h)) \
@@ -3108,6 +3111,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
                          $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
+	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
 	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
 # Binaries are stripped into the image: the BIOS boot path reserves a 32 MiB
@@ -3172,7 +3176,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
 # and a writable /tmp/sh5d/build overlay.  The complete stage is intentional:
 # the guest, not a host compiler, turns every x86_64 kernel source into the
 # final /fat/KERNEL.ELF.
-	@if [ -f $(SELFHOST_TCC) ]; then \
+	@set -e; if [ -f $(SELFHOST_TCC) ]; then \
 	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
 	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \
 	    cp -r $(SELFHOST_SRC)/include/. $(INITRD_DIR)/apps/tcc/include/; \
@@ -3223,6 +3227,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh $(BUILD_DIR)/mini-asm \
     cp $(SELFHOST_SRC)/*.h $(INITRD_DIR)/src/tcc/; \
     cp -r $(SELFHOST_SRC)/include $(INITRD_DIR)/src/tcc/include; \
     bash tools/selfhost/gen_kernel_build.sh > \
+       $(INITRD_DIR)/src/selfhost/kernel_build.sh.tmp; \
+    mv $(INITRD_DIR)/src/selfhost/kernel_build.sh.tmp \
        $(INITRD_DIR)/src/selfhost/kernel_build.sh; \
 	    echo "[selfhost] staged guest tcc + SH5d kernel source closure into initrd"; \
 	else \
@@ -3847,6 +3853,13 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@echo "[unit] running tests/unit/test_sh5d_generators.sh"
 	@bash tests/unit/test_sh5d_generators.sh || exit 1
 
+# An optional self-host source closure can grow past the kernel's initrd
+# tables; the host packer must refuse overflow, including hard-link aliases.
+	@echo "[unit] running tests/unit/test_mkinitrd_bounds.sh"
+	@bash tests/unit/test_mkinitrd_bounds.sh || exit 1
+	@echo "[unit] running tests/unit/test_lx_lua_cached.sh"
+	@bash tests/unit/test_lx_lua_cached.sh || exit 1
+
 # SELFHOST_PLAN SH5d: the prompt-aware serial transport that drives the
 # in-guest build.  Its per-command zero-exit gate is what turns "the guest
 # build broke" into "command 41/167 failed", so it is tested against a stub
@@ -4098,7 +4111,7 @@ $(BUILD_DIR)/test_ota_manifest: tests/unit/test_ota_manifest.c \
 # the output, every member round-trips byte-identically, and the 512-byte
 # header layout (ustar magic, typeflag, "./" name prefix) is what the kernel
 # reads.
-$(BUILD_DIR)/test_mkinitrd: tests/unit/test_mkinitrd.c tools/selfhost/mkinitrd.c
+$(BUILD_DIR)/test_mkinitrd: tests/unit/test_mkinitrd.c tools/selfhost/mkinitrd.c kernel/fs/initrd.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_DEFAULT_SOURCE \
 	           -D_POSIX_C_SOURCE=200809L -I . $< -o $@

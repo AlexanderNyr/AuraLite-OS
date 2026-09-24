@@ -43,9 +43,9 @@
 #   W32A9-REGISTRY-OK final marker
 #
 # Exit code 78 is the fixture's own success path; 79 any failed check; 1
-# the loader's refusal.  The host side (tests/unit/test_w32_a9.c, 360
-# checks) pins the engine in isolation; this gate pins it through the
-# loader, the bind table, the guest libc and diskfs.
+# the loader's refusal.  The host side (tests/unit/test_w32_a9.c)
+# pins the engine in isolation; this gate pins it through the loader,
+# the bind table, the guest libc and diskfs.
 
 set -u
 cd "$(dirname "$0")/.."

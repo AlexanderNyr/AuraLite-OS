@@ -454,9 +454,10 @@ Some of these are experimental and intentionally simplified. See
 
 ### Critical SYSCALL/SYSRET details
 
-- **SYSCALL does not switch stacks.** The handler runs on the user's RSP. This
-  is safe because the user stack is writable + user-accessible, and timer
-  interrupts switch to the TSS.RSP0 kernel stack (a different stack).
+- **SYSCALL saves the user RSP and switches to a kernel stack.**
+  `kernel/arch/x86_64/syscall_entry.asm` stores the return frame in the
+  per-CPU `cpu_local` area, then loads `CL_SYS_KRSP` before pushing registers
+  or calling C.  Kernel code never uses the attacker-controlled user stack.
 - **`o64 sysret`** (not plain `sysret`): NASM's 32-bit-operand SYSRET sets
   `CS = STAR[63:48]`; the 64-bit version correctly sets
   `CS = (STAR[63:48] + 0x10) | RPL3 = 0x23`.

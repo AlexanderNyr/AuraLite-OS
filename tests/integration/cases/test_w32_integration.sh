@@ -68,15 +68,17 @@ il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=0\)" \
 # moved with its phase: it now opens the seeded key and reads ProductName
 # back through the real A-variant engine. The loud-stub contract itself
 # stays covered by the A-1 fixtures (still-stubbed modules live there).
-# NOTE: these assertions are source-verified (the example's strings are
-# in its own source) but not machine-verified until mingw-w64 returns to
-# the build host -- without the cross-compiler this whole case skips.
+# CI's dedicated w32 shard installs mingw-w64 and asserts these binaries
+# exist in the initrd.  A failed registry operation now makes the example
+# exit 79 instead of silently returning a false-success code 0.
 il_assert_grep "$LOG" "w32run: /tests/w32unsup\\.exe .* [0-9][0-9]* import\\(s\\) bound" \
     "every import bound (the count is the compiler's, the receipt is ours)"
 il_assert_grep "$LOG" "w32unsup: the registry is real \(W32A-9\)" \
     "the example starts and announces the A-9 contract"
 il_assert_grep "$LOG" "w32unsup: ProductName = AuraLite OS \(w32 personality\)" \
     "the seeded key answers through the real A-variant engine"
+il_assert_no_grep "$LOG" "w32unsup: ERROR|exited \(code=79\)" \
+    "the registry PE did not hide an error behind a clean exit"
 il_assert_grep "$LOG" "'/apps/w32run' \(tid [0-9]+\) exited \(code=0\)" \
     "and it exits cleanly"
 il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION.*KERNEL|kernel panic" \

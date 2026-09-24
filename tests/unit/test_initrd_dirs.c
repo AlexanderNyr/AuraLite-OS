@@ -59,7 +59,8 @@ struct tar_builder {
 };
 
 static void tb_init(struct tar_builder *tb) {
-    tb->cap = 256 * 1024;
+    /* Enough headers to exercise one element beyond each kernel limit. */
+    tb->cap = (INITRD_MAX_FILES + INITRD_MAX_DIRS + 8) * TAR_BLOCK;
     tb->buf = calloc(1, tb->cap);
     tb->len = 0;
 }
@@ -546,6 +547,81 @@ static int t_directory_entry_is_not_a_file(void) {
     return 1;
 }
 
+/* A full image must be usable; one additional entry must fail the whole
+ * mount rather than silently discard its tail.  Hard links use file slots
+ * too (they have their own path, despite sharing an inode's contents). */
+static int t_file_table_boundary(void) {
+    tb_init(&g_tb);
+    char name[32];
+    for (int i = 0; i < INITRD_MAX_FILES; i++) {
+        snprintf(name, sizeof name, "./file%04d", i);
+        tb_add(&g_tb, name, NULL, 0);
+    }
+    tb_finish(&g_tb);
+    CHECK(initrd_init((uint64_t)(uintptr_t)g_tb.buf, g_tb.len) == 0);
+    CHECK(initrd_ops.lookup(NULL, name + 2) != NULL);
+    tb_free(&g_tb);
+    return 1;
+}
+
+static int t_file_table_overflow_refuses_mount(void) {
+    tb_init(&g_tb);
+    char name[32];
+    for (int i = 0; i <= INITRD_MAX_FILES; i++) {
+        snprintf(name, sizeof name, "./file%04d", i);
+        tb_add(&g_tb, name, NULL, 0);
+    }
+    tb_finish(&g_tb);
+    CHECK(initrd_init((uint64_t)(uintptr_t)g_tb.buf, g_tb.len) == -1);
+    CHECK(initrd_ops.lookup(NULL, "file0000") == NULL);
+    CHECK(initrd_ops.lookup(NULL, "file2048") == NULL);
+    tb_free(&g_tb);
+    return 1;
+}
+
+static int t_hard_link_overflow_refuses_mount(void) {
+    tb_init(&g_tb);
+    tb_add(&g_tb, "./target", NULL, 0);
+    char name[32];
+    for (int i = 1; i <= INITRD_MAX_FILES; i++) {
+        snprintf(name, sizeof name, "./alias%04d", i);
+        tb_add_link(&g_tb, name, "./target");
+    }
+    tb_finish(&g_tb);
+    CHECK(initrd_init((uint64_t)(uintptr_t)g_tb.buf, g_tb.len) == -1);
+    CHECK(initrd_ops.lookup(NULL, "target") == NULL);
+    tb_free(&g_tb);
+    return 1;
+}
+
+static int t_directory_table_boundary(void) {
+    tb_init(&g_tb);
+    char name[32];
+    for (int i = 1; i < INITRD_MAX_DIRS; i++) {
+        snprintf(name, sizeof name, "./dir%03d/", i);
+        tb_add_dir(&g_tb, name);
+    }
+    tb_finish(&g_tb);
+    CHECK(initrd_init((uint64_t)(uintptr_t)g_tb.buf, g_tb.len) == 0);
+    CHECK(initrd_ops.lookup(NULL, name + 2) != NULL);  /* includes root */
+    tb_free(&g_tb);
+    return 1;
+}
+
+static int t_directory_table_overflow_refuses_mount(void) {
+    tb_init(&g_tb);
+    char name[32];
+    for (int i = 1; i <= INITRD_MAX_DIRS; i++) {
+        snprintf(name, sizeof name, "./dir%03d/", i);
+        tb_add_dir(&g_tb, name);
+    }
+    tb_finish(&g_tb);
+    CHECK(initrd_init((uint64_t)(uintptr_t)g_tb.buf, g_tb.len) == -1);
+    CHECK(initrd_ops.lookup(NULL, "dir001") == NULL);
+    tb_free(&g_tb);
+    return 1;
+}
+
 int main(void) {
     printf("test_initrd_dirs: USTAR parser + derived directory view\n");
 
@@ -576,6 +652,11 @@ int main(void) {
     RUN(t_explicit_empty_directory);
     RUN(t_explicit_and_implied_directory_not_duplicated);
     RUN(t_directory_entry_is_not_a_file);
+    RUN(t_file_table_boundary);
+    RUN(t_file_table_overflow_refuses_mount);
+    RUN(t_hard_link_overflow_refuses_mount);
+    RUN(t_directory_table_boundary);
+    RUN(t_directory_table_overflow_refuses_mount);
 
     printf("  %d/%d passed, %d failed\n", passed, tn, failed);
     return failed == 0 ? 0 : 1;

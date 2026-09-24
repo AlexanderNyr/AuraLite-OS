@@ -2,7 +2,7 @@
 # test_sh5c_kernel_tcc.sh -- SELFHOST_PLAN.md SH5c host gate: the kernel,
 # compiled by tcc.
 #
-# Runs tools/selfhost/build_kernel_tcc.sh (tcc compiles the 127 kernel C
+# Runs tools/selfhost/build_kernel_tcc.sh (tcc compiles the 137 kernel C
 # files, mini-asm assembles the 9 asm files, aulink links kernel-tcc.elf
 # against kernel.ld) and then asserts the three parts of the SH5c story:
 #
@@ -60,16 +60,10 @@ if ! bash tools/selfhost/build_kernel_tcc.sh > "$OUT-test.log" 2>&1; then
     sed 's/^/    /' "$OUT-test.log" | tail -15
     exit 1
 fi
-# RESIDUE2 CI fix (run 2): 127 -> 135 -- the kernel link line now yields
-# 135 C sources: the RESIDUE2 phases added four new ones (kernel/fs/path.c,
-# drivers/e1000e/e1000e.c, drivers/vmxnet3/vmxnet3.c, drivers/wifi/wifi_virt.c)
-# on top of a count that had already drifted to 131 at the series' base.
-# CI never saw the mismatch: the unit job builds no host tcc, so this gate
-# skips there; any LOCAL test-unit with the selfhost deps present was red.
-# Not a weakening -- the assertion stays exact: every C source on the
-# kernel link line must compile.
-grep -q '^\[sh5c\] tcc compiled 135 kernel C files' "$OUT-test.log" \
-    && ok "tcc compiled all 135 kernel C files" \
+# The exact count follows the current x86_64 kernel source closure.  Without
+# host tcc this gate skips; the CI selfhost-closure shard builds it explicitly.
+grep -q '^\[sh5c\] tcc compiled 137 kernel C files' "$OUT-test.log" \
+    && ok "tcc compiled all 137 kernel C files" \
     || bad "tcc object count changed (see $OUT-test.log)"
 grep -q '^\[sh5c\] mini-asm assembled 9 kernel asm files' "$OUT-test.log" \
     && ok "mini-asm assembled all 9 kernel asm files" \

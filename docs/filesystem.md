@@ -76,8 +76,8 @@ A trailing slash asserts "this is a directory": `/etc/` resolves, and
 
 | Constant | Value | Where |
 |---|---|---|
-| `INITRD_MAX_FILES` | 1024 | `kernel/fs/initrd.c` |
-| `INITRD_MAX_DIRS` | 128 | `kernel/fs/initrd.c` |
+| `INITRD_MAX_FILES` | 2048 | `kernel/fs/initrd.h` |
+| `INITRD_MAX_DIRS` | 128 | `kernel/fs/initrd.h` |
 | USTAR name field | 100 bytes | format; enforced by `mkinitrd.sh` |
 | `VFS_PATH_MAX` | 256 | `kernel/fs/vfs.h` |
 
@@ -85,7 +85,8 @@ A trailing slash asserts "this is a directory": `/etc/` resolves, and
 F3 keeps compatibility aliases for a while, which roughly doubles the entry
 count, so the old ceiling would have been reached mid-plan.
 
-Exceeding either table is a warning at boot, not a silent truncation.
+The host packer rejects an archive that exceeds either limit; the kernel
+also refuses to mount an over-limit image rather than silently drop entries.
 
 ---
 

@@ -292,7 +292,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 
 # ---- thematic CI shards (2026-08-21) ----
 #
-# One 129-case job ran ~2 h on a shared runner; thematic shards run in
+# One monolithic job ran ~2 h on a shared runner; thematic shards run in
 # parallel instead.  The selfhost arc is itself three shards (2026-08-31,
 # SELFHOST_PLAN.md SH9): selfhost-script (SH6 scripting, no guest toolchain),
 # selfhost-closure (SH8 toolchain+kernel, the only one needing /bin/tcc so the
@@ -303,7 +303,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 # refuses to run rather than silently dropping out of CI — the
 # AUDIT_A0 disease (27 cases on disk that CI never ran) does not get a
 # second chapter.
-GROUP_NAMES="core posix fs usb net gui selfhost-script selfhost-closure selfhost-img fsfull ota lx"
+GROUP_NAMES="core posix fs usb net gui w32 selfhost-script selfhost-closure selfhost-img fsfull ota lx"
 group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
@@ -328,7 +328,10 @@ group_re() {
         lx)    echo '^test_lx_[a-z0-9_]+$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|w32_[a-z0-9_]+|w32a[0-9]_[a-z0-9_]+)$' ;;
+        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
+        # Keep the whole Win32 personality in its own CI job, including the
+        # compiler-built PE integration case and two-digit W32A-10 phase.
+        w32)   echo '^test_(w32_[a-z0-9_]+|w32a[0-9]+_[a-z0-9_]+)$' ;;
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
         # slowest (the SH8 closure, ~23 min in the guest plus the idle budget)
         # does not serialize behind the scripting cases.  selfhost-script = the
@@ -360,9 +363,8 @@ check_groups() {
     return "$bad"
 }
 
-# The partition is checked on EVERY run (129 x 9 regex matches is
-# free); --check-groups checks and exits, for the CI step and the
-# curious.
+# The partition is checked on EVERY run (198 cases, 13 groups);
+# --check-groups checks and exits, for the CI step and the curious.
 if ! check_groups; then
     exit 2
 fi
@@ -414,8 +416,6 @@ print_banner() {
 
 for case_name in "${ALL_CASES[@]}"; do
     script="$HERE/cases/${case_name}.sh"
-    [ -x "$script" ] || chmod +x "$script" 2>/dev/null || true
-    [ -f "$script" ] || { echo "${C_Y}skip $case_name (no script)${C_END}"; continue; }
 
     if [ -n "$FILTER" ] && ! [[ "$case_name" =~ $FILTER ]]; then
         skipped=$((skipped+1))
@@ -426,6 +426,15 @@ for case_name in "${ALL_CASES[@]}"; do
         skipped=$((skipped+1))
         continue
     fi
+    if [ ! -f "$script" ]; then
+        echo "${C_R}✘ FAIL $case_name (registered script missing)${C_END}"
+        echo "FAIL $case_name missing-script" >> "$RESULTS"
+        fail=$((fail+1))
+        FAILED_LIST+=("$case_name")
+        continue
+    fi
+    # All cases run under bash; changing executable bits of registered
+    # scripts is unnecessary and used to dirty the checkout during a run.
 
     print_banner "▶ $case_name"
     t0=$(date +%s)

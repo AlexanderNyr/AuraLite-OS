@@ -4,8 +4,8 @@
 # The breadth claim: seven mingw-w64 fixtures, one per W32A-2 group
 # (find, time, mapping, pipes, process, locale, heap), each asserting
 # REAL behaviour and each refusal by name.  Every fixture prints one
-# `[W32A2-<GROUP>] pass` marker on success (or `[W32A2-<GROUP>]
-# FAIL:<mark>` lines, one per failed check) and exits 55 on a clean
+# `W32A2-<GROUP>-OK` marker on success (or `FAIL-<mark>` for a failed
+# check followed by `W32A2-<GROUP>-FAIL`) and exits 55 on a clean
 # run, 1 on any failure.
 #
 # The message-table rule is enforced by the find fixture's round-trip
@@ -47,9 +47,9 @@ il_send "exit"
 
 il_run_qemu "$LOG" 200
 
-# --- every fixture printed its pass marker ---------------------------------
+# --- every fixture printed its actual success marker -----------------------
 for g in FIND TIME MAP PIPES PROC LOCALE HEAP; do
-    il_assert_grep "$LOG" "\\[W32A2-$g\\] pass" \
+    il_assert_grep "$LOG" "W32A2-$g-OK" \
         "the $g fixture passed in-guest"
 done
 

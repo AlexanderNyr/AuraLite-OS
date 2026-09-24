@@ -567,8 +567,15 @@ void ahci_self_test(void) {
     kprintf("[ahci] sector 0: %s, first bytes:", has_sig ? "MBR" : "data");
     for (int i = 0; i < 16; i++) kprintf(" %02x", mbr[i]);
     kprintf("\n");
-    if (!has_sig && !mbr[0]) {
-        kprintf("[ahci] FAIL: SATA read returned empty sector\n");
+    /* A successfully-read all-zero LBA0 is normal for a blank disk or a
+     * filesystem beginning at an offset (e.g. the Freedoom FAT32 volume).
+     * No known scratch marker means sector 1 must not be overwritten. */
+    int blank = 1;
+    for (int i = 0; i < 512; i++)
+        if (mbr[i] != 0) { blank = 0; break; }
+    if (blank) {
+        kprintf("[ahci] self-test: blank LBA0 read successfully; "
+                "write verification skipped (no scratch marker)\n");
         return;
     }
 
@@ -595,6 +602,12 @@ void ahci_self_test(void) {
             if (mbr[0x1BE + e * 16 + 4] != 0)
                 disk_is_partitioned = 1;
     }
+    if (!disk_is_partitioned &&
+        !(has_sig && memcmp(mbr, "AURALHCI", 8) == 0)) {
+        kprintf("[ahci] self-test: unknown table-less disk; "
+                "write verification skipped (no scratch marker)\n");
+        return;
+    }
 
     static uint8_t wbuf[512];
     static uint8_t rbuf[512];
@@ -613,23 +626,28 @@ void ahci_self_test(void) {
     } else {
         kprintf("[ahci] self-test: writing scratch sector 1...\n");
     }
+    /* If this is a real disk, restore its saved LBA 1 even when the write
+     * reports an error (it might have partially completed) or readback
+     * fails.  An early return here used to leave the GPT header damaged. */
+    int verify_ok = 1;
     if (ahci_write(port, 1, 1, wbuf) != 0) {
         kprintf("[ahci] FAIL: SATA write sector 1 failed\n");
-        return;
+        verify_ok = 0;
     }
-    memset(rbuf, 0, sizeof(rbuf));
-    if (ahci_read(port, 1, 1, rbuf) != 0) {
-        kprintf("[ahci] FAIL: SATA readback sector 1 failed\n");
-        return;
-    }
-    if (memcmp(wbuf, rbuf, sizeof(wbuf)) != 0) {
-        kprintf("[ahci] FAIL: SATA write/readback mismatch\n");
-        return;
+    if (verify_ok) {
+        memset(rbuf, 0, sizeof(rbuf));
+        if (ahci_read(port, 1, 1, rbuf) != 0) {
+            kprintf("[ahci] FAIL: SATA readback sector 1 failed\n");
+            verify_ok = 0;
+        } else if (memcmp(wbuf, rbuf, sizeof(wbuf)) != 0) {
+            kprintf("[ahci] FAIL: SATA write/readback mismatch\n");
+            verify_ok = 0;
+        }
     }
     if (disk_is_partitioned) {
-        /* Restore what we borrowed and prove it went back in.  A silent
-         * restore failure would mean the disk's GPT header is left
-         * trashed -- that deserves a loud FAIL, not a shrug. */
+        /* Restore what we borrowed and prove it went back in, even if the
+         * write/readback attempt failed.  A silent restore failure would
+         * mean a GPT header may remain trashed. */
         if (ahci_write(port, 1, 1, saved) != 0) {
             kprintf("[ahci] FAIL: SATA restore sector 1 failed\n");
             return;
@@ -641,6 +659,7 @@ void ahci_self_test(void) {
             return;
         }
     }
+    if (!verify_ok) return;
     kprintf("[ahci] PASS: SATA read/write DMA works\n");
 }
 

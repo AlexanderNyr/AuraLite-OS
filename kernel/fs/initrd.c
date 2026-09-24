@@ -48,15 +48,10 @@
 /* 41 entries are packed today.  The runtime reorganisation in FSLAYOUT_PLAN
  * phase F3 keeps compatibility aliases for a while, which roughly doubles the
  * count, so the old ceiling of 64 would have been hit mid-plan. */
-/* SELFHOST SH5d: 512 -> 1024 files, 32 -> 128 directories.  The image now
- * carries the complete x86_64 kernel source closure (kernel/, drivers/,
- * boot/, w32/ and generated-tool sources) so tcc can build the next kernel
- * inside AuraLite.  Keep these fixed, auditable bounds rather than silently
- * dropping the tail of a USTAR archive: 1024 file records cost about 272 KiB
- * of BSS and 128 directory records about 32 KiB, modest beside the kernel's
- * existing multi-megabyte static tables. */
-#define INITRD_MAX_FILES 1024
-#define INITRD_MAX_DIRS  128
+/* The table bounds live in initrd.h and are checked by the host packer.
+ * A self-hosted image can carry more than 1024 source files, so both the
+ * packer and parser refuse an over-limit archive rather than lose its tail.
+ * 2048 file records cost about 544 KiB of BSS. */
 
 struct initrd_file {
     char     name[VFS_PATH_MAX];
@@ -100,33 +95,42 @@ static uint64_t parse_octal(const char *s, int len) {
 /* Register `path` (relative, no trailing slash) as a directory if it is not
  * already known.  The root ("") is registered by initrd_init() up front so
  * that slot 0 is always the root. */
-static void initrd_add_dir(const char *path, size_t len) {
+static int initrd_add_dir(const char *path, size_t len) {
+    if (len >= VFS_PATH_MAX) {
+        kprintf("[initrd] ERROR: directory path exceeds VFS_PATH_MAX\n");
+        return -1;
+    }
     for (int i = 0; i < initrd.dir_count; i++) {
         if (strlen(initrd.dirs[i].name) == len &&
             memcmp(initrd.dirs[i].name, path, len) == 0) {
-            return;
+            return 0;
         }
     }
     if (initrd.dir_count >= INITRD_MAX_DIRS) {
-        kprintf("[initrd] WARNING: directory table full (%d), "
-                "ignoring a directory — increase INITRD_MAX_DIRS\n",
+        kprintf("[initrd] ERROR: directory table full (%d); refusing mount\n",
                 INITRD_MAX_DIRS);
-        return;
+        return -1;
     }
-    if (len >= VFS_PATH_MAX) len = VFS_PATH_MAX - 1;
     memcpy(initrd.dirs[initrd.dir_count].name, path, len);
     initrd.dirs[initrd.dir_count].name[len] = '\0';
     initrd.dir_count++;
+    return 0;
 }
 
 /* Walk a file's path and register every directory prefix it implies.
  * "apps/gl/probe" registers "apps" and "apps/gl". */
-static void initrd_register_prefixes(const char *name) {
+static int initrd_register_prefixes(const char *name) {
     for (size_t i = 0; name[i]; i++) {
-        if (name[i] == '/' && i > 0) {
-            initrd_add_dir(name, i);
-        }
+        if (name[i] == '/' && i > 0 && initrd_add_dir(name, i) != 0)
+            return -1;
     }
+    return 0;
+}
+
+static int initrd_refuse_mount(void) {
+    initrd.file_count = 0;
+    initrd.dir_count = 0;
+    return -1;
 }
 
 int initrd_init(uint64_t address, uint64_t size) {
@@ -135,7 +139,7 @@ int initrd_init(uint64_t address, uint64_t size) {
     initrd.file_count = 0;
     initrd.dir_count  = 0;
     /* Slot 0 is the root directory, always present even in an empty image. */
-    initrd_add_dir("", 0);
+    if (initrd_add_dir("", 0) != 0) return initrd_refuse_mount();
 
     const uint8_t *p = (const uint8_t *)address;
     uint64_t offset = 0;
@@ -168,7 +172,8 @@ int initrd_init(uint64_t address, uint64_t size) {
             /* An explicit directory.  Its name carries a trailing slash. */
             size_t dlen = strlen(name);
             while (dlen > 0 && name[dlen - 1] == '/') dlen--;
-            if (dlen > 0) initrd_add_dir(name, dlen);
+            if (dlen > 0 && initrd_add_dir(name, dlen) != 0)
+                return initrd_refuse_mount();
         } else if (typeflag == '1') {
             /* A hard link: no data of its own, so it must borrow the target's.
              * The target always appears earlier in the archive — tar cannot
@@ -188,7 +193,12 @@ int initrd_init(uint64_t address, uint64_t size) {
             if (!src) {
                 kprintf("[initrd] WARNING: hard link '%s' -> '%s': "
                         "target not found, skipping\n", name, target);
-            } else if (initrd.file_count < INITRD_MAX_FILES) {
+            } else {
+                if (initrd.file_count >= INITRD_MAX_FILES) {
+                    kprintf("[initrd] ERROR: file table full (%d); refusing mount\n",
+                            INITRD_MAX_FILES);
+                    return initrd_refuse_mount();
+                }
                 struct initrd_file *f = &initrd.files[initrd.file_count];
                 strncpy(f->name, name, VFS_PATH_MAX - 1);
                 f->name[VFS_PATH_MAX - 1] = '\0';
@@ -196,35 +206,33 @@ int initrd_init(uint64_t address, uint64_t size) {
                 f->data_offset = src->data_offset;
                 f->mode        = src->mode;   /* a link wears its target's bits */
                 initrd.file_count++;
-                initrd_register_prefixes(f->name);
-            } else {
-                kprintf("[initrd] WARNING: file table full (%d), "
-                        "skipping link '%s'\n", INITRD_MAX_FILES, name);
+                if (initrd_register_prefixes(f->name) != 0)
+                    return initrd_refuse_mount();
             }
         } else if (typeflag == '0' || typeflag == '\0') {
-            if (initrd.file_count < INITRD_MAX_FILES) {
-                struct initrd_file *f = &initrd.files[initrd.file_count];
-                strncpy(f->name, name, VFS_PATH_MAX - 1);
-                f->name[VFS_PATH_MAX - 1] = '\0';
-                f->size        = fsize;
-                f->data_offset = offset + 512;   /* data follows the header */
-                /* RESIDUE2 T1: the permission bits live in the tar header
-                 * (octal ASCII at offset 100, 8 bytes).  They used to be
-                 * dropped on the floor, and the file vnodes below were
-                 * memset to mode 0 -- which root never notices (uid 0
-                 * bypasses vfs_check_perm) but which makes EVERY initrd
-                 * file unreadable to any other uid.  The selftest drops
-                 * to uid 1000 in P7 and never climbs back (SYS_SETUID is
-                 * correctly one-way), so its T1 execve("/bin/sh") died
-                 * with EACCES: a mode-0 vnode grants nothing to "other". */
-                f->mode        = (uint32_t)parse_octal(hdr + 100, 8);
-                initrd.file_count++;
-                initrd_register_prefixes(f->name);
-            } else {
-                kprintf("[initrd] WARNING: file table full (%d), "
-                        "skipping '%s' — increase INITRD_MAX_FILES\n",
-                        INITRD_MAX_FILES, name);
+            if (initrd.file_count >= INITRD_MAX_FILES) {
+                kprintf("[initrd] ERROR: file table full (%d); refusing mount\n",
+                        INITRD_MAX_FILES);
+                return initrd_refuse_mount();
             }
+            struct initrd_file *f = &initrd.files[initrd.file_count];
+            strncpy(f->name, name, VFS_PATH_MAX - 1);
+            f->name[VFS_PATH_MAX - 1] = '\0';
+            f->size        = fsize;
+            f->data_offset = offset + 512;   /* data follows the header */
+            /* RESIDUE2 T1: the permission bits live in the tar header
+             * (octal ASCII at offset 100, 8 bytes).  They used to be
+             * dropped on the floor, and the file vnodes below were
+             * memset to mode 0 -- which root never notices (uid 0
+             * bypasses vfs_check_perm) but which makes EVERY initrd
+             * file unreadable to any other uid.  The selftest drops
+             * to uid 1000 in P7 and never climbs back (SYS_SETUID is
+             * correctly one-way), so its T1 execve("/bin/sh") died
+             * with EACCES: a mode-0 vnode grants nothing to "other". */
+            f->mode        = (uint32_t)parse_octal(hdr + 100, 8);
+            initrd.file_count++;
+            if (initrd_register_prefixes(f->name) != 0)
+                return initrd_refuse_mount();
         }
 
         /* Advance past header + data (padded up to 512). */

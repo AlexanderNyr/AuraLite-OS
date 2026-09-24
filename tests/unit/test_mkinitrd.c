@@ -156,6 +156,58 @@ int main(void) {
               "archive length is 512-byte blocked (ends with zero blocks)");
     }
 
+    /* This is the SAME writer the guest ships as /bin/mkinitrd.  Refuse
+     * images that would overflow the kernel tables, and remove partial
+     * output when a source tree grows one entry beyond either limit. */
+    {
+        const char *bounds = "/tmp/aura_mkinitrd_bounds";
+        const char *bounded_out = "/tmp/aura_mkinitrd_bounds.tar";
+        snprintf(cmd, sizeof cmd, "rm -rf %s %s && mkdir -p %s",
+                 bounds, bounded_out, bounds);
+        CHECK(system(cmd) == 0, "bounds fixture created");
+        char path[256];
+        int created = 1;
+        for (int i = 0; i < INITRD_MAX_FILES; i++) {
+            snprintf(path, sizeof path, "%s/file%04d", bounds, i);
+            FILE *f = fopen(path, "wb");
+            if (!f) { created = 0; break; }
+            fclose(f);
+        }
+        CHECK(created, "created exactly INITRD_MAX_FILES empty files");
+        CHECK(mkinitrd_write(bounds, bounded_out) == INITRD_MAX_FILES,
+              "guest writer accepts exactly the kernel file-table limit");
+        snprintf(path, sizeof path, "%s/extra", bounds);
+        write_file(path, "x");
+        CHECK(mkinitrd_write(bounds, bounded_out) == -1 &&
+              access(bounded_out, F_OK) != 0,
+              "guest writer refuses one extra file without leaving a tar");
+        snprintf(cmd, sizeof cmd, "rm -rf %s %s", bounds, bounded_out);
+        CHECK(system(cmd) == 0, "file-limit fixture removed");
+    }
+    {
+        const char *bounds = "/tmp/aura_mkinitrd_dirs_bounds";
+        const char *bounded_out = "/tmp/aura_mkinitrd_dirs_bounds.tar";
+        snprintf(cmd, sizeof cmd, "rm -rf %s %s && mkdir -p %s",
+                 bounds, bounded_out, bounds);
+        CHECK(system(cmd) == 0, "directory-limit fixture created");
+        char path[256];
+        int created = 1;
+        for (int i = 1; i < INITRD_MAX_DIRS; i++) {
+            snprintf(path, sizeof path, "%s/dir%03d", bounds, i);
+            if (mkdir(path, 0755) != 0) { created = 0; break; }
+        }
+        CHECK(created, "created kernel limit minus root directory");
+        CHECK(mkinitrd_write(bounds, bounded_out) == INITRD_MAX_DIRS - 1,
+              "guest writer accepts exactly the kernel directory-table limit");
+        snprintf(path, sizeof path, "%s/extra", bounds);
+        CHECK(mkdir(path, 0755) == 0, "created one extra directory");
+        CHECK(mkinitrd_write(bounds, bounded_out) == -1 &&
+              access(bounded_out, F_OK) != 0,
+              "guest writer refuses an extra directory without leaving a tar");
+        snprintf(cmd, sizeof cmd, "rm -rf %s %s", bounds, bounded_out);
+        CHECK(system(cmd) == 0, "directory-limit fixture removed");
+    }
+
     if (fail_count) {
         printf("\n%d passed, %d FAILED\n", pass_count, fail_count);
         return 1;

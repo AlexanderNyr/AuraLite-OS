@@ -3,10 +3,16 @@
 
 #include <stdint.h>
 
+/* Shared with the host packer (tools/mkinitrd.sh); neither may silently
+ * produce an archive the kernel would truncate at boot.  A self-hosted
+ * kernel source closure needs more than 1024 entries. */
+#define INITRD_MAX_FILES 2048
+#define INITRD_MAX_DIRS  128
+
 /*
  * USTAR (POSIX tar) initial RAM disk.
  *
- * The initrd is passed to the kernel by Limine as a boot module. We parse the
+ * The initrd is passed to the kernel by the BIOS or UEFI bootloader. We parse the
  * 512-byte tar headers to build an in-memory file table, then expose it via
  * the VFS as a read-only filesystem mounted at "/".
  *
@@ -19,9 +25,9 @@
  *   Data follows each header, padded to 512 bytes.
  */
 
-/* Initialise the initrd from a Limine module (address + size).
- * Returns 0 on success, -1 when the vnode pool could not be allocated;
- * the caller must skip the vfs_mount() in that case. */
+/* Initialise the bootloader-provided initrd (address + size).
+ * Returns 0 on success, -1 on an allocation failure or if the archive
+ * exceeds either table limit; the caller must skip vfs_mount() on failure. */
 int initrd_init(uint64_t address, uint64_t size);
 
 /* VFS operations for the initrd. */

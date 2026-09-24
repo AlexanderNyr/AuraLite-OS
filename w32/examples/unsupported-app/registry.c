@@ -44,18 +44,29 @@ void __stdcall winstart(void) {
     w32unsup_out = GetStdHandle(STD_OUTPUT_HANDLE);
     w32unsup_puts("w32unsup: the registry is real (W32A-9)\r\n");
 
-    /* The seeded key answers through the real A-variant engine. */
+    /* Never report a successful run when the registry contract failed:
+     * this is a gate exercised by a real compiler-emitted PE. */
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "Software\\AuraLite\\CurrentVersion",
-                      0, KEY_READ, &key) == 0) {
-        if (RegQueryValueExA(key, "ProductName", NULL, NULL,
-                             (LPBYTE)buf, &n) == 0 && n < sizeof(buf)) {
-            buf[n] = 0;
-            w32unsup_puts("w32unsup: ProductName = ");
-            w32unsup_puts(buf);
-            w32unsup_puts("\r\n");
-        }
-        RegCloseKey(key);
+                      0, KEY_READ, &key) != ERROR_SUCCESS) {
+        w32unsup_puts("w32unsup: ERROR opening seeded registry key\r\n");
+        ExitProcess(79);
+        return;
     }
-
+    if (RegQueryValueExA(key, "ProductName", NULL, NULL,
+                         (LPBYTE)buf, &n) != ERROR_SUCCESS || n >= sizeof(buf)) {
+        w32unsup_puts("w32unsup: ERROR reading ProductName\r\n");
+        RegCloseKey(key);
+        ExitProcess(79);
+        return;
+    }
+    buf[n] = 0;
+    w32unsup_puts("w32unsup: ProductName = ");
+    w32unsup_puts(buf);
+    w32unsup_puts("\r\n");
+    if (RegCloseKey(key) != ERROR_SUCCESS) {
+        w32unsup_puts("w32unsup: ERROR closing registry key\r\n");
+        ExitProcess(79);
+        return;
+    }
     ExitProcess(0);
 }

@@ -38,6 +38,25 @@ while IFS= read -r -d '' f; do
     fi
 done < <(find "$STAGING" -type f -print0)
 
+# The parser has fixed-size file and directory tables.  Count paths rather
+# than unique inodes: GNU tar emits one regular entry and one hard-link entry
+# for two names of the same file, and both consume file-table slots.  Every
+# derived directory is a physical ancestor in the staging tree (plus root).
+LIMITS_HEADER="$(dirname "$0")/../kernel/fs/initrd.h"
+max_files=$(awk '$1 == "#define" && $2 == "INITRD_MAX_FILES" { print $3 }' "$LIMITS_HEADER")
+max_dirs=$(awk '$1 == "#define" && $2 == "INITRD_MAX_DIRS" { print $3 }' "$LIMITS_HEADER")
+if ! [[ "$max_files" =~ ^[0-9]+$ && "$max_dirs" =~ ^[0-9]+$ ]]; then
+    echo "[mkinitrd] ERROR: cannot read initrd table limits from $LIMITS_HEADER" >&2
+    exit 1
+fi
+file_count=$(find "$STAGING" -type f -printf . | wc -c)
+dir_count=$(find "$STAGING" -type d -printf . | wc -c)
+if [ "$file_count" -gt "$max_files" ] || [ "$dir_count" -gt "$max_dirs" ]; then
+    echo "[mkinitrd] ERROR: initrd exceeds kernel tables: $file_count/$max_files files, $dir_count/$max_dirs directories" >&2
+    rm -f "$OUTPUT"    # never leave an older archive masquerading as this build
+    exit 1
+fi
+
 # Create the USTAR archive (no compression, POSIX format).
 #
 # ORDER MATTERS, AND NOT FOR THE REASON YOU WOULD GUESS.

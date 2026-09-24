@@ -105,6 +105,12 @@ il_assert_grep_fixed "$LOG" "DOOM-WINDOW-CREATED 640x400" "DOOM window created"
 # without reading all 28 MB correctly.
 il_assert_grep_fixed "$LOG" "adding /fat/doom/freedoom1.wad" "IWAD located on the WAD disk"
 il_assert_grep_fixed "$LOG" "Freedoom: Phase 1"              "IWAD identified as Freedoom Phase 1"
+# This disk has a valid FAT32 volume at LBA 64 but intentionally blank LBA 0.
+# A successful zero-filled read must not be called an AHCI failure, and the
+# boot-time self-test must not write sector 1 of an unmarked data disk.
+il_assert_grep_fixed "$LOG" "[ahci] self-test: blank LBA0 read successfully" \
+    "blank LBA0 is a valid WAD-disk layout, not a failed DMA read"
+il_assert_no_grep_fixed "$LOG" "[ahci] FAIL:" "no spurious AHCI failure"
 
 # Engine initialisation, in order.  Each of these was, at some point in the
 # port, the exact line the engine died on.

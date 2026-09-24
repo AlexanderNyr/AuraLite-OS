@@ -175,6 +175,25 @@ int main(void) {
     ok(RegOpenKeyExW(W32_HKEY_CURRENT_USER, W("Software\\PuTTY\\Nothere"), 0, 0, &k2) ==
        (W32_LONG)W32_ERROR_FILE_NOT_FOUND, "missing key -> FILE_NOT_FOUND");
     ok(RegCloseKey((W32_HKEY)(uintptr_t)0x80000001u) == 0, "closing a predefined key is a no-op");
+#if UINTPTR_MAX > UINT32_MAX
+    /* mingw-w64's HKEY_* macros cast signed LONG to a 64-bit pointer.  The
+     * fixture's NASM mov ecx, 0x80000002 and our own W32_HKEY_* macros both
+     * zero-extend, so they never caught the PE application's real value. */
+    W32_HKEY mingw_hklm = (W32_HKEY)(uintptr_t)(int64_t)(int32_t)0x80000002u;
+    W32_HKEY mingw_hkcu = (W32_HKEY)(uintptr_t)(int64_t)(int32_t)0x80000001u;
+    W32_HKEY mingw_hkcr = (W32_HKEY)(uintptr_t)(int64_t)(int32_t)0x80000000u;
+    LONG_OK(RegOpenKeyExA(mingw_hklm, "Software\\AuraLite\\CurrentVersion", 0, 0, &k2));
+    LONG_OK(RegCloseKey(k2));
+    LONG_OK(RegOpenKeyExA(mingw_hkcu, "Software\\PuTTY", 0, 0, &k2));
+    LONG_OK(RegCloseKey(k2));
+    LONG_OK(RegCreateKeyExA(mingw_hkcr, "SignedHandle", 0, NULL, 0, 0,
+                            NULL, &k2, &disp));
+    LONG_OK(RegCloseKey(k2));
+    LONG_OK(RegCloseKey(mingw_hklm));
+    ok(RegOpenKeyExA((W32_HKEY)(uintptr_t)0x1234567880000002ull,
+                     "Software", 0, 0, &k2) == (W32_LONG)W32_ERROR_INVALID_HANDLE,
+       "an arbitrary pointer with HKEY low bits is not a predefined key");
+#endif
     ok(RegCloseKey((W32_HKEY)(uintptr_t)0x70000000u) ==
        (W32_LONG)W32_ERROR_INVALID_HANDLE, "closing garbage -> INVALID_HANDLE");
 
@@ -260,6 +279,75 @@ int main(void) {
     len = sizeof out;
     LONG_OK(RegQueryValueExA(k, "ProductName", NULL, &type, out, &len));
     ok(type == W32_REG_SZ, "HKLM seed: ProductName is REG_SZ");
+    static const char product[] = "AuraLite OS (w32 personality)";
+    ok(len == sizeof product && memcmp(out, product, sizeof product) == 0,
+       "HKLM seed: RegQueryValueExA returns the complete NUL-terminated string");
+    len = sizeof out;
+    LONG_OK(RegQueryValueExW(k, W("ProductName"), NULL, &type, out, &len));
+    ok(len == sizeof product * 2 && out[len - 1] == 0 && out[len - 2] == 0,
+       "HKLM seed: UTF-16 string ends in a real NUL");
+    LONG_OK(RegCloseKey(k));
+
+    /* A takes/returns UTF-8 bytes; W takes/returns UTF-16LE bytes.  Embedded
+     * NULs in MULTI_SZ must survive and non-string types stay byte-exact. */
+    LONG_OK(RegCreateKeyExA(W32_HKEY_CURRENT_USER, "Software\\AnsiProbe", 0,
+                            NULL, 0, 0, NULL, &k, &disp));
+    static const uint8_t cafe[] = { 'c', 'a', 'f', 0xC3, 0xA9, 0 };
+    static const uint16_t cafe_w[] = { 'c', 'a', 'f', 0xE9, 0 };
+    LONG_OK(RegSetValueExA(k, "Cafe", 0, W32_REG_SZ, cafe, sizeof cafe));
+    len = sizeof out;
+    LONG_OK(RegQueryValueExW(k, W("Cafe"), NULL, &type, out, &len));
+    ok(type == W32_REG_SZ && len == sizeof cafe_w &&
+       memcmp(out, cafe_w, sizeof cafe_w) == 0,
+       "A string is stored as UTF-16LE for W callers");
+    len = 0;
+    LONG_OK(RegQueryValueExA(k, "Cafe", NULL, &type, NULL, &len));
+    ok(len == sizeof cafe, "A size-only query reports UTF-8 bytes incl NUL");
+    memset(out, 0xAA, sizeof out);
+    len = 2;
+    ok(RegQueryValueExA(k, "Cafe", NULL, &type, out, &len) ==
+       (W32_LONG)W32_ERROR_MORE_DATA && len == sizeof cafe && out[0] == 0xAA,
+       "A undersized buffer reports UTF-8 length without writing data");
+    len = sizeof out;
+    LONG_OK(RegQueryValueExA(k, "Cafe", NULL, &type, out, &len));
+    ok(len == sizeof cafe && memcmp(out, cafe, sizeof cafe) == 0,
+       "A string round-trips every UTF-8 byte");
+
+    static const uint8_t multi_a[] = { 'a', 0, 0xC3, 0xA9, 0, 0 };
+    static const uint16_t multi_w[] = { 'a', 0, 0xE9, 0, 0 };
+    LONG_OK(RegSetValueExA(k, "Multi", 0, W32_REG_MULTI_SZ, multi_a, sizeof multi_a));
+    len = sizeof out;
+    LONG_OK(RegQueryValueExW(k, W("Multi"), NULL, &type, out, &len));
+    ok(type == W32_REG_MULTI_SZ && len == sizeof multi_w &&
+       memcmp(out, multi_w, sizeof multi_w) == 0,
+       "A REG_MULTI_SZ preserves embedded NULs in W form");
+    len = sizeof out;
+    LONG_OK(RegQueryValueExA(k, "Multi", NULL, &type, out, &len));
+    ok(len == sizeof multi_a && memcmp(out, multi_a, sizeof multi_a) == 0,
+       "A REG_MULTI_SZ round-trips embedded NULs");
+    LONG_OK(RegSetValueExA(k, "Expand", 0, W32_REG_EXPAND_SZ, cafe, sizeof cafe));
+    len = sizeof out;
+    LONG_OK(RegQueryValueExA(k, "Expand", NULL, &type, out, &len));
+    ok(type == W32_REG_EXPAND_SZ && len == sizeof cafe &&
+       memcmp(out, cafe, sizeof cafe) == 0,
+       "A REG_EXPAND_SZ retains unexpanded UTF-8 data");
+    static const uint8_t raw_a[] = { 0x00, 0xFF, 0x80, 0x7F };
+    LONG_OK(RegSetValueExA(k, "RawA", 0, W32_REG_BINARY, raw_a, sizeof raw_a));
+    len = sizeof out;
+    LONG_OK(RegQueryValueExA(k, "RawA", NULL, &type, out, &len));
+    ok(type == W32_REG_BINARY && len == sizeof raw_a &&
+       memcmp(out, raw_a, sizeof raw_a) == 0,
+       "non-string A value remains byte-identical");
+    static const uint8_t bad_utf8[] = { 0xC0, 0x80, 0 };
+    ok(RegSetValueExA(k, "Bad", 0, W32_REG_SZ, bad_utf8, sizeof bad_utf8) ==
+       (W32_LONG)W32_ERROR_NO_UNICODE_TRANSLATION,
+       "malformed UTF-8 string is refused rather than stored");
+    static const uint8_t odd_utf16[] = { 'A', 0, 0xFF };
+    LONG_OK(RegSetValueExW(k, W("Odd"), 0, W32_REG_SZ, odd_utf16, sizeof odd_utf16));
+    len = sizeof out;
+    ok(RegQueryValueExA(k, "Odd", NULL, NULL, out, &len) ==
+       (W32_LONG)W32_ERROR_NO_UNICODE_TRANSLATION,
+       "odd UTF-16LE byte count is refused on ANSI read");
     LONG_OK(RegCloseKey(k));
 
     LONG_OK(RegCreateKeyExA(W32_HKEY_LOCAL_MACHINE, "Software\\Installer\\Probe",

@@ -445,10 +445,13 @@ static void seed_fresh_hive(void) {
     if (!c) return;
     uint16_t w[64];
     size_t n = strlen(s1); for (size_t i = 0; i < n; i++) w[i] = (uint16_t)(unsigned char)s1[i];
+    w[n] = 0;
     key_set_value(c, v1, 11, W32_REG_SZ, (const uint8_t *)w, (uint32_t)(n * 2 + 2));
     n = strlen(s2); for (size_t i = 0; i < n; i++) w[i] = (uint16_t)(unsigned char)s2[i];
+    w[n] = 0;
     key_set_value(c, v2, 10, W32_REG_SZ, (const uint8_t *)w, (uint32_t)(n * 2 + 2));
     n = strlen(s3); for (size_t i = 0; i < n; i++) w[i] = (uint16_t)(unsigned char)s3[i];
+    w[n] = 0;
     key_set_value(c, v3, 14, W32_REG_SZ, (const uint8_t *)w, (uint32_t)(n * 2 + 2));
 }
 
@@ -605,6 +608,22 @@ static void hive_ensure_loaded(void) {
 
 enum { ROOT_HKCU = 1, ROOT_HKLM = 2, ROOT_HKCR = 3 };
 
+/* Win32's predefined HKEY macros cast a signed 32-bit LONG to a pointer.
+ * mingw-w64 consequently passes 0xffffffff8000000N on x64, while our own
+ * W32_HKEY_* constants and NASM fixtures use 0x000000008000000N.  Accept
+ * only these two canonical representations, not an arbitrary pointer whose
+ * low 32 bits happen to match a root. */
+static int predefined_root(W32_HKEY key) {
+    uintptr_t v = (uintptr_t)key;
+    uint32_t id = (uint32_t)v;
+    if (id < 0x80000000u || id > 0x80000002u ||
+        (v != (uintptr_t)id &&
+         v != (uintptr_t)(intptr_t)(int32_t)id))
+        return 0;
+    return id == 0x80000000u ? ROOT_HKCR
+         : id == 0x80000001u ? ROOT_HKCU : ROOT_HKLM;
+}
+
 typedef struct {
     int      used;
     int      root;
@@ -615,11 +634,9 @@ typedef struct {
 static reg_handle_t reg_handles[REG_KEY_HANDLES];
 
 static int root_of(W32_HKEY key, int *root, const uint16_t **path, size_t *units) {
-    uintptr_t v = (uintptr_t)key;
-    if (v >= 0x80000000u && v <= 0x80000002u) {
-        /* predefined order: HKCR=0x80000000, HKCU=0x...01, HKLM=0x...02 */
-        *root = (v == 0x80000000u) ? ROOT_HKCR
-              : (v == 0x80000001u) ? ROOT_HKCU : ROOT_HKLM;
+    int predefined = predefined_root(key);
+    if (predefined) {
+        *root = predefined;
         *path = NULL; *units = 0;
         return 0;
     }
@@ -918,12 +935,16 @@ W32_LONG W32ABI RegCloseKey(W32_HKEY key) {
         }
     }
     /* Predefined keys close successfully (the documented no-op). */
-    uintptr_t v = (uintptr_t)key;
-    if (v >= 0x80000000u && v <= 0x80000002u) return W32_ERROR_SUCCESS;
+    if (predefined_root(key)) return W32_ERROR_SUCCESS;
     return W32_ERROR_INVALID_HANDLE;
 }
 
 /* ---- values: query / set / delete ------------------------------------------ */
+
+static int reg_is_string_type(W32_DWORD type) {
+    return type == W32_REG_SZ || type == W32_REG_EXPAND_SZ ||
+           type == W32_REG_MULTI_SZ;
+}
 
 static W32_LONG reg_query_common(W32_HKEY key, const uint16_t *name,
                                  W32_DWORD *type, uint8_t *data, W32_DWORD *len) {
@@ -976,7 +997,41 @@ W32_LONG W32ABI RegQueryValueExA(W32_HKEY key, const char *name,
         w32_utf8z_to_utf16(name, w, REG_MAX_VALUE_NAME + 1);
         pw = w;
     }
-    return reg_query_common(key, pw, type, data, len);
+
+    W32_DWORD vtype = 0, wide_len = 0;
+    W32_LONG rc = reg_query_common(key, pw, &vtype, NULL, &wide_len);
+    if (rc != W32_ERROR_SUCCESS) return rc;
+    if (type) *type = vtype;
+    if (!reg_is_string_type(vtype) || !len)
+        return reg_query_common(key, pw, NULL, data, len);
+
+    /* The hive stores strings as UTF-16LE.  Querying an A value must return
+     * UTF-8 (the project's A-codepage convention), with lengths in BYTES;
+     * it cannot expose the raw W bytes, including their embedded zeroes. */
+    if (wide_len & 1u) return W32_ERROR_NO_UNICODE_TRANSLATION;
+    uint8_t *wide = malloc(wide_len ? wide_len : 2);
+    if (!wide) return W32_ERROR_NOT_ENOUGH_MEMORY;
+    W32_DWORD got = wide_len;
+    rc = reg_query_common(key, pw, NULL, wide, &got);
+    if (rc == W32_ERROR_SUCCESS) {
+        size_t needed = 0;
+        if ((got & 1u) || w32_utf16_to_utf8((const uint16_t *)wide,
+                                            got / 2, NULL, 0, &needed) != W32_UTF_OK)
+            rc = W32_ERROR_NO_UNICODE_TRANSLATION;
+        else if (needed > UINT32_MAX)
+            rc = W32_ERROR_NOT_ENOUGH_MEMORY;
+        else if (data && *len < needed) {
+            *len = (W32_DWORD)needed;
+            rc = W32_ERROR_MORE_DATA;
+        } else {
+            if (data && w32_utf16_to_utf8((const uint16_t *)wide, got / 2,
+                                           (char *)data, *len, NULL) != W32_UTF_OK)
+                rc = W32_ERROR_NO_UNICODE_TRANSLATION;
+            if (rc == W32_ERROR_SUCCESS) *len = (W32_DWORD)needed;
+        }
+    }
+    free(wide);
+    return rc;
 }
 
 static W32_LONG reg_set_common(W32_HKEY key, const uint16_t *name,
@@ -1029,7 +1084,28 @@ W32_LONG W32ABI RegSetValueExA(W32_HKEY key, const char *name,
         w32_utf8z_to_utf16(name, w, REG_MAX_VALUE_NAME + 1);
         pw = w;
     }
-    return reg_set_common(key, pw, type, data, len);
+    if (!reg_is_string_type(type) || (!data && len) || len > REG_MAX_DATA)
+        return reg_set_common(key, pw, type, data, len);
+
+    /* Convert all bytes (not strlen): REG_MULTI_SZ contains internal NULs,
+     * and callers may explicitly omit a terminator from a REG_SZ value. */
+    size_t units = 0;
+    if (w32_utf8_to_utf16((const char *)data, len, NULL, 0,
+                          &units) != W32_UTF_OK)
+        return W32_ERROR_NO_UNICODE_TRANSLATION;
+    if (units > REG_MAX_DATA / sizeof(uint16_t))
+        return W32_ERROR_NOT_ENOUGH_MEMORY;
+    uint16_t *wide = malloc(units ? units * sizeof(uint16_t) : 2);
+    if (!wide) return W32_ERROR_NOT_ENOUGH_MEMORY;
+    if (w32_utf8_to_utf16((const char *)data, len, wide, units,
+                          NULL) != W32_UTF_OK) {
+        free(wide);
+        return W32_ERROR_NO_UNICODE_TRANSLATION;
+    }
+    W32_LONG rc = reg_set_common(key, pw, type, (const uint8_t *)wide,
+                                  (W32_DWORD)(units * sizeof(uint16_t)));
+    free(wide);
+    return rc;
 }
 
 W32_LONG W32ABI RegDeleteValueW(W32_HKEY key, const uint16_t *name) {

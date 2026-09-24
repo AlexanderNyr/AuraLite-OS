@@ -9,7 +9,7 @@
 # the exit).  Exit lines name each PE directly (the shell dispatches .exe
 # to w32run), so every status below is attributed, not guessed.
 #
-# Part 2 needs vncdotool + PIL (CI's gui shard installs both).  Without
+# Part 2 needs vncdotool + PIL (CI's w32 shard installs both).  Without
 # vncdotool the dismissal soft-passes but the serial receipts (ARMED +
 # the unhandled dump) still prove the box path was reached.
 

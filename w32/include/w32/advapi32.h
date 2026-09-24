@@ -84,7 +84,8 @@ typedef uint16_t W32_WCHAR;
 
 /* ---- predefined keys -------------------------------------------------- */
 /* Documented HKEY_* constants.  They are passed as HKEY values directly
- * (the Windows shape: the constants ARE valid keys, no open required). */
+ * (the Windows shape: the constants ARE valid keys, no open required).
+ * The engine also accepts mingw-w64's sign-extended LONG representation. */
 
 #define W32_HKEY_CLASSES_ROOT   ((W32_HKEY)(uintptr_t)0x80000000u)
 #define W32_HKEY_CURRENT_USER   ((W32_HKEY)(uintptr_t)0x80000001u)
@@ -129,6 +130,9 @@ W32_LONG W32ABI RegCreateKeyExW(W32_HKEY key, const uint16_t *subkey, W32_ULONG 
                                 W32_ULONG sam, void *security,
                                 W32_HKEY *out, W32_DWORD *disposition);
 W32_LONG W32ABI RegCloseKey(W32_HKEY key);
+/* A-string registry values use UTF-8 bytes; the hive stores UTF-16LE.
+ * REG_BINARY/DWORD/QWORD pass through without conversion.  Lengths are
+ * byte counts including any caller-provided terminating NUL(s). */
 W32_LONG W32ABI RegQueryValueExA(W32_HKEY key, const char *name, W32_ULONG *reserved,
                                  W32_DWORD *type, uint8_t *data, W32_DWORD *len);
 W32_LONG W32ABI RegQueryValueExW(W32_HKEY key, const uint16_t *name, W32_ULONG *reserved,

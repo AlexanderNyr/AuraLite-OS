@@ -603,11 +603,13 @@ exit /b 1
 make test-unit              # host-side unit tests
 make test-integration-fast  # QEMU smoke/integration subset
 make test-integration       # full QEMU integration suite
+bash tests/integration/run_all.sh --group w32  # the Win32 CI shard
 ```
 
-The full suite currently registers 192 black-box QEMU cases (12 thematic CI
-shards), including AHCI, FAT32 persistence, ext2 cross-OS round-trips, the
-ext4/f2fs/btrfs/exFAT/NTFS interop lanes, USB MSC/HID/hub/xHCI rings,
+The full suite currently registers 198 black-box QEMU cases in 13 thematic CI
+shards (with Win32 in its own `w32` shard). Cases cover AHCI, FAT32 persistence,
+ext2 cross-OS round-trips, the ext4/f2fs/btrfs/exFAT/NTFS interop lanes,
+USB MSC/HID/hub/xHCI rings,
 networking (DNS failover, TCP x5, TLS/HTTPS, IPv6), SMP, selfhost closures,
 graphics and GUI/VNC checks.
 
