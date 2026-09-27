@@ -171,7 +171,7 @@ previous COM/drag/drop/theme/token implementation. New assertions:
 | `make iso` | PASS | PE receiver imports `CreateFileW`; in-tree Unicode-named payload copied to initrd (third-party application PEs are not). |
 | `bash tests/integration/cases/test_w32a11_core_subset.sh` | **13/13** | Regression: base COM/BSTR/VARIANT/ordinals, IMM32, clipboard and pixel/theme guest fixture still passes after relinking fixture import libraries. |
 | `make -j8 test-unit` | PASS | All unit gates pass; A11 owned HDROP host test increases from 20 to **44** checks (ASan/UBSan), including UTF-8 invalid sequences, UTF-16 surrogate/truncation, file read, path bounds, isolation and stale handles. A11 OLE drag test remains 61 checks. Optional foreign-ABI suites report their own skips. |
-| `bash tests/integration/cases/test_w32a11_dragdrop.sh` | **11/11** | Two-window PE supplies a genuine `IDataObject` (`QueryInterface`, `QueryGetData`, `GetData`); right target reads `CF_HDROP`/Unicode path from an allocated `STGMEDIUM` and checks `ReleaseStgMedium` freed it. Separate native process sends a Unicode UTF-8 pathname via compositor; PE queries the owned HDROP's 22 UTF-16 units, including U+00E9 and a surrogate pair for U+1F642, and opens the on-disk file via `CreateFileW`. Both PE processes and sender exit 78. **The OLE source is in-process, not the native sender.** |
+| `bash tests/integration/cases/test_w32a11_dragdrop.sh` | **11/11** | Two-window PE supplies a genuine `IDataObject` (`QueryInterface`, `QueryGetData`, `GetData`); right target reads `CF_HDROP`/Unicode path from an allocated `STGMEDIUM` and checks `ReleaseStgMedium` freed it. Separate native process sends a Unicode UTF-8 pathname via compositor; in this **historical 7d38775 run**, PE queries the owned HDROP's 22 UTF-16 units (a BMP accent and a surrogate pair) and opens the on-disk file via `CreateFileW`. Both PE processes and sender exit 78. **The OLE source is in-process, not the native sender.** |
 | `python3 tools/w32_gen_stubs.py --check`; `python3 tools/w32_import_ledger.py check` | PASS | Generated TODOs remain in sync; the structural K/U/G ledger gap remains 41. No imported USER32 prerequisite was silently reclassified as REAL. |
 
 **CLSID/ProgID probe:** official PuTTY 0.85, 7-Zip FM 24.09 (+7z.dll)
@@ -187,6 +187,40 @@ this is **not** an observed CLSID/IID table. External OLE sources,
 scripted application sessions, the activation table, timed theme effects,
 and the full `make test`/W32A-11 phase gate remain open. This patch does not
 try to repair earlier KERNEL32/USER32/GDI32 breadth phases.
+
+### Follow-up on exact `e4be5d968a4b69d397245b560eb2a6ec88be83bb` (2026-09-27)
+
+This delta does **not** repeat the already merged W32A-11 drag/drop,
+COM-lite or theme implementation. It makes both guest file-drop consumers
+use the existing BMP-accented payload already staged by `e4be5d9`, rather
+than expecting a different, absent filename. It also makes the existing
+**TODO** class probes testable without pretending to know which classes
+the pinned applications use:
+
+| gate / command | result | scope |
+|---|---:|---|
+| `make iso` | PASS | The existing `w32a11-é.txt` is copied unchanged to initrd; the native sender, PE receiver and in-process OLE PE now use that **same** BMP Unicode filename. The repository fixture filename has no supplementary-plane character. A separate author-written PE probe is packaged in initrd. |
+| `bash tests/integration/cases/test_w32a11_core_subset.sh` | **18/18** | The old Win64 COM/automation/IMM/clipboard/theme fixture still exits 78. A new independent PE imports `CoCreateInstance` and `CLSIDFromProgID`, submits two **synthetic** GUID pairs (with distinct IIDs and CLSCTX values) and a Unicode ProgID, checks `E_NOTIMPL`/`ERROR_NOT_SUPPORTED` and cleared outputs, and exits 78. QEMU serial output is asserted for each GUID and a one-line reversible UTF-16 ProgID. |
+| `bash tests/integration/cases/test_w32a11_dragdrop.sh` | **11/11** | Both independent PEs and the native sender agree on the BMP-accented path; the OLE `IDataObject`/file-drop gate opens the **actual Unicode-named file** and checks its bytes (the PE receiver asserts 19 UTF-16 path units); sender and both PEs exit 78. This revised guest gate does **not** claim surrogate-pair file-drop coverage. |
+| `bash tests/integration/cases/test_w32a11_tokens.sh` | **7/7** | Regression for owner-bound, single-use, stale-token rejection across native tasks. |
+| `bash tests/integration/cases/test_w32a11_theme.sh` | **9/9** | Regression for v5/v6 themed rendering and explicit timed-animation refusal; no timed animation is newly implemented. |
+| `make -j8 test-unit` | PASS | ASan/UBSan generated-stub probe: **28 checks**, zero failures; tests canonical GUID byte order, bounded/lossless UTF-16 escaping including BMP/non-emoji supplementary (U+20000), newline, backslash, whitespace and `=`, explicit truncation, every-call logs, failure HRESULT/error and cleared outputs. The separate owned HDROP host test also round-trips U+20000 through a real temporary file; all existing host tests and provenance checks pass. |
+| `python3 -B tools/w32_gen_stubs.py --check` | PASS | Committed generated code agrees with the generator; no unverified class activation table was added. |
+
+Each `w32a11-clsid-probe` line contains full CLSID/IID and CLSCTX;
+`w32a11-progid-probe` contains a reversible prefix (up to 192 UTF-16 code
+units) and `truncated=0/1`. Unsafe ASCII such as newline, space and `=` is
+escaped as `\uXXXX` so log lines/field boundaries cannot be spoofed. These
+**synthetic test vectors are not observations from any pinned application**.
+No third-party app was redownloaded or rerun for this delta; the last
+SHA-256-verified attempts are the earlier
+`w32/tests/W32A11.pinned-probe.7d38775.log`, where each executable failed a
+USER32 import before entry. Until actual app code reaches the probe, there
+is no defensible CLSID/IID table. Timed UxTheme effects, full
+`test_w32a11_ole.sh`, the three pinned-app gates and the full `make test`
+remain open; **W32A-11 is NOT DONE**. `check_w32app_claims.py --check`
+still fails solely on the three pre-existing missing W32A-2/3/4 patch
+receipts named above; this delta does not repair those earlier phases.
 
 ## App-gate receipts (reserved format)
 

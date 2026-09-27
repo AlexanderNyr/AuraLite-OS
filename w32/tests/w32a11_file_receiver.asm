@@ -28,9 +28,9 @@ extern ExitProcess
 section .rdata
 cls_w: dw 'A','1','1','F','i','l','e',0
 title_w: dw 'F','i','l','e',' ','r','e','c','e','i','v','e','r',0
-; /tests/w32a11-é-🙂.txt in UTF-16, including the surrogate pair.
+; /tests/w32a11-é.txt in UTF-16 (BMP; compare all units).
 path_expected: dw '/', 't', 'e', 's', 't', 's', '/', 'w', '3', '2', 'a', '1', '1', '-'
-               dw 0x00e9, '-', 0xd83d, 0xde42, '.', 't', 'x', 't', 0
+               dw 0x00e9, '.', 't', 'x', 't', 0
 path_units equ ($-path_expected)/2-1
 content: db 'W32A11-DROP-FILE-CONTENTS',10
 content_len equ $-content

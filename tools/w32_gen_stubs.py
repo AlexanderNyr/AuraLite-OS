@@ -297,6 +297,38 @@ def main(argv):
             "}", "",
         ])
 
+    # Log the UTF-16 code units, not a lossy ASCII '?' approximation of a
+    # ProgID. Keep only identifier-safe ASCII readable; escape every other
+    # unit (including space, '=' and newline, so the trailing fields cannot
+    # be forged by an untrusted ProgID).
+    # A bounded, explicitly marked truncation is NOT a complete observation.
+    if any(d == "ole32.dll" and s == "CLSIDFromProgID" and k == "TODO"
+           for d, s, k, *_ in stubs):
+        L.extend([
+            "#define W32A11_PROGID_MAX_UNITS 192u",
+            "static int probe_progid(const uint16_t *id,",
+            "                        char out[W32A11_PROGID_MAX_UNITS * 6u + 1u]) {",
+            '    static const char hex[] = "0123456789abcdef";',
+            "    size_t i = 0, used = 0;",
+            '    if (!id) { strcpy(out, "(null)"); return 0; }',
+            "    while (i < W32A11_PROGID_MAX_UNITS && id[i]) {",
+            "        unsigned ch = id[i++];",
+            "        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||",
+            "            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {",
+            "            out[used++] = (char)ch;",
+            "        } else {",
+            "            out[used++] = 0x5c; out[used++] = 'u';",
+            "            out[used++] = hex[(ch >> 12) & 15u];",
+            "            out[used++] = hex[(ch >> 8) & 15u];",
+            "            out[used++] = hex[(ch >> 4) & 15u];",
+            "            out[used++] = hex[ch & 15u];",
+            "        }",
+            "    }",
+            "    out[used] = 0;",
+            "    return i == W32A11_PROGID_MAX_UNITS && id[i] != 0;",
+            "}", "",
+        ])
+
     for dll, sym, kind, rettype, fail, phase, note, ident in stubs:
         tag = "%s!%s" % (dll, sym)
         if kind == "DATA":
@@ -334,17 +366,16 @@ def main(argv):
             continue
         if dll == "ole32.dll" and sym == "CLSIDFromProgID" and kind == "TODO":
             L.extend([
-                "/* W32A-11 instrument: record ProgIDs, never invent a class. */",
+                "/* W32A-11 probe: lossless UTF-16 prefix, never invent a class. */",
                 "W32ABI W32_DWORD %s(const uint16_t *id, void *out) {" % ident,
                 "    static int once = 0;",
                 '    note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);',
-                "    char name[96]; size_t n = 0;",
-                "    if (id) while (n + 1 < sizeof name && id[n]) {",
-                "        name[n] = id[n] < 128 ? (char)id[n] : '?'; ++n;",
-                "    }",
-                "    name[n] = 0;",
-                '    printf("w32a11-progid-probe: %s\\n", id ? name : "(null)");',
-                "    (void)out; w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
+                "    char name[W32A11_PROGID_MAX_UNITS * 6u + 1u];",
+                "    unsigned truncated = (unsigned)probe_progid(id, name);",
+                '    printf("w32a11-progid-probe: UTF16=%s truncated=%u\\n",',
+                "           name, truncated);",
+                "    if (out) memset(out, 0, 16); /* fail-clean GUID, no guessed CLSID */",
+                "    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
                 "    return W32_E_NOTIMPL;",
                 "}", "",
             ])

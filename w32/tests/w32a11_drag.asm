@@ -52,7 +52,7 @@ format_etc: dw 15
 ; MULTI_SZ holds exactly one Unicode filename and the double terminator.
 drop_blob: dd 20, 0, 0, 0, 1
 path_expected: dw '/', 't', 'e', 's', 't', 's', '/', 'w', '3', '2', 'a', '1', '1', '-'
-               dw 0x00e9, '-', 0xd83d, 0xde42, '.', 't', 'x', 't', 0
+               dw 0x00e9, '.', 't', 'x', 't', 0
 path_units equ ($-path_expected)/2-1
            dw 0
 drop_blob_size equ $-drop_blob

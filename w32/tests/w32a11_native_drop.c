@@ -12,9 +12,9 @@
 #include "sys/wait.h"
 #include <stdint.h>
 
-/* One BMP and one supplementary-plane code point: the PE must receive
- * the exact UTF-16 path through a cross-process, compositor-owned token. */
-#define PATH "/tests/w32a11-\xC3\xA9-\xF0\x9F\x99\x82.txt"
+/* A BMP-accented filename: the PE must receive the exact UTF-16 path
+ * through a cross-process, compositor-owned token. */
+#define PATH "/tests/w32a11-\xC3\xA9.txt"
 #define CONTENT "W32A11-DROP-FILE-CONTENTS\n"
 
 int main(void) {

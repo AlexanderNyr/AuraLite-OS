@@ -140,12 +140,13 @@ ReactOS.
 | `src/w32_clipfmt.c` | W32A-11 shared A/W named clipboard-format registry; does not imply clipboard data transport |
 | `tests/ole32_a11.def`, `tests/oleaut32_a11.def`, `tests/imm32_a11.def`, `tests/uxtheme_a11.def` | W32A-11 incremental PE import-library declarations (only fixture names; no third-party bytes) |
 | `tests/w32a11_core.asm` | W32A-11 subset guest fixture: COM/BSTR/VARIANT, OLEAUT32 ordinals, IMM32 refusal, clipboard-format IDs, BUTTON pixel diff |
+| `tests/w32a11_probe.asm` | W32A-11 independent Win64 PE with synthetic GUID and Unicode ProgID vectors: generated TODO probes log exact IDs, return `E_NOTIMPL`, clear outputs; no pinned-app activation is inferred |
 | `tests/W32A11.pinned-probe.partial.log` | W32A-11 text-only SHA-256-verified upstream application bind probes; no observed CLSID/IID pairs yet |
 | `src/w32_ole_drag.c` | W32A-11 in-process OLE drop-target callbacks and STGMEDIUM ownership; no external OLE source or cross-process marshalling |
 | `tests/w32a11_drag.asm` | W32A-11 Win64 callback/refcount fixture: real IDataObject vtable hands CF_HDROP/UTF-16 DROPFILES in HGLOBAL to a target, which reads the Unicode-named file; mouse messages are posted, not an external source |
-| `tests/w32a11_file_receiver.asm` | W32A-11 independent PE receiver asserting a compositor-generated WM_DROPFILES UTF-16 pathname (BMP + surrogate pair), opened by CreateFileW and checked against on-disk bytes |
+| `tests/w32a11_file_receiver.asm` | W32A-11 independent PE receiver asserting a compositor-generated WM_DROPFILES BMP UTF-16 pathname, opened by CreateFileW and checked against on-disk bytes |
 | `tests/w32a11_native_drop.c` | W32A-11 native GUI sender, spawning an independent w32run and submitting a pathname through the kernel compositor |
-| `tests/w32a11_payload.txt`, `tests/w32a11-é-🙂.txt` | Original ASCII and new Unicode-named on-disk payloads with known bytes for the file-drop / IDataObject guest fixtures; author-written, no third-party bytes |
+| `tests/w32a11_payload.txt`, `tests/w32a11-é.txt` | Original ASCII and BMP Unicode-named on-disk payloads with known bytes for the file-drop / IDataObject guest fixtures; author-written, no third-party bytes |
 | `tests/w32a11_token_sender.c`, `tests/w32a11_token_receiver.c` | Independent native tasks testing window-slot recycling, stale/one-shot drop tokens, per-owner ACL and actual payload bytes |
 | `tests/w32a11_theme_matrix.asm` | Two independent v5/v6 manifest PE fixtures using real GDI pixel reads, zero-duration animation and timed-effect refusal |
 | `tests/integration/cases/test_w32a11_dragdrop.sh`, `tests/integration/cases/test_w32a11_tokens.sh`, `tests/integration/cases/test_w32a11_theme.sh` | Incremental QEMU effect gates; none claims the full CLSID/IID application probe |

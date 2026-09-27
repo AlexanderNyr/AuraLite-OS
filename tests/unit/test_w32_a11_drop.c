@@ -56,11 +56,11 @@ int main(void) {
     CHECK(DragQueryPoint(NULL,&out)==0 && out.x==0 && out.y==0);
 
     /* A real UTF-8 filename traverses owned HDROP -> UTF-16 query -> VFS.
-     * The suffix has U+00E9 (one unit) and U+1F642 (surrogate pair). */
+     * The suffix has U+00E9 (one unit) and U+20000 (non-emoji surrogate pair). */
     char dir[]="/tmp/w32a11-unicode-XXXXXX";
     CHECK(mkdtemp(dir)!=NULL);
     char unicode[260], original[260];
-    CHECK(snprintf(unicode,sizeof unicode,"%s/\xC3\xA9-\xF0\x9F\x99\x82.txt",dir)<(int)sizeof unicode);
+    CHECK(snprintf(unicode,sizeof unicode,"%s/\xC3\xA9-\xF0\xA0\x80\x80.txt",dir)<(int)sizeof unicode);
     strcpy(original,unicode);
     fd=open(unicode,O_WRONLY|O_CREAT|O_EXCL,0600);
     CHECK(fd>=0);
@@ -73,7 +73,7 @@ int main(void) {
     CHECK(DragQueryFileW(u,0,NULL,0)==units);
     uint16_t uw[260]={0};
     CHECK(DragQueryFileW(u,0,uw,260)==units && uw[units]==0);
-    CHECK(uw[units-8]==0x00e9 && uw[units-6]==0xd83d && uw[units-5]==0xde42);
+    CHECK(uw[units-8]==0x00e9 && uw[units-6]==0xd840 && uw[units-5]==0xdc00);
     char decoded[260]={0}; size_t got_bytes=0;
     CHECK(w32_utf16_to_utf8(uw,units,decoded,sizeof decoded-1,&got_bytes)==W32_UTF_OK);
     decoded[got_bytes]=0;
@@ -100,7 +100,7 @@ int main(void) {
     last_error=0;
     CHECK(w32_shell_drop_create(surrogate,1,p,1)==NULL &&
           last_error==W32_ERROR_NO_UNICODE_TRANSLATION);
-    const char *cut[]={"/tmp/\xf0\x9f\x99"};
+    const char *cut[]={"/tmp/\xf0\xa0\x80"};
     last_error=0;
     CHECK(w32_shell_drop_create(cut,1,p,1)==NULL &&
           last_error==W32_ERROR_NO_UNICODE_TRANSLATION);

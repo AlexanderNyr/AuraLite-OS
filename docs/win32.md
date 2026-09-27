@@ -610,7 +610,16 @@ All three official pinned apps again failed USER32 import binding before
 entry on base `7d38775` with the incremental W32A-11 patch (see
 `w32/tests/W32A11.pinned-probe.7d38775.log`). No CLSID/IID or ProgID was
 observed: `CoCreateInstance`/`CLSIDFromProgID` remain typed, instrumented
-`E_NOTIMPL` TODOs, not fake activations.
+`E_NOTIMPL` TODOs, not fake activations. A follow-up directly on `e4be5d9`
+tests those generated stubs from a **synthetic**, independent Win64 PE:
+every `CoCreateInstance` request logs the complete CLSID/IID pair and
+CLSCTX; `CLSIDFromProgID` logs at most 192 UTF-16 code units with reversible
+`\uXXXX` escaping (including a BMP unit and a surrogate pair) and an
+explicit truncation bit. `E_NOTIMPL` and `ERROR_NOT_SUPPORTED` remain the
+failure contract; output pointers/GUIDs are cleared. These fixture IDs are
+**not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify
+an activation table. The three pinned application sessions are still
+blocked at the USER32 imports listed above.
 
 **Automation:** the imported `OLEAUT32` ordinals
 `#2/#4/#6/#7/#9/#10/#149/#150` bind to the project's BSTR/VARIANT
@@ -652,8 +661,10 @@ fixture checks `QueryGetData`/`GetData(CF_HDROP)`, a UTF-16 `DROPFILES`
 process can send a *bounded UTF-8 pathname*, not a cross-process COM object,
 through the compositor's one-time, per-owner drop token to a receiving PE.
 Its owned HDROP rejects malformed UTF-8 and `DragQueryFileW` returns the
-precise UTF-16 length, including surrogate pairs; the guest opens the real
-Unicode-named file with `CreateFileW`. No outside-personality OLE source is
+precise UTF-16 length of the BMP-accented path; the guest opens that real
+Unicode-named file with `CreateFileW`. A separate host test round-trips a
+non-emoji supplementary code point (U+20000) through an owned HDROP; it is
+not an end-to-end guest file-drop claim. No outside-personality OLE source is
 claimed. Scripted application CLSID/IID sessions and the full W32A-11 gate
 remain open.
 
