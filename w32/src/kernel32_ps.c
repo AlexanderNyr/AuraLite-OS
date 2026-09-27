@@ -2391,6 +2391,22 @@ W32ABI void GetSystemInfo(W32_SYSTEM_INFO *out) {
 
 /* ---- small processes ---------------------------------------------------------------------------- */
 
+/* Beep has a silent-success fallback, and OutputDebugStringW has no error
+ * result. Both channels are best-effort, but short writes and EINTR must not
+ * silently drop the rest of a diagnostic. Inspect write's result so host
+ * builds with fortified libc and -Werror also compile. */
+static void ps_write_best_effort(int fd, const char *text, size_t len) {
+    while (len) {
+        ssize_t n = write(fd, text, len);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return;
+        text += (size_t)n;
+        len -= (size_t)n;
+    }
+}
+
 W32ABI W32_BOOL Beep(W32_DWORD freq, W32_DWORD dur) {
     int fd;
     char msg[64];
@@ -2406,7 +2422,7 @@ W32ABI W32_BOOL Beep(W32_DWORD freq, W32_DWORD dur) {
     n = snprintf(msg, sizeof(msg), "BEEP %lu %lu", (unsigned long)freq,
         (unsigned long)dur);
     if (n > 0)
-        write(fd, msg, (size_t)n);
+        ps_write_best_effort(fd, msg, (size_t)n);
     close(fd);
     return 1;
 }
@@ -2423,8 +2439,8 @@ W32ABI void OutputDebugStringW(W32_LPCWSTR str) {
     if (!u8)
         return;
     /* Debug output lands on stderr — the channel a developer watches. */
-    write(2, u8, strlen(u8));
-    write(2, "\n", 1);
+    ps_write_best_effort(2, u8, strlen(u8));
+    ps_write_best_effort(2, "\n", 1);
     free(u8);
 }
 

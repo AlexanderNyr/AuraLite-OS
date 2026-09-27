@@ -256,6 +256,53 @@ static W32_DWORD W32ABI w_apc_target(void *p) {
     return r;
 }
 
+static void test_debug_output(void) {
+    const W32_WCHAR text[] = { 'A', 0x00e9, 0 };
+    int fd[2];
+    int saved = dup(2);
+    int rc;
+    char got[8] = {0};
+    ssize_t n;
+
+    CHECK(saved >= 0);
+    if (saved < 0)
+        return;
+    rc = pipe(fd);
+    CHECK(rc == 0);
+    if (rc != 0) {
+        close(saved);
+        return;
+    }
+    rc = dup2(fd[1], 2);
+    CHECK_EQ(rc, 2);
+    close(fd[1]);
+    if (rc != 2) {
+        close(fd[0]);
+        close(saved);
+        return;
+    }
+    SetLastError(0x1234u);
+    OutputDebugStringW(text);
+    OutputDebugStringW(NULL);
+    CHECK_EQ(GetLastError(), 0x1234u);
+    rc = dup2(saved, 2);
+    CHECK_EQ(rc, 2);
+    close(saved);
+    if (rc != 2) {
+        close(2); /* do not leave the pipe's writer open for read() */
+        close(fd[0]);
+        return;
+    }
+    n = read(fd[0], got, sizeof(got));
+    CHECK_EQ(n, 4);
+    if (n == 4)
+        CHECK(memcmp(got, "A\xc3\xa9\n", 4) == 0);
+    close(fd[0]);
+    /* A void, best-effort sink must not clobber Win32 LastError on EBADF. */
+    ps_write_best_effort(-1, "x", 1);
+    CHECK_EQ(GetLastError(), 0x1234u);
+}
+
 int main(int argc, char **argv) {
     char *init_argv[2];
     (void)argc;
@@ -290,6 +337,7 @@ int main(int argc, char **argv) {
         SetLastError(7);
         CHECK_EQ(GetLastError(), 7u);
     }
+    test_debug_output();
 
     /* ---- 2. threads: create/join/codes/ids ---- */
     {
