@@ -1,0 +1,12 @@
+; All eight published OLEAUT32 ordinals are imported BY NUMBER (NONAME).
+; Canonical names + MIT-licensed ordinal source: w32/ordinal_map.tsv.
+LIBRARY OLEAUT32.dll
+EXPORTS
+    SysAllocString @2 NONAME
+    SysAllocStringLen @4 NONAME
+    SysFreeString @6 NONAME
+    SysStringLen @7 NONAME
+    VariantClear @9 NONAME
+    VariantCopy @10 NONAME
+    SysStringByteLen @149 NONAME
+    SysAllocStringByteLen @150 NONAME

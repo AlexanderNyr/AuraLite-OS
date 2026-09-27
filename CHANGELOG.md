@@ -2,6 +2,23 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-11 — incremental OLE32/IMM32/UxTheme work; phase NOT DONE] 2026-09-24
+
+Added balanced COM initialization and task memory, expanded BSTR/VARIANT
+ownership, a typed fail-clean IMM32 surface, named clipboard-format IDs,
+independently owned HDROP query/finish, and v6 BUTTON theme drawing against
+GDI pixels. Hardened recursive PE import binding and PE file/relocation
+limits. Six new ASan/UBSan host tests and the PE32+ guest subset fixture
+passed; QEMU subset: 13/13, regressions A6 39/39, A8 21/21, A10 15/15;
+`make test-unit` also passed. See `docs/w32app_receipts.md` for the scope.
+
+Official SHA-256-matched PuTTY 0.85, 7-Zip FM 24.09 and Notepad++ 8.8.9
+were tested from a FAT volume kept outside Git; all three fail import binding
+on earlier USER32 omissions before their entry points. No observed CLSID/IID
+table, compositor-delivered file drop, OLE window-to-window drag, remaining
+UxTheme parts/animation, or full `make test` gate is claimed. These are
+remaining W32A-11 requirements, not relabelled as shipped.
+
 ## [W32A-10 — Shell furniture: SHLWAPI, SHELL32, COMDLG32, VERSION and the small modules] 2026-09-22
 
 The personality grows its furniture: five engines over one file-backed

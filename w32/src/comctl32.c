@@ -121,8 +121,9 @@ extern int        w32_win_index_from_hwnd(W32_HWND h);
  * ===================================================================== */
 
 static int comctl_version = 5;
+static int palette_valid;
 
-void w32_comctl_set_version(int major) { comctl_version = major; }
+void w32_comctl_set_version(int major) { comctl_version = major; palette_valid = 0; }
 int  w32_comctl_version(void)          { return comctl_version; }
 
 /* Classic syscolors (the v5 look): the documented face/text/frame
@@ -135,18 +136,21 @@ static const w32_comctl_palette_t classic_palette = {
     0x00000080u,   /* sel   HIGHLIGHT    */
 };
 
-static w32_comctl_palette_t live_palette;      /* rebuilt per call */
-static int palette_valid;
+static w32_comctl_palette_t live_palette;      /* rebuilt on paint */
 
 const w32_comctl_palette_t *w32_comctl_palette(void) {
     if (comctl_version < 6) return &classic_palette;
+#ifndef AURALITE_W32_HOST_TEST
+    /* gtheme can mutate the compositor palette while the window is alive. */
+    palette_valid = 0;
+#endif
     if (!palette_valid) {
 #ifdef AURALITE_W32_HOST_TEST
         live_palette = classic_palette;        /* test overrides fields */
         w32_comctl_host_palette(&live_palette);
 #else
         ag_theme_t t;
-        if (!ag_theme_get(&t)) return &classic_palette;
+        if (ag_theme_get(&t) != 0) return &classic_palette;
         live_palette.face  = t.win_content;
         live_palette.text  = 0x00000000u;
         live_palette.frame = t.border;

@@ -134,6 +134,13 @@ ReactOS.
 | `tests/integration/cases/test_w32a10_furniture.sh` | The W32A-10 integration gate: one boot asserting every section marker, the exit receipt, and no kernel faults |
 | `tests/integration/cases/test_w32a1_loader.sh` | W32A-1 gate, recalibrated in W32A-7 after the suite's first machine run: the exit-code triad now anchors on the shell's `[shell]` attribution line because the kernel reports every child exit twice ([thread] then [shell]) |
 | `tests/integration/cases/test_w32_user32.sh` | W32-5 gate, reworked in W32A-7 after the suite's first machine run: the hostile-WNDPROC leg boots alone behind a QEMU monitor socket and dismisses the W32A-4 unhandled-exception alert with sendkey, instead of blocking headless on the MessageBoxA modal; asserts the PE's nonzero exit, the compositor reap, and clean shell exits for both boots |
+| `include/w32/ole32.h`, `src/ole32.c` | W32A-11 incremental COM init depth and task allocator; CLSID activation remains TODO |
+| `include/w32/imm32.h`, `src/imm32.c` | W32A-11 typed FAIL-CLEAN IME boundaries; no composition engine |
+| `include/w32/uxtheme.h`, `src/uxtheme.c` | W32A-11 limited v6 BUTTON part rendering onto a GDI bitmap with the compositor palette |
+| `src/w32_clipfmt.c` | W32A-11 shared A/W named clipboard-format registry; does not imply clipboard data transport |
+| `tests/ole32_a11.def`, `tests/oleaut32_a11.def`, `tests/imm32_a11.def`, `tests/uxtheme_a11.def` | W32A-11 incremental PE import-library declarations (only fixture names; no third-party bytes) |
+| `tests/w32a11_core.asm` | W32A-11 subset guest fixture: COM/BSTR/VARIANT, OLEAUT32 ordinals, IMM32 refusal, clipboard-format IDs, BUTTON pixel diff |
+| `tests/W32A11.pinned-probe.partial.log` | W32A-11 text-only SHA-256-verified upstream application bind probes; no observed CLSID/IID pairs yet |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

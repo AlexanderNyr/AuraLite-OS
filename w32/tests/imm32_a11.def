@@ -1,0 +1,13 @@
+; W32A-11: all ten measured fail-clean IMM32 imports (no DLL shipped).
+LIBRARY IMM32.dll
+EXPORTS
+    ImmEscapeW
+    ImmGetCompositionStringW
+    ImmGetContext
+    ImmNotifyIME
+    ImmReleaseContext
+    ImmSetCandidateWindow
+    ImmSetCompositionFontA
+    ImmSetCompositionFontW
+    ImmSetCompositionStringW
+    ImmSetCompositionWindow

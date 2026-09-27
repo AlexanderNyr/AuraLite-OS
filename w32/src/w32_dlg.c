@@ -600,8 +600,6 @@ W32ABI W32_BOOL IsClipboardFormatAvailable(W32_UINT fmt) {
     if (fmt == W32_CF_TEXT || fmt == W32_CF_UNICODETEXT) return 1;
     return clip_find(fmt) != 0;
 }
-W32ABI W32_UINT RegisterClipboardFormatW(const uint16_t *n){(void)n;return 0xC000;}
-W32ABI W32_UINT RegisterClipboardFormatA(const char *n){(void)n;return 0xC000;}
 W32ABI W32_BOOL CountClipboardFormats(void){return 1;}
 W32ABI W32_BOOL EnumClipboardFormats(W32_UINT){return 0;}
 W32ABI W32_HWND GetClipboardOwner(void){return clip_owner;}

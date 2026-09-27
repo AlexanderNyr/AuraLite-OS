@@ -84,84 +84,13 @@ static void note_failclean(const char *dll, const char *sym,
     printf("w32: %s!%s: %s\n", dll, sym, why);
 }
 
-/* imm32.dll!ImmEscapeW: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI void *w32_stub_imm32_ImmEscapeW(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmEscapeW", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmGetCompositionStringW: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmGetCompositionStringW(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmGetCompositionStringW", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmGetContext: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI void *w32_stub_imm32_ImmGetContext(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmGetContext", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmNotifyIME: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmNotifyIME(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmNotifyIME", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmReleaseContext: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmReleaseContext(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmReleaseContext", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmSetCandidateWindow: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmSetCandidateWindow(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmSetCandidateWindow", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmSetCompositionFontA: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmSetCompositionFontA(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmSetCompositionFontA", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmSetCompositionFontW: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmSetCompositionFontW(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmSetCompositionFontW", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmSetCompositionStringW: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmSetCompositionStringW(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmSetCompositionStringW", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* imm32.dll!ImmSetCompositionWindow: TODO (FAIL-CLEAN final lands in W32A-11).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_imm32_ImmSetCompositionWindow(void) {
-    static int once = 0;
-    note_todo("imm32.dll", "ImmSetCompositionWindow", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
+static void probe_guid(const void *guid, char out[37]) {
+    if (!guid) { strcpy(out, "(null)"); return; }
+    const uint8_t *b = (const uint8_t *)guid;
+    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"
+             "%02x%02x-%02x%02x%02x%02x%02x%02x",
+             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],
+             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
 }
 
 /* kernel32.dll!ClearCommBreak: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
@@ -639,52 +568,33 @@ W32ABI void *w32_stub_msvcrt_wcsstr(void) {
     return 0;
 }
 
-/* ole32.dll!CLSIDFromProgID: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_CLSIDFromProgID(void) {
+/* W32A-11 instrument: record ProgIDs, never invent a class. */
+W32ABI W32_DWORD w32_stub_ole32_CLSIDFromProgID(const uint16_t *id, void *out) {
     static int once = 0;
     note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
+    char name[96]; size_t n = 0;
+    if (id) while (n + 1 < sizeof name && id[n]) {
+        name[n] = id[n] < 128 ? (char)id[n] : '?'; ++n;
+    }
+    name[n] = 0;
+    printf("w32a11-progid-probe: %s\n", id ? name : "(null)");
+    (void)out; w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return W32_E_NOTIMPL;
 }
 
-/* ole32.dll!CoCreateInstance: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_CoCreateInstance(void) {
+/* W32A-11 instrument: every requested CLSID/IID, NOT an activation. */
+W32ABI W32_DWORD w32_stub_ole32_CoCreateInstance(const void *clsid, void *outer,
+                          W32_DWORD ctx, const void *iid, void **out) {
     static int once = 0;
     note_todo("ole32.dll", "CoCreateInstance", "W32A-11", &once);
+    (void)outer;
+    char class_id[37], interface_id[37];
+    probe_guid(clsid, class_id); probe_guid(iid, interface_id);
+    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\n",
+           class_id, interface_id, ctx);
+    if (out) *out = 0;
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return W32_E_NOTIMPL;
-}
-
-/* ole32.dll!CoInitialize: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_CoInitialize(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "CoInitialize", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* ole32.dll!CoTaskMemAlloc: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI void *w32_stub_ole32_CoTaskMemAlloc(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "CoTaskMemAlloc", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
-/* ole32.dll!CoTaskMemFree: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI void w32_stub_ole32_CoTaskMemFree(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "CoTaskMemFree", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* ole32.dll!CoUninitialize: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI void w32_stub_ole32_CoUninitialize(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "CoUninitialize", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* ole32.dll!DoDragDrop: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
@@ -693,22 +603,6 @@ W32ABI W32_DWORD w32_stub_ole32_DoDragDrop(void) {
     note_todo("ole32.dll", "DoDragDrop", "W32A-11", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return W32_E_NOTIMPL;
-}
-
-/* ole32.dll!OleInitialize: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_OleInitialize(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "OleInitialize", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* ole32.dll!OleUninitialize: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI void w32_stub_ole32_OleUninitialize(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "OleUninitialize", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
 }
 
 /* ole32.dll!RegisterDragDrop: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
@@ -1119,22 +1013,6 @@ W32ABI W32_DWORD w32_stub_uxtheme_BufferedPaintStopAllAnimations(void) {
     return W32_E_NOTIMPL;
 }
 
-/* uxtheme.dll!CloseThemeData: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_CloseThemeData(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "CloseThemeData", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!DrawThemeBackground: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_DrawThemeBackground(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "DrawThemeBackground", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
 /* uxtheme.dll!DrawThemeParentBackground: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
 W32ABI W32_DWORD w32_stub_uxtheme_DrawThemeParentBackground(void) {
     static int once = 0;
@@ -1167,14 +1045,6 @@ W32ABI W32_DWORD w32_stub_uxtheme_EndBufferedAnimation(void) {
     return W32_E_NOTIMPL;
 }
 
-/* uxtheme.dll!GetThemeBackgroundContentRect: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_GetThemeBackgroundContentRect(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "GetThemeBackgroundContentRect", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
 /* uxtheme.dll!GetThemeFont: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
 W32ABI W32_DWORD w32_stub_uxtheme_GetThemeFont(void) {
     static int once = 0;
@@ -1199,14 +1069,6 @@ W32ABI W32_DWORD w32_stub_uxtheme_GetThemeTransitionDuration(void) {
     return W32_E_NOTIMPL;
 }
 
-/* uxtheme.dll!OpenThemeData: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_OpenThemeData(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "OpenThemeData", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* uxtheme.dll!SetWindowTheme: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
 W32ABI W32_DWORD w32_stub_uxtheme_SetWindowTheme(void) {
     static int once = 0;
@@ -1218,16 +1080,6 @@ W32ABI W32_DWORD w32_stub_uxtheme_SetWindowTheme(void) {
 /* ---- generated export table ------------------------------------- */
 
 static const w32_export_t gen_exports[] = {
-    { "imm32.dll", "ImmEscapeW", (void *)&w32_stub_imm32_ImmEscapeW },
-    { "imm32.dll", "ImmGetCompositionStringW", (void *)&w32_stub_imm32_ImmGetCompositionStringW },
-    { "imm32.dll", "ImmGetContext", (void *)&w32_stub_imm32_ImmGetContext },
-    { "imm32.dll", "ImmNotifyIME", (void *)&w32_stub_imm32_ImmNotifyIME },
-    { "imm32.dll", "ImmReleaseContext", (void *)&w32_stub_imm32_ImmReleaseContext },
-    { "imm32.dll", "ImmSetCandidateWindow", (void *)&w32_stub_imm32_ImmSetCandidateWindow },
-    { "imm32.dll", "ImmSetCompositionFontA", (void *)&w32_stub_imm32_ImmSetCompositionFontA },
-    { "imm32.dll", "ImmSetCompositionFontW", (void *)&w32_stub_imm32_ImmSetCompositionFontW },
-    { "imm32.dll", "ImmSetCompositionStringW", (void *)&w32_stub_imm32_ImmSetCompositionStringW },
-    { "imm32.dll", "ImmSetCompositionWindow", (void *)&w32_stub_imm32_ImmSetCompositionWindow },
     { "kernel32.dll", "ClearCommBreak", (void *)&w32_stub_kernel32_ClearCommBreak },
     { "kernel32.dll", "FindResourceA", (void *)&w32_stub_kernel32_FindResourceA },
     { "kernel32.dll", "FindResourceW", (void *)&w32_stub_kernel32_FindResourceW },
@@ -1293,13 +1145,7 @@ static const w32_export_t gen_exports[] = {
     { "msvcrt.dll", "wcsstr", (void *)&w32_stub_msvcrt_wcsstr },
     { "ole32.dll", "CLSIDFromProgID", (void *)&w32_stub_ole32_CLSIDFromProgID },
     { "ole32.dll", "CoCreateInstance", (void *)&w32_stub_ole32_CoCreateInstance },
-    { "ole32.dll", "CoInitialize", (void *)&w32_stub_ole32_CoInitialize },
-    { "ole32.dll", "CoTaskMemAlloc", (void *)&w32_stub_ole32_CoTaskMemAlloc },
-    { "ole32.dll", "CoTaskMemFree", (void *)&w32_stub_ole32_CoTaskMemFree },
-    { "ole32.dll", "CoUninitialize", (void *)&w32_stub_ole32_CoUninitialize },
     { "ole32.dll", "DoDragDrop", (void *)&w32_stub_ole32_DoDragDrop },
-    { "ole32.dll", "OleInitialize", (void *)&w32_stub_ole32_OleInitialize },
-    { "ole32.dll", "OleUninitialize", (void *)&w32_stub_ole32_OleUninitialize },
     { "ole32.dll", "RegisterDragDrop", (void *)&w32_stub_ole32_RegisterDragDrop },
     { "ole32.dll", "ReleaseStgMedium", (void *)&w32_stub_ole32_ReleaseStgMedium },
     { "ole32.dll", "RevokeDragDrop", (void *)&w32_stub_ole32_RevokeDragDrop },
@@ -1351,17 +1197,13 @@ static const w32_export_t gen_exports[] = {
     { "uxtheme.dll", "BeginBufferedAnimation", (void *)&w32_stub_uxtheme_BeginBufferedAnimation },
     { "uxtheme.dll", "BufferedPaintRenderAnimation", (void *)&w32_stub_uxtheme_BufferedPaintRenderAnimation },
     { "uxtheme.dll", "BufferedPaintStopAllAnimations", (void *)&w32_stub_uxtheme_BufferedPaintStopAllAnimations },
-    { "uxtheme.dll", "CloseThemeData", (void *)&w32_stub_uxtheme_CloseThemeData },
-    { "uxtheme.dll", "DrawThemeBackground", (void *)&w32_stub_uxtheme_DrawThemeBackground },
     { "uxtheme.dll", "DrawThemeParentBackground", (void *)&w32_stub_uxtheme_DrawThemeParentBackground },
     { "uxtheme.dll", "DrawThemeTextEx", (void *)&w32_stub_uxtheme_DrawThemeTextEx },
     { "uxtheme.dll", "EnableThemeDialogTexture", (void *)&w32_stub_uxtheme_EnableThemeDialogTexture },
     { "uxtheme.dll", "EndBufferedAnimation", (void *)&w32_stub_uxtheme_EndBufferedAnimation },
-    { "uxtheme.dll", "GetThemeBackgroundContentRect", (void *)&w32_stub_uxtheme_GetThemeBackgroundContentRect },
     { "uxtheme.dll", "GetThemeFont", (void *)&w32_stub_uxtheme_GetThemeFont },
     { "uxtheme.dll", "GetThemePartSize", (void *)&w32_stub_uxtheme_GetThemePartSize },
     { "uxtheme.dll", "GetThemeTransitionDuration", (void *)&w32_stub_uxtheme_GetThemeTransitionDuration },
-    { "uxtheme.dll", "OpenThemeData", (void *)&w32_stub_uxtheme_OpenThemeData },
     { "uxtheme.dll", "SetWindowTheme", (void *)&w32_stub_uxtheme_SetWindowTheme },
     { 0, 0, 0 }
 };
@@ -1372,7 +1214,6 @@ const w32_export_t *w32_gen_exports(void) { return gen_exports; }
 
 static const char *const gen_modules[] = {
     "gdi32",
-    "imm32",
     "kernel32",
     "mpr",
     "msvcrt",

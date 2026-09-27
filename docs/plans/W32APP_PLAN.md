@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Applications Plan (w32 breadth + the OSS ladder)
 
-## Status: PLANNED — W32A-0 – W32A-18, none started
+## Status: ACTIVE — see each phase's heading and receipts; W32A-11 is in progress, not done
 
 | Phase | State |
 |---|---|
@@ -15,7 +15,7 @@
 | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ✅ shipped |
 | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ✅ shipped |
 | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ✅ shipped |
-| W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ⬜ planned |
+| W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | 🔄 in progress — subset gate; full gate open |
 | W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
 | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ⬜ planned |
 | W32A-14 App gate I — PuTTY | ⬜ planned |
@@ -1640,10 +1640,23 @@ fixtures, `tests/integration/cases/test_w32a10_shell.sh`,
 
 ---
 
-### Phase W32A-11 — `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs ⬜ PLANNED
+### Phase W32A-11 — `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs 🔄 IN PROGRESS (NOT DONE)
 
 **Objective:** the narrow COM the census shows — init, a CLSID table, and
 working drag-and-drop — plus the VARIANT helpers and the honest IME stubs.
+
+**Incremental receipt, not the phase gate (2026-09-24):** COM init and task
+memory, BSTR/VARIANT (including OLEAUT32 ordinal imports), ten typed IMM32
+fail-clean exports, named A/W clipboard formats, owned HDROP query/finish,
+and pixel-backed v6 BUTTON drawing have host tests and a 13/13 QEMU guest
+subset. See `docs/w32app_receipts.md` and
+`tests/integration/cases/test_w32a11_core_subset.sh`. SHA-256-matched
+PuTTY, 7-Zip FM and Notepad++ were mounted externally, but all three failed
+USER32 import binding *before* their entry points; the exact first missing
+names are in `w32/tests/W32A11.pinned-probe.partial.log`. There are **no
+observed CLSID/IID pairs yet**, so no activation table can be claimed.
+Compositor-delivered file drops, window-to-window OLE drags, remaining
+UxTheme parts/animation and the full `make test` gate are still open.
 
 #### Tasks
 

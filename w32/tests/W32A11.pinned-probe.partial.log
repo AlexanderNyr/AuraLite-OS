@@ -1,0 +1,49 @@
+# W32A-11 partial pinned-app probe, 2026-09-24 (NOT a CLSID/IID table)
+# Base tree: a5ba47004d71e62fd2adc23f833d6be4c600c942 + separate bugfix
+# changes + W32A-11 in-progress changes. Build: make iso; QEMU BIOS 512 MiB,
+# IL_SELFTEST=fast. Source app PE files and FAT image kept OUTSIDE Git in
+# /tmp/auralite-w32a11-binaries; no third-party executable was added to ISO.
+# Hashes were checked on extracted originals before making the FAT volume.
+# This record reports the FIRST observed refusal for each app, not the full
+# import gap or the scripts requested by the full W32A-11 phase gate.
+
+file: putty.exe (PuTTY 0.85, https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe)
+sha256: d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87
+FAT guest path: /fat/PUTTY.EXE
+command: run /apps/w32run /fat/PUTTY.EXE
+seen: [fat32] mounted FAT32 at /fat
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!CreateDialogParamA
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+
+file: 7zFM.exe (7-Zip 24.09, extracted from https://www.7-zip.org/a/7z2409-x64.exe)
+sha256: dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58
+companion: 7z.dll
+companion-sha256: 882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+FAT guest paths: /fat/7ZFM.EXE and /fat/7Z.DLL
+command: run /apps/w32run /fat/7ZFM.EXE
+seen: [fat32] mounted FAT32 at /fat
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!GetMenuItemInfoW
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+# 7Z.DLL was copied to the FAT volume, but the loader never ran the app;
+# this probe does NOT establish that the DLL was loaded.
+
+file: notepad++.exe (Notepad++ 8.8.9 portable, extracted from
+      https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.9/npp.8.8.9.portable.x64.zip)
+sha256: a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d
+FAT guest path: /fat/NPP.EXE (portable plugin files NOT included in probe)
+command: run /apps/w32run /fat/NPP.EXE
+seen: [fat32] mounted FAT32 at /fat
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!CreateDialogIndirectParamW
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+
+result: BLOCKED BEFORE PROGRAM ENTRY for all three PE files.
+observed-CLSID/IID-pairs: NOT OBSERVED; not an empty table of requests.
+Full phase gate still requires resolving the prior USER32 imports without
+pretending to implement them, instrumenting/logging class activation, and
+running scripted application sessions. Raw local QEMU logs (not tracked):
+  build/integration-logs/w32a11-putty-pinned-probe.log
+  build/integration-logs/w32a11-7zfm-pinned-probe.log
+  build/integration-logs/w32a11-npp-pinned-probe.log

@@ -1,0 +1,7 @@
+; W32A-11: only v6 BUTTON/BP_PUSHBUTTON subset is bound.
+LIBRARY UXTHEME.dll
+EXPORTS
+    OpenThemeData
+    CloseThemeData
+    DrawThemeBackground
+    GetThemeBackgroundContentRect

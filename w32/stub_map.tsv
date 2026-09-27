@@ -142,16 +142,16 @@ gdi32.dll	StartPage	REAL	REAL	int	0	W32A-7	phase-owned
 gdi32.dll	TranslateCharsetInfo	REAL	REAL	WINBOOL	0	W32A-7	phase-owned
 gdi32.dll	UnrealizeObject	REAL	REAL	WINBOOL	0	W32A-7	phase-owned
 gdi32.dll	UpdateColors	REAL	REAL	WINBOOL	0	W32A-7	phase-owned
-imm32.dll	ImmEscapeW	FAIL-CLEAN	TODO	PTR64	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmGetCompositionStringW	FAIL-CLEAN	TODO	LONG	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmGetContext	FAIL-CLEAN	TODO	PTR64	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmNotifyIME	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmReleaseContext	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmSetCandidateWindow	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmSetCompositionFontA	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmSetCompositionFontW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmSetCompositionStringW	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
-imm32.dll	ImmSetCompositionWindow	FAIL-CLEAN	TODO	WINBOOL	0	W32A-11	FAIL-CLEAN final lands in W32A-11
+imm32.dll	ImmEscapeW	FAIL-CLEAN	REAL	PTR64	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmGetCompositionStringW	FAIL-CLEAN	REAL	LONG	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmGetContext	FAIL-CLEAN	REAL	PTR64	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmNotifyIME	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmReleaseContext	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmSetCandidateWindow	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmSetCompositionFontA	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmSetCompositionFontW	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmSetCompositionStringW	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
+imm32.dll	ImmSetCompositionWindow	FAIL-CLEAN	REAL	WINBOOL	0	W32A-11	imm32.c: direct input, no IME, NOT_SUPPORTED
 kernel32.dll	ClearCommBreak	REAL	TODO	WINBOOL	0	W32A-2	phase-owned
 kernel32.dll	FindResourceA	REAL	TODO	HRSRC	0	W32A-2	phase-owned
 kernel32.dll	FindResourceW	REAL	TODO	HRSRC	0	W32A-2	phase-owned
@@ -217,13 +217,13 @@ msvcrt.dll	wcslen	REAL	TODO	size_t	0	W32A-13	phase-owned
 msvcrt.dll	wcsstr	REAL	TODO	PTR64	0	W32A-13	phase-owned
 ole32.dll	CLSIDFromProgID	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 ole32.dll	CoCreateInstance	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-ole32.dll	CoInitialize	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-ole32.dll	CoTaskMemAlloc	REAL	TODO	PTR64	0	W32A-11	phase-owned
-ole32.dll	CoTaskMemFree	REAL	TODO	void	-	W32A-11	phase-owned
-ole32.dll	CoUninitialize	REAL	TODO	void	-	W32A-11	phase-owned
+ole32.dll	CoInitialize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: thread-local init depth / task heap
+ole32.dll	CoTaskMemAlloc	REAL	REAL	PTR64	0	W32A-11	ole32.c: thread-local init depth / task heap
+ole32.dll	CoTaskMemFree	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
+ole32.dll	CoUninitialize	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	DoDragDrop	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-ole32.dll	OleInitialize	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-ole32.dll	OleUninitialize	REAL	TODO	void	-	W32A-11	phase-owned
+ole32.dll	OleInitialize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: thread-local init depth / task heap
+ole32.dll	OleUninitialize	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	RegisterDragDrop	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 ole32.dll	ReleaseStgMedium	REAL	TODO	void	-	W32A-11	phase-owned
 ole32.dll	RevokeDragDrop	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
@@ -407,17 +407,17 @@ user32.dll	TranslateAcceleratorA	REAL	REAL	int	0	W32A-6	phase-owned
 uxtheme.dll	BeginBufferedAnimation	REAL	TODO	HANIMATIONBUFFER	0	W32A-11	phase-owned
 uxtheme.dll	BufferedPaintRenderAnimation	REAL	TODO	WINBOOL	0	W32A-11	phase-owned
 uxtheme.dll	BufferedPaintStopAllAnimations	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	CloseThemeData	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	DrawThemeBackground	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+uxtheme.dll	CloseThemeData	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
+uxtheme.dll	DrawThemeBackground	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
 uxtheme.dll	DrawThemeParentBackground	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	DrawThemeTextEx	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	EnableThemeDialogTexture	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	EndBufferedAnimation	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	GetThemeBackgroundContentRect	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+uxtheme.dll	GetThemeBackgroundContentRect	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
 uxtheme.dll	GetThemeFont	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	GetThemePartSize	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 uxtheme.dll	GetThemeTransitionDuration	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	OpenThemeData	REAL	TODO	HTHEME	0	W32A-11	phase-owned
+uxtheme.dll	OpenThemeData	REAL	REAL	HTHEME	0	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
 uxtheme.dll	SetWindowTheme	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
 version.dll	GetFileVersionInfoSizeW	REAL	REAL	DWORD	0	W32A-10	phase-owned
 version.dll	GetFileVersionInfoW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned

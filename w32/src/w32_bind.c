@@ -15,6 +15,9 @@
 #include "w32/w32aux.h"
 #include "w32/w32_rsrc.h"
 #include "w32/oleaut32.h"
+#include "w32/ole32.h"
+#include "w32/imm32.h"
+#include "w32/uxtheme.h"
 #include "w32/w32_seh.h"
 #include "w32/w32_gen.h"
 #include "w32/w32_utf.h"
@@ -26,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #endif
+#include <stdlib.h>
 
 /* Case-insensitive compare for DLL names: an import table may say
  * "KERNEL32.dll", "kernel32.DLL" or any mixture, and Windows treats them as
@@ -46,6 +50,9 @@ static int ieq(const char *a, const char *b) {
 #define MCRT "msvcrt.dll"
 #define G32 "GDI32.dll"
 #define OA32 "OLEAUT32.dll"
+#define O32 "OLE32.dll"
+#define I32 "IMM32.dll"
+#define UX32 "UXTHEME.dll"
 #define C32 "COMCTL32.dll"
 #define A32 "ADVAPI32.dll"
 
@@ -380,6 +387,29 @@ static const w32_export_t exports[] = {
     { OA32, "SysStringByteLen",      (void *)SysStringByteLen      },
     { OA32, "VariantClear",          (void *)VariantClear          },
     { OA32, "VariantCopy",           (void *)VariantCopy           },
+
+    /* W32A-11 subset: COM init/heap, real BUTTON theme pixels and all ten
+     * typed fail-clean IME calls; activation/drag/UxTheme remainder TODO. */
+    { O32, "CoInitialize", (void *)CoInitialize },
+    { O32, "CoUninitialize", (void *)CoUninitialize },
+    { O32, "OleInitialize", (void *)OleInitialize },
+    { O32, "OleUninitialize", (void *)OleUninitialize },
+    { O32, "CoTaskMemAlloc", (void *)CoTaskMemAlloc },
+    { O32, "CoTaskMemFree", (void *)CoTaskMemFree },
+    { UX32, "OpenThemeData", (void *)OpenThemeData },
+    { UX32, "CloseThemeData", (void *)CloseThemeData },
+    { UX32, "DrawThemeBackground", (void *)DrawThemeBackground },
+    { UX32, "GetThemeBackgroundContentRect", (void *)GetThemeBackgroundContentRect },
+    { I32, "ImmGetContext", (void *)ImmGetContext },
+    { I32, "ImmReleaseContext", (void *)ImmReleaseContext },
+    { I32, "ImmGetCompositionStringW", (void *)ImmGetCompositionStringW },
+    { I32, "ImmSetCompositionWindow", (void *)ImmSetCompositionWindow },
+    { I32, "ImmSetCompositionFontA", (void *)ImmSetCompositionFontA },
+    { I32, "ImmSetCompositionFontW", (void *)ImmSetCompositionFontW },
+    { I32, "ImmSetCandidateWindow", (void *)ImmSetCandidateWindow },
+    { I32, "ImmSetCompositionStringW", (void *)ImmSetCompositionStringW },
+    { I32, "ImmEscapeW", (void *)ImmEscapeW },
+    { I32, "ImmNotifyIME", (void *)ImmNotifyIME },
     /* KERNEL32 (W32A-2).  Every guest-importable W32ABI definition
      * from the four phase files, so the tested implementation shadows
      * the generated TODO stub.  Deliberate gaps: FreeLibrary stays with
@@ -985,14 +1015,10 @@ static void poke64(uint64_t addr, uint64_t val) {
 
 int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
                      const char **missing_dll, const char **missing_name) {
-    /* Frame-local, NOT static: binding recurses (load_one -> map_dll ->
-     * w32_bind_imports), and a shared array means the inner bind refills
-     * what the outer loop is still reading -- the outer bind then
-     * resolves the inner DLL's names and pokes the inner DLL's IAT RVAs
-     * into its own image (W32A-1: chain_a's bind died on chain_b's
-     * GetStdHandle).  256 entries x ~208 bytes x depth 8 fits any thread
-     * stack several times over. */
-    pe_import_t imports[256];
+    /* Pinned apps have >256 imports. Count first and allocate PER CALL:
+     * recursive binding cannot reuse an outer image's still-live list. */
+    pe_import_t *imports = NULL;
+    size_t want = 0;
     /* The missings outlive the return (the caller prints them), so they
      * need stable storage of their own.  Single-flight: filled, then the
      * caller prints before any further bind -- like ordfmt below. */
@@ -1005,10 +1031,15 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
 
     if (pe_parse(image, image_size, &img) != PE_OK) return -1;
 
-    int rc = pe_imports(&img, imports, sizeof imports / sizeof imports[0], &count);
+    int rc = pe_imports(&img, NULL, 0, &count);
     if (rc != PE_OK) return -2;
-    if (count == 0) return 0;                       /* nothing to bind */
-    if (count > sizeof imports / sizeof imports[0]) return -3;
+    if (count == 0) return 0;
+    if (count > 4096) return -3; /* explicit resource cap */
+    want = count;
+    imports = malloc(want * sizeof *imports);
+    if (!imports) return -6;
+    rc = pe_imports(&img, imports, want, &count);
+    if (rc != PE_OK || count != want) { free(imports); return -2; }
 
     for (size_t i = 0; i < count; i++) {
         pe_import_t *im = &imports[i];
@@ -1026,7 +1057,7 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
                 snprintf(miss_dll, sizeof miss_dll, "%s", im->dll);
                 if (missing_dll)  *missing_dll = miss_dll;
                 if (missing_name) *missing_name = ordfmt;
-                return -4;
+                free(imports); return -4;
             }
             name = canon;
         }
@@ -1043,9 +1074,13 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
             snprintf(miss_name, sizeof miss_name, "%s", name);
             if (missing_dll)  *missing_dll = miss_dll;
             if (missing_name) *missing_name = miss_name;
-            return -5;
+            free(imports); return -5;
+        }
+        if ((uint64_t)im->iat_rva + 8u > img.size_of_image) {
+            free(imports); return -2;
         }
         poke64(base + im->iat_rva, (uint64_t)(uintptr_t)fn);
     }
+    free(imports);
     return 0;
 }

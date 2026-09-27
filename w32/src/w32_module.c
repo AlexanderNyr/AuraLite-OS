@@ -245,7 +245,7 @@ static uint8_t *read_whole_file(const char *path, size_t *out_size) {
     for (;;) {
         if (len == cap) {
             size_t ncap = cap * 2;
-            if (ncap > 8u * 1024u * 1024u) { free(buf); close(fd); return NULL; }
+            if (ncap > 16u * 1024u * 1024u) { free(buf); close(fd); return NULL; }
             uint8_t *nb = realloc(buf, ncap);
             if (!nb) { free(buf); close(fd); return NULL; }
             buf = nb; cap = ncap;
@@ -355,7 +355,7 @@ static int map_dll(const uint8_t *file, size_t file_size,
     /* Relocate.  A DLL is almost never loaded at its preferred base, so an
      * image with no relocation table cannot be moved and is refused rather
      * than run at the wrong address. */
-    static pe_reloc_t relocs[4096];
+    static pe_reloc_t relocs[16384];
     size_t nrel = 0;
     if (pe_relocations(&img, relocs, sizeof relocs / sizeof relocs[0],
                        &nrel) != PE_OK) {

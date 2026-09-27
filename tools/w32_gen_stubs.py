@@ -281,6 +281,22 @@ def main(argv):
     L.append("}")
     L.append("")
 
+    # W32A-11's FIRST gate is runtime data: record which class AND interface
+    # the pinned applications actually request.  Keep activation TODO until
+    # a measured table exists; a name-only TODO stub discards that evidence.
+    if any(d == "ole32.dll" and s == "CoCreateInstance"
+           for d, s, *_ in stubs):
+        L.extend([
+            "static void probe_guid(const void *guid, char out[37]) {",
+            '    if (!guid) { strcpy(out, "(null)"); return; }',
+            "    const uint8_t *b = (const uint8_t *)guid;",
+            '    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"',
+            '             "%02x%02x-%02x%02x%02x%02x%02x%02x",',
+            "             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],",
+            "             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);",
+            "}", "",
+        ])
+
     for dll, sym, kind, rettype, fail, phase, note, ident in stubs:
         tag = "%s!%s" % (dll, sym)
         if kind == "DATA":
@@ -297,6 +313,41 @@ def main(argv):
             L.append("    ExitProcess((unsigned int)code);")
             L.append("}")
             L.append("")
+            continue
+        if dll == "ole32.dll" and sym == "CoCreateInstance" and kind == "TODO":
+            L.extend([
+                "/* W32A-11 instrument: every requested CLSID/IID, NOT an activation. */",
+                "W32ABI W32_DWORD %s(const void *clsid, void *outer," % ident,
+                "                          W32_DWORD ctx, const void *iid, void **out) {",
+                "    static int once = 0;",
+                '    note_todo("ole32.dll", "CoCreateInstance", "W32A-11", &once);',
+                "    (void)outer;",
+                "    char class_id[37], interface_id[37];",
+                "    probe_guid(clsid, class_id); probe_guid(iid, interface_id);",
+                '    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\\n",',
+                "           class_id, interface_id, ctx);",
+                "    if (out) *out = 0;",
+                "    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
+                "    return W32_E_NOTIMPL;",
+                "}", "",
+            ])
+            continue
+        if dll == "ole32.dll" and sym == "CLSIDFromProgID" and kind == "TODO":
+            L.extend([
+                "/* W32A-11 instrument: record ProgIDs, never invent a class. */",
+                "W32ABI W32_DWORD %s(const uint16_t *id, void *out) {" % ident,
+                "    static int once = 0;",
+                '    note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);',
+                "    char name[96]; size_t n = 0;",
+                "    if (id) while (n + 1 < sizeof name && id[n]) {",
+                "        name[n] = id[n] < 128 ? (char)id[n] : '?'; ++n;",
+                "    }",
+                "    name[n] = 0;",
+                '    printf("w32a11-progid-probe: %s\\n", id ? name : "(null)");',
+                "    (void)out; w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
+                "    return W32_E_NOTIMPL;",
+                "}", "",
+            ])
             continue
         width = width_of(rettype)
         if width == "void":

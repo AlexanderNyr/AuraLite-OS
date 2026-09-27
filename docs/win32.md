@@ -568,9 +568,14 @@ association table, desktop namespace is §7).
 duplicate `ADD` → `ERROR_ALREADY_EXISTS`, unknown `MODIFY`/`DELETE` →
 `ERROR_INVALID_PARAMETER`.
 
-**Drag** (`DragQueryFileW`/`DragQueryPoint`/`DragFinish`): one drop
-list of 16 paths, empty until W32A-11 wires the source; `DragQueryFileW`
-with `0xFFFFFFFF` returns the count, `DragFinish` clears.
+**Drag** (`DragQueryFileW`/`DragQueryPoint`/`DragFinish`): the older NULL
+handle still reads one borrowed list of at most 16 paths. W32A-11 also
+provides independently owned HDROP handles (16 slots × at most 16 copied
+paths each) with generation-checked lifetime, points and `DragFinish`.
+`DragQueryFileW` with `0xFFFFFFFF` returns a handle's file count; actual
+file bytes can be read via the path returned. **No compositor event carries
+a file path yet:** no GUI-driven `WM_DROPFILES` or window-to-window OLE drag
+can be claimed from this in-process model.
 
 **Common dialogs** (`GetOpenFileNameW`/`GetSaveFileNameW`,
 `ChooseColorW`/`ChooseFontW`): real modal dialogs over the W32A-6 engine
@@ -592,9 +597,56 @@ defaults 21/80/443), `ImageNtHeader` (MZ + `e_lfanew` + `PE\0\0`),
 (TCP connect, never hardcoded), `WinVerifyTrust` → `TRUST_E_NOSIGNATURE`,
 `CryptQueryObject`/`Cert*`/`CryptMsg*` → `CRYPT_E_NOT_FOUND`/`ERROR_INVALID_HANDLE`.
 
+## W32A-11 incremental COM, IME and themed controls (not the full phase)
+
+**COM-lite:** `CoInitialize`/`CoUninitialize` and
+`OleInitialize`/`OleUninitialize` maintain balanced initialization counts
+per Win32 thread; `OleInitialize` owns a `CoInitialize` depth. This is a
+single **MTA-like** in-process model, **no apartments**, **no marshalling**,
+**no class activation**. Bound `CoTaskMemAlloc`/`CoTaskMemFree` own
+malloc-backed memory; `CoTaskMemRealloc` is implemented in the same module
+and host-tested (zero size frees), but no pinned guest import calls it. The three official
+pinned apps all failed USER32 import binding before running (see
+`w32/tests/W32A11.pinned-probe.partial.log`), so there is no observed
+CLSID/IID table: `CoCreateInstance`/`CLSIDFromProgID` are still typed
+`E_NOTIMPL` TODOs, not fake implementations.
+
+**Automation:** the imported `OLEAUT32` ordinals
+`#2/#4/#6/#7/#9/#10/#149/#150` bind to the project's BSTR/VARIANT
+routines. A BSTR stores a byte length at pointer −4, allows embedded NUL,
+and has two trailing zero bytes. `SysStringByteLen` returns exact bytes,
+including odd-byte strings from `SysAllocStringByteLen`; `SysStringLen`
+returns floor(bytes/2), not `wcslen`. `VariantClear` and `VariantCopy`
+handle scalars, BYREF as borrowed, BSTR as owned/deep-copied and
+IUnknown/IDispatch with AddRef/Release; unsupported arrays/records/decimal
+refuse `E_NOTIMPL` without destroying their existing owner.
+
+**IMM32:** no IME context or composition engine exists. `ImmGetContext`
+returns NULL; `ImmGetCompositionStringW` returns 0 (empty, with no output
+buffer mutation); `ImmEscapeW` returns NULL; `ImmReleaseContext`,
+`ImmSetCompositionWindow`, `ImmSetCompositionFontA/W`,
+`ImmSetCandidateWindow`, `ImmSetCompositionStringW` and `ImmNotifyIME`
+return FALSE. Each sets `ERROR_NOT_SUPPORTED` (50). CJK composition is
+unavailable; direct keyboard input still works.
+
+**Named clipboard formats:** `RegisterClipboardFormatA/W` share a
+ASCII-case-insensitive UTF-8 name registry (at most 256 names; IDs start at
+`0xC000`). This allocates stable IDs but does not put file paths or any
+data on the clipboard.
+
+**UxTheme:** `OpenThemeData` accepts only the `BUTTON` class with a v6
+manifest. `DrawThemeBackground` and `GetThemeBackgroundContentRect` accept
+only `BP_PUSHBUTTON`, states 1–5. Background drawing uses the live
+compositor palette on a real GDI DC; the guest fixture compares distinct
+normal/hot pixels. Other classes refuse at open with `ERROR_NOT_SUPPORTED`;
+unsupported parts and the UxTheme text/size/font/parent/transition/
+animation/buffered-paint API remain `E_NOTIMPL` TODO (not an unthemed
+success). A v5 window does not gain theme support. The full W32A-11
+compositor file-drop and app-session gates remain open.
+
 ## Not implemented at all
 
-COM, .NET, DirectX, WinSock, and WOW64 (32-bit programs).
+General COM activation, .NET, DirectX, WinSock, and WOW64 (32-bit programs).
 `BitBlt`/off-screen device contexts shipped in W32A-7 (the GDI raster
 engine); the registry shipped in W32A-9 (the `W32HIVE1` section
 above); the shell furniture shipped in W32A-10 (the section above);

@@ -65,13 +65,21 @@ int main(int argc, char **argv) {
     int fd = open(path, O_RDONLY, 0);
     if (fd < 0) { printf("w32run: cannot open %s\n", path); return 1; }
 
-    static unsigned char buf[512 * 1024];
+    /* Official pinned apps exceed 512 KiB. Never parse a silently
+     * truncated PE when the bounded guest image buffer is exhausted. */
+    static unsigned char buf[16u * 1024u * 1024u];
     long total = 0;
     for (;;) {
+        if ((unsigned long)total == sizeof buf) {
+            unsigned char extra;
+            long n = read(fd, &extra, 1);
+            if (n != 0) die(n < 0 ? "PE read failed" : "PE exceeds 16 MiB cap");
+            break;
+        }
         long n = read(fd, buf + total, sizeof buf - (unsigned long)total);
-        if (n <= 0) break;
+        if (n < 0) die("PE read failed");
+        if (n == 0) break;
         total += n;
-        if ((unsigned long)total >= sizeof buf) break;
     }
     close(fd);
     if (total <= 0) die("empty file");
@@ -156,7 +164,7 @@ int main(int argc, char **argv) {
     }
 
     /* Base relocations: this mapping is nowhere near the preferred base. */
-    static pe_reloc_t relocs[4096];
+    static pe_reloc_t relocs[16384];
     size_t nrel = 0;
     rc = pe_relocations(&img, relocs, sizeof relocs / sizeof relocs[0], &nrel);
     if (rc != PE_OK) die("bad relocation table");

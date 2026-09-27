@@ -119,6 +119,7 @@ ALL_CASES=(
     test_w32a8_comctl32
     test_w32a9_registry
     test_w32a10_furniture
+    test_w32a11_core_subset
     test_ahci_large_read
     test_doom
     test_stack_guard

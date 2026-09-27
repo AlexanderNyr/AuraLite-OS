@@ -1126,56 +1126,125 @@ W32_BOOL W32ABI Shell_NotifyIconW(W32_DWORD msg, W32_NOTIFYICONDATAW *data) {
     }
 }
 
-/* ---- the drag trio (the model W32A-11 feeds) ------------------------------------------------------ */
-
+/* ---- W32A-11 HDROP ownership --------------------------------------
+ * The legacy NULL handle keeps A-10's borrowed one-list model; non-NULL
+ * handles independently own copied path strings and have generation IDs.
+ * File-drop delivery through GUI_EVT_DROP is NOT yet implemented. */
 #define SH_DROP_MAX 16
+#define SH_DROP_SLOTS 16
+#define SH_DROP_BIAS ((uintptr_t)0x68000000u)
 static const char *sh_drop_list[SH_DROP_MAX];
 static int sh_drop_count;
-
-/* W32A-11's drag source registers the drop list; until then it is
- * empty and every query answers honestly from the empty model. */
-void w32_shell_set_drop_list(const char *paths[], int n) {
-    sh_drop_count = 0;
-    for (int i = 0; i < n && i < SH_DROP_MAX; i++)
-        sh_drop_list[i] = paths[i];
-    sh_drop_count = (n < SH_DROP_MAX) ? n : SH_DROP_MAX;
+static struct {
+    char *paths[SH_DROP_MAX];
+    int count, used;
+    unsigned generation;
+    W32_POINT point;
+    W32_BOOL client;
+} drop_slots[SH_DROP_SLOTS];
+static volatile int drop_lock;
+static void lock_drop(void) {
+    while (__sync_lock_test_and_set(&drop_lock,1))
+        while (drop_lock) __asm__ volatile("pause" ::: "memory");
 }
-
+static void unlock_drop(void) { __sync_lock_release(&drop_lock); }
+static int drop_slot(W32_HANDLE handle) {
+    uintptr_t v=(uintptr_t)handle;
+    if (v < SH_DROP_BIAS || v - SH_DROP_BIAS > 0x00ffffffu) return -1;
+    uintptr_t id=v-SH_DROP_BIAS;
+    unsigned slot=(unsigned)(id & 0xffu);
+    if (!slot || slot > SH_DROP_SLOTS) return -1;
+    --slot;
+    return drop_slots[slot].used && drop_slots[slot].generation == (id >> 8)
+        ? (int)slot : -1;
+}
+void w32_shell_set_drop_list(const char *paths[], int n) {
+    lock_drop(); sh_drop_count=0;
+    if (paths && n > 0) {
+        for (int i=0;i<n && i<SH_DROP_MAX;i++) sh_drop_list[i]=paths[i];
+        sh_drop_count=n<SH_DROP_MAX?n:SH_DROP_MAX;
+    }
+    unlock_drop();
+}
+W32_HANDLE w32_shell_drop_create(const char *const paths[], int n,
+                                  W32_POINT pt, W32_BOOL client_area) {
+    if (!paths || n < 1 || n > SH_DROP_MAX) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return NULL;
+    }
+    size_t lens[SH_DROP_MAX];
+    for (int i=0;i<n;i++) {
+        if (!paths[i]) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return NULL; }
+        size_t len=0;
+        while (len < 512 && paths[i][len]) ++len;
+        if (!len || len==512) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return NULL; }
+        lens[i]=len;
+    }
+    lock_drop();
+    int slot=-1;
+    for (int i=0;i<SH_DROP_SLOTS;i++) if (!drop_slots[i].used) { slot=i; break; }
+    if (slot<0) { unlock_drop(); w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return NULL; }
+    for (int i=0;i<n;i++) {
+        drop_slots[slot].paths[i]=malloc(lens[i]+1);
+        if (!drop_slots[slot].paths[i]) {
+            for (int j=0;j<i;j++) { free(drop_slots[slot].paths[j]); drop_slots[slot].paths[j]=NULL; }
+            unlock_drop(); w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return NULL;
+        }
+        memcpy(drop_slots[slot].paths[i],paths[i],lens[i]+1);
+    }
+    unsigned gen=drop_slots[slot].generation+1;
+    if (!gen || gen>0xffffu) gen=1;
+    drop_slots[slot].generation=gen;
+    drop_slots[slot].count=n;
+    drop_slots[slot].point=pt;
+    drop_slots[slot].client=client_area!=0;
+    drop_slots[slot].used=1;
+    unlock_drop();
+    return (W32_HANDLE)(SH_DROP_BIAS+((uintptr_t)gen<<8)+(unsigned)slot+1);
+}
 W32_UINT W32ABI DragQueryFileW(W32_HANDLE hDrop, W32_UINT index,
                                W32_LPWSTR buf, W32_UINT cch) {
-    (void)hDrop;                    /* one drop at a time in this model */
-    if (index == 0xFFFFFFFFu)
-        return (W32_UINT)sh_drop_count;
-    if ((int)index >= sh_drop_count) {
-        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
-        return 0;
+    char path[513];
+    lock_drop();
+    int slot=hDrop?drop_slot(hDrop):-1;
+    if (hDrop && slot < 0) {
+        unlock_drop(); w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0;
     }
-    uint16_t w[600];
-    if (sh_a2w(sh_drop_list[index], w, 600) <= 0) return 0;
-    size_t n = sh_wcslen(w);
-    if (!buf || cch == 0)
-        return (W32_UINT)(n + 1);   /* the needed size, documented */
-    if (cch < n + 1) {
-        w32_set_last_error(W32_ERROR_INSUFFICIENT_BUFFER);
-        return (W32_UINT)(n + 1);
+    int count=hDrop?drop_slots[slot].count:sh_drop_count;
+    if (index==0xffffffffu) { unlock_drop(); return (W32_UINT)count; }
+    if (index >= (W32_UINT)count) {
+        unlock_drop(); w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
     }
-    sh_wcpy(buf, w, n);
-    buf[n] = 0;
-    return (W32_UINT)n;
+    const char *chosen=hDrop?drop_slots[slot].paths[index]:sh_drop_list[index];
+    if (!chosen) { unlock_drop(); return 0; }
+    size_t bytes=0;
+    while (bytes<512 && chosen[bytes]) ++bytes;
+    if (bytes==512) { unlock_drop(); return 0; }
+    memcpy(path, chosen, bytes+1);
+    unlock_drop();
+    uint16_t wide[600];
+    if (sh_a2w(path,wide,600)<0) return 0;
+    size_t n=sh_wcslen(wide);
+    if (!buf || !cch) return (W32_UINT)n; /* excludes NUL */
+    size_t copy=n<(size_t)cch-1?n:(size_t)cch-1;
+    sh_wcpy(buf,wide,copy); buf[copy]=0;
+    return (W32_UINT)copy;
 }
-
 W32_BOOL W32ABI DragQueryPoint(W32_HANDLE hDrop, W32_POINT *pt) {
-    (void)hDrop;
-    if (!pt) {
-        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
-        return 0;
-    }
-    pt->x = 0;
-    pt->y = 0;
-    return 0;                       /* no drop has happened in this model */
+    if (!pt) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    if (!hDrop) { pt->x=pt->y=0; return 0; }
+    lock_drop(); int slot=drop_slot(hDrop);
+    if (slot<0) { unlock_drop(); w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
+    *pt=drop_slots[slot].point;
+    W32_BOOL client=drop_slots[slot].client;
+    unlock_drop(); return client;
 }
-
 void W32ABI DragFinish(W32_HANDLE hDrop) {
-    (void)hDrop;
-    sh_drop_count = 0;              /* release: the list is a borrow */
+    if (!hDrop) { lock_drop(); sh_drop_count=0; unlock_drop(); return; }
+    lock_drop(); int slot=drop_slot(hDrop);
+    if (slot<0) { unlock_drop(); w32_set_last_error(W32_ERROR_INVALID_HANDLE); return; }
+    for (int i=0;i<drop_slots[slot].count;i++) {
+        free(drop_slots[slot].paths[i]); drop_slots[slot].paths[i]=NULL;
+    }
+    drop_slots[slot].count=0; drop_slots[slot].used=0;
+    unlock_drop();
 }

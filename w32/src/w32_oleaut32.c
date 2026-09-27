@@ -15,10 +15,9 @@
  *   - every BSTR carries a trailing NUL past its length, so a BSTR with no
  *     embedded NULs also reads as a plain C string.
  *
- * VARIANT coverage is deliberately partial: VT_EMPTY and VT_BSTR are real,
- * every other type returns E_NOTIMPL.  Arrays, IDispatch and decimal need
- * W32A-11's OLE-lite, and a stub that pretends to clear them would corrupt
- * the caller's memory -- the one thing a memory function must not do.
+ * W32A-11 extends VARIANT to scalar, BYREF and IUnknown/IDispatch
+ * reference-counted arms. Arrays, records and decimal stay fail-clean;
+ * silently clearing them would corrupt ownership.
  */
 
 #include "w32/oleaut32.h"
@@ -28,6 +27,7 @@
 #else
 #include <stdlib.h>
 #endif
+#include <string.h>
 
 /* The length prefix sits 4 bytes before the pointer the caller sees.  All
  * access is byte-wise: the prefix is unaligned by construction on some
@@ -105,36 +105,62 @@ W32ABI unsigned SysStringByteLen(W32_BSTR bstr) {
     return prefix_get(bstr);
 }
 
-W32ABI W32_DWORD VariantClear(W32_VARIANT *pvarg) {
-    if (!pvarg) return W32_E_NOTIMPL;
-    if (pvarg->vt == W32_VT_EMPTY) return W32_S_OK;
-    if (pvarg->vt == W32_VT_BSTR) {
-        SysFreeString((W32_BSTR)pvarg->u.ptr);
-        pvarg->vt = W32_VT_EMPTY;
-        pvarg->u.ptr = 0;
-        return W32_S_OK;
+/* Unsupported variants keep their exact bytes and ownership. BYREF
+ * pointers are borrowed; IUnknown/IDispatch have AddRef/Release at 1/2. */
+static int variant_supported(uint16_t vt) {
+    if (vt & (uint16_t)~(W32_VT_BYREF | 0x0fffu)) return 0;
+    switch (vt & 0x0fffu) {
+    case W32_VT_EMPTY: case W32_VT_NULL: case W32_VT_I2: case W32_VT_I4:
+    case W32_VT_R4: case W32_VT_R8: case W32_VT_CY: case W32_VT_DATE:
+    case W32_VT_BSTR: case W32_VT_DISPATCH: case W32_VT_ERROR:
+    case W32_VT_BOOL: case W32_VT_UNKNOWN: case W32_VT_UI1:
+    case W32_VT_UI2: case W32_VT_UI4: case W32_VT_I8: case W32_VT_UI8:
+    case W32_VT_INT: case W32_VT_UINT: return 1;
+    default: return 0;
     }
-    /* Any other type needs W32A-11.  E_NOTIMPL, not a half-clear that would
-     * leak or double-free: see the file header. */
-    return W32_E_NOTIMPL;
 }
-
+typedef W32_DWORD (W32ABI *ole_ref_fn)(void *self);
+static void ole_ref(void *obj, unsigned slot) {
+    if (obj) {
+        void **vtable = *(void ***)obj;
+        if (vtable && vtable[slot]) ((ole_ref_fn)vtable[slot])(obj);
+    }
+}
+W32ABI void VariantInit(W32_VARIANT *pvarg) {
+    if (pvarg) memset(pvarg, 0, sizeof *pvarg);
+}
+W32ABI W32_DWORD VariantClear(W32_VARIANT *pvarg) {
+    if (!pvarg) return W32_E_INVALIDARG;
+    if (!variant_supported(pvarg->vt)) return W32_E_NOTIMPL;
+    if (!(pvarg->vt & W32_VT_BYREF)) {
+        if (pvarg->vt == W32_VT_BSTR) SysFreeString((W32_BSTR)pvarg->u.ptr);
+        if (pvarg->vt == W32_VT_UNKNOWN || pvarg->vt == W32_VT_DISPATCH)
+            ole_ref(pvarg->u.ptr, 2);
+    }
+    VariantInit(pvarg);
+    return W32_S_OK;
+}
 W32ABI W32_DWORD VariantCopy(W32_VARIANT *dest, const W32_VARIANT *src) {
-    const W32_OLECHAR *s;
-    W32_BSTR fresh;
-    if (!dest || !src) return W32_E_NOTIMPL;
-    if (src->vt != W32_VT_EMPTY && src->vt != W32_VT_BSTR)
+    if (!dest || !src) return W32_E_INVALIDARG;
+    if (!variant_supported(src->vt) || !variant_supported(dest->vt))
         return W32_E_NOTIMPL;
-    /* A real VariantCopy clears the destination first, so copying over a
-     * live BSTR does not leak it. */
-    if (VariantClear(dest) != W32_S_OK) return W32_E_NOTIMPL;
-    if (src->vt == W32_VT_EMPTY) return W32_S_OK;
-    s = (const W32_OLECHAR *)src->u.ptr;
-    /* Length-exact copy: embedded NULs survive, which a SysAllocString call
-     * would not guarantee. */
-    fresh = SysAllocStringLen(s, s ? prefix_get((W32_BSTR)s) / 2u : 0);
-    if (src->u.ptr && !fresh) return W32_E_OUTOFMEMORY;
-    dest->vt = W32_VT_BSTR;
-    dest->u.ptr = fresh;
+    if (dest == src) return W32_S_OK;
+    W32_VARIANT temp = *src;
+    if (src->vt == W32_VT_BSTR && src->u.ptr) {
+        /* Byte exact: an odd-byte BSTR would be truncated by WCHAR-count. */
+        unsigned bytes = SysStringByteLen((W32_BSTR)src->u.ptr);
+        temp.u.ptr = SysAllocStringByteLen((const char *)src->u.ptr, bytes);
+        if (!temp.u.ptr) return W32_E_OUTOFMEMORY;
+    } else if (src->vt == W32_VT_UNKNOWN || src->vt == W32_VT_DISPATCH) {
+        ole_ref(src->u.ptr, 1);
+    }
+    W32_DWORD rc = VariantClear(dest);
+    if (rc != W32_S_OK) {
+        if (src->vt == W32_VT_BSTR) SysFreeString((W32_BSTR)temp.u.ptr);
+        if (src->vt == W32_VT_UNKNOWN || src->vt == W32_VT_DISPATCH)
+            ole_ref(temp.u.ptr, 2);
+        return rc;
+    }
+    *dest = temp;
     return W32_S_OK;
 }
