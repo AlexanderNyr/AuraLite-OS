@@ -142,15 +142,16 @@ ReactOS.
 | `tests/w32a11_core.asm` | W32A-11 subset guest fixture: COM/BSTR/VARIANT, OLEAUT32 ordinals, IMM32 refusal, clipboard-format IDs, BUTTON pixel diff |
 | `tests/W32A11.pinned-probe.partial.log` | W32A-11 text-only SHA-256-verified upstream application bind probes; no observed CLSID/IID pairs yet |
 | `src/w32_ole_drag.c` | W32A-11 in-process OLE drop-target callbacks and STGMEDIUM ownership; no external OLE source or cross-process marshalling |
-| `tests/w32a11_drag.asm` | W32A-11 Win64 callback/refcount fixture using posted mouse messages, not an external source |
-| `tests/w32a11_file_receiver.asm` | W32A-11 independent PE receiver asserting a compositor-generated WM_DROPFILES path and on-disk bytes |
+| `tests/w32a11_drag.asm` | W32A-11 Win64 callback/refcount fixture: real IDataObject vtable hands CF_HDROP/UTF-16 DROPFILES in HGLOBAL to a target, which reads the Unicode-named file; mouse messages are posted, not an external source |
+| `tests/w32a11_file_receiver.asm` | W32A-11 independent PE receiver asserting a compositor-generated WM_DROPFILES UTF-16 pathname (BMP + surrogate pair), opened by CreateFileW and checked against on-disk bytes |
 | `tests/w32a11_native_drop.c` | W32A-11 native GUI sender, spawning an independent w32run and submitting a pathname through the kernel compositor |
-| `tests/w32a11_payload.txt` | On-disk payload with known bytes for the file-drop guest fixture |
+| `tests/w32a11_payload.txt`, `tests/w32a11-é-🙂.txt` | Original ASCII and new Unicode-named on-disk payloads with known bytes for the file-drop / IDataObject guest fixtures; author-written, no third-party bytes |
 | `tests/w32a11_token_sender.c`, `tests/w32a11_token_receiver.c` | Independent native tasks testing window-slot recycling, stale/one-shot drop tokens, per-owner ACL and actual payload bytes |
 | `tests/w32a11_theme_matrix.asm` | Two independent v5/v6 manifest PE fixtures using real GDI pixel reads, zero-duration animation and timed-effect refusal |
 | `tests/integration/cases/test_w32a11_dragdrop.sh`, `tests/integration/cases/test_w32a11_tokens.sh`, `tests/integration/cases/test_w32a11_theme.sh` | Incremental QEMU effect gates; none claims the full CLSID/IID application probe |
 | `tests/unit/test_w32_a11_drag.c` | Sanitized host Win64 OLE callback/refcount and STGMEDIUM ownership vector |
 | `tests/W32A11.pinned-probe.5350c54.log` | Text-only, SHA-256-matched second probe on exact 5350c54 base; all three blocked at earlier USER32 imports before entry, NOT a CLSID/IID table |
+| `tests/W32A11.pinned-probe.7d38775.log` | Text-only, SHA-256-matched probe on exact 7d38775 base plus incremental W32A-11 changes; same three earlier USER32 bind failures, no observed CLSID/IID |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

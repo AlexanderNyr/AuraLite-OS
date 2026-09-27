@@ -1,0 +1,54 @@
+# W32A-11 pinned-app runtime bind probe, 2026-09-27.
+# NOT a CLSID/IID table: none of the three application entry points ran.
+base-commit: 7d38775423c09d61b3ddc1773dc5821d60c20a58
+working-tree: base plus this Unicode HDROP / IDataObject fixture patch, make iso
+machine: QEMU x86_64 BIOS, 512 MiB, fast kernel self-test
+transport: external 128 MiB FAT32 image, BPB at LBA 64, AHCI mounted at /fat
+verification: all four ORIGINAL extracted PE files below passed sha256sum -c
+# Installer/archive, extracted PEs and external FAT image kept OUTSIDE Git.
+# Only the verified PE bytes were copied to FAT. No PEs added to the ISO.
+
+app: PuTTY 0.85
+url: https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe
+PE: putty.exe -> /fat/PUTTY.EXE
+sha256: d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87
+command: run /apps/w32run /fat/PUTTY.EXE
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!CreateDialogParamA
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+
+app: 7-Zip File Manager 24.09
+url: https://www.7-zip.org/a/7z2409-x64.exe
+PE: 7zFM.exe -> /fat/7ZFM.EXE
+sha256: dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58
+companion: 7z.dll -> /fat/7Z.DLL
+companion-sha256: 882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+command: run /apps/w32run /fat/7ZFM.EXE
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!GetMenuItemInfoW
+seen: [shell] '/apps/w32run' (tid 9) exited (code=1)
+# 7Z.DLL was present, but no evidence that the application's code loaded it.
+
+app: Notepad++ 8.8.9 (portable x64)
+url: https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.9/npp.8.8.9.portable.x64.zip
+PE: notepad++.exe -> /fat/NPP.EXE
+sha256: a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d
+command: run /apps/w32run /fat/NPP.EXE
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!CreateDialogIndirectParamW
+seen: [shell] '/apps/w32run' (tid 10) exited (code=1)
+# Portable plugins were not included: executable itself stopped before entry.
+
+result: ALL THREE BLOCKED BEFORE ENTRY by earlier USER32 import gaps.
+observed-CLSID/IID-pairs: NOT OBSERVED (not proof of zero requests).
+observed-ProgIDs: NOT OBSERVED.
+observed-probe-lines: 0 (neither CoCreateInstance nor CLSIDFromProgID invoked).
+consequence: do NOT claim a populated activation table or W32A-11 DONE.
+# The composed OLE IDataObject and file-drop fixtures are separate mechanisms;
+# they are NOT evidence that any pinned application exercised COM.
+raw-serial-log-local-only: build/integration-logs/a11-7d38775-pinned.log
+reproduction: verify original PE hashes above; on a host-only FAT32 disk with
+BPB at LBA 64, copy the four verified files (no in-tree/ISO copies); attach
+-drive file=<external-disk>,format=raw,if=none,id=ahcidisk \
+-device ahci,id=ahci0 -device ide-hd,drive=ahcidisk,bus=ahci0.0;
+boot the patched ISO, then issue the three commands above in the serial shell.

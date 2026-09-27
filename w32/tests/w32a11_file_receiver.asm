@@ -14,7 +14,7 @@ extern SetWindowPos
 extern ShowWindow
 extern GetStdHandle
 extern WriteFile
-extern CreateFileA
+extern CreateFileW
 extern ReadFile
 extern CloseHandle
 extern DragQueryFileW
@@ -28,12 +28,15 @@ extern ExitProcess
 section .rdata
 cls_w: dw 'A','1','1','F','i','l','e',0
 title_w: dw 'F','i','l','e',' ','r','e','c','e','i','v','e','r',0
-path_a: db '/tests/w32a11_payload.txt',0
+; /tests/w32a11-é-🙂.txt in UTF-16, including the surrogate pair.
+path_expected: dw '/', 't', 'e', 's', 't', 's', '/', 'w', '3', '2', 'a', '1', '1', '-'
+               dw 0x00e9, '-', 0xd83d, 0xde42, '.', 't', 'x', 't', 0
+path_units equ ($-path_expected)/2-1
 content: db 'W32A11-DROP-FILE-CONTENTS',10
 content_len equ $-content
 ready_msg: db 'A11-FILE-READY',13,10
 ready_len equ $-ready_msg
-ok_msg: db 'A11-FILE-OK',13,10
+ok_msg: db 'A11-FILE-UNICODE-OK',13,10
 ok_len equ $-ok_msg
 fail_msg: db 'A11-FILE-FAIL',13,10
 fail_len equ $-fail_msg
@@ -46,7 +49,6 @@ msg: resb 48
 pos: resd 2
 pt: resd 2
 path_w: resw 260
-path_from_drop: resb 260
 payload: resb 64
 received: resd 1
 hdrop: resq 1
@@ -85,12 +87,20 @@ wndproc:
     call DragQueryFileW
     cmp eax,1
     jne fail
+    ; The required length is in UTF-16 code units, not UTF-8 bytes.
+    mov rcx,[hdrop]
+    xor edx,edx
+    xor r8d,r8d
+    xor r9d,r9d
+    call DragQueryFileW
+    cmp eax,path_units
+    jne fail
     mov rcx,[hdrop]
     xor edx,edx
     lea r8,[path_w]
     mov r9d,260
     call DragQueryFileW
-    cmp eax,25 ; length of /tests/w32a11_payload.txt (verified below)
+    cmp eax,path_units
     jne fail
     mov rcx,[hdrop]
     lea rdx,[pt]
@@ -103,31 +113,24 @@ wndproc:
     jae fail
     xor ecx,ecx
     lea r10,[path_w]
-    lea r11,[path_a]
-    lea rbx,[path_from_drop]
+    lea r11,[path_expected]
 .path_loop:
     movzx edx,word [r10+rcx*2]
-    cmp edx,127
-    ja fail
-    cmp dl,[r11+rcx]
+    cmp dx,[r11+rcx*2]
     jne fail
-    mov [rbx+rcx],dl
-    test dl,dl
-    jz .read_file
     inc ecx
-    cmp ecx,259
-    jae fail
-    jmp .path_loop
+    cmp ecx,path_units+1 ; compare the terminator too
+    jb .path_loop
 .read_file:
-    ; The opened path is converted from DragQueryFileW, not hardwired.
-    lea rcx,[path_from_drop]
+    ; Open exactly the returned wide string, not a fixture constant.
+    lea rcx,[path_w]
     mov edx,0x80000000
     mov r8d,1
     xor r9d,r9d
     mov qword [rsp+32],3 ; OPEN_EXISTING
     mov qword [rsp+40],0
     mov qword [rsp+48],0
-    call CreateFileA
+    call CreateFileW
     cmp rax,-1
     je fail
     mov [file],rax

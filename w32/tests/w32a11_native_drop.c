@@ -12,7 +12,9 @@
 #include "sys/wait.h"
 #include <stdint.h>
 
-#define PATH "/tests/w32a11_payload.txt"
+/* One BMP and one supplementary-plane code point: the PE must receive
+ * the exact UTF-16 path through a cross-process, compositor-owned token. */
+#define PATH "/tests/w32a11-\xC3\xA9-\xF0\x9F\x99\x82.txt"
 #define CONTENT "W32A11-DROP-FILE-CONTENTS\n"
 
 int main(void) {
@@ -62,7 +64,7 @@ int main(void) {
         ag_window_destroy(source);
         return 79;
     }
-    printf("A11-SENDER-DELIVERED\n");
+    printf("A11-SENDER-DELIVERED-UNICODE\n");
     pid_t done = 0;
     for (int i = 0; i < 100; ++i) {
         done = waitpid(child, &status, WNOHANG);

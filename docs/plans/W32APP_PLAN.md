@@ -1669,6 +1669,21 @@ same earlier USER32 imports (see `w32/tests/W32A11.pinned-probe.5350c54.log`).
 No application CLSID/IID pair is observed; timed UxTheme animation,
 external OLE sources and the full `make test`/W32A-11 phase gate remain open.
 
+**Further incremental receipt (2026-09-27, exact base `7d38775`):**
+The compositor/PE file-drop fixture now validates UTF-8 at the owned HDROP
+boundary, checks UTF-16 length and a surrogate pair, and opens a real
+Unicode-named file with `CreateFileW`. The in-process two-HWND OLE fixture now
+passes an actual `IDataObject` vtable; its target obtains a `CF_HDROP`
+`STGMEDIUM`/`HGLOBAL` through `QueryGetData`/`GetData`, opens the file named
+inside the medium and verifies ownership after `ReleaseStgMedium`. Host
+sanitizers check malformed UTF-8, path limits, ownership and truncation.
+The 11/11 QEMU effect gate and `make -j8 test-unit` passed. Fresh official
+PEs, checked against all four SHA-256 pins, again stopped at their earlier
+USER32 imports before entry; see `w32/tests/W32A11.pinned-probe.7d38775.log`.
+No CLSID/IID pair or ProgID was observed, and **this is not the full phase
+gate**: the activation table, outside-personality OLE sources, timed themes
+and full `make test` remain open.
+
 #### Tasks
 
 - [ ] COM-lite core (REAL, single MTA documented — no apartments, no

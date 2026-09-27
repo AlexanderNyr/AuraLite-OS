@@ -605,11 +605,12 @@ per Win32 thread; `OleInitialize` owns a `CoInitialize` depth. This is a
 single **MTA-like** in-process model, **no apartments**, **no marshalling**,
 **no class activation**. Bound `CoTaskMemAlloc`/`CoTaskMemFree` own
 malloc-backed memory; `CoTaskMemRealloc` is implemented in the same module
-and host-tested (zero size frees), but no pinned guest import calls it. The three official
-pinned apps all failed USER32 import binding before running (see
-`w32/tests/W32A11.pinned-probe.partial.log`), so there is no observed
-CLSID/IID table: `CoCreateInstance`/`CLSIDFromProgID` are still typed
-`E_NOTIMPL` TODOs, not fake implementations.
+and host-tested (zero size frees), but no pinned guest import calls it.
+All three official pinned apps again failed USER32 import binding before
+entry on base `7d38775` with the incremental W32A-11 patch (see
+`w32/tests/W32A11.pinned-probe.7d38775.log`). No CLSID/IID or ProgID was
+observed: `CoCreateInstance`/`CLSIDFromProgID` remain typed, instrumented
+`E_NOTIMPL` TODOs, not fake activations.
 
 **Automation:** the imported `OLEAUT32` ordinals
 `#2/#4/#6/#7/#9/#10/#149/#150` bind to the project's BSTR/VARIANT
@@ -634,15 +635,27 @@ ASCII-case-insensitive UTF-8 name registry (at most 256 names; IDs start at
 `0xC000`). This allocates stable IDs but does not put file paths or any
 data on the clipboard.
 
-**UxTheme:** `OpenThemeData` accepts only the `BUTTON` class with a v6
-manifest. `DrawThemeBackground` and `GetThemeBackgroundContentRect` accept
-only `BP_PUSHBUTTON`, states 1–5. Background drawing uses the live
-compositor palette on a real GDI DC; the guest fixture compares distinct
-normal/hot pixels. Other classes refuse at open with `ERROR_NOT_SUPPORTED`;
-unsupported parts and the UxTheme text/size/font/parent/transition/
-animation/buffered-paint API remain `E_NOTIMPL` TODO (not an unthemed
-success). A v5 window does not gain theme support. The full W32A-11
-compositor file-drop and app-session gates remain open.
+**UxTheme:** v6 `OpenThemeData` supports a bounded flat matrix: BUTTON
+pushbutton states 1–5, EDIT edittext 1–7, TAB tabitem 1–4, PROGRESS
+bar/chunk (horizontal or vertical) state 0, and COMBOBOX dropdown 1–4.
+Accepted parts draw onto a real GDI DC from the compositor palette;
+unsupported part/state pairs return `E_NOTIMPL` without painting. Text,
+content/size/font/parent queries are implemented within that matrix;
+transition duration is **zero**. Buffered animation copies a compatible
+bitmap at zero duration; nonzero-duration, DIB and alpha animation are
+refused. A v5 window falls back rather than gaining theme support.
+
+**Drag and file drop:** within one PE process, registered OLE targets on
+different top-level HWNDs receive a caller-owned `IDataObject`. The guest
+fixture checks `QueryGetData`/`GetData(CF_HDROP)`, a UTF-16 `DROPFILES`
+`STGMEDIUM`, `ReleaseStgMedium` ownership and a file read. A separate native
+process can send a *bounded UTF-8 pathname*, not a cross-process COM object,
+through the compositor's one-time, per-owner drop token to a receiving PE.
+Its owned HDROP rejects malformed UTF-8 and `DragQueryFileW` returns the
+precise UTF-16 length, including surrogate pairs; the guest opens the real
+Unicode-named file with `CreateFileW`. No outside-personality OLE source is
+claimed. Scripted application CLSID/IID sessions and the full W32A-11 gate
+remain open.
 
 ## Not implemented at all
 

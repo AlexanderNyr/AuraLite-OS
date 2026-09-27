@@ -161,6 +161,33 @@ missing `patches/W32A2_kernel32fs.patch`, `patches/W32A3_threads.patch`,
 `patches/W32A4_unwind.patch`. Neither the full W32A-11 gate nor the three
 pinned-app gates are green.
 
+### Follow-up on exact `7d38775423c09d61b3ddc1773dc5821d60c20a58` (2026-09-27)
+
+This delta contains **only changes after that commit**; it does not replay the
+previous COM/drag/drop/theme/token implementation. New assertions:
+
+| gate / command | observed result | scope |
+|---|---:|---|
+| `make iso` | PASS | PE receiver imports `CreateFileW`; in-tree Unicode-named payload copied to initrd (third-party application PEs are not). |
+| `bash tests/integration/cases/test_w32a11_core_subset.sh` | **13/13** | Regression: base COM/BSTR/VARIANT/ordinals, IMM32, clipboard and pixel/theme guest fixture still passes after relinking fixture import libraries. |
+| `make -j8 test-unit` | PASS | All unit gates pass; A11 owned HDROP host test increases from 20 to **44** checks (ASan/UBSan), including UTF-8 invalid sequences, UTF-16 surrogate/truncation, file read, path bounds, isolation and stale handles. A11 OLE drag test remains 61 checks. Optional foreign-ABI suites report their own skips. |
+| `bash tests/integration/cases/test_w32a11_dragdrop.sh` | **11/11** | Two-window PE supplies a genuine `IDataObject` (`QueryInterface`, `QueryGetData`, `GetData`); right target reads `CF_HDROP`/Unicode path from an allocated `STGMEDIUM` and checks `ReleaseStgMedium` freed it. Separate native process sends a Unicode UTF-8 pathname via compositor; PE queries the owned HDROP's 22 UTF-16 units, including U+00E9 and a surrogate pair for U+1F642, and opens the on-disk file via `CreateFileW`. Both PE processes and sender exit 78. **The OLE source is in-process, not the native sender.** |
+| `python3 tools/w32_gen_stubs.py --check`; `python3 tools/w32_import_ledger.py check` | PASS | Generated TODOs remain in sync; the structural K/U/G ledger gap remains 41. No imported USER32 prerequisite was silently reclassified as REAL. |
+
+**CLSID/ProgID probe:** official PuTTY 0.85, 7-Zip FM 24.09 (+7z.dll)
+and Notepad++ 8.8.9 PEs were downloaded outside Git, all **four** extracted
+PE hashes matched the pinned SHA-256 values, and one QEMU session on the
+patched ISO loaded them from an external FAT32 disk. PuTTY refused
+`USER32!CreateDialogParamA`, 7-Zip `USER32!GetMenuItemInfoW` and Notepad++
+`USER32!CreateDialogIndirectParamW` before application entry (exit 1 each).
+There were **zero calls** to the already instrumented `CoCreateInstance` and
+`CLSIDFromProgID` *because none reached entry*, not because no COM classes
+are required. Raw outcome is in `w32/tests/W32A11.pinned-probe.7d38775.log`;
+this is **not** an observed CLSID/IID table. External OLE sources,
+scripted application sessions, the activation table, timed theme effects,
+and the full `make test`/W32A-11 phase gate remain open. This patch does not
+try to repair earlier KERNEL32/USER32/GDI32 breadth phases.
+
 ## App-gate receipts (reserved format)
 
 Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16

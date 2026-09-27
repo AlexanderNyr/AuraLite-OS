@@ -274,12 +274,13 @@ typedef struct {
 
 W32_BOOL W32ABI Shell_NotifyIconW(W32_DWORD msg, W32_NOTIFYICONDATAW *data);
 
-/* ---- drag/drop: W32A-11 owned HDROP model (not compositor delivery) ----
- * w32_shell_drop_create copies up to 16 paths into a separate generation-
- * checked handle; DragFinish frees that handle without affecting others.
- * NULL still denotes the legacy A-10 borrowed one-list model. No compositor
- * event transports a pathname yet, so a real incoming WM_DROPFILES cannot
- * be inferred from these APIs alone. */
+/* ---- drag/drop: W32A-11 owned HDROP model ----------------------------
+ * w32_shell_drop_create validates and copies up to 16 UTF-8 paths into a
+ * generation-checked handle; DragQueryFileW converts to UTF-16 and DragFinish
+ * frees the handle.  The native compositor delivers a bounded, one-time token
+ * to a receiving PE (USER32 takes it into this process and posts WM_DROPFILES).
+ * NULL remains the legacy A-10 borrowed one-list model, not a cross-process
+ * handle. */
 W32_HANDLE w32_shell_drop_create(const char *const paths[], int n,
                                   W32_POINT pt, W32_BOOL client_area);
 void w32_shell_set_drop_list(const char *paths[], int n);

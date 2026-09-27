@@ -9,6 +9,7 @@ LIBRARY KERNEL32.dll
 EXPORTS
     CloseHandle
     CreateFileA
+    CreateFileW
     ExitProcess
     FreeLibrary
     GetCommandLineA
@@ -18,6 +19,10 @@ EXPORTS
     GetProcessHeap
     GetStdHandle
     GetTickCount64
+    GlobalAlloc
+    GlobalFree
+    GlobalLock
+    GlobalSize
     HeapAlloc
     HeapFree
     LoadLibraryA

@@ -1178,6 +1178,12 @@ W32_HANDLE w32_shell_drop_create(const char *const paths[], int n,
         size_t len=0;
         while (len < 512 && paths[i][len]) ++len;
         if (!len || len==512) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return NULL; }
+        /* A compositor path is UTF-8.  Reject invalid byte sequences before
+         * allocating any slot so DragQueryFileW can never hand a PE a
+         * substituted or half-converted filename. */
+        if (w32_utf8_to_utf16(paths[i], len, NULL, 0, NULL) != W32_UTF_OK) {
+            w32_set_last_error(W32_ERROR_NO_UNICODE_TRANSLATION); return NULL;
+        }
         lens[i]=len;
     }
     lock_drop();
@@ -1219,14 +1225,24 @@ W32_UINT W32ABI DragQueryFileW(W32_HANDLE hDrop, W32_UINT index,
     if (!chosen) { unlock_drop(); return 0; }
     size_t bytes=0;
     while (bytes<512 && chosen[bytes]) ++bytes;
-    if (bytes==512) { unlock_drop(); return 0; }
+    if (bytes==512) {
+        unlock_drop(); w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
+    }
     memcpy(path, chosen, bytes+1);
     unlock_drop();
-    uint16_t wide[600];
-    if (sh_a2w(path,wide,600)<0) return 0;
-    size_t n=sh_wcslen(wide);
-    if (!buf || !cch) return (W32_UINT)n; /* excludes NUL */
+    /* A path is at most 511 UTF-8 bytes, hence at most 511 UTF-16 units.
+     * Use the checked converter rather than the convenience z-wrapper: it
+     * silently ignores malformed sequences and truncation errors. */
+    uint16_t wide[512];
+    size_t n=0;
+    if (w32_utf8_to_utf16(path,bytes,wide,511,&n) != W32_UTF_OK) {
+        w32_set_last_error(W32_ERROR_NO_UNICODE_TRANSLATION); return 0;
+    }
+    if (!buf || !cch) return (W32_UINT)n; /* excludes NUL, UTF-16 units */
     size_t copy=n<(size_t)cch-1?n:(size_t)cch-1;
+    /* A short buffer must not expose half of a surrogate pair. */
+    if (copy<n && copy && wide[copy-1]>=0xd800u && wide[copy-1]<=0xdbffu)
+        --copy;
     sh_wcpy(buf,wide,copy); buf[copy]=0;
     return (W32_UINT)copy;
 }
