@@ -71,7 +71,7 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
     }
     case GUI_OP_DESTROY:
         if (!require_owner((int)a2)) return (uint64_t)-1;
-        return (uint64_t)gui_destroy_window((int)a2);
+        return (uint64_t)gui_destroy_window((int)a2, current_pid());
     case GUI_OP_SHOW:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_show_window((int)a2);
@@ -336,6 +336,24 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         }
         return 0;
     }
+    case GUI_OP_SEND_DROP: {
+        if (!require_owner((int)a2)) return UINT64_MAX;
+        char path[GUI_DROP_PATH_MAX];
+        if (copy_string_from_user(path, (const char *)(uintptr_t)a3,
+                                  sizeof path) != 0) return UINT64_MAX;
+        return gui_send_file_drop((int)a2, current_pid(), path);
+    }
+    case GUI_OP_TAKE_DROP: {
+        if (!require_owner((int)a2) || !a3 || a3 > 0xffffu || !a4 ||
+            !validate_user_range((void *)(uintptr_t)a4, GUI_DROP_PATH_MAX, 1))
+            return UINT64_MAX;
+        char path[GUI_DROP_PATH_MAX];
+        if (gui_take_file_drop((int)a2, current_pid(), (uint16_t)a3, path) != 0)
+            return UINT64_MAX;
+        if (copy_to_user((void *)(uintptr_t)a4, path, sizeof path) != 0)
+            return UINT64_MAX;
+        return 0;
+    }
     case GUI_OP_INVAL_RECT:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_invalidate_rect((int)a2, lo32(a3), hi32(a3),
@@ -374,8 +392,8 @@ uint64_t syscall_gui_event(uint64_t wid, uint64_t user_evt, uint64_t blocking) {
     if (!validate_user_range((void *)(uintptr_t)user_evt, sizeof(evt), 1)) {
         return (uint64_t)-1;
     }
-    if (blocking) r = gui_wait_event((int)wid, &evt);
-    else          r = gui_poll_event((int)wid, &evt);
+    if (blocking) r = gui_wait_event((int)wid, current_pid(), &evt);
+    else          r = gui_poll_event((int)wid, current_pid(), &evt);
     if (r <= 0) return (uint64_t)r;
     if (copy_to_user((void *)(uintptr_t)user_evt, &evt, sizeof(evt)) != 0) {
         return (uint64_t)-1;

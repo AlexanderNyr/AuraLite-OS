@@ -252,6 +252,7 @@ void w32_user32_init(void);
 #define W32_WS_GROUP         0x00020000u
 
 #define W32_WS_EX_TOPMOST     0x00000008u
+#define W32_WS_EX_ACCEPTFILES 0x00000010u
 #define W32_WS_EX_TRANSPARENT 0x00000020u
 #define W32_WS_EX_TOOLWINDOW  0x00000080u
 #define W32_WS_EX_LAYERED     0x00080000u
@@ -912,6 +913,7 @@ W32ABI W32_LRESULT CallNextHookEx(W32_HHOOK hhk, int32_t code, W32_WPARAM wp, W3
 #define W32_WM_DRAWITEM       0x002B
 #define W32_WM_MEASUREITEM    0x002C
 #define W32_WM_CHANGECBCHAIN  0x030D
+#define W32_WM_DROPFILES      0x0233
 #define W32_WM_DRAWCLIPBOARD  0x0308
 
 /* DrawText format flags + the USER32-side DrawText/DrawFocusRect/etc

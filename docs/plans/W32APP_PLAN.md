@@ -1655,8 +1655,19 @@ PuTTY, 7-Zip FM and Notepad++ were mounted externally, but all three failed
 USER32 import binding *before* their entry points; the exact first missing
 names are in `w32/tests/W32A11.pinned-probe.partial.log`. There are **no
 observed CLSID/IID pairs yet**, so no activation table can be claimed.
-Compositor-delivered file drops, window-to-window OLE drags, remaining
-UxTheme parts/animation and the full `make test` gate are still open.
+**Further incremental receipt (2026-09-27, exact base `5350c54`):**
+`tests/integration/cases/test_w32a11_dragdrop.sh` proves Win64 OLE
+callbacks between two compositor HWNDs and an independent native sender
+crossing into a PE receiver with an owned `WM_DROPFILES`/`DragQueryFileW`
+path whose on-disk contents are checked. `test_w32a11_tokens.sh` proves
+one-shot/ACL tokens survive window-slot recycling without admitting a stale
+path; `test_w32a11_theme.sh` compares v5 fallback against v6 GDI pixels,
+part refusals and zero-duration animation. The host theme test exercises
+all advertised part/states. Raw evidence and exact limits are in
+`docs/w32app_receipts.md`; verified pinned apps are still blocked at the
+same earlier USER32 imports (see `w32/tests/W32A11.pinned-probe.5350c54.log`).
+No application CLSID/IID pair is observed; timed UxTheme animation,
+external OLE sources and the full `make test`/W32A-11 phase gate remain open.
 
 #### Tasks
 

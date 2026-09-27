@@ -75,6 +75,10 @@ enum {
      * of the personality keeping second, drifting copies. */
     GUI_OP_GET_PIXEL,       /* a2=wid, a3=x|y<<32 → colour, or -1 */
     GUI_OP_FONT_INFO,       /* a2=user u32*[5] (w,h,ascent,descent,glyphs) */
+    /* W32A-11: across-process native file drops. Never pass user pointers
+     * between tasks: only bounded pathname bytes and a generation token. */
+    GUI_OP_SEND_DROP,       /* a2=owned source wid, a3=absolute UTF-8 path */
+    GUI_OP_TAKE_DROP,       /* a2=owned destination wid, a3=u16 token, a4=out[256] */
 };
 
 /* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.

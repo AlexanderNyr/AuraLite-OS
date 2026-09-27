@@ -1,4 +1,4 @@
-; W32A-11 incremental COM init/task-heap import library (no DLL shipped).
+; W32A-11 in-process OLE and COM fixture import library; no DLL shipped.
 LIBRARY OLE32.dll
 EXPORTS
     CoInitialize
@@ -6,4 +6,9 @@ EXPORTS
     OleInitialize
     OleUninitialize
     CoTaskMemAlloc
+    CoTaskMemRealloc
     CoTaskMemFree
+    DoDragDrop
+    RegisterDragDrop
+    RevokeDragDrop
+    ReleaseStgMedium

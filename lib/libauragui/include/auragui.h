@@ -78,7 +78,8 @@ enum {
 #define AG_EVT_PAINT             17
 #define AG_EVT_CONTEXT_MENU      18  /* right-click in client area */
 #define AG_EVT_SNAP_CHANGED      19  /* window snap state changed */
-#define AG_EVT_DROP              20  /* drag-drop (future) */
+#define AG_EVT_DROP              20  /* data: per-window path token */
+#define AG_DROP_PATH_MAX         256
 #define AG_EVT_ICON_CLICK        21  /* desktop icon activated */
 #define AG_EVT_COUNT             22  /* sentinel — must be last */
 
@@ -216,6 +217,11 @@ int  ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
 /* ---- Events ---- */
 int  ag_poll_event(int wid, ag_event_t *out);
 int  ag_wait_event(int wid, ag_event_t *out);
+/* W32A-11: the sender owns source_wid, the destination takes the one-shot
+ * token from its GUI_EVT_DROP. Only a bounded pathname crosses processes. */
+int  ag_send_file_drop(int source_wid, const char *absolute_utf8_path);
+int  ag_take_file_drop(int destination_wid, uint16_t token,
+                       char out[AG_DROP_PATH_MAX]);
 
 /* ---- Theme ---- */
 int  ag_theme_get(ag_theme_t *out);

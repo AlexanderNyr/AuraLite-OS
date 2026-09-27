@@ -1129,7 +1129,8 @@ W32_BOOL W32ABI Shell_NotifyIconW(W32_DWORD msg, W32_NOTIFYICONDATAW *data) {
 /* ---- W32A-11 HDROP ownership --------------------------------------
  * The legacy NULL handle keeps A-10's borrowed one-list model; non-NULL
  * handles independently own copied path strings and have generation IDs.
- * File-drop delivery through GUI_EVT_DROP is NOT yet implemented. */
+ * GUI_EVT_DROP delivers one path to a WM_DROPFILES opt-in HWND; the
+ * receiver owns its distinct HDROP until DragFinish. */
 #define SH_DROP_MAX 16
 #define SH_DROP_SLOTS 16
 #define SH_DROP_BIAS ((uintptr_t)0x68000000u)

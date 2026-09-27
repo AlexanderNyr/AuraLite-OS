@@ -221,12 +221,12 @@ ole32.dll	CoInitialize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: thread-local
 ole32.dll	CoTaskMemAlloc	REAL	REAL	PTR64	0	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	CoTaskMemFree	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	CoUninitialize	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
-ole32.dll	DoDragDrop	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+ole32.dll	DoDragDrop	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	w32_ole_drag.c: in-process OLE ownership/event routing
 ole32.dll	OleInitialize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	OleUninitialize	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
-ole32.dll	RegisterDragDrop	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-ole32.dll	ReleaseStgMedium	REAL	TODO	void	-	W32A-11	phase-owned
-ole32.dll	RevokeDragDrop	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+ole32.dll	RegisterDragDrop	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	w32_ole_drag.c: in-process OLE ownership/event routing
+ole32.dll	ReleaseStgMedium	REAL	REAL	void	-	W32A-11	w32_ole_drag.c: in-process OLE ownership/event routing
+ole32.dll	RevokeDragDrop	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	w32_ole_drag.c: in-process OLE ownership/event routing
 oleaut32.dll	SysAllocString	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
 oleaut32.dll	SysAllocStringByteLen	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
 oleaut32.dll	SysAllocStringLen	REAL	REAL	-	-	W32A-11	w32_oleaut32.c
@@ -404,21 +404,21 @@ user32.dll	NotifyWinEvent	REAL	REAL	VOID	-	W32A-6	phase-owned
 user32.dll	SetWindowsHookExA	REAL	REAL	HHOOK	0	W32A-6	phase-owned
 user32.dll	SizeofResource	REAL	REAL	DWORD	0	W32A-6	phase-owned
 user32.dll	TranslateAcceleratorA	REAL	REAL	int	0	W32A-6	phase-owned
-uxtheme.dll	BeginBufferedAnimation	REAL	TODO	HANIMATIONBUFFER	0	W32A-11	phase-owned
+uxtheme.dll	BeginBufferedAnimation	REAL	REAL	HANIMATIONBUFFER	0	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
 uxtheme.dll	BufferedPaintRenderAnimation	REAL	TODO	WINBOOL	0	W32A-11	phase-owned
-uxtheme.dll	BufferedPaintStopAllAnimations	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	CloseThemeData	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
-uxtheme.dll	DrawThemeBackground	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
-uxtheme.dll	DrawThemeParentBackground	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	DrawThemeTextEx	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	EnableThemeDialogTexture	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	EndBufferedAnimation	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	GetThemeBackgroundContentRect	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
-uxtheme.dll	GetThemeFont	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	GetThemePartSize	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	GetThemeTransitionDuration	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-uxtheme.dll	OpenThemeData	REAL	REAL	HTHEME	0	W32A-11	uxtheme.c: v6 BUTTON/BP_PUSHBUTTON only
-uxtheme.dll	SetWindowTheme	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+uxtheme.dll	BufferedPaintStopAllAnimations	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
+uxtheme.dll	CloseThemeData	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	DrawThemeBackground	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	DrawThemeParentBackground	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	DrawThemeTextEx	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	EnableThemeDialogTexture	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
+uxtheme.dll	EndBufferedAnimation	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
+uxtheme.dll	GetThemeBackgroundContentRect	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	GetThemeFont	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	GetThemePartSize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	GetThemeTransitionDuration	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	OpenThemeData	REAL	REAL	HTHEME	0	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+uxtheme.dll	SetWindowTheme	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
 version.dll	GetFileVersionInfoSizeW	REAL	REAL	DWORD	0	W32A-10	phase-owned
 version.dll	GetFileVersionInfoW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned
 version.dll	VerQueryValueW	REAL	REAL	WINBOOL	0	W32A-10	phase-owned

@@ -123,6 +123,9 @@ typedef ui_event_mirror_t ui_event_t;
 #define AG_WIN_DEFAULT     (AG_WIN_RESIZABLE | AG_WIN_MOVABLE | \
                             AG_WIN_HAS_TITLE | AG_WIN_HAS_CLOSE | AG_WIN_HAS_MINMAX)
 
+extern int ag_take_file_drop(int, uint16_t, char *) __attribute__((weak));
+extern W32_HANDLE w32_shell_drop_create(const char *const [], int,
+                                         W32_POINT, W32_BOOL) __attribute__((weak));
 int ag_window_create(int32_t, int32_t, uint32_t, uint32_t, const char *, uint32_t);
 int ag_window_show(int);
 int ag_window_hide(int);
@@ -159,6 +162,7 @@ void ag_render_now(void);
 void ag_alert(const char *, const char *);
 #else
 #include "auragui.h"
+#include "w32/shell32.h"
 typedef ag_theme_t ui_theme_t;
 typedef ag_event_t ui_event_t;
 _Static_assert(UI_EVT_MOUSE_DOWN == AG_EVT_MOUSE_DOWN, "ag_event_t drifted");
@@ -166,6 +170,7 @@ _Static_assert(UI_EVT_KEY_DOWN   == AG_EVT_KEY_DOWN,   "ag_event_t drifted");
 _Static_assert(UI_EVT_CLOSE_REQ  == AG_EVT_CLOSE_REQ,  "ag_event_t drifted");
 _Static_assert(UI_EVT_PAINT      == AG_EVT_PAINT,      "ag_event_t drifted");
 _Static_assert(sizeof(ui_theme_t) == sizeof(ag_theme_t), "ag_theme_t drifted");
+_Static_assert(AG_DROP_PATH_MAX == 256, "file-drop ABI drifted");
 #endif
 
 #define UI_MAX_CLASSES  32
@@ -198,7 +203,7 @@ _Static_assert(sizeof(ui_theme_t) == sizeof(ag_theme_t), "ag_theme_t drifted");
 #define UI_EXSTYLE_KNOWN \
     (W32_WS_EX_TOPMOST | W32_WS_EX_TOOLWINDOW | W32_WS_EX_LAYERED | \
      W32_WS_EX_APPWINDOW | W32_WS_EX_CLIENTEDGE | W32_WS_EX_DLGMODALFRAME | \
-     W32_WS_EX_TRANSPARENT)
+     W32_WS_EX_TRANSPARENT | W32_WS_EX_ACCEPTFILES)
 
 struct ui_class {
     int       in_use;
@@ -740,6 +745,16 @@ W32ABI W32_BOOL DestroyWindow(W32_HWND hwnd) {
      * handler's job, and PostQuitMessage is what does it. */
     SendMessageW(hwnd, W32_WM_NCDESTROY, 0, 0);
 
+    /* Neither an OLE target nor a theme override may survive HWND recycling. */
+    {
+        extern __attribute__((weak)) void w32_ole_drag_window_destroyed(W32_HWND);
+        if (w32_ole_drag_window_destroyed) w32_ole_drag_window_destroyed(hwnd);
+    }
+    {
+        extern __attribute__((weak)) void w32_theme_window_destroyed(W32_HWND);
+        if (w32_theme_window_destroyed) w32_theme_window_destroyed(hwnd);
+    }
+
     /* W32A-8: a common-control window dropping its state before the slot
      * dies (weak: the A-3-style host amalgams that omit comctl32.c still
      * link, exactly like the timer-pump hook above). */
@@ -1090,9 +1105,24 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
     case UI_EVT_TIMER:
         ui_post_to(hwnd, W32_WM_TIMER, e->data, 0, e->x, e->y);
         break;
+    case UI_EVT_DROP: {
+        /* The kernel event has a generation token, never a user pointer.
+         * Consume it even when this HWND did not request file drops. */
+#ifdef AURALITE_W32_HOST_TEST
+        if (!ag_take_file_drop || !w32_shell_drop_create) break;
+#endif
+        char path[256];
+        if (ag_take_file_drop(w->ag_wid, e->data, path) != 0) break;
+        if (!(w->exstyle & W32_WS_EX_ACCEPTFILES)) break;
+        const char *paths[1] = { path };
+        W32_POINT pt = { e->x, e->y };
+        W32_HANDLE drop = w32_shell_drop_create(paths, 1, pt, W32_TRUE);
+        if (drop) ui_post_to(hwnd, W32_WM_DROPFILES,
+                             (W32_WPARAM)(uintptr_t)drop, 0, e->x, e->y);
+        break;
+    }
     case UI_EVT_ICON_CLICK:
     case UI_EVT_SNAP_CHANGED:
-    case UI_EVT_DROP:
     default:
         /* Events with no Win32 equivalent are dropped, not invented. */
         break;

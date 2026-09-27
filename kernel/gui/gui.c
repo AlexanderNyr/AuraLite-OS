@@ -125,6 +125,11 @@ typedef struct gui_win {
     /* per-window event ring */
     gui_event_t events[GUI_EVT_RING_SIZE];
     volatile uint32_t evt_head, evt_tail;
+    /* W32A-11: tokenised path slots, never a cross-process user pointer. */
+#define GUI_DROP_SLOTS 8
+    char drop_paths[GUI_DROP_SLOTS][GUI_DROP_PATH_MAX];
+    uint16_t drop_generation[GUI_DROP_SLOTS];
+    uint8_t drop_busy[GUI_DROP_SLOTS];
     /* owner pid */
     int       owner_pid;
     /* per-window dirty flag for back-buffer changes */
@@ -153,6 +158,14 @@ typedef struct gui_win {
 
 static gui_win_t windows[GUI_MAX_WINDOWS];
 static spinlock_t gui_lock;
+/* Event rings and pathname slots share this lock. Always acquire gui_lock
+ * before gui_evt_lock if both are needed (destroy/send). */
+static spinlock_t gui_evt_lock;
+/* Survive HWND slot recycling: a stale 16-bit token from a destroyed window
+ * must not match the next occupant's first drop in the same path slot. */
+static uint16_t drop_epoch[GUI_MAX_WINDOWS][GUI_DROP_SLOTS];
+/* Event waiters must not follow an integer HWND into its next lifetime. */
+static uint32_t window_epoch[GUI_MAX_WINDOWS];
 static int focused = -1;
 /* W32A-5: SetCapture.  -1 = nobody; otherwise the wid that receives every
  * mouse event until it releases.  Cleared when the owner dies (see
@@ -319,9 +332,12 @@ static void mark_window_dirty(const gui_win_t *w) {
 
 void gui_init(void) {
     memset(windows, 0, sizeof(windows));
+    memset(drop_epoch, 0, sizeof(drop_epoch));
+    memset(window_epoch, 0, sizeof(window_epoch));
     memset(icons, 0, sizeof(icons));
     memset(notifications, 0, sizeof(notifications));
     spinlock_init(&gui_lock);
+    spinlock_init(&gui_evt_lock);
     wq_init(&gui_wq);
     spinlock_init(&gui_wake_lock);
     gui_pending = 1;                /* first frame draws without a poke */
@@ -516,14 +532,17 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     }
 
     gui_win_t *win = &windows[id];
+    tcb_t *owner = sched_current();
+    spinlock_acquire(&gui_evt_lock);
+    if (++window_epoch[id] == 0) window_epoch[id] = 1;
     memset(win, 0, sizeof(*win));
-    win->in_use = 1;
     win->x = x; win->y = y;
     win->w = w; win->h = h;
     win->flags = flags;
     win->snap = GUI_SNAP_NONE;
-    tcb_t *owner = sched_current();
     win->owner_pid = owner ? (int)owner->id : 0;
+    win->in_use = 1;
+    spinlock_release(&gui_evt_lock);
     win->visible = 0;
     win->minimized = 0;
     win->maximized = 0;
@@ -538,14 +557,18 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     size_t buf_size = (size_t)bw * bh * 4;
     if (buf_size / 4 != (size_t)bw * bh) {
         /* Integer overflow — reject impossibly large window. */
+        spinlock_acquire(&gui_evt_lock);
         win->in_use = 0;
+        spinlock_release(&gui_evt_lock);
         kprintf("[gui] create_window: buffer size overflow %ux%u\n", bw, bh);
         spinlock_release(&gui_lock);
         return -1;
     }
     win->back = (uint32_t *)kmalloc(buf_size);
     if (!win->back) {
+        spinlock_acquire(&gui_evt_lock);
         win->in_use = 0;
+        spinlock_release(&gui_evt_lock);
         kprintf("[gui] create_window: kmalloc failed for %ux%u back buffer\n", bw, bh);
         spinlock_release(&gui_lock);
         return -1;
@@ -556,14 +579,22 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     return id;
 }
 
-int gui_destroy_window(int wid) {
-    if (!win_alive(wid)) return -1;
+int gui_destroy_window(int wid, uint64_t owner_pid) {
     spinlock_acquire(&gui_lock);
+    /* The syscall's earlier require_owner is only a snapshot: another
+     * process could recycle this slot before we acquire gui_lock. */
+    if (!owner_pid || !win_alive(wid) ||
+        (uint32_t)windows[wid].owner_pid != owner_pid) {
+        spinlock_release(&gui_lock);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     mark_window_dirty(w);
     if (w->back) kfree(w->back);
     if (w->front) { kfree(w->front); w->front = NULL; }
+    spinlock_acquire(&gui_evt_lock);
     memset(w, 0, sizeof(*w));
+    spinlock_release(&gui_evt_lock);
     if (focused == wid) focused = -1;
     if (captured == wid) captured = -1;    /* W32A-5 */
     if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
@@ -571,10 +602,10 @@ int gui_destroy_window(int wid) {
     recompute_focus();
     full_dirty = 1;
     spinlock_release(&gui_lock);
-    return 0;
-    /* O7: anyone parked in gui_wait_event on this window must re-check
-     * win_alive now. */
+    /* Anyone parked in gui_wait_event must re-check win_alive; a pending
+     * token also dies with the slot rather than waking a recycled HWND. */
     wq_wake_all(&gui_evt_wq);
+    return 0;
 }
 
 int gui_window_owned_by(int wid, uint64_t owner_pid) {
@@ -615,7 +646,9 @@ void gui_cleanup_process(uint64_t owner_pid) {
         if ((uint64_t)(uint32_t)windows[i].owner_pid != owner_pid) continue;
         mark_window_dirty(&windows[i]);
         if (windows[i].back) kfree(windows[i].back);
+        spinlock_acquire(&gui_evt_lock);
         memset(&windows[i], 0, sizeof(windows[i]));
+        spinlock_release(&gui_evt_lock);
         if (focused == i) focused = -1;
         if (captured == i) captured = -1;
         if (drag_wid == i) { drag_wid = -1; drag_mode = 0; }
@@ -635,6 +668,7 @@ void gui_cleanup_process(uint64_t owner_pid) {
     }
     spinlock_release(&gui_lock);
     if (cleaned) {
+        wq_wake_all(&gui_evt_wq);
         kprintf("[gui] cleaned %d window(s) for pid %llu\n",
                 cleaned, (unsigned long long)owner_pid);
     }
@@ -1221,39 +1255,73 @@ int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
  * Event ring
  * =================================================================== */
 
-int gui_post_event(int wid, const gui_event_t *evt) {
-    if (!win_alive(wid) || !evt) return -1;
-    gui_win_t *w = &windows[wid];
+static void drop_release_token(gui_win_t *w, uint16_t token) {
+    unsigned slot = token & 15u;
+    if (!slot || slot > GUI_DROP_SLOTS) return;
+    --slot;
+    if (w->drop_busy[slot] && w->drop_generation[slot] == (token >> 4))
+        w->drop_busy[slot] = 0;
+}
+/* gui_evt_lock held by the caller. Eviction also frees a pending path. */
+static void gui_post_event_locked(gui_win_t *w, const gui_event_t *evt) {
     uint32_t next = (w->evt_head + 1) % GUI_EVT_RING_SIZE;
     if (next == w->evt_tail) {
-        /* Ring full — drop oldest. */
+        const gui_event_t *old = &w->events[w->evt_tail];
+        if (old->type == GUI_EVT_DROP) drop_release_token(w, old->data);
         w->evt_tail = (w->evt_tail + 1) % GUI_EVT_RING_SIZE;
     }
     w->events[w->evt_head] = *evt;
     w->evt_head = next;
-    wq_wake_all(&gui_evt_wq);                          /* O7 */
+}
+int gui_post_event(int wid, const gui_event_t *evt) {
+    if (!evt) return -1;
+    spinlock_acquire(&gui_evt_lock);
+    if (!win_alive(wid)) { spinlock_release(&gui_evt_lock); return -1; }
+    gui_post_event_locked(&windows[wid], evt);
+    spinlock_release(&gui_evt_lock);
+    wq_wake_all(&gui_evt_wq);
     return 0;
 }
 
-int gui_poll_event(int wid, gui_event_t *out) {
-    if (!win_alive(wid) || !out) return 0;
+/* gui_evt_lock held: the syscall's initial ownership check is NOT enough
+ * when a window ID is destroyed/reused before an event is read. A blocking
+ * waiter also pins this *lifetime*, not just the owner and integer slot. */
+static int gui_poll_owned_event_locked(int wid, uint64_t owner_pid,
+                                       uint32_t epoch, gui_event_t *out) {
+    if (!out || !owner_pid || !win_alive(wid) ||
+        (uint32_t)windows[wid].owner_pid != owner_pid ||
+        (epoch && window_epoch[wid] != epoch)) return -1;
     gui_win_t *w = &windows[wid];
     if (w->evt_head == w->evt_tail) return 0;
     *out = w->events[w->evt_tail];
     w->evt_tail = (w->evt_tail + 1) % GUI_EVT_RING_SIZE;
     return 1;
 }
+int gui_poll_event(int wid, uint64_t owner_pid, gui_event_t *out) {
+    spinlock_acquire(&gui_evt_lock);
+    int result = gui_poll_owned_event_locked(wid, owner_pid, 0, out);
+    spinlock_release(&gui_evt_lock);
+    return result;
+}
 
-int gui_wait_event(int wid, gui_event_t *out) {
-    /* O7: block instead of yield-spinning — every GUI app parked in its
-     * event loop used to burn scheduler slots full-time.  The 5-tick
-     * net covers the push-vs-sleep race and window death (destroy also
-     * wakes, but the net makes the liveness argument unconditional). */
-    while (!gui_poll_event(wid, out)) {
-        if (!win_alive(wid)) return -1;
+int gui_wait_event(int wid, uint64_t owner_pid, gui_event_t *out) {
+    /* O7: block instead of yield-spinning; the 5-tick net covers a push
+     * between our empty check and sleep. Destruction also wakes waiters. */
+    spinlock_acquire(&gui_evt_lock);
+    if (!out || !owner_pid || !win_alive(wid) ||
+        (uint32_t)windows[wid].owner_pid != owner_pid) {
+        spinlock_release(&gui_evt_lock);
+        return -1;
+    }
+    uint32_t epoch = window_epoch[wid];
+    spinlock_release(&gui_evt_lock);
+    for (;;) {
+        spinlock_acquire(&gui_evt_lock);
+        int result = gui_poll_owned_event_locked(wid, owner_pid, epoch, out);
+        spinlock_release(&gui_evt_lock);
+        if (result) return result; /* event or destroyed/reused HWND */
         wq_wait_deadline(&gui_evt_wq, NULL, timer_get_ticks() + 5);
     }
-    return 1;
 }
 
 /* ===================================================================
@@ -2041,6 +2109,76 @@ static int hit_part(const gui_win_t *w, int32_t mx, int32_t my) {
         return 1; /* title bar */
     }
     return 0; /* client area */
+}
+
+/* W32A-11: the native GUI sender submits an absolute pathname; the
+ * compositor selects a DIFFERENT visible client-area window by the actual
+ * pointer position. A generation token links the event to a one-shot path
+ * slot so no user address leaks into another address space. */
+int gui_send_file_drop(int source_wid, uint64_t source_pid, const char *path) {
+    if (!path || path[0] != '/') return -1;
+    size_t n = 0;
+    while (n < GUI_DROP_PATH_MAX && path[n]) {
+        if ((unsigned char)path[n] < 32u) return -1;
+        ++n;
+    }
+    if (n < 2 || n >= GUI_DROP_PATH_MAX) return -1;
+    int32_t mx, my;
+    if (gui_mouse_position(&mx, &my) != 1) return -1;
+    spinlock_acquire(&gui_lock);
+    if (!source_pid || !win_alive(source_wid) ||
+        (uint32_t)windows[source_wid].owner_pid != source_pid) {
+        spinlock_release(&gui_lock); return -1;
+    }
+    int dst = hit_window(mx, my);
+    if (dst < 0 || dst == source_wid || hit_part(&windows[dst], mx, my) != 0) {
+        spinlock_release(&gui_lock); return -1;
+    }
+    gui_win_t *w = &windows[dst];
+    gui_event_t evt = { GUI_EVT_DROP, 0, 0, 0, 0, 0, 0 };
+    evt.x = mx - content_x(w);
+    evt.y = my - content_y(w);
+    spinlock_acquire(&gui_evt_lock);
+    int slot = -1;
+    for (int i = 0; i < GUI_DROP_SLOTS; ++i)
+        if (!w->drop_busy[i]) { slot = i; break; }
+    if (slot < 0) {
+        spinlock_release(&gui_evt_lock);
+        spinlock_release(&gui_lock);
+        return -1;
+    }
+    uint16_t gen = (uint16_t)((drop_epoch[dst][slot] + 1u) & 0x0fffu);
+    if (!gen) gen = 1;
+    drop_epoch[dst][slot] = gen;
+    w->drop_busy[slot] = 1;
+    w->drop_generation[slot] = gen;
+    memset(w->drop_paths[slot], 0, GUI_DROP_PATH_MAX);
+    memcpy(w->drop_paths[slot], path, n + 1);
+    evt.data = (uint16_t)((gen << 4) | (unsigned)(slot + 1));
+    gui_post_event_locked(w, &evt);
+    spinlock_release(&gui_evt_lock);
+    spinlock_release(&gui_lock);
+    wq_wake_all(&gui_evt_wq);
+    return 0;
+}
+int gui_take_file_drop(int destination_wid, uint64_t destination_pid,
+                       uint16_t token, char out[GUI_DROP_PATH_MAX]) {
+    if (!out || !destination_pid) return -1;
+    spinlock_acquire(&gui_evt_lock);
+    if (!win_alive(destination_wid) ||
+        (uint32_t)windows[destination_wid].owner_pid != destination_pid) {
+        spinlock_release(&gui_evt_lock); return -1;
+    }
+    gui_win_t *w = &windows[destination_wid];
+    unsigned index = token & 15u;
+    if (!index || index > GUI_DROP_SLOTS || !w->drop_busy[index - 1] ||
+        w->drop_generation[index - 1] != (token >> 4)) {
+        spinlock_release(&gui_evt_lock); return -1;
+    }
+    memcpy(out, w->drop_paths[index - 1], GUI_DROP_PATH_MAX);
+    w->drop_busy[index - 1] = 0;
+    spinlock_release(&gui_evt_lock);
+    return 0;
 }
 
 /* ---- Desktop icon hit-test ---- */

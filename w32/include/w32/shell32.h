@@ -31,7 +31,7 @@
  *   - SHChangeNotify — accepted; the file dialogs refresh (the narrow
  *     REAL behaviour, not a broadcast system);
  *   - the drag trio (DragQueryFileW/DragQueryPoint/DragFinish) — the
- *     drop-list model W32A-11 will feed; REAL against it;
+ *     drop-list model now fed by compositor GUI_EVT_DROP; REAL against it;
  *   - SHBrowseForFolderW — the folder picker over the W32A-6 dialog
  *     engine;
  *   - SHGetDesktopFolder — E_NOTIMPL, the namespace object is §7.

@@ -32,6 +32,8 @@ enum {
     GUI_OP_GET_FOCUSED, GUI_OP_TOP_WINDOW, GUI_OP_GET_MOUSE,
     GUI_OP_INVAL_RECT,
     /* W32A-7 */ GUI_OP_GET_PIXEL, GUI_OP_FONT_INFO,
+    /* W32A-11: must match kernel/gui/gui_syscalls.h exactly. */
+    GUI_OP_SEND_DROP, GUI_OP_TAKE_DROP,
 };
 
 #define SYS_GUI_CALL_NUM    200
@@ -254,6 +256,17 @@ int ag_poll_event(int wid, ag_event_t *e) {
 }
 int ag_wait_event(int wid, ag_event_t *e) {
     return (int)syscall(SYS_GUI_EVENT_NUM, (uint64_t)wid, (uint64_t)e, 1, 0, 0, 0);
+}
+
+int ag_send_file_drop(int wid, const char *path) {
+    if (!path) return -1;
+    return (int)gui_call(GUI_OP_SEND_DROP, (uint64_t)wid,
+                         (uint64_t)(uintptr_t)path, 0, 0);
+}
+int ag_take_file_drop(int wid, uint16_t token, char out[AG_DROP_PATH_MAX]) {
+    if (!out || !token) return -1;
+    return (int)gui_call(GUI_OP_TAKE_DROP, (uint64_t)wid, token,
+                         (uint64_t)(uintptr_t)out, 0);
 }
 
 /* ---- Theme ---- */

@@ -136,11 +136,21 @@ ReactOS.
 | `tests/integration/cases/test_w32_user32.sh` | W32-5 gate, reworked in W32A-7 after the suite's first machine run: the hostile-WNDPROC leg boots alone behind a QEMU monitor socket and dismisses the W32A-4 unhandled-exception alert with sendkey, instead of blocking headless on the MessageBoxA modal; asserts the PE's nonzero exit, the compositor reap, and clean shell exits for both boots |
 | `include/w32/ole32.h`, `src/ole32.c` | W32A-11 incremental COM init depth and task allocator; CLSID activation remains TODO |
 | `include/w32/imm32.h`, `src/imm32.c` | W32A-11 typed FAIL-CLEAN IME boundaries; no composition engine |
-| `include/w32/uxtheme.h`, `src/uxtheme.c` | W32A-11 limited v6 BUTTON part rendering onto a GDI bitmap with the compositor palette |
+| `include/w32/uxtheme.h`, `src/uxtheme.c` | W32A-11 compositor-palette flat BUTTON/EDIT/TAB/PROGRESS/COMBO part/state matrix, per-part refusal, per-window theme cleanup, zero-duration compatible-bitmap animation; timed effects/DIB/alpha refused |
 | `src/w32_clipfmt.c` | W32A-11 shared A/W named clipboard-format registry; does not imply clipboard data transport |
 | `tests/ole32_a11.def`, `tests/oleaut32_a11.def`, `tests/imm32_a11.def`, `tests/uxtheme_a11.def` | W32A-11 incremental PE import-library declarations (only fixture names; no third-party bytes) |
 | `tests/w32a11_core.asm` | W32A-11 subset guest fixture: COM/BSTR/VARIANT, OLEAUT32 ordinals, IMM32 refusal, clipboard-format IDs, BUTTON pixel diff |
 | `tests/W32A11.pinned-probe.partial.log` | W32A-11 text-only SHA-256-verified upstream application bind probes; no observed CLSID/IID pairs yet |
+| `src/w32_ole_drag.c` | W32A-11 in-process OLE drop-target callbacks and STGMEDIUM ownership; no external OLE source or cross-process marshalling |
+| `tests/w32a11_drag.asm` | W32A-11 Win64 callback/refcount fixture using posted mouse messages, not an external source |
+| `tests/w32a11_file_receiver.asm` | W32A-11 independent PE receiver asserting a compositor-generated WM_DROPFILES path and on-disk bytes |
+| `tests/w32a11_native_drop.c` | W32A-11 native GUI sender, spawning an independent w32run and submitting a pathname through the kernel compositor |
+| `tests/w32a11_payload.txt` | On-disk payload with known bytes for the file-drop guest fixture |
+| `tests/w32a11_token_sender.c`, `tests/w32a11_token_receiver.c` | Independent native tasks testing window-slot recycling, stale/one-shot drop tokens, per-owner ACL and actual payload bytes |
+| `tests/w32a11_theme_matrix.asm` | Two independent v5/v6 manifest PE fixtures using real GDI pixel reads, zero-duration animation and timed-effect refusal |
+| `tests/integration/cases/test_w32a11_dragdrop.sh`, `tests/integration/cases/test_w32a11_tokens.sh`, `tests/integration/cases/test_w32a11_theme.sh` | Incremental QEMU effect gates; none claims the full CLSID/IID application probe |
+| `tests/unit/test_w32_a11_drag.c` | Sanitized host Win64 OLE callback/refcount and STGMEDIUM ownership vector |
+| `tests/W32A11.pinned-probe.5350c54.log` | Text-only, SHA-256-matched second probe on exact 5350c54 base; all three blocked at earlier USER32 imports before entry, NOT a CLSID/IID table |
 | `LICENSING.md`, `PROVENANCE.md` | This documentation |
 
 ### On the application ledgers

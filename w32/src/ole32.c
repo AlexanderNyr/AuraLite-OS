@@ -86,3 +86,14 @@ W32ABI void *CoTaskMemRealloc(void *ptr, size_t bytes) {
     return next;
 }
 W32ABI void CoTaskMemFree(void *ptr) { free(ptr); }
+
+/* Drop targets require an OleInitialize on this thread. No cross-process
+ * marshalling/apartments are invented by this single-process personality. */
+int w32_com_ole_ready(void) {
+    int ready = 0;
+    lock_com();
+    int slot = find_thread(GetCurrentThreadId(), 0);
+    if (slot >= 0 && com_threads[slot].ole_depth) ready = 1;
+    unlock_com();
+    return ready;
+}

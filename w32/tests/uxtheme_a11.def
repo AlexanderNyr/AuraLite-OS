@@ -1,7 +1,19 @@
-; W32A-11: only v6 BUTTON/BP_PUSHBUTTON subset is bound.
+; W32A-11 flat palette-rendered theme and zero-duration buffer fixture imports.
 LIBRARY UXTHEME.dll
 EXPORTS
     OpenThemeData
     CloseThemeData
     DrawThemeBackground
     GetThemeBackgroundContentRect
+    DrawThemeTextEx
+    DrawThemeParentBackground
+    GetThemePartSize
+    GetThemeFont
+    GetThemeTransitionDuration
+    SetWindowTheme
+    EnableThemeDialogTexture
+    BufferedPaintInit
+    BufferedPaintUnInit
+    BeginBufferedAnimation
+    EndBufferedAnimation
+    BufferedPaintStopAllAnimations

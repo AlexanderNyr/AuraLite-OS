@@ -597,38 +597,6 @@ W32ABI W32_DWORD w32_stub_ole32_CoCreateInstance(const void *clsid, void *outer,
     return W32_E_NOTIMPL;
 }
 
-/* ole32.dll!DoDragDrop: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_DoDragDrop(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "DoDragDrop", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* ole32.dll!RegisterDragDrop: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_RegisterDragDrop(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "RegisterDragDrop", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* ole32.dll!ReleaseStgMedium: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI void w32_stub_ole32_ReleaseStgMedium(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "ReleaseStgMedium", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return;
-}
-
-/* ole32.dll!RevokeDragDrop: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_ole32_RevokeDragDrop(void) {
-    static int once = 0;
-    note_todo("ole32.dll", "RevokeDragDrop", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
 /* user32.dll!BeginDeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_BeginDeferWindowPos(void) {
     static int once = 0;
@@ -989,92 +957,12 @@ W32ABI W32_DWORD w32_stub_user32_wsprintfW(void) {
     return 0;
 }
 
-/* uxtheme.dll!BeginBufferedAnimation: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_BeginBufferedAnimation(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "BeginBufferedAnimation", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* uxtheme.dll!BufferedPaintRenderAnimation: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
 W32ABI W32_DWORD w32_stub_uxtheme_BufferedPaintRenderAnimation(void) {
     static int once = 0;
     note_todo("uxtheme.dll", "BufferedPaintRenderAnimation", "W32A-11", &once);
     w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
     return 0;
-}
-
-/* uxtheme.dll!BufferedPaintStopAllAnimations: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_BufferedPaintStopAllAnimations(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "BufferedPaintStopAllAnimations", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!DrawThemeParentBackground: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_DrawThemeParentBackground(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "DrawThemeParentBackground", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!DrawThemeTextEx: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_DrawThemeTextEx(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "DrawThemeTextEx", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!EnableThemeDialogTexture: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_EnableThemeDialogTexture(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "EnableThemeDialogTexture", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!EndBufferedAnimation: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_EndBufferedAnimation(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "EndBufferedAnimation", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!GetThemeFont: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_GetThemeFont(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "GetThemeFont", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!GetThemePartSize: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_GetThemePartSize(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "GetThemePartSize", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!GetThemeTransitionDuration: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_GetThemeTransitionDuration(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "GetThemeTransitionDuration", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* uxtheme.dll!SetWindowTheme: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_SetWindowTheme(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "SetWindowTheme", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
 }
 
 /* ---- generated export table ------------------------------------- */
@@ -1145,10 +1033,6 @@ static const w32_export_t gen_exports[] = {
     { "msvcrt.dll", "wcsstr", (void *)&w32_stub_msvcrt_wcsstr },
     { "ole32.dll", "CLSIDFromProgID", (void *)&w32_stub_ole32_CLSIDFromProgID },
     { "ole32.dll", "CoCreateInstance", (void *)&w32_stub_ole32_CoCreateInstance },
-    { "ole32.dll", "DoDragDrop", (void *)&w32_stub_ole32_DoDragDrop },
-    { "ole32.dll", "RegisterDragDrop", (void *)&w32_stub_ole32_RegisterDragDrop },
-    { "ole32.dll", "ReleaseStgMedium", (void *)&w32_stub_ole32_ReleaseStgMedium },
-    { "ole32.dll", "RevokeDragDrop", (void *)&w32_stub_ole32_RevokeDragDrop },
     { "user32.dll", "BeginDeferWindowPos", (void *)&w32_stub_user32_BeginDeferWindowPos },
     { "user32.dll", "CallNextHookEx", (void *)&w32_stub_user32_CallNextHookEx },
     { "user32.dll", "CharPrevExA", (void *)&w32_stub_user32_CharPrevExA },
@@ -1194,17 +1078,7 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "TranslateAcceleratorW", (void *)&w32_stub_user32_TranslateAcceleratorW },
     { "user32.dll", "UnhookWindowsHookEx", (void *)&w32_stub_user32_UnhookWindowsHookEx },
     { "user32.dll", "wsprintfW", (void *)&w32_stub_user32_wsprintfW },
-    { "uxtheme.dll", "BeginBufferedAnimation", (void *)&w32_stub_uxtheme_BeginBufferedAnimation },
     { "uxtheme.dll", "BufferedPaintRenderAnimation", (void *)&w32_stub_uxtheme_BufferedPaintRenderAnimation },
-    { "uxtheme.dll", "BufferedPaintStopAllAnimations", (void *)&w32_stub_uxtheme_BufferedPaintStopAllAnimations },
-    { "uxtheme.dll", "DrawThemeParentBackground", (void *)&w32_stub_uxtheme_DrawThemeParentBackground },
-    { "uxtheme.dll", "DrawThemeTextEx", (void *)&w32_stub_uxtheme_DrawThemeTextEx },
-    { "uxtheme.dll", "EnableThemeDialogTexture", (void *)&w32_stub_uxtheme_EnableThemeDialogTexture },
-    { "uxtheme.dll", "EndBufferedAnimation", (void *)&w32_stub_uxtheme_EndBufferedAnimation },
-    { "uxtheme.dll", "GetThemeFont", (void *)&w32_stub_uxtheme_GetThemeFont },
-    { "uxtheme.dll", "GetThemePartSize", (void *)&w32_stub_uxtheme_GetThemePartSize },
-    { "uxtheme.dll", "GetThemeTransitionDuration", (void *)&w32_stub_uxtheme_GetThemeTransitionDuration },
-    { "uxtheme.dll", "SetWindowTheme", (void *)&w32_stub_uxtheme_SetWindowTheme },
     { 0, 0, 0 }
 };
 

@@ -1073,7 +1073,7 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_seh.o \
                 $(USER_BUILD)/w32_module.o \
                 $(USER_BUILD)/w32_oleaut32.o $(USER_BUILD)/w32_imm32.o \
-                $(USER_BUILD)/w32_ole32.o $(USER_BUILD)/w32_clipfmt.o \
+                $(USER_BUILD)/w32_ole32.o $(USER_BUILD)/w32_ole_drag.o $(USER_BUILD)/w32_clipfmt.o \
                 $(USER_BUILD)/w32_uxtheme.o $(USER_BUILD)/w32_manifest.o $(USER_BUILD)/w32_stubs_gen.o \
                 $(USER_BUILD)/w32_kernel32_fs.o $(USER_BUILD)/w32_kernel32_ps.o \
                 $(USER_BUILD)/w32_kernel32_loc.o $(USER_BUILD)/w32_msg.o \
@@ -1169,6 +1169,9 @@ $(USER_BUILD)/w32_imm32.o: w32/src/imm32.c w32/include/w32/imm32.h $(USER_CFLAGS
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 # W32A-11: per-thread COM init and CoTaskMem ownership; CLSID gate pending.
 $(USER_BUILD)/w32_ole32.o: w32/src/ole32.c w32/include/w32/ole32.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# In-process drag engine, kept separate from the COM init host amalgam.
+$(USER_BUILD)/w32_ole_drag.o: w32/src/w32_ole_drag.c w32/include/w32/ole32.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_clipfmt.o: w32/src/w32_clipfmt.c w32/include/w32/user32.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -2569,6 +2572,44 @@ $(W32A10_EXE): w32/tests/w32a10_furniture.asm $(K32_IMPLIB) $(W32A10_IMPLIBS)
 # four *_a11.def import libraries are host-generated, NEVER shipped DLLs.
 W32A11_IMPLIBS := $(addprefix $(USER_BUILD)/,ole32_a11.lib oleaut32_a11.lib imm32_a11.lib uxtheme_a11.lib)
 W32A11_EXE := $(USER_BUILD)/w32a11_core.exe
+W32A11_DRAG_EXE := $(USER_BUILD)/w32a11_drag.exe
+W32A11_FILE_EXE := $(USER_BUILD)/w32a11_file_receiver.exe
+W32A11_FILE_SOURCE := $(USER_BUILD)/w32a11_native_drop.elf
+W32A11_TOKEN_SENDER := $(USER_BUILD)/w32a11_token_sender.elf
+W32A11_TOKEN_RECEIVER := $(USER_BUILD)/w32a11_token_receiver.elf
+W32A11_THEME_V5 := $(USER_BUILD)/w32a11_theme_v5.exe
+W32A11_THEME_V6 := $(USER_BUILD)/w32a11_theme_v6.exe
+$(USER_BUILD)/w32a11_token_sender.o: w32/tests/w32a11_token_sender.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/w32a11_token_receiver.o: w32/tests/w32a11_token_receiver.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/w32a11_native_drop.o: w32/tests/w32a11_native_drop.c \
+                                      lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(W32A11_THEME_V5) $(W32A11_THEME_V6): $(USER_BUILD)/w32a11_theme_%.exe: \
+        w32/tests/w32a11_theme_matrix.asm $(K32_IMPLIB) $(U32_IMPLIB) \
+        $(G32_IMPLIB) $(USER_BUILD)/uxtheme_a11.lib $(USER_BUILD)/mantest_%.res
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $(if $(filter v5,$*),-D V5=1,) $< -o $(USER_BUILD)/w32a11_theme_$*.obj
+	lld-link -subsystem:console -entry:winstart -nodefaultlib \
+	         $(USER_BUILD)/w32a11_theme_$*.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(G32_IMPLIB) $(USER_BUILD)/uxtheme_a11.lib $(USER_BUILD)/mantest_$*.res -out:$@
+	@echo "  [pe] $@ (W32A-11 v5/v6 themed pixel and animation fixture)"
+$(W32A11_FILE_EXE): w32/tests/w32a11_file_receiver.asm $(K32_IMPLIB) $(U32_IMPLIB) $(SHELL32_IMPLIB)
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(USER_BUILD)/w32a11_file_receiver.obj
+	lld-link -subsystem:console -entry:winstart -nodefaultlib \
+	         $(USER_BUILD)/w32a11_file_receiver.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(SHELL32_IMPLIB) -out:$@
+$(W32A11_DRAG_EXE): w32/tests/w32a11_drag.asm $(K32_IMPLIB) $(U32_IMPLIB) $(USER_BUILD)/ole32_a11.lib
+	@mkdir -p $(dir $@)
+	$(AS) -f win64 $< -o $(USER_BUILD)/w32a11_drag.obj
+	lld-link -subsystem:console -entry:winstart -nodefaultlib \
+	         $(USER_BUILD)/w32a11_drag.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+	         $(USER_BUILD)/ole32_a11.lib -out:$@
 $(W32A11_EXE): w32/tests/w32a11_core.asm $(K32_IMPLIB) $(U32_IMPLIB) \
                $(G32_IMPLIB) $(W32A11_IMPLIBS) $(USER_BUILD)/mantest_v6.res
 	@mkdir -p $(dir $@)
@@ -3135,7 +3176,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
@@ -3329,6 +3370,14 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@cp $(W32A9_EXE) $(INITRD_DIR)/tests/w32a9_registry.exe
 	@cp $(W32A10_EXE) $(INITRD_DIR)/tests/w32a10_furniture.exe
 	@cp $(W32A11_EXE) $(INITRD_DIR)/tests/w32a11_core.exe
+	@cp $(W32A11_DRAG_EXE) $(INITRD_DIR)/tests/w32a11_drag.exe
+	@cp $(W32A11_THEME_V5) $(INITRD_DIR)/tests/w32a11_theme_v5.exe
+	@cp $(W32A11_THEME_V6) $(INITRD_DIR)/tests/w32a11_theme_v6.exe
+	@cp $(W32A11_FILE_EXE) $(INITRD_DIR)/tests/w32a11_file_receiver.exe
+	@strip -s $(W32A11_FILE_SOURCE) -o $(INITRD_DIR)/tests/w32a11_native_drop
+	@strip -s $(W32A11_TOKEN_SENDER) -o $(INITRD_DIR)/tests/w32a11_token_sender
+	@strip -s $(W32A11_TOKEN_RECEIVER) -o $(INITRD_DIR)/tests/w32a11_token_receiver
+	@cp w32/tests/w32a11_payload.txt $(INITRD_DIR)/tests/w32a11_payload.txt
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
 	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
 	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
@@ -3628,6 +3677,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a11_oleaut $(BUILD_DIR)/test_w32_a11_imm \
                 $(BUILD_DIR)/test_w32_a11_com $(BUILD_DIR)/test_w32_a11_clipfmt \
                 $(BUILD_DIR)/test_w32_a11_theme $(BUILD_DIR)/test_w32_a11_drop \
+                $(BUILD_DIR)/test_w32_a11_drag \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3863,6 +3913,12 @@ $(BUILD_DIR)/test_w32_a11_drop: tests/unit/test_w32_a11_drop.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
 	          -ffunction-sections -fdata-sections -fsanitize=address,undefined \
 	          $(W32_INC) -I . $< w32/src/w32_utf.c -Wl,--gc-sections -o $@
+$(BUILD_DIR)/test_w32_a11_drag: tests/unit/test_w32_a11_drag.c \
+                                 w32/src/w32_ole_drag.c w32/include/w32/ole32.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined -D_POSIX_C_SOURCE=200809L \
+	          $(W32_INC) $< -o $@
 
 # Host tool: dump a PE image (WIN32_PLAN.md W32-2).  Also the fixture for the
 # llvm-readobj cross-check gate below.

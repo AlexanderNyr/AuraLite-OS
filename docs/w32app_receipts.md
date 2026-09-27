@@ -54,11 +54,12 @@ binaries (4 applications + 4 plugins). `check` is hermetic: it parses
 the five committed ledgers, re-derives the §2.2 census (348/298/86/590,
 union 611, gap 569) and the live export count from `w32/src/w32_bind.c`.
 
-## W32A-11 — incremental evidence only (2026-09-24; NOT DONE)
+## W32A-11 — incremental evidence only (2026-09-24 and 2026-09-27; NOT DONE)
 
-This is **not** `test_w32a11_ole.sh`, the scripted-app CLSID/IID probe, an
-end-to-end compositor file-drop, or a green full `make test` receipt. The
-phase heading in the plan is IN PROGRESS; none of these checks alone flips it.
+The original 2026-09-24 core receipt below did **not** cover compositor
+file-drops or OLE drags. The 2026-09-27 follow-up does; neither is the
+scripted-app CLSID/IID probe, the full `test_w32a11_ole.sh` phase gate or a
+green full `make test` receipt. The plan stays IN PROGRESS.
 
 - Guest: `make iso && bash tests/integration/cases/test_w32a11_core_subset.sh`
   (13/13 assertions). QEMU boots the ISO and runs the committed
@@ -104,13 +105,61 @@ import: PuTTY `CreateDialogParamA`, 7-Zip FM `GetMenuItemInfoW`, Notepad++
 loading; Notepad++ plugins were not included in this probe. These are NOT
 scripted application sessions and the log is NOT an empty CLSID/IID table:
 no COM activation was observed. `CoCreateInstance` and `CLSIDFromProgID`
-therefore stay typed TODOs. `UI_EVT_DROP` carries coordinates plus a 16-bit
-data field, not file paths, so separate HDROP handles and `DragQueryFileW`
-cannot satisfy compositor file-drop delivery. The remaining OLE drag/drop
-APIs and most UxTheme parts/animation remain TODO.
+therefore stay typed TODOs. As of this original receipt, `GUI_EVT_DROP`
+carried coordinates and a 16-bit data field, not file paths; separate HDROP
+handles and `DragQueryFileW` alone could not deliver cross-process drops.
+The 2026-09-27 patch adds an owned pathname-token transport and the bounded
+OLE/flat-theme implementations below. Timed animation remains unsupported.
 `check_w32app_claims.py --check` also fails on pre-existing missing
 `patches/W32A2_kernel32fs.patch`, `patches/W32A3_threads.patch`, and
 `patches/W32A4_unwind.patch`; do not mask that failure as W32A-11 DONE.
+
+### Follow-up on exact `5350c54d466173f38bc80b550c65c3d8bfff8a5f` (2026-09-27)
+
+This patch is **directly against that commit**, not a re-export of the
+already-merged W32A-11 core subset. New, independently asserted effects:
+
+| gate / command after `make iso` | result | observed contract |
+|---|---:|---|
+| `bash tests/integration/cases/test_w32a11_core_subset.sh` | 13/13 | Regression: Win64 COM nesting, OLEAUT32 ordinal BSTR/VARIANT bytes, ten IMM32 behaviours, A/W clipboard IDs, v6 BUTTON pixels; PE exit 78. The fixture is from the base commit. |
+| `bash tests/integration/cases/test_w32a11_dragdrop.sh` | 11/11 | OLE `IDropTarget`/`IDropSource` Win64 callbacks across two registered HWNDs, proper refcounts and a mouse-release drop; separately, a native task sends a path across process boundaries to an `WS_EX_ACCEPTFILES` PE HWND. That PE queries **its own** HDROP, opens the returned path and compares actual file contents. Both PE instances and native sender exit 78. |
+| `bash tests/integration/cases/test_w32a11_tokens.sh` | 7/7 | Two independent native tasks: old still-busy path token rejected after destruction/reuse of the **same** window slot; unrelated PID cannot take the new token, while its actual owner can consume it once and read the on-disk payload. Both tasks exit 78. |
+| `bash tests/integration/cases/test_w32a11_theme.sh` | 9/9 | Distinct v5/v6 manifest PEs: v5 retains a GDI fallback pixel; v6 overwrites it with two distinguishable themed states, refuses an unknown part without painting, measures size/content and a zero-duration transition, copies a compatible-bitmap animation frame into the target DC, rejects a timed frame, invalidates a stopped buffer; each exits 78. |
+| `make -j8 test-unit` | PASS | ASan/UBSan A11 checks: OLEAUT 29, IMM 21, COM 203, named clipboard 263, theme 254 (all advertised part/states plus resource cleanup), HDROP 20, OLE drag 61 including release over a new/empty HWND; width ratchet 394/394. Provenance negative-control messages in its log are *expected* detections. |
+| `test_gui_acl.sh`, `test_gui_bad_pointers.sh` | 5/5, 2/2 | Adjacent kernel GUI ownership and hostile-pointer regression gates. |
+
+`python3 tools/w32_gen_stubs.py --check` and
+`python3 tools/w32_import_ledger.py check` pass (607 personality exports,
+611 ledger union, 41 uncovered); 202/202 integration cases are registered,
+with each case assigned to exactly one shard. All three new QEMU gates are
+registered. Runtime logs are written under `build/integration-logs/` and
+build artefacts/third-party PE bytes are **not** part of this patch.
+
+**Boundaries:** file-drop transports one bounded, absolute pathname per
+token (eight outstanding slots per HWND, 256-byte slot) with destination PID
+ownership, not a cross-process pointer or OLE object. Event polling/waiting
+rechecks owner while holding the event lock, and blocking waits also pin the
+window lifetime; a reused integer HWND cannot deliver its new owner's event
+to an old waiter. The 16-bit event-data token reserves four bits for its slot
+and 12 bits for a nonzero generation;
+generation survives HWND recycling but, by construction, wraps after 4095
+uses of a given slot. External OLE sources, apartments/marshalling, UxTheme
+timed animations and DIB/alpha effects remain unsupported; unadvertised
+part/state combinations return `E_NOTIMPL`, not a fake themed drawing.
+
+The fresh upstream probe `w32/tests/W32A11.pinned-probe.5350c54.log` verifies
+all four SHA-256 pins again and boots the three executables from an **external**
+FAT32 image. PuTTY still stops at `USER32!CreateDialogParamA`, 7-Zip FM at
+`USER32!GetMenuItemInfoW`, Notepad++ at
+`USER32!CreateDialogIndirectParamW`: each fails import binding **before**
+its entry point, so no CLSID/IID or ProgID is observed and **no activation
+table is claimed**. Fixing those unrelated USER32 prerequisites is separate
+from this W32A-11 patch. `CoCreateInstance`/`CLSIDFromProgID` remain
+instrumented, typed TODOs. The full `make test` suite has **not** been run;
+`tools/check_w32app_claims.py --check` remains red for the pre-existing
+missing `patches/W32A2_kernel32fs.patch`, `patches/W32A3_threads.patch`,
+`patches/W32A4_unwind.patch`. Neither the full W32A-11 gate nor the three
+pinned-app gates are green.
 
 ## App-gate receipts (reserved format)
 

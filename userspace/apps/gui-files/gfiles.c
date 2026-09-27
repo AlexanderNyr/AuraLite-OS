@@ -9,6 +9,8 @@ static int wid;
 static ag_widget_t widgets[16];
 static ag_view_t view;
 static ag_widget_t *path_box, *list, *content_view, *status;
+static int drag_armed, drag_moved, drag_x, drag_y;
+static char drag_path[AG_DROP_PATH_MAX];
 
 /* Fixed names list backing the listbox.  We store entries as a flat buffer of
  * concatenated NUL-terminated names so the listbox's `items[]` (char*) array
@@ -17,7 +19,6 @@ static char names_buf[8192];
 static char *names_ptr[AG_MAX_LIST_ITEMS];
 
 static void load_dir(const char *path) {
-    ag_listbox_clear(list);
     /* AuraLite's VFS exposes readdir via SYS_STAT? Actually via separate
      * syscall.  For simplicity we re-use the legacy `listdir` (prints to
      * console) — and additionally try opening the path as a file to show
@@ -60,6 +61,8 @@ static void load_dir(const char *path) {
         return;
     }
 
+    /* A file preview must not destroy the list selection while dragging. */
+    ag_listbox_clear(list);
     /* Directory — populate listbox via readdir. */
     int np = 0;
     int bp = 0;
@@ -101,20 +104,68 @@ static void on_open(ag_widget_t *w, void *u) {
     load_dir(path_box->text);
 }
 
-static void on_select(ag_widget_t *w, void *u) {
-    (void)u;
-    if (w->selected < 0 || w->selected >= w->item_count) return;
-    /* Build path = base "/" name. */
-    char p[256];
-    int n = 0;
+/* Bounded absolute path of the currently selected entry, not the path box's
+ * mutable text. A file preview leaves the directory/list selection intact. */
+static int selected_path(char *out, size_t cap) {
+    if (!list || list->selected < 0 || list->selected >= list->item_count)
+        return -1;
     const char *base = path_box->text;
-    while (base[n]) { p[n] = base[n]; n++; }
-    if (n > 0 && p[n-1] != '/') p[n++] = '/';
-    const char *nm = w->items[w->selected];
-    while (*nm) { p[n++] = *nm++; }
-    p[n] = 0;
-    ag_textbox_set(path_box, p);
-    load_dir(p);
+    const char *name = list->items[list->selected];
+    if (!base || base[0] != '/' || !name || strchr(name, '/')) return -1;
+    size_t n = strlen(base), m = strlen(name);
+    size_t slash = (n > 0 && base[n - 1] == '/') ? 0 : 1;
+    if (!m || n + slash + m >= cap) return -1;
+    memcpy(out, base, n);
+    if (slash) out[n++] = '/';
+    memcpy(out + n, name, m + 1);
+    return 0;
+}
+
+static void on_select(ag_widget_t *w, void *u) {
+    (void)w; (void)u;
+    char path[AG_DROP_PATH_MAX];
+    if (selected_path(path, sizeof path) != 0) return;
+    struct stat st;
+    if (stat(path, &st) != 0) return;
+    if (st.st_type != ST_TYPE_FILE) ag_textbox_set(path_box, path);
+    load_dir(path);
+}
+
+/* USER32 consumers receive WM_DROPFILES only when they opted into
+ * WS_EX_ACCEPTFILES. This native file manager supplies the real absolute path
+ * on release over a DIFFERENT compositor window's client area. Capture keeps
+ * the sender receiving the release, but drop hit-testing ignores capture. */
+static int on_drag(ag_view_t *v, const ag_event_t *e, void *user) {
+    (void)v; (void)user;
+    if (e->type == AG_EVT_MOUSE_DOWN &&
+        e->x >= list->x && e->x < list->x + (int32_t)list->w &&
+        e->y >= list->y && e->y < list->y + (int32_t)list->h) {
+        struct stat st;
+        drag_armed = selected_path(drag_path, sizeof drag_path) == 0 &&
+                     stat(drag_path, &st) == 0 && st.st_type == ST_TYPE_FILE;
+        drag_moved = 0; drag_x = e->x; drag_y = e->y;
+        if (drag_armed) ag_window_capture(wid);
+    }
+    if (drag_armed && e->type == AG_EVT_MOUSE_MOVE) {
+        int dx = e->x - drag_x, dy = e->y - drag_y;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        if (dx + dy >= 6) drag_moved = 1;
+    }
+    if (drag_armed && e->type == AG_EVT_MOUSE_UP) {
+        if (drag_moved) {
+            int sent = ag_send_file_drop(wid, drag_path);
+            ag_textbox_set(status, sent == 0 ? "File delivered" :
+                                            "No accepting window under pointer");
+        }
+        ag_window_capture(-1);
+        drag_armed = drag_moved = 0;
+    }
+    if (drag_armed && e->type == AG_EVT_KEY_DOWN && e->key == 27) {
+        ag_window_capture(-1);
+        drag_armed = drag_moved = 0;
+    }
+    return 0;
 }
 
 int main(void) {
@@ -137,6 +188,6 @@ int main(void) {
     status = ag_add_textbox(&view, 60, 250, 466, 24, "ready");
 
     load_dir("/");
-    ag_view_run(&view, 0, 0);
+    ag_view_run(&view, on_drag, 0);
     return 0;
 }

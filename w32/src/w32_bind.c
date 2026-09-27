@@ -388,18 +388,36 @@ static const w32_export_t exports[] = {
     { OA32, "VariantClear",          (void *)VariantClear          },
     { OA32, "VariantCopy",           (void *)VariantCopy           },
 
-    /* W32A-11 subset: COM init/heap, real BUTTON theme pixels and all ten
-     * typed fail-clean IME calls; activation/drag/UxTheme remainder TODO. */
+    /* W32A-11: in-process OLE targets, typed STGMEDIUM, flat theme pixels.
+     * No cross-process COM marshalling, external source or timed animation.
+     * Activation stays an instrumented refusal until the pinned app probe. */
     { O32, "CoInitialize", (void *)CoInitialize },
     { O32, "CoUninitialize", (void *)CoUninitialize },
     { O32, "OleInitialize", (void *)OleInitialize },
     { O32, "OleUninitialize", (void *)OleUninitialize },
     { O32, "CoTaskMemAlloc", (void *)CoTaskMemAlloc },
+    { O32, "CoTaskMemRealloc", (void *)CoTaskMemRealloc },
     { O32, "CoTaskMemFree", (void *)CoTaskMemFree },
+    { O32, "DoDragDrop", (void *)DoDragDrop },
+    { O32, "RegisterDragDrop", (void *)RegisterDragDrop },
+    { O32, "RevokeDragDrop", (void *)RevokeDragDrop },
+    { O32, "ReleaseStgMedium", (void *)ReleaseStgMedium },
     { UX32, "OpenThemeData", (void *)OpenThemeData },
     { UX32, "CloseThemeData", (void *)CloseThemeData },
     { UX32, "DrawThemeBackground", (void *)DrawThemeBackground },
     { UX32, "GetThemeBackgroundContentRect", (void *)GetThemeBackgroundContentRect },
+    { UX32, "DrawThemeTextEx", (void *)DrawThemeTextEx },
+    { UX32, "DrawThemeParentBackground", (void *)DrawThemeParentBackground },
+    { UX32, "GetThemePartSize", (void *)GetThemePartSize },
+    { UX32, "GetThemeFont", (void *)GetThemeFont },
+    { UX32, "GetThemeTransitionDuration", (void *)GetThemeTransitionDuration },
+    { UX32, "SetWindowTheme", (void *)SetWindowTheme },
+    { UX32, "EnableThemeDialogTexture", (void *)EnableThemeDialogTexture },
+    { UX32, "BufferedPaintInit", (void *)BufferedPaintInit },
+    { UX32, "BufferedPaintUnInit", (void *)BufferedPaintUnInit },
+    { UX32, "BeginBufferedAnimation", (void *)BeginBufferedAnimation },
+    { UX32, "EndBufferedAnimation", (void *)EndBufferedAnimation },
+    { UX32, "BufferedPaintStopAllAnimations", (void *)BufferedPaintStopAllAnimations },
     { I32, "ImmGetContext", (void *)ImmGetContext },
     { I32, "ImmReleaseContext", (void *)ImmReleaseContext },
     { I32, "ImmGetCompositionStringW", (void *)ImmGetCompositionStringW },

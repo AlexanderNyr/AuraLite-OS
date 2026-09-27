@@ -1,0 +1,57 @@
+# W32A-11 second pinned-application runtime probe, 2026-09-27.
+# NOT a CLSID/IID activation table; no scriptable application session ran.
+base-commit: 5350c54d466173f38bc80b550c65c3d8bfff8a5f
+working-tree: base plus the W32A-11 changes in this patch, make iso
+machine: QEMU x86_64 BIOS; 512 MiB; IL_SELFTEST=fast
+transport: host-only 128 MiB FAT32, BPB at LBA 64; one AHCI disk mapped /fat
+# A FAT BPB at LBA 0 did not mount (the kernel expects LBA 64); that first
+# transport attempt is EXCLUDED from the observations below. No upstream
+# executable, installer, archive or FAT image was added to the Git tree/ISO.
+# Original extracted PE bytes were hashed BEFORE copying to the external FAT.
+
+app: PuTTY 0.85
+url: https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe
+PE: putty.exe
+sha256: d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87
+command: run /apps/w32run /fat/PUTTY.EXE
+seen: [fat32] mounted FAT32 at /fat (base LBA 64, ...)
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!CreateDialogParamA
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+
+app: 7-Zip File Manager 24.09
+url: https://www.7-zip.org/a/7z2409-x64.exe
+PE: 7zFM.exe
+sha256: dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58
+companion-PE: 7z.dll
+companion-sha256: 882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+command: run /apps/w32run /fat/7ZFM.EXE
+seen: [fat32] mounted FAT32 at /fat (base LBA 64, ...)
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!GetMenuItemInfoW
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+# 7Z.DLL was copied to FAT, but the app never entered; DLL loading unobserved.
+
+app: Notepad++ 8.8.9 (portable x64)
+url: https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.9/npp.8.8.9.portable.x64.zip
+PE: notepad++.exe (copied as NPP.EXE; portable plugin DLLs not included)
+sha256: a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d
+command: run /apps/w32run /fat/NPP.EXE
+seen: [fat32] mounted FAT32 at /fat (base LBA 64, ...)
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: unresolved import USER32.dll!CreateDialogIndirectParamW
+seen: [shell] '/apps/w32run' (tid 8) exited (code=1)
+
+result: ALL THREE BLOCKED BEFORE ENTRY on earlier USER32 import gaps.
+observed-CLSID/IID-pairs: NOT OBSERVED; not an empty table of requests.
+observed-ProgIDs: NOT OBSERVED.
+consequence: no application CLSID/ProgID activation table can be claimed;
+CoCreateInstance and CLSIDFromProgID stay typed, diagnostic TODOs. Fixing
+unrelated USER32 prerequisites must not be disguised as W32A-11 completion.
+reproduction: make iso; create an external FAT32 disk with the verified PE
+files at LBA 64; boot with -drive file=<disk>,format=raw,if=none,id=fat \
+  -device ahci,id=ahci -device ide-hd,drive=fat,bus=ahci.0;
+run each command above from the serial shell. Local raw QEMU logs (not tracked):
+  build/integration-logs/a11-5350-pinned-PUTTY.log
+  build/integration-logs/a11-5350-pinned-7ZFM.log
+  build/integration-logs/a11-5350-pinned-NPP.log

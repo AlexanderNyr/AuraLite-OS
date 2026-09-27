@@ -170,7 +170,8 @@ typedef enum {
 #define GUI_EVT_PAINT             17
 #define GUI_EVT_CONTEXT_MENU      18  /* right-click in client area */
 #define GUI_EVT_SNAP_CHANGED      19  /* window snap state changed */
-#define GUI_EVT_DROP              20  /* drag-drop completed (future) */
+#define GUI_EVT_DROP              20  /* data: per-window pathname token */
+#define GUI_DROP_PATH_MAX         256
 #define GUI_EVT_ICON_CLICK        21  /* desktop icon activated */
 #define GUI_EVT_COUNT             22  /* sentinel — must be last */
 
@@ -238,7 +239,7 @@ int  gui_pid_has_windows(uint64_t owner_pid);
 /* ---- Window lifecycle ---- */
 int  gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                        const char *title, uint32_t flags);
-int  gui_destroy_window(int wid);
+int  gui_destroy_window(int wid, uint64_t owner_pid);
 int  gui_show_window(int wid);
 int  gui_hide_window(int wid);
 int  gui_move_window(int wid, int32_t x, int32_t y);
@@ -296,9 +297,15 @@ int  gui_invalidate_window(int wid);
 int  gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h);
 
 /* Event delivery. */
+/* File path bytes stay in a per-window kernel slot; the 16-bit event data
+ * carries only a slot+generation token. Sender must own its source window;
+ * recipient must own the destination to consume its token exactly once. */
+int  gui_send_file_drop(int source_wid, uint64_t source_pid, const char *path);
+int  gui_take_file_drop(int destination_wid, uint64_t destination_pid,
+                        uint16_t token, char out[GUI_DROP_PATH_MAX]);
 int  gui_post_event(int wid, const gui_event_t *evt);
-int  gui_poll_event(int wid, gui_event_t *out);
-int  gui_wait_event(int wid, gui_event_t *out);
+int  gui_poll_event(int wid, uint64_t owner_pid, gui_event_t *out);
+int  gui_wait_event(int wid, uint64_t owner_pid, gui_event_t *out);
 
 /* Cursor. */
 void gui_set_cursor(gui_cursor_t c);
