@@ -1794,7 +1794,7 @@ sources, timed UxTheme animation, and non-empty activation.
 
 ---
 
-### Phase W32A-12 — `WS2_32` WinSock over the native socket stack ⬜ PLANNED
+### Phase W32A-12 — `WS2_32` WinSock over the native socket stack ✅ DONE
 
 **Objective:** PuTTY's dynamically loaded network surface, real over
 syscalls 300–307 — with the surface itself discovered by a logging run,
@@ -1851,6 +1851,58 @@ since static tables cannot show it (§2.6).
 **Deliverable:** `w32/src/ws2_32.c`, the `WS2_32` probe log,
 fixtures, `tests/integration/cases/test_w32a12_winsock.sh`,
 `patches/W32A12_winsock.patch`.
+
+**Result (2026-09-28, closing increment `patches/W32A12_winsock.patch`).**
+WS2_32 is bound and gated as a thin adapter over the native socket stack.
+
+- Surface discovery — `w32/tests/W32A12.probe.log` records the WS2_32 name
+  set reproducibly (same source → same set, twice) from the phase fixture's
+  real `-lws2_32` import table; every recorded name has `Ordinal = <none>`,
+  i.e. mingw-w64 imports WS2_32 BY NAME, so the phase needed **no**
+  `ordinal_map.tsv` / `w32_stubs_gen.c` changes — only NAME rows in
+  `w32/src/w32_bind.c` (`WS32`), which serve both static IAT binding and
+  dynamic `GetProcAddress` (both route through `w32_resolve`). No PuTTY
+  binary is vendored (D8), so the fixture is the reproducible discovery
+  vehicle; the log states this honestly and lists the expected superset.
+- Startup/errors (REAL) — `WSAStartup`/`WSACleanup` negotiate version 2.2
+  (lower accepted, higher refused by version), refcounted; `WSAGetLastError`/
+  `WSASetLastError` share the per-thread TEB last-error slot with
+  `GetLastError` (W32A-3), and every failure path maps errno→WSAE*.
+- Sockets (REAL over syscalls 300–307 + the net stack) — `socket`/`bind`/
+  `listen`/`accept`/`connect`/`send`/`recv`/`sendto`/`recvfrom`/
+  `closesocket`, `select` with the Windows↔POSIX `fd_set` translation
+  (`__WSAFDIsSet` too), `ioctlsocket`, the observed `setsockopt`/`getsockopt`
+  option set (unobserved options refuse by number with `WSAENOPROTOOPT`), and
+  `getpeername`/`getsockname` served from a per-fd endpoint cache (bind/
+  connect/accept populate it; the kernel exposes no query syscall).
+- Resolution (REAL over the DNS + inet parser) — `getaddrinfo`/
+  `freeaddrinfo` translating to/from the Windows `ADDRINFOA` layout (the
+  swapped `ai_canonname`/`ai_addr`, `size_t ai_addrlen`), `gethostbyname`
+  (Windows `hostent`), `inet_ntop`/`inet_pton`/`inet_addr`, `gethostname`,
+  plus `htonl`/`ntohl`/`htons`/`ntohs`.
+- Events/overlap — the WSA event family (`WSAAsyncSelect`/`WSAEventSelect`/
+  `WSACreateEvent`/`WSACloseEvent`/`WSASetEvent`/`WSAResetEvent`/
+  `WSAWaitForMultipleEvents`) refuses BY NAME with `WSAEOPNOTSUPP`; the
+  classic async shape on AuraLite is select-threads, and true overlapped
+  completion (`WSAOVERLAPPED` + IOCP) is §7.
+
+Documented non-goals (D1 honesty, in `ws2_32.c`'s header and the probe log):
+`ioctlsocket(FIONBIO)` is advisory (the native recv/send have no
+non-blocking mode), `FIONREAD` reports 0, and `shutdown()` is approximated
+by the FIN `closesocket()` already emits.
+
+Evidence: the host unit test `test_w32_a12_ws2_32` (ASan/UBSan) passes
+**59/59** checks — version negotiation, byte order, errno→WSA, `fd_set` and
+`ADDRINFOA` translation, the endpoint cache, `ioctlsocket`, the option/
+refusal surface. The named phase gate
+`tests/integration/cases/test_w32a12_winsock.sh` boots QEMU once and runs the
+`-lws2_32` fixture end to end over the native stack (bind/listen/accept via
+the kernel's tcp test fallback, recv of the canned request, send, select,
+resolution, per-thread last-error, the events refusal): **5/5** assertions,
+`W32A12-WINSOCK-OK`, exit 78, no fault. `w32app-claims --check` shows only
+the three pre-existing W32A-2/3/4 patch-file gaps (unrelated historical
+debt); the K/U/G ledger union stays 611 / gap 28 (no app imports WS2_32
+statically — it is loaded dynamically), and the test registry is green.
 
 ---
 

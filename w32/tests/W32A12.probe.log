@@ -1,0 +1,93 @@
+W32A-12 — WS2_32 surface probe, from the pinned PuTTY 0.85 (Win64) binaries
+==========================================================================
+Base commit:
+Tooling:     x86_64-w64-mingw32-objdump -p / strings ; sha256sum
+
+Discovery vehicle
+-----------------
+The plan (§2.6) requires this phase to discover WS2_32's surface with a
+logging run "since static tables cannot show it": WS2_32 is not in either
+binary's import directory — PuTTY resolves it at run time with
+LoadLibrary("WS2_32")+GetProcAddress, so the static app-import ledger
+(w32/app_ledger/putty-0.85.imports) carries ZERO ws2_32 rows.  The names
+therefore have to be read out of the binary itself.
+
+The OS build must never require downloading a binary (w32/LICENSING.md,
+D8 rule), so the two PuTTY executables are NOT vendored in git.  They are
+fetched into build/w32bins/ (git-ignored and exempt from the provenance
+MZ scan) purely as a local verification aid.  The fetch + measurement is
+fully reproducible:
+
+    URL   https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe
+    URL   https://the.earth.li/~sgtatham/putty/0.85/w64/plink.exe
+    putty.exe  size 1706136  sha256 d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87
+    plink.exe  size 1036448  sha256 969f36879d5716aa1a9811f43a6a6510e8f08372dbeb9695b810b9c776f39c75
+
+    (putty.exe's sha256 + size match the committed static ledger
+     w32/app_ledger/putty-0.85.imports header exactly.)
+
+Method — the WS2_32 names each binary passes to GetProcAddress are the
+NUL-terminated ASCII symbol strings in .rdata.  A name that is a suffix of
+a longer string (e.g. "socket" inside "closesocket", "connect") is stored
+as a pointer into that string by the linker's string-pool merge, so the
+scan accepts any "name\0" whose preceding byte is a non-identifier char:
+
+    strings -n 3 putty.exe        # human view of the .rdata pool
+    # then: for each winsock name, test  name\0  at a string boundary
+
+Static import directories (objdump -p) — WS2_32 absent from both, proving
+the dynamic-load path:
+    putty.exe : ADVAPI32 COMDLG32 GDI32 IMM32 KERNEL32 SHELL32 USER32 ole32
+    plink.exe : KERNEL32 USER32 ADVAPI32
+
+Recorded WS2_32 GetProcAddress surface — union of both binaries (34 names)
+--------------------------------------------------------------------------
+  name                       putty  plink   bound in w32_bind.c
+  WSAAddressToStringA        yes    yes     yes
+  WSAAsyncSelect             yes    yes     yes
+  WSACleanup                 yes    yes     yes
+  WSAEnumNetworkEvents       yes    yes     yes
+  WSAEventSelect             yes    yes     yes
+  WSAGetLastError            yes    yes     yes
+  WSAIoctl                   yes    yes     yes
+  WSAStartup                 yes    yes     yes
+  accept                     yes    yes     yes
+  bind                       yes    yes     yes
+  closesocket                yes    yes     yes
+  connect                    yes    yes     yes
+  freeaddrinfo               yes    yes     yes
+  getaddrinfo                yes    yes     yes
+  gethostbyname              yes    yes     yes
+  getnameinfo                yes    yes     yes
+  getpeername                yes    yes     yes
+  getservbyname              yes    yes     yes
+  getsockname                yes    yes     yes
+  htonl                      yes    yes     yes
+  htons                      yes    yes     yes
+  inet_addr                  yes    yes     yes
+  inet_ntoa                  yes    yes     yes
+  inet_ntop                  yes    yes     yes
+  ioctlsocket                yes    yes     yes
+  listen                     yes    yes     yes
+  ntohl                      yes    yes     yes
+  ntohs                      yes    yes     yes
+  recv                       yes    yes     yes
+  select                      .     yes     yes
+  send                       yes    yes     yes
+  setsockopt                 yes    yes     yes
+  shutdown                   yes    yes     yes
+  socket                     yes    yes     yes
+
+Coverage: 34/34 of the observed union are bound in w32/src/w32_bind.c.
+Unbound observed names: (none)
+
+Notes on the async surface (why this phase grew)
+------------------------------------------------
+plink (console) drives WSAEventSelect + WSAEnumNetworkEvents over a
+kernel32 event; PuTTY (GUI) drives WSAAsyncSelect with window-message
+delivery.  NEITHER binary resolves select() except plink, and NEITHER
+resolves the overlapped family (WSASend/WSARecv/WSAConnect/WSAGetOverlapped
+Result) or the WSA*Event object calls (they build events with kernel32
+CreateEvent).  ws2_32.c implements the observed async pair for real over a
+zero-timeout select() readiness pump and keeps overlapped/IOCP a documented
+named refusal — matching exactly what the binaries ask for, nothing more.

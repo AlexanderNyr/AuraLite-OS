@@ -138,6 +138,8 @@ ReactOS.
 | `include/w32/imm32.h`, `src/imm32.c` | W32A-11 typed FAIL-CLEAN IME boundaries; no composition engine |
 | `include/w32/uxtheme.h`, `src/uxtheme.c` | W32A-11 compositor-palette flat BUTTON/EDIT/TAB/PROGRESS/COMBO part/state matrix, per-part refusal, per-window theme cleanup, zero-duration compatible-bitmap animation; timed effects/DIB/alpha refused |
 | `src/w32_clipfmt.c` | W32A-11 shared A/W named clipboard-format registry; does not imply clipboard data transport |
+| `include/w32/ws2_32.h`, `src/ws2_32.c` | W32A-12 WS2_32 WinSock: thin adapter over the native libc socket surface + DNS/inet parser; version negotiation, socket verbs, `select` fd_set translation, `getpeername`/`getsockname` cache, resolution; WSA event/overlapped family refused by name; author-written, no third-party bytes |
+| `tests/w32a12_winsock.c` | W32A-12 guest fixture: mingw-w64 TU (`-lws2_32`, name imports) exercising the WinSock surface over the native stack; author-written |
 | `tests/ole32_a11.def`, `tests/oleaut32_a11.def`, `tests/imm32_a11.def`, `tests/uxtheme_a11.def` | W32A-11 incremental PE import-library declarations (only fixture names; no third-party bytes) |
 | `tests/w32a11_core.asm` | W32A-11 subset guest fixture: COM/BSTR/VARIANT, OLEAUT32 ordinals, IMM32 refusal, clipboard-format IDs, BUTTON pixel diff |
 | `tests/w32a11_probe.asm` | W32A-11 independent Win64 PE with synthetic GUID and Unicode ProgID vectors: generated TODO probes log exact IDs, return `E_NOTIMPL`, clear outputs; no pinned-app activation is inferred |

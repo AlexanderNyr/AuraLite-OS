@@ -1086,7 +1086,8 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_advapi32.o \
                 $(USER_BUILD)/w32_shlwapi.o $(USER_BUILD)/w32_shell32.o \
                 $(USER_BUILD)/w32_comdlg32.o $(USER_BUILD)/w32_version.o \
-                $(USER_BUILD)/w32_w32aux.o
+                $(USER_BUILD)/w32_w32aux.o \
+                $(USER_BUILD)/w32_ws2_32.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1144,6 +1145,10 @@ $(USER_BUILD)/w32_comdlg32.o: w32/src/comdlg32.c w32/include/w32/comdlg32.h $(US
 $(USER_BUILD)/w32_version.o: w32/src/version.c w32/include/w32/version.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_w32aux.o: w32/src/w32aux.c w32/include/w32/w32aux.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-12: WS2_32 WinSock, a thin adapter over the native
+# socket stack (syscalls 300-307) + the DNS/inet parser layer.
+$(USER_BUILD)/w32_ws2_32.o: w32/src/ws2_32.c w32/include/w32/ws2_32.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -2980,6 +2985,23 @@ $(W32A2_EXES): $(W32_MINGW_STAMP)
 	@: > $@
 endif
 
+# W32APP_PLAN.md W32A-12: the WS2_32 WinSock guest fixture.  Same contract as
+# the W32A-2 probes (compiler-emitted C, -nostdlib, winstart entry) but it
+# also links -lws2_32, so its WS2_32 imports are genuine name imports.
+W32A12_EXE := $(BUILD_DIR)/user/w32a12_winsock.exe
+ifneq ($(MINGW_CC),)
+$(W32A12_EXE): w32/tests/w32a12_winsock.c $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -lkernel32 -lws2_32 -lgcc
+	@echo "  [pe] $@ (W32A-12 WinSock guest fixture)"
+else
+$(W32A12_EXE): $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the W32A-12 fixture (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
 # W32A-4: the real-C++ unwinding fixture.  -nostdlib + --entry=winstart like
 # the A2 probes (kernel32-only imports, no msvcrt.dll); libstdc++/libgcc come
 # in statically, and the TU carries every CRT shim the link needs (see the
@@ -3188,7 +3210,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
@@ -3408,6 +3430,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@for f in $(W32A2_EXES); do \
 	    if [ -s $$f ]; then cp $$f $(INITRD_DIR)/tests/; fi; \
 	done
+# W32A-12: the WinSock guest fixture, basename-preserved.
+	@if [ -s $(W32A12_EXE) ]; then cp $(W32A12_EXE) $(INITRD_DIR)/tests/w32a12_winsock.exe; fi
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.
@@ -3692,6 +3716,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a11_com $(BUILD_DIR)/test_w32_a11_clipfmt \
                 $(BUILD_DIR)/test_w32_a11_theme $(BUILD_DIR)/test_w32_a11_drop \
                 $(BUILD_DIR)/test_w32_a11_drag $(BUILD_DIR)/test_w32_a11_probe \
+                $(BUILD_DIR)/test_w32_a12_ws2_32 \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3906,6 +3931,15 @@ $(BUILD_DIR)/test_w32_a11_imm: tests/unit/test_w32_a11_imm.c \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) $< -o $@
+# W32A-12: the WS2_32 adapter's ABI-boundary logic (version negotiation,
+# byte order, errno->WSA map, fd_set + ADDRINFOA translation, the endpoint
+# cache, ioctlsocket, options).  Amalgamates ws2_32.c against libc socket
+# doubles; needs the guest socket headers, hence -I lib/libc/include.
+$(BUILD_DIR)/test_w32_a12_ws2_32: tests/unit/test_w32_a12_ws2_32.c \
+                                   w32/src/ws2_32.c w32/include/w32/ws2_32.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I lib/libc/include $< -o $@
 $(BUILD_DIR)/test_w32_a11_com: tests/unit/test_w32_a11_com.c \
                                 w32/src/ole32.c w32/include/w32/ole32.h
 	@mkdir -p $(dir $@)

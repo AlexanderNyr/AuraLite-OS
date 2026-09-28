@@ -354,6 +354,53 @@ table is EMPTY by receipt, pinned to `w32/tests/W32A11.pinned-probe.*.log`).
 The REFUSE guard is unaffected — W32A-11 is not an application gate, so no
 `.imports` ledger with `MZ` binaries or REFUSE rows blocks it.
 
+## W32A-12 — PHASE CLOSED (2026-09-28), WS2_32 WinSock over the native stack
+
+`w32/src/ws2_32.c` binds WS2_32 as a thin adapter over AuraLite's libc socket
+surface (syscalls 300–307) + the DNS/inet parser layer.  mingw-w64 imports
+WS2_32 **by name** (every `Ordinal = <none>`), so the phase added only NAME
+rows to `w32/src/w32_bind.c` (`WS32`) plus `add_builtin("ws2_32")` for the
+dynamic `LoadLibrary`+`GetProcAddress` path — no `ordinal_map.tsv` /
+`w32_stubs_gen.c` change.
+
+**Surface discovered from the real binaries.**  The plan (§2.6) requires the
+phase to learn WS2_32's surface with a logging run "since static tables cannot
+show it": WS2_32 is *not* in PuTTY's or plink's import directory — both resolve
+it at run time with `LoadLibrary("WS2_32")+GetProcAddress`, which is why the
+static ledger `w32/app_ledger/putty-0.85.imports` carries zero ws2_32 rows.
+The names were therefore read out of the pinned **PuTTY 0.85 (Win64)** binaries
+themselves (`putty.exe` sha256 `d01fdb5a…`, size 1706136 — matching the ledger
+header exactly; `plink.exe` sha256 `969f3687…`).  Per the no-vendored-binary
+rule (`w32/LICENSING.md`, D8) the executables are **not** committed: they are
+fetched into `build/w32bins/` (git-ignored, provenance-exempt) purely as a
+local verification aid, and the fetch+scan is fully reproducible.
+`w32/tests/W32A12.probe.log` records the **union of 34 names** both binaries
+resolve, per-binary, with a coverage cross-check showing **34/34 bound** in
+`w32_bind.c`.  The observed set is *load-bearing async*, not select-threads:
+plink drives `WSAEventSelect`+`WSAEnumNetworkEvents` over a kernel32 event and
+PuTTY drives `WSAAsyncSelect` with window-message delivery — so this phase
+implements that pair for REAL rather than refusing it.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `tests/integration/cases/test_w32a12_winsock.sh` (guest, QEMU) | **5/5 assertions** | The **expanded** `w32a12_winsock.exe` (`-lws2_32`, **40 name imports**, 43 bound in-guest) runs the whole surface end to end on real hardware-emulated boot (`build/auralite.iso` via `qemu-system-x86_64`): the core verbs (socket/bind/getsockname/listen/accept via the kernel tcp test fallback, peer 10.0.2.2:54321; getpeername; recv of the canned request + send; `select`; `ioctlsocket`; observed `setsockopt` + refuse-by-number; shutdown/close), the resolution/format surface (`getaddrinfo`+`inet_ntop`/`inet_pton`/`inet_ntoa`, `getservbyname`/`getservbyport`, `getnameinfo`, `WSAAddressToStringA`/`WSAStringToAddressA`, `gethostname`), `WSAIoctl` (FIONBIO/FIONREAD/SIO_KEEPALIVE_VALS), the WSA event objects over kernel32, and the readiness pair `WSAEventSelect`+`WSAEnumNetworkEvents` plus `WSAAsyncSelect` registration; prints `W32A12-WINSOCK-OK`, exits 78, no fault. **This live gate caught a real ABI bug the host suite could not: WinSock's `SERVENT` swaps `s_proto`/`s_port` under `_WIN64` (`psdk_inc/_ip_types.h`), so `struct ws2_servent` was reordered to match — the host test shared the same struct and so had passed regardless** |
+| `test_w32_a12_ws2_32` (host, ASan/UBSan) | **110 checks, 0 failures** | everything above as pure boundary logic: version negotiation, refcounted cleanup + `WSANOTINITIALISED`, byte order, errno→WSAE*, `fd_set`/`ADDRINFOA` translation, endpoint cache, `ioctlsocket`+`WSAIoctl` dispatch, option accept/refuse, `inet_ntoa`/`getservby*`/`getnameinfo`/`WSAAddressToStringA`↔`WSAStringToAddressA`, **non-blocking recv/send returning `WSAEWOULDBLOCK` via a zero-timeout select gate**, `WSAEventSelect`+`WSAEnumNetworkEvents` over kernel32 event doubles, `WSAWaitForMultipleEvents` pumping readiness, and `WSAAsyncSelect` delivering a `PostMessageW` through the pump |
+| `ld.lld … -o build/user/w32run.elf` | **links clean** | the whole w32 personality (incl. `w32_ws2_32.o`) links: the cross-module symbols `w32_ws2_pump` / `w32_user32_set_socket_pump` and ws2_32's calls into kernel32 events + user32 `PostMessageW` all resolve |
+| `bash tools/check_provenance.sh` | **PASS (83 files)** | ws2_32.c/.h + fixture recorded; `build/` (the fetched binaries) is exempt from the MZ scan |
+| `python3 tools/check_test_registry.py` | **204 cases, all registered** | `test_w32a12_winsock` in `ALL_CASES` |
+| `python3 tools/check_w32app_claims.py --check` | 3 pre-existing FAILs only | the missing `patches/W32A2/A3/A4` receipts (unrelated historical debt); K/U/G ledger union stays **611**, gap **28**, `CHECK OK` (no app imports WS2_32 statically — it is loaded dynamically) |
+
+Documented non-goals (D1, honest and matching what the binaries ask for):
+overlapped I/O (`WSAOVERLAPPED`+IOCP, `WSASend`/`WSARecv`/`WSAConnect`/
+`WSAGetOverlappedResult`) refuses BY NAME — neither binary resolves it;
+`WSAIoctl` beyond FIONBIO/FIONREAD/SIO_KEEPALIVE_VALS refuses
+(`SIO_GET_EXTENSION_FUNCTION_POINTER`→`WSAEOPNOTSUPP`, else `WSAEINVAL`);
+`FIONREAD` reports 0 (no bytes-available query); non-blocking `connect()`
+completes synchronously and delivers `FD_CONNECT` on the next pump/enum;
+readiness is measured with a zero-timeout `select()`, and reverse DNS (PTR) is
+numeric-only.  Closing patch: `patches/W32A12_winsock.patch` (format-patch
+form).  W32A-12 is not an application gate, so no `.imports` ledger blocks it.
+
 ## App-gate receipts (reserved format)
 
 Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16

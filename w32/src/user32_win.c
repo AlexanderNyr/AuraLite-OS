@@ -1230,6 +1230,16 @@ W32ABI W32_LRESULT SendMessageA(W32_HWND hwnd, W32_UINT msg,
     return SendMessageW(hwnd, msg, wp, lp);
 }
 
+/* W32A-12: the WS2_32 readiness pump.  ws2_32.c registers it at WSAStartup so
+ * a WSAAsyncSelect socket delivers its window messages while the app is parked
+ * in GetMessage/PeekMessage.  NULL until a socket app starts, so a GUI that
+ * never touches WinSock sees no behaviour change. */
+static void (W32ABI *w32_ui_socket_pump)(void);
+
+W32ABI void w32_user32_set_socket_pump(void (W32ABI *fn)(void)) {
+    w32_ui_socket_pump = fn;
+}
+
 W32ABI W32_BOOL PostMessageW(W32_HWND hwnd, W32_UINT msg,
                              W32_WPARAM wp, W32_LPARAM lp) {
     if (w32_win_index_from_hwnd(hwnd) < 0) {
@@ -1252,6 +1262,7 @@ W32ABI W32_BOOL PeekMessageW(W32_MSG *msg, W32_HWND filter,
     if (!msg) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
     struct ui_queue *q = ui_queue_for(GetCurrentThreadId(), 1);
     if (!q) return W32_FALSE;
+    if (w32_ui_socket_pump) w32_ui_socket_pump();   /* WSAAsyncSelect delivery */
     ui_service_sends(q);
     ui_pump();
     ui_service_sends(q);
@@ -1266,6 +1277,7 @@ W32ABI W32_BOOL GetMessageW(W32_MSG *msg, W32_HWND filter,
     if (!q) { msg->message = W32_WM_QUIT; return W32_FALSE; }
 
     for (;;) {
+        if (w32_ui_socket_pump) w32_ui_socket_pump();   /* WSAAsyncSelect delivery */
         ui_service_sends(q);
         if (q->quit_posted && q->head == q->tail) {
             msg->hwnd = 0;

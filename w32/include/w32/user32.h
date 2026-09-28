@@ -518,6 +518,9 @@ W32ABI W32_LRESULT SendMessageW(W32_HWND hwnd, W32_UINT msg,
                                 W32_WPARAM wp, W32_LPARAM lp);
 W32ABI W32_LRESULT SendMessageA(W32_HWND hwnd, W32_UINT msg,
                                 W32_WPARAM wp, W32_LPARAM lp);
+/* W32A-12: WS2_32 registers its readiness pump here so WSAAsyncSelect socket
+ * notifications are delivered from the GetMessage/PeekMessage loop. */
+W32ABI void        w32_user32_set_socket_pump(void (W32ABI *fn)(void));
 W32ABI W32_BOOL    PostMessageW(W32_HWND hwnd, W32_UINT msg,
                                 W32_WPARAM wp, W32_LPARAM lp);
 W32ABI W32_BOOL    PostMessageA(W32_HWND hwnd, W32_UINT msg,

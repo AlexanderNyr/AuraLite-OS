@@ -187,6 +187,12 @@ void w32_module_init(void) {
     add_builtin("sensapi");
     add_builtin("wintrust");
     add_builtin("crypt32");
+    /* W32A-12: WS2_32's exports are linked into the loader (ws2_32.c), so it
+     * belongs with the other engine modules -- PuTTY's classic shape is
+     * LoadLibrary("ws2_32.dll") + GetProcAddress, which needs the module to
+     * answer GetModuleHandle (the A-8 lesson: a missing row here silently
+     * breaks dynamic load while IAT binding keeps working). */
+    add_builtin("ws2_32");
     /* W32A-1: every stub-covered module answers GetModuleHandle too, so a
      * program probing for mpr, comctl32 or shell32 finds a module whose
      * functions fail cleanly instead of a missing DLL.  Names already
