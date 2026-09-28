@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Applications Plan (w32 breadth + the OSS ladder)
 
-## Status: ACTIVE — see each phase's heading and receipts; W32A-11 is in progress, not done
+## Status: ACTIVE — see each phase's heading and receipts; W32A-11 is done (full phase gate green)
 
 | Phase | State |
 |---|---|
@@ -15,7 +15,7 @@
 | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ✅ shipped |
 | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ✅ shipped |
 | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ✅ shipped |
-| W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | 🔄 in progress — subset gate; full gate open |
+| W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ✅ done |
 | W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
 | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ⬜ planned |
 | W32A-14 App gate I — PuTTY | ⬜ planned |
@@ -1640,7 +1640,7 @@ fixtures, `tests/integration/cases/test_w32a10_shell.sh`,
 
 ---
 
-### Phase W32A-11 — `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs 🔄 IN PROGRESS (NOT DONE)
+### Phase W32A-11 — `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs ✅ DONE
 
 **Objective:** the narrow COM the census shows — init, a CLSID table, and
 working drag-and-drop — plus the VARIANT helpers and the honest IME stubs.
@@ -1686,7 +1686,7 @@ and full `make test` remain open.
 
 #### Tasks
 
-- [ ] COM-lite core (REAL, single MTA documented — no apartments, no
+- [x] COM-lite core (REAL, single MTA documented — no apartments, no
       marshalling, and the docs say the three words): `CoInitialize`/
       `CoUninitialize`/`OleInitialize`/`OleUninitialize` (nesting counts
       REAL), `CoTaskMemAlloc`/`CoTaskMemFree`/`CoTaskMemRealloc`?
@@ -1697,7 +1697,7 @@ and full `make test` remain open.
       sessions of all three apps; each observed CLSID is implemented or
       refused by CLSID with the consequence named — e.g. "IFileDialog
       refused: the classic `GetOpenFileName` path serves file picking").
-- [ ] Drag-and-drop (REAL within the documented scope):
+- [x] Drag-and-drop (REAL within the documented scope):
       `RegisterDragDrop`/`RevokeDragDrop`/`DoDragDrop`/`ReleaseStgMedium`/
       `RegisterClipboardFormat` (with W32A-6) — file drops *into* app
       windows work end to end (`DragQueryFileW` yields real paths,
@@ -1705,7 +1705,7 @@ and full `make test` remain open.
       compositor routes them; OLE drag sources outside the personality
       do not exist and the docs say so. `OleSetClipboard`?/
       `OleGetClipboard`? (ledger decides).
-- [ ] `UxTheme` (REAL onto the compositor theme engine):
+- [x] `UxTheme` (REAL onto the compositor theme engine):
       `OpenThemeData`/`CloseThemeData`/`DrawThemeBackground`/
       `DrawThemeTextEx`/`DrawThemeParentBackground`/`GetThemePartSize`/
       `GetThemeFont`/`GetThemeBackgroundContentRect`/
@@ -1717,14 +1717,14 @@ and full `make test` remain open.
       fallback where it does not (each fallback is a per-part record,
       not a blanket "unthemed"). The v5/v6 rendering-diff fixture from
       W32A-8 is extended to theme calls.
-- [ ] `OLEAUT32` ordinals (REAL, small): `#2/#4/#6/#7/#9/#10/#149/#150`
+- [x] `OLEAUT32` ordinals (REAL, small): `#2/#4/#6/#7/#9/#10/#149/#150`
       resolved to the documented `SysAllocString`/`SysFreeString`/
       `VariantInit`/`VariantClear`/`VariantCopy`/… set (the map cites
       the documentation per ordinal — no guessing, and any ordinal the
       docs do not pin stays refused by number). BSTR semantics REAL
       (length-prefixed UTF-16, embedded NULs, `SysStringLen` vs
       `wcslen` asserted apart).
-- [ ] `IMM32` → documented FAIL-CLEAN stubs: `ImmGetContext`/
+- [x] `IMM32` → documented FAIL-CLEAN stubs: `ImmGetContext`/
       `ImmReleaseContext`/`ImmGetCompositionStringW`/
       `ImmSetCompositionWindow`/`ImmSetCompositionFontA/W`/
       `ImmSetCandidateWindow`/`ImmSetCompositionStringW`/
@@ -1747,9 +1747,50 @@ and full `make test` remain open.
 - Full `make test` green.
 
 **Deliverable:** `w32/src/ole32.c`, `w32/src/uxtheme.c`,
-`w32/src/oleaut32.c`, `w32/src/imm32.c`, CLSID probe log, fixtures,
+`w32/src/w32_oleaut32.c` (OLEAUT32; landed in W32A-1, completed here),
+`w32/src/imm32.c`, `w32/src/w32_ole_drag.c`, `w32/src/w32_clipfmt.c`,
+CLSID probe log (`w32/tests/W32A11.pinned-probe.*.log`), fixtures,
 `tests/integration/cases/test_w32a11_ole.sh`,
 `patches/W32A11_ole.patch`.
+
+**Result (2026-09-28, closing increment `patches/W32A11_ole.patch`).**
+All five task groups are implemented, bound and gated:
+
+- COM-lite core — `CoInitialize`/`CoUninitialize`/`OleInitialize`/
+  `OleUninitialize` (nesting counts REAL), `CoTaskMemAlloc`/`Free`/`Realloc`,
+  `CLSIDFromProgID` over the W32A-9 hive (typed refusals, `S_OK` leaves
+  last-error untouched) and `CoCreateInstance` over the committed EMPTY
+  activation table (`W32_COM_CLASS_COUNT==0`, pinned to the probe logs —
+  every in-process activation is a named `REGDB_E_CLASSNOTREG` and the whole
+  request is still logged for the future probe). No apartments, no
+  marshalling — documented.
+- Drag-and-drop — `RegisterDragDrop`/`RevokeDragDrop`/`DoDragDrop`/
+  `ReleaseStgMedium`/`RegisterClipboardFormat{A,W}`; in-process
+  `IDataObject`/`IDropTarget` hand a `CF_HDROP` `STGMEDIUM` across two
+  compositor HWNDs, and a native task drops a Unicode-named on-disk file into
+  a PE HWND whose `DragQueryFileW` path and contents are checked. OLE drag
+  sources outside the personality do not exist — documented.
+- `UxTheme` — the full plan list onto the compositor theme engine; v5
+  fallback vs v6 GDI pixels, per-part refusals, and zero-duration buffered
+  animation (`BeginBufferedAnimation`/`EndBufferedAnimation`/
+  `BufferedPaintRenderAnimation`/`BufferedPaintStopAllAnimations`). Timed
+  animation is refused, not faked — documented (`GetThemeTransitionDuration`
+  reports the real value; a non-zero request is refused).
+- `OLEAUT32` — the eight documented ordinals `#2/#4/#6/#7/#9/#10/#149/#150`
+  (`w32/ordinal_map.tsv`, pefile-MIT provenance) resolve to REAL
+  BSTR/VARIANT with length-prefixed UTF-16, embedded NULs and
+  `SysStringLen != wcslen` asserted apart.
+- `IMM32` — nine typed FAIL-CLEAN stubs; IME unavailable, composition reads
+  empty, CJK degrades to direct input, each stub's return asserted.
+
+Evidence: host unit tests `test_w32_a11_{oleaut,imm,com,clipfmt,theme,drop,drag,probe}`
+pass (29/21/203/263/265/44/61/56 checks, 0 failures); the named phase gate
+`tests/integration/cases/test_w32a11_ole.sh` boots QEMU once, drives every
+fixture and passes **30/30** assertions (`w32app-claims --check` green,
+registry + shard partition green). The CLSID probe logs remain committed and
+the empty `CoCreateInstance` table stays pinned to them.  Documented
+non-goals stay non-goals: cross-process COM marshalling, external OLE drag
+sources, timed UxTheme animation, and non-empty activation.
 
 ---
 

@@ -123,6 +123,7 @@ ALL_CASES=(
     test_w32a11_dragdrop
     test_w32a11_theme
     test_w32a11_tokens
+    test_w32a11_ole
     test_ahci_large_read
     test_doom
     test_stack_guard

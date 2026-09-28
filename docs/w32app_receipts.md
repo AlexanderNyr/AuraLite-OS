@@ -54,7 +54,7 @@ binaries (4 applications + 4 plugins). `check` is hermetic: it parses
 the five committed ledgers, re-derives the §2.2 census (348/298/86/590,
 union 611, gap 569) and the live export count from `w32/src/w32_bind.c`.
 
-## W32A-11 — incremental evidence only (2026-09-24 and 2026-09-27; NOT DONE)
+## W32A-11 — incremental evidence (2026-09-24 and 2026-09-27; superseded by the phase-close receipt at the end of this section)
 
 The original 2026-09-24 core receipt below did **not** cover compositor
 file-drops or OLE drags. The 2026-09-27 follow-up does; neither is the
@@ -323,6 +323,36 @@ stay outside Git.
 
 **W32A-11 and the W32A-12/13/14/15/16 phases remain NOT DONE.**  The import
 ledger gap is now 28 (was 41) because the 13 USER32 rows below closed.
+
+## W32A-11 — PHASE CLOSED (2026-09-28), full phase gate green
+
+The five task groups (OLE32-lite, drag-and-drop, `OLEAUT32` ordinals, `IMM32`
+FAIL-CLEAN stubs, `UxTheme`) are implemented, bound and gated together by the
+named deliverable `tests/integration/cases/test_w32a11_ole.sh` — the single
+phase gate the earlier incremental deltas said remained open.  It boots QEMU
+once and drives every fixture; the earlier per-slice gates
+(`test_w32a11_{core_subset,dragdrop,theme,tokens}`) still pass unchanged.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `tests/integration/cases/test_w32a11_ole.sh` (guest, QEMU) | **30/30 assertions** | core (COM/VARIANT/ORDINALS/IMM/CLIPFMT/THEME) + probe (hive ProgID + empty activation table typed refusals) + drag (in-proc `IDataObject`/`CF_HDROP`) + native file drop (Unicode name via `CreateFileW`) + UxTheme v5/v6 pixels + zero-duration animation; 5 PE fixtures each exit 78; no unresolved import, no guest fault |
+| `test_w32_a11_oleaut` (host, ASan/UBSan) | **29 checks, 0 failures** | BSTR/VARIANT, length-prefixed UTF-16, embedded NULs, `SysStringLen != wcslen` |
+| `test_w32_a11_imm` (host) | **21 checks, 0 failures** | nine typed FAIL-CLEAN IMM32 stubs |
+| `test_w32_a11_com` (host) | **203 checks, 0 failures** | init/uninit nesting, task memory, `CLSIDFromProgID`, `CoCreateInstance` typed refusals |
+| `test_w32_a11_clipfmt` (host) | **263 checks, 0 failures** | named A/W clipboard-format registration/round-trip |
+| `test_w32_a11_theme` (host) | **265 checks, 0 failures** | v5 fallback vs v6 parts, sizes, `GetThemeTransitionDuration`, buffered animation |
+| `test_w32_a11_drop` / `test_w32_a11_drag` (host) | **44 / 61 checks, 0 failures** | owned HDROP query/finish; `IDataObject`/`QueryGetData`/`GetData`/`ReleaseStgMedium` |
+| `test_w32_a11_probe` (host) | **56 checks, 0 failures** | real hive lookup + empty-table pin; probe lines byte-exact |
+| `python3 tools/check_test_registry.py --check` | **203 cases, all registered** | `test_w32a11_ole` added to `ALL_CASES`; shard partition still exact (`w32`) |
+| `python3 tools/check_w32app_claims.py --check` | 3 pre-existing FAILs only | the missing `patches/W32A2/A3/A4` receipts (unrelated, documented above); marking W32A-11 DONE adds no new failure and the W32A-0 census still confirms `agree` — union 611, gap 28, `CHECK OK` |
+
+Closing patch: `patches/W32A11_ole.patch`.  Documented non-goals stay
+non-goals (the plan says the words): cross-process COM marshalling, OLE drag
+sources outside the personality, timed `UxTheme` animation, and non-empty
+activation (no pinned-app CLSID/IID pair observed; the `CoCreateInstance`
+table is EMPTY by receipt, pinned to `w32/tests/W32A11.pinned-probe.*.log`).
+The REFUSE guard is unaffected — W32A-11 is not an application gate, so no
+`.imports` ledger with `MZ` binaries or REFUSE rows blocks it.
 
 ## App-gate receipts (reserved format)
 
