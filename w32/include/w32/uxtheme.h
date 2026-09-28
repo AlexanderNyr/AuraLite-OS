@@ -94,4 +94,12 @@ W32ABI void *BeginBufferedAnimation(W32_HWND hwnd, W32_HDC target,
                                      W32_HDC *from, W32_HDC *to);
 W32ABI W32_DWORD EndBufferedAnimation(void *buffer, W32_BOOL update);
 W32ABI W32_DWORD BufferedPaintStopAllAnimations(W32_HWND hwnd);
+/* BOOL API (not the HRESULT family): TRUE when every live zero-duration
+ * animation owned by hwnd was blitted into hdcTarget at its animation
+ * rect, TRUE also when the window owns no live animation (an honest
+ * no-op -- the window simply has no animation pixels); FALSE with
+ * GetLastError on an invalid HWND/HDC or a failed blit.  The current
+ * frame is the "to" state: no frame scheduler exists in this personality,
+ * so there is no in-between blend to render. */
+W32ABI W32_BOOL BufferedPaintRenderAnimation(W32_HWND hwnd, W32_HDC target);
 #endif

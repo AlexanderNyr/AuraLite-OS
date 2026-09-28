@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Incremental W32A-11 guest gate: OLE init/BSTR/VARIANT ordinals, IMM32,
 # clipboard-format IDs and BUTTON theme pixels. A SECOND synthetic PE checks
-# that TODO class/ProgID probes log precisely and fail cleanly. Neither PE
-# supplies a pinned-app CLSID/IID observation or a class activation table.
+# the REAL activation surface: hive-backed ProgID resolution (positive and
+# malformed), the committed empty activation table's typed refusals and the
+# whole-request probe lines. Neither PE supplies a pinned-app CLSID/IID
+# observation, so the activation table stays empty by receipt, not by claim.
 set -u
 cd "$(dirname "$0")/.."
 . lib/lib.sh
@@ -36,8 +38,12 @@ il_assert_grep_fixed "$LOG" "w32a11-clsid-probe: CLSID=12345678-9abc-def0-1122-3
     "second pair logged instead of suppressed by TODO-once"
 il_assert_grep_fixed "$LOG" "w32a11-progid-probe: UTF16=NPP.\\u00e9\\ud840\\udc00\\u005c\\u000a\\u003d\\u0020 truncated=0" \
     "Unicode ProgID logged losslessly on a single line"
+il_assert_grep_fixed "$LOG" "w32a11-progid-probe: UTF16=AuraW32A11.Probe truncated=0 result=0x00000000" \
+    "hive-seeded ProgID resolved in-guest, outcome stamped"
+il_assert_grep_fixed "$LOG" "w32a11-progid-probe: UTF16=AuraW32A11.Bad truncated=0 result=0x800401f3" \
+    "malformed registered CLSID refused with its outcome stamped"
 il_assert_grep "$LOG" "A11-PROBE-FIXTURE-OK" \
-    "unknown classes refused and output parameters cleared"
+    "real lookup round-trips the hive and typed refusals cleared outputs"
 il_assert_count "$LOG" "\[shell\] '/apps/w32run' \(tid [0-9]+\) exited \(code=78\)" 2 \
     "both independent PE fixtures exited 78"
 il_assert_no_grep "$LOG" "W32A11-CORE-SUBSET-FAIL|A11-PROBE-FIXTURE-FAIL" "no fixture failure"

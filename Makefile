@@ -2605,15 +2605,17 @@ $(W32A11_FILE_EXE): w32/tests/w32a11_file_receiver.asm $(K32_IMPLIB) $(U32_IMPLI
 	lld-link -subsystem:console -entry:winstart -nodefaultlib \
 	         $(USER_BUILD)/w32a11_file_receiver.obj $(K32_IMPLIB) $(U32_IMPLIB) \
 	         $(SHELL32_IMPLIB) -out:$@
-# Synthetic activation probe: confirms the generated TODO stubs log precise
-# CLSID/IID/ProgID values, WITHOUT treating fixture IDs as app observations.
-$(W32A11_PROBE_EXE): w32/tests/w32a11_probe.asm $(K32_IMPLIB) $(USER_BUILD)/ole32_a11.lib
+# Synthetic activation gate: REAL ProgID resolution against the guest hive
+# (seeded through ADVAPI32), the empty-table class-not-registered refusal
+# and the typed context/argument vocabulary, WITHOUT treating fixture IDs
+# as pinned-app observations.
+$(W32A11_PROBE_EXE): w32/tests/w32a11_probe.asm $(K32_IMPLIB) $(USER_BUILD)/ole32_a11.lib $(A32_IMPLIB)
 	@mkdir -p $(dir $@)
 	$(AS) -f win64 $< -o $(USER_BUILD)/w32a11_probe.obj
 	lld-link -subsystem:console -entry:winstart -nodefaultlib \
 	         $(USER_BUILD)/w32a11_probe.obj $(K32_IMPLIB) \
-	         $(USER_BUILD)/ole32_a11.lib -out:$@
-	@echo "  [pe] $@ (W32A-11 synthetic class-probe fixture)"
+	         $(USER_BUILD)/ole32_a11.lib $(A32_IMPLIB) -out:$@
+	@echo "  [pe] $@ (W32A-11 activation/refusal fixture)"
 $(W32A11_DRAG_EXE): w32/tests/w32a11_drag.asm $(K32_IMPLIB) $(U32_IMPLIB) $(USER_BUILD)/ole32_a11.lib
 	@mkdir -p $(dir $@)
 	$(AS) -f win64 $< -o $(USER_BUILD)/w32a11_drag.obj
@@ -3909,14 +3911,30 @@ $(BUILD_DIR)/test_w32_a11_com: tests/unit/test_w32_a11_com.c \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) $< -lpthread -o $@
-# Probe stubs remain TODO: check canonical GUIDs, reversible UTF-16 logging,
-# explicit truncation and clean output parameters under ASan/UBSan.
+# Activation probes are REAL now: CLSIDFromProgID runs against the actual
+# W32A-9 hive on a scratch file (the A9 amalgamation pattern updated for
+# ole32), CoCreateInstance answers its typed refusals, the probe lines are
+# asserted byte-exact, and the empty activation table is pinned.
 $(BUILD_DIR)/test_w32_a11_probe: tests/unit/test_w32_a11_probe.c \
-                                     w32/src/w32_stubs_gen.c w32/include/w32/w32_gen.h
+                                     w32/src/ole32.c w32/include/w32/ole32.h \
+                                     w32/src/advapi32.c w32/src/w32_errno.c w32/src/w32_utf.c \
+                                     w32/src/kernel32_loc.c \
+                                     w32/include/w32/advapi32.h w32/include/w32/kernel32.h \
+                                     lib/libatls/src/atls_sha256.c \
+                                     lib/libatls/src/atls_sha512.c \
+                                     lib/libatls/src/atls_sha3.c \
+                                     lib/libatls/src/atls_common.c \
+                                     lib/libatls/include/atls/atls.h
 	@mkdir -p $(dir $@)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
-	          -ffunction-sections -fdata-sections -fsanitize=address,undefined \
-	          $(W32_INC) -I . $< -Wl,--gc-sections -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          -D_POSIX_C_SOURCE=200809L \
+	          -I lib/libatls/include \
+	          tests/unit/test_w32_a11_probe.c \
+	          w32/src/kernel32_loc.c \
+	          lib/libatls/src/atls_sha256.c lib/libatls/src/atls_sha512.c \
+	          lib/libatls/src/atls_sha3.c lib/libatls/src/atls_common.c \
+	          -lpthread -o $@
 $(BUILD_DIR)/test_w32_a11_clipfmt: tests/unit/test_w32_a11_clipfmt.c \
                                     w32/src/w32_clipfmt.c w32/src/w32_utf.c
 	@mkdir -p $(dir $@)

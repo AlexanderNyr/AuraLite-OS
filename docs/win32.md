@@ -609,17 +609,19 @@ and host-tested (zero size frees), but no pinned guest import calls it.
 All three official pinned apps again failed USER32 import binding before
 entry on base `7d38775` with the incremental W32A-11 patch (see
 `w32/tests/W32A11.pinned-probe.7d38775.log`). No CLSID/IID or ProgID was
-observed: `CoCreateInstance`/`CLSIDFromProgID` remain typed, instrumented
-`E_NOTIMPL` TODOs, not fake activations. A follow-up directly on `e4be5d9`
-tests those generated stubs from a **synthetic**, independent Win64 PE:
-every `CoCreateInstance` request logs the complete CLSID/IID pair and
-CLSCTX; `CLSIDFromProgID` logs at most 192 UTF-16 code units with reversible
-`\uXXXX` escaping (including a BMP unit and a surrogate pair) and an
-explicit truncation bit. `E_NOTIMPL` and `ERROR_NOT_SUPPORTED` remain the
-failure contract; output pointers/GUIDs are cleared. These fixture IDs are
-**not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify
-an activation table. The three pinned application sessions are still
-blocked at the USER32 imports listed above.
+observed, so no activation table can be claimed. Since 2026-09-28 both
+exports are **REAL**, not stubs: `CLSIDFromProgID` resolves
+`HKCR\<ProgID>\CLSID` case-insensitively through the W32A-9 hive view
+(typed refusals `E_INVALIDARG`/`CO_E_CLASSSTRING` with named last-errors;
+`S_OK` leaves last-error untouched), and `CoCreateInstance` walks a
+committed **empty** class table — `REGDB_E_CLASSNOTREG` for in-process
+contexts, `E_NOTIMPL` beyond in-process, `CLASS_E_NOAGGREGATION` for
+aggregation, always clearing the output pointer. Every call still logs its
+probe line (`w32a11-clsid-probe:` with full CLSID/IID/CLSCTX;
+`w32a11-progid-probe:` with at most 192 escaped UTF-16 code units and a
+truncation bit), now stamped with the per-call `result=0x%08x`. Every
+`CoCreateInstance` request logs the complete CLSID/IID pair and CLSCTX;
+the ProgID escape stays reversible `\\uXXXX` (BMP unit and surrogate pair covered) with an explicit truncation bit. Failure HRESULTs and the named last-errors above are the refusal contract; output pointers/GUIDs are always cleared. These fixture IDs are **not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify an activation-table row. The three pinned application sessions are still blocked at the USER32 imports listed above.
 
 **Automation:** the imported `OLEAUT32` ordinals
 `#2/#4/#6/#7/#9/#10/#149/#150` bind to the project's BSTR/VARIANT

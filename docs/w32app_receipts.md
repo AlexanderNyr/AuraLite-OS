@@ -222,6 +222,53 @@ remain open; **W32A-11 is NOT DONE**. `check_w32app_claims.py --check`
 still fails solely on the three pre-existing missing W32A-2/3/4 patch
 receipts named above; this delta does not repair those earlier phases.
 
+### Follow-up after `d45cb71` (2026-09-28): typed probes to REAL semantics
+
+No new third-party application run is claimed. The three generated TODO
+stubs `CLSIDFromProgID`, `CoCreateInstance` and
+`BufferedPaintRenderAnimation` are replaced by **REAL** implementations
+whose claims still rest only on receipts already in this file:
+
+- `CLSIDFromProgID` (REAL): case-insensitive hive lookup
+  `HKCR\<ProgID>\CLSID` through the existing W32A-9 advapi32 view, no
+  committed ProgID table. Refusals stay typed and named: NULL argument →
+  `E_INVALIDARG`/`ERROR_INVALID_PARAMETER`; empty or over-long ProgID →
+  `CO_E_CLASSSTRING`/`ERROR_INVALID_NAME`; unregistered →
+  `CO_E_CLASSSTRING`/`ERROR_FILE_NOT_FOUND`; malformed value, wrong value
+  type or unterminated GUID text → `CO_E_CLASSSTRING`/`ERROR_INVALID_DATA`.
+  Success returns `S_OK` and leaves last-error untouched. Every call keeps
+  logging its `w32a11-progid-probe:` line (same escape/truncation rules)
+  now stamped with the per-call `result=0x%08x`.
+- `CoCreateInstance` (REAL over an **empty** activation table): the
+  previous probes observed **zero** CLSID/IID pairs, so `w32_com_classes`
+  ships with no rows and `W32_COM_CLASS_COUNT==0` is pinned by test and
+  row schema comment; the first class may be added only with a receipt
+  log line that name it. Typed vocabulary: `E_POINTER` for NULL out;
+  `E_INVALIDARG`/87 for `CLSCTX==0` or NULL CLSID/IID;
+  `CLASS_E_NOAGGREGATION` for a non-NULL outer; `E_NOTIMPL`/50 for any
+  context beyond in-process; `REGDB_E_CLASSNOTREG`/2 for in-process while
+  the table is empty. The output pointer is always cleared on failure.
+- `BufferedPaintRenderAnimation` (REAL): live-buffer snapshot blitted
+  into the target DC without holding the uxtheme animation lock across
+  the blit; `TRUE` no-op when no animation runs on the window;
+  `FALSE`/`ERROR_INVALID_HANDLE` on a dead target DC or unknown window;
+  `FALSE`/`ERROR_INVALID_PARAMETER` on a NULL target rect.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `make iso` | PASS | Fixture `w32a11_probe.exe` rebuilt from the rewritten `w32/tests/w32a11_probe.asm` (seeds `HKCR\AuraW32A11.Probe\CLSID` in-guest via `RegCreateKeyExW`/`RegSetValueExW`; exits 78 only when positive lookup, malformed refusal and empty-table refusal all agree). |
+| `bash tests/integration/run_all.sh '^test_w32a11_core_subset$'` | **20/20** | Two new asserts pin the in-guest `result=0x00000000` hive hit and the `result=0x800401f3` malformed-CLSID refusal; older probe-line asserts still prefix-match. |
+| `test_w32a11_tokens` / `test_w32a11_theme` / `test_w32a11_dragdrop` | **7/7, 9/9, 11/11** | No regression in the neighbouring W32A-11 guest gates. |
+| `test_w32_a11_probe` / `_com` / `_theme` (host) | **56 / 203 / 265 checks, 0 failures** | Probe test amalgamates ole32+advapi32+w32_errno+w32_utf+kernel32_loc+atls TUs and uses a scratch hive under `/tmp/w32a11_hive_*`; the com test's always-miss `Reg*` mocks keep the real hive path exclusive to the probe test. |
+| `python3 tools/w32_gen_stubs.py --check`; `python3 tools/w32_import_ledger.py check` | PASS | Generated surface in sync (**105** stubs, down from 108); K/U/G ledger gap still 41; `stub_map.tsv` rows 218/219/408 flipped TODO→REAL with evidence notes. |
+| `python3 tools/check_test_registry.py` | **202 cases registered** | Registry parity unchanged. |
+
+Timed UxTheme effects, `test_w32a11_ole.sh`, the three pinned-app gates
+and the full `make test` remain open; **W32A-11 is still NOT DONE**: the
+USER32 import prerequisites blocking application entry are untouched, the
+COM activation table is empty by receipt, and no plugin/scripted session
+has exercised the new lookup in situ.
+
 ## App-gate receipts (reserved format)
 
 Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16

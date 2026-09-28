@@ -390,7 +390,10 @@ static const w32_export_t exports[] = {
 
     /* W32A-11: in-process OLE targets, typed STGMEDIUM, flat theme pixels.
      * No cross-process COM marshalling, external source or timed animation.
-     * Activation stays an instrumented refusal until the pinned app probe. */
+     * Activation is REAL over the committed state: the activation table is
+     * empty because the pinned-app probe observed no CLSID/IID pair, so
+     * every in-process activation is a named REGDB_E_CLASSNOTREG and the
+     * request is still logged whole for the future probe. */
     { O32, "CoInitialize", (void *)CoInitialize },
     { O32, "CoUninitialize", (void *)CoUninitialize },
     { O32, "OleInitialize", (void *)OleInitialize },
@@ -402,6 +405,10 @@ static const w32_export_t exports[] = {
     { O32, "RegisterDragDrop", (void *)RegisterDragDrop },
     { O32, "RevokeDragDrop", (void *)RevokeDragDrop },
     { O32, "ReleaseStgMedium", (void *)ReleaseStgMedium },
+    /* W32A-11 activation: hive-backed ProgID lookup and the committed
+     * (empty) in-process activation table with typed refusals. */
+    { O32, "CLSIDFromProgID", (void *)CLSIDFromProgID },
+    { O32, "CoCreateInstance", (void *)CoCreateInstance },
     { UX32, "OpenThemeData", (void *)OpenThemeData },
     { UX32, "CloseThemeData", (void *)CloseThemeData },
     { UX32, "DrawThemeBackground", (void *)DrawThemeBackground },
@@ -418,6 +425,7 @@ static const w32_export_t exports[] = {
     { UX32, "BeginBufferedAnimation", (void *)BeginBufferedAnimation },
     { UX32, "EndBufferedAnimation", (void *)EndBufferedAnimation },
     { UX32, "BufferedPaintStopAllAnimations", (void *)BufferedPaintStopAllAnimations },
+    { UX32, "BufferedPaintRenderAnimation", (void *)BufferedPaintRenderAnimation },
     { I32, "ImmGetContext", (void *)ImmGetContext },
     { I32, "ImmReleaseContext", (void *)ImmReleaseContext },
     { I32, "ImmGetCompositionStringW", (void *)ImmGetCompositionStringW },

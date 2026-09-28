@@ -281,53 +281,11 @@ def main(argv):
     L.append("}")
     L.append("")
 
-    # W32A-11's FIRST gate is runtime data: record which class AND interface
-    # the pinned applications actually request.  Keep activation TODO until
-    # a measured table exists; a name-only TODO stub discards that evidence.
-    if any(d == "ole32.dll" and s == "CoCreateInstance"
-           for d, s, *_ in stubs):
-        L.extend([
-            "static void probe_guid(const void *guid, char out[37]) {",
-            '    if (!guid) { strcpy(out, "(null)"); return; }',
-            "    const uint8_t *b = (const uint8_t *)guid;",
-            '    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"',
-            '             "%02x%02x-%02x%02x%02x%02x%02x%02x",',
-            "             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],",
-            "             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);",
-            "}", "",
-        ])
-
-    # Log the UTF-16 code units, not a lossy ASCII '?' approximation of a
-    # ProgID. Keep only identifier-safe ASCII readable; escape every other
-    # unit (including space, '=' and newline, so the trailing fields cannot
-    # be forged by an untrusted ProgID).
-    # A bounded, explicitly marked truncation is NOT a complete observation.
-    if any(d == "ole32.dll" and s == "CLSIDFromProgID" and k == "TODO"
-           for d, s, k, *_ in stubs):
-        L.extend([
-            "#define W32A11_PROGID_MAX_UNITS 192u",
-            "static int probe_progid(const uint16_t *id,",
-            "                        char out[W32A11_PROGID_MAX_UNITS * 6u + 1u]) {",
-            '    static const char hex[] = "0123456789abcdef";',
-            "    size_t i = 0, used = 0;",
-            '    if (!id) { strcpy(out, "(null)"); return 0; }',
-            "    while (i < W32A11_PROGID_MAX_UNITS && id[i]) {",
-            "        unsigned ch = id[i++];",
-            "        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||",
-            "            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {",
-            "            out[used++] = (char)ch;",
-            "        } else {",
-            "            out[used++] = 0x5c; out[used++] = 'u';",
-            "            out[used++] = hex[(ch >> 12) & 15u];",
-            "            out[used++] = hex[(ch >> 8) & 15u];",
-            "            out[used++] = hex[(ch >> 4) & 15u];",
-            "            out[used++] = hex[ch & 15u];",
-            "        }",
-            "    }",
-            "    out[used] = 0;",
-            "    return i == W32A11_PROGID_MAX_UNITS && id[i] != 0;",
-            "}", "",
-        ])
+    # W32A-11 history note: CoCreateInstance/CLSIDFromProgID used to carry
+    # generator special cases (whole-GUID/lossless-Progid TODO probes) while
+    # they were typed TODOs.  They are REAL now (w32/src/ole32.c): the
+    # helpers moved with the semantics, and the per-invocation probe lines
+    # are emitted by the real implementation instead of a placeholder.
 
     for dll, sym, kind, rettype, fail, phase, note, ident in stubs:
         tag = "%s!%s" % (dll, sym)
@@ -345,40 +303,6 @@ def main(argv):
             L.append("    ExitProcess((unsigned int)code);")
             L.append("}")
             L.append("")
-            continue
-        if dll == "ole32.dll" and sym == "CoCreateInstance" and kind == "TODO":
-            L.extend([
-                "/* W32A-11 instrument: every requested CLSID/IID, NOT an activation. */",
-                "W32ABI W32_DWORD %s(const void *clsid, void *outer," % ident,
-                "                          W32_DWORD ctx, const void *iid, void **out) {",
-                "    static int once = 0;",
-                '    note_todo("ole32.dll", "CoCreateInstance", "W32A-11", &once);',
-                "    (void)outer;",
-                "    char class_id[37], interface_id[37];",
-                "    probe_guid(clsid, class_id); probe_guid(iid, interface_id);",
-                '    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\\n",',
-                "           class_id, interface_id, ctx);",
-                "    if (out) *out = 0;",
-                "    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
-                "    return W32_E_NOTIMPL;",
-                "}", "",
-            ])
-            continue
-        if dll == "ole32.dll" and sym == "CLSIDFromProgID" and kind == "TODO":
-            L.extend([
-                "/* W32A-11 probe: lossless UTF-16 prefix, never invent a class. */",
-                "W32ABI W32_DWORD %s(const uint16_t *id, void *out) {" % ident,
-                "    static int once = 0;",
-                '    note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);',
-                "    char name[W32A11_PROGID_MAX_UNITS * 6u + 1u];",
-                "    unsigned truncated = (unsigned)probe_progid(id, name);",
-                '    printf("w32a11-progid-probe: UTF16=%s truncated=%u\\n",',
-                "           name, truncated);",
-                "    if (out) memset(out, 0, 16); /* fail-clean GUID, no guessed CLSID */",
-                "    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
-                "    return W32_E_NOTIMPL;",
-                "}", "",
-            ])
             continue
         width = width_of(rettype)
         if width == "void":

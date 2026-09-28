@@ -215,8 +215,8 @@ msvcrt.dll	strstr	REAL	TODO	PTR64	0	W32A-13	phase-owned
 msvcrt.dll	wcscmp	REAL	TODO	int	0	W32A-13	phase-owned
 msvcrt.dll	wcslen	REAL	TODO	size_t	0	W32A-13	phase-owned
 msvcrt.dll	wcsstr	REAL	TODO	PTR64	0	W32A-13	phase-owned
-ole32.dll	CLSIDFromProgID	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
-ole32.dll	CoCreateInstance	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+ole32.dll	CLSIDFromProgID	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: HKCR\<progid>\CLSID via the W32A-9 hive; typed CO_E_CLASSSTRING refusals
+ole32.dll	CoCreateInstance	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: committed (empty) activation table; named context/argument refusals
 ole32.dll	CoInitialize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	CoTaskMemAlloc	REAL	REAL	PTR64	0	W32A-11	ole32.c: thread-local init depth / task heap
 ole32.dll	CoTaskMemFree	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
@@ -405,7 +405,7 @@ user32.dll	SetWindowsHookExA	REAL	REAL	HHOOK	0	W32A-6	phase-owned
 user32.dll	SizeofResource	REAL	REAL	DWORD	0	W32A-6	phase-owned
 user32.dll	TranslateAcceleratorA	REAL	REAL	int	0	W32A-6	phase-owned
 uxtheme.dll	BeginBufferedAnimation	REAL	REAL	HANIMATIONBUFFER	0	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
-uxtheme.dll	BufferedPaintRenderAnimation	REAL	TODO	WINBOOL	0	W32A-11	phase-owned
+uxtheme.dll	BufferedPaintRenderAnimation	REAL	REAL	WINBOOL	0	W32A-11	uxtheme.c: blits live zero-duration frames; TRUE no-op with no animation
 uxtheme.dll	BufferedPaintStopAllAnimations	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
 uxtheme.dll	CloseThemeData	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
 uxtheme.dll	DrawThemeBackground	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL

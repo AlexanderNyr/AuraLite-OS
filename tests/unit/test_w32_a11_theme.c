@@ -252,6 +252,32 @@ int main(void){
     CHECK(buf!=NULL);
     CHECK(BufferedPaintStopAllAnimations(win)==W32_THEME_S_OK);
     CHECK(EndBufferedAnimation(buf,1)==W32_THEME_E_HANDLE);
+
+    /* BufferedPaintRenderAnimation: the BOOL sibling of the HRESULT set --
+     * blits every live zero-duration frame, TRUE no-op when none is live. */
+    error=0;
+    CHECK(BufferedPaintRenderAnimation(win,(W32_HDC)1)==1 && error==0);
+    error=0;
+    CHECK(!BufferedPaintRenderAnimation((W32_HWND)(uintptr_t)0xdead,(W32_HDC)1)
+          && error==W32_ERROR_INVALID_HANDLE);
+    error=0;
+    CHECK(!BufferedPaintRenderAnimation(win,NULL) && error==W32_ERROR_INVALID_PARAMETER);
+    buf=BeginBufferedAnimation(win,(W32_HDC)1,&area,0,NULL,&anim,&from,&to);
+    CHECK(buf!=NULL);
+    W32_RECT whole={0,0,8,8};
+    CHECK(FillRect(to,&whole,CreateSolidBrush(0x00a5b6c7))==1);
+    memset(pixels,0,sizeof pixels);
+    error=0;
+    CHECK(BufferedPaintRenderAnimation(win,(W32_HDC)1)==1 && error==0);
+    CHECK(pixels[2][2]==0x00a5b6c7 && pixels[7][7]==0x00a5b6c7 && pixels[8][8]==0);
+    /* A failed blit (dead target DC in the mock grid) is FALSE, not silence. */
+    error=0;
+    CHECK(!BufferedPaintRenderAnimation(win,(W32_HDC)(uintptr_t)100)
+          && error==W32_ERROR_INVALID_HANDLE);
+    memset(pixels,0,sizeof pixels);
+    CHECK(EndBufferedAnimation(buf,0)==W32_THEME_S_OK);
+    CHECK(BufferedPaintRenderAnimation(win,(W32_HDC)1)==1);
+    CHECK(pixels[2][2]==0);
     CHECK(BufferedPaintUnInit()==W32_THEME_S_OK);
     CHECK(!BeginBufferedAnimation(win,(W32_HDC)1,&area,0,NULL,&anim,&from,&to));
     for(int i=0;i<32;i++)CHECK(allocated[i]==NULL);

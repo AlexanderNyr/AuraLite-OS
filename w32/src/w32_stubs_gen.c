@@ -84,38 +84,6 @@ static void note_failclean(const char *dll, const char *sym,
     printf("w32: %s!%s: %s\n", dll, sym, why);
 }
 
-static void probe_guid(const void *guid, char out[37]) {
-    if (!guid) { strcpy(out, "(null)"); return; }
-    const uint8_t *b = (const uint8_t *)guid;
-    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"
-             "%02x%02x-%02x%02x%02x%02x%02x%02x",
-             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],
-             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
-}
-
-#define W32A11_PROGID_MAX_UNITS 192u
-static int probe_progid(const uint16_t *id,
-                        char out[W32A11_PROGID_MAX_UNITS * 6u + 1u]) {
-    static const char hex[] = "0123456789abcdef";
-    size_t i = 0, used = 0;
-    if (!id) { strcpy(out, "(null)"); return 0; }
-    while (i < W32A11_PROGID_MAX_UNITS && id[i]) {
-        unsigned ch = id[i++];
-        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {
-            out[used++] = (char)ch;
-        } else {
-            out[used++] = 0x5c; out[used++] = 'u';
-            out[used++] = hex[(ch >> 12) & 15u];
-            out[used++] = hex[(ch >> 8) & 15u];
-            out[used++] = hex[(ch >> 4) & 15u];
-            out[used++] = hex[ch & 15u];
-        }
-    }
-    out[used] = 0;
-    return i == W32A11_PROGID_MAX_UNITS && id[i] != 0;
-}
-
 /* kernel32.dll!ClearCommBreak: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
 W32ABI W32_DWORD w32_stub_kernel32_ClearCommBreak(void) {
     static int once = 0;
@@ -591,34 +559,6 @@ W32ABI void *w32_stub_msvcrt_wcsstr(void) {
     return 0;
 }
 
-/* W32A-11 probe: lossless UTF-16 prefix, never invent a class. */
-W32ABI W32_DWORD w32_stub_ole32_CLSIDFromProgID(const uint16_t *id, void *out) {
-    static int once = 0;
-    note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);
-    char name[W32A11_PROGID_MAX_UNITS * 6u + 1u];
-    unsigned truncated = (unsigned)probe_progid(id, name);
-    printf("w32a11-progid-probe: UTF16=%s truncated=%u\n",
-           name, truncated);
-    if (out) memset(out, 0, 16); /* fail-clean GUID, no guessed CLSID */
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
-/* W32A-11 instrument: every requested CLSID/IID, NOT an activation. */
-W32ABI W32_DWORD w32_stub_ole32_CoCreateInstance(const void *clsid, void *outer,
-                          W32_DWORD ctx, const void *iid, void **out) {
-    static int once = 0;
-    note_todo("ole32.dll", "CoCreateInstance", "W32A-11", &once);
-    (void)outer;
-    char class_id[37], interface_id[37];
-    probe_guid(clsid, class_id); probe_guid(iid, interface_id);
-    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\n",
-           class_id, interface_id, ctx);
-    if (out) *out = 0;
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return W32_E_NOTIMPL;
-}
-
 /* user32.dll!BeginDeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
 W32ABI W32_DWORD w32_stub_user32_BeginDeferWindowPos(void) {
     static int once = 0;
@@ -979,14 +919,6 @@ W32ABI W32_DWORD w32_stub_user32_wsprintfW(void) {
     return 0;
 }
 
-/* uxtheme.dll!BufferedPaintRenderAnimation: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
-W32ABI W32_DWORD w32_stub_uxtheme_BufferedPaintRenderAnimation(void) {
-    static int once = 0;
-    note_todo("uxtheme.dll", "BufferedPaintRenderAnimation", "W32A-11", &once);
-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
-    return 0;
-}
-
 /* ---- generated export table ------------------------------------- */
 
 static const w32_export_t gen_exports[] = {
@@ -1053,8 +985,6 @@ static const w32_export_t gen_exports[] = {
     { "msvcrt.dll", "wcscmp", (void *)&w32_stub_msvcrt_wcscmp },
     { "msvcrt.dll", "wcslen", (void *)&w32_stub_msvcrt_wcslen },
     { "msvcrt.dll", "wcsstr", (void *)&w32_stub_msvcrt_wcsstr },
-    { "ole32.dll", "CLSIDFromProgID", (void *)&w32_stub_ole32_CLSIDFromProgID },
-    { "ole32.dll", "CoCreateInstance", (void *)&w32_stub_ole32_CoCreateInstance },
     { "user32.dll", "BeginDeferWindowPos", (void *)&w32_stub_user32_BeginDeferWindowPos },
     { "user32.dll", "CallNextHookEx", (void *)&w32_stub_user32_CallNextHookEx },
     { "user32.dll", "CharPrevExA", (void *)&w32_stub_user32_CharPrevExA },
@@ -1100,7 +1030,6 @@ static const w32_export_t gen_exports[] = {
     { "user32.dll", "TranslateAcceleratorW", (void *)&w32_stub_user32_TranslateAcceleratorW },
     { "user32.dll", "UnhookWindowsHookEx", (void *)&w32_stub_user32_UnhookWindowsHookEx },
     { "user32.dll", "wsprintfW", (void *)&w32_stub_user32_wsprintfW },
-    { "uxtheme.dll", "BufferedPaintRenderAnimation", (void *)&w32_stub_uxtheme_BufferedPaintRenderAnimation },
     { 0, 0, 0 }
 };
 
@@ -1113,9 +1042,7 @@ static const char *const gen_modules[] = {
     "kernel32",
     "mpr",
     "msvcrt",
-    "ole32",
     "user32",
-    "uxtheme",
     0
 };
 

@@ -12,6 +12,20 @@
 #define W32_COM_E_INVALIDARG 0x80070057u
 #define W32_COM_E_OUTOFMEMORY 0x8007000Eu
 #define W32_COM_E_NOTINITIALIZED 0x800401F0u
+/* Activation and ProgID HRESULTs (published combase/ole2 documentation).
+ * E_NOTIMPL keeps the 0x80004001 spelling the generated stubs already use;
+ * the W32A-11 increment below replaces the TODO probe with typed refusals,
+ * so the same constant must read as one value from every call site. */
+#define W32_COM_E_POINTER 0x80004003u
+#define W32_COM_E_NOTIMPL 0x80004001u
+#define W32_COM_CO_E_CLASSSTRING 0x800401F3u
+#define W32_COM_REGDB_E_CLASSNOTREG 0x80040154u
+#define W32_COM_CLASS_E_NOAGGREGATION 0x80040110u
+/* CLSCTX values (published dwClsContext enumeration).  In-process is the
+ * only activation context this personality serves: out-of-process server
+ * bits are a named E_NOTIMPL refusal, never a silently ignored flag. */
+#define W32_CLSCTX_INPROC_SERVER 1u
+#define W32_CLSCTX_LOCAL_SERVER 4u
 #define W32_DRAGDROP_E_NOTREGISTERED 0x80040100u
 #define W32_DRAGDROP_E_ALREADYREGISTERED 0x80040101u
 #define W32_DRAGDROP_E_INVALIDHWND 0x80040102u
@@ -82,4 +96,18 @@ void w32_ole_drag_window_destroyed(W32_HWND hwnd);
 W32ABI W32_DWORD DoDragDrop(void *data, W32_IDropSource *source,
                             W32_DWORD allowed, W32_DWORD *effect);
 W32ABI void ReleaseStgMedium(W32_STGMEDIUM *m);
+/* W32A-11 activation surface (REAL over the committed state):
+ * CLSIDFromProgID resolves HKCR\<progid>\CLSID default value through the
+ * W32A-9 registry (the committed ProgID table is the hive's HKCR view --
+ * seeded empty, managed through Reg*); CoCreateInstance serves the
+ * committed in-process activation table, which holds ZERO factories
+ * because the pinned-app probe observed NO CLSID/IID pair, so every
+ * in-process activation is a named REGDB_E_CLASSNOTREG refusal with the
+ * request logged whole (w32a11-clsid-probe:) for the future probe.
+ * `out` is zeroed on every failure path; GetLastError carries the Win32
+ * companion code on failures and is left untouched on success. */
+W32ABI W32_DWORD CLSIDFromProgID(const uint16_t *progid, W32_GUID *out);
+W32ABI W32_DWORD CoCreateInstance(const W32_GUID *clsid, void *outer,
+                                  W32_DWORD ctx, const W32_GUID *iid,
+                                  void **out);
 #endif

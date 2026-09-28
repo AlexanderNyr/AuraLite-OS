@@ -501,3 +501,32 @@ W32ABI W32_DWORD BufferedPaintStopAllAnimations(W32_HWND hwnd) {
     discard_animations(hwnd);
     return W32_THEME_S_OK;
 }
+W32ABI W32_BOOL BufferedPaintRenderAnimation(W32_HWND hwnd, W32_HDC target) {
+    if (!hwnd || !IsWindow(hwnd)) {
+        w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0;
+    }
+    if (!target) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
+    }
+    /* Snapshot the owned buffers before any GDI call: destroy_anim already
+     * avoids callbacks under ux_lock, and a render must not hold it across
+     * BitBlt either.  A buffer cannot be consumed concurrently -- its owner
+     * window is THIS hwnd, and the only mutation paths run on its thread. */
+    struct animation_buffer live[UX_MAX_ANIMS];
+    int n = 0;
+    lock_ux();
+    for (int i = 0; i < UX_MAX_ANIMS; ++i)
+        if (animations[i].used && animations[i].hwnd == hwnd)
+            live[n++] = animations[i];
+    unlock_ux();
+    for (int i = 0; i < n; ++i) {
+        const struct animation_buffer *a = &live[i];
+        int w = a->rect.right - a->rect.left, h = a->rect.bottom - a->rect.top;
+        if (!a->to || w <= 0 || h <= 0 ||
+            !BitBlt(target, a->rect.left, a->rect.top, w, h,
+                    a->to, 0, 0, W32_SRCCOPY)) {
+            w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0;
+        }
+    }
+    return 1;
+}
