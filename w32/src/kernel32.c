@@ -17,6 +17,7 @@
 #include "w32/kernel32.h"
 #include "w32/w32_module.h"
 #include "w32/w32_teb.h"
+#include "w32/msvcrt.h"      /* W32A-13: w32_msvcrt_init publishes _acmdln */
 
 /* The guest headers are skipped when this file is compiled into a host unit
  * test, which stubs the same functions itself (tests/unit/test_w32_kernel32.c).
@@ -627,6 +628,10 @@ void w32_kernel32_init(int argc, char **argv) {
         if (quote) cmdline[pos++] = '"';
     }
     cmdline[pos] = '\0';
+
+    /* W32A-13: publish the command line to msvcrt's _acmdln data export now
+     * that it exists, so the CRT bridge and GetCommandLineA agree. */
+    w32_msvcrt_init();
 }
 
 W32ABI const char *GetCommandLineA(void) { return cmdline; }

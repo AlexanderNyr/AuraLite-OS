@@ -17,7 +17,7 @@
 | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ✅ shipped |
 | W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ✅ done |
 | W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
-| W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ⬜ planned |
+| W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ✅ done |
 | W32A-14 App gate I — PuTTY | ⬜ planned |
 | W32A-15 App gate II — 7-Zip File Manager | ⬜ planned |
 | W32A-16 App gate III — Notepad++ | ⬜ planned |
@@ -1906,7 +1906,24 @@ statically — it is loaded dynamically), and the test registry is green.
 
 ---
 
-### Phase W32A-13 — The `msvcrt` bridge ⬜ PLANNED
+### Phase W32A-13 — The `msvcrt` bridge ✅ DONE
+
+**RECEIPTS (2026-09-28).**  `w32/src/msvcrt.c` bridges msvcrt onto the native
+libc + the W32A-2/3/4 runtimes; the phase added only NAME rows to
+`w32/src/w32_bind.c` (`MCRT`), the static table shadowing the `w32_stubs_gen.c`
+TODO stubs.  Surface read from the **real 7-Zip 24.09 (Win64)** binaries
+(`w32/tests/W32A13.probe.log`): `7zFM.exe` 34 msvcrt imports and `7z.dll` 22 —
+each **real == ledger** — for a **union of 37**, **all 37 bound** (5 are
+W32A-4's C++ EH names; W32A-13 adds 32).  Gates: `test_w32_a13_msvcrt` **71
+checks / 0 failures** (host, ASan/UBSan); `tests/integration/cases/test_w32a13_msvcrt.sh`
+**6/6** in QEMU — heap unity across the msvcrt→kernel32 DLL boundary
+(`HeapSize(malloc(n)) == n`), `_beginthreadex` over `CreateThread`, the seeded
+`rand` LCG, and `_onexit`→`exit(78)`; `w32run.elf` links clean; provenance PASS;
+the W32A-0 census is unchanged (union 611, gap 28 — msvcrt is not in the K/U/G
+union).  Honest non-goals: C++ *catch matching* stays the D7 gap
+(`__CxxFrameHandler` continue-search → cleanups then a NAMED terminate);
+CRT stdio (the console `7z.exe` surface) is out of gate scope.  Deliverable
+`patches/W32A13_msvcrt.patch`.  Full detail in `docs/w32app_receipts.md`.
 
 **Objective:** the 34+22 `msvcrt` symbols the 7-Zip gate imports —
 forwarded onto the native libc and the W32A-3/W32A-4 runtimes, with the

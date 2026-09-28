@@ -401,6 +401,62 @@ readiness is measured with a zero-timeout `select()`, and reverse DNS (PTR) is
 numeric-only.  Closing patch: `patches/W32A12_winsock.patch` (format-patch
 form).  W32A-12 is not an application gate, so no `.imports` ledger blocks it.
 
+## W32A-13 — PHASE CLOSED (2026-09-28), the msvcrt bridge
+
+`w32/src/msvcrt.c` bridges msvcrt.dll onto runtimes AuraLite already owns:
+malloc/free/realloc onto the **process heap** (`GetProcessHeap`/`HeapAlloc`/
+`HeapFree`/`HeapReAlloc`, W32A-2), `_beginthreadex` onto `CreateThread`
+(W32A-3), and the C++ EH names onto W32A-4's unwinder.  msvcrt is a PE DLL
+whose callers cross the Windows-x64 boundary, so every export is `W32ABI`.
+The phase added only NAME rows to `w32/src/w32_bind.c` (`MCRT`) — the static
+table shadows the `w32_stubs_gen.c` TODO stubs exactly as W32A-4's five C++ EH
+names already did, so no `stub_map.tsv` / `w32_stubs_gen.c` change.
+
+**Heap unity — the load-bearing invariant.**  A CRT pointer *is* a process-heap
+pointer, byte for byte: `malloc` is `HeapAlloc(GetProcessHeap(),…)`, so
+`HeapSize(malloc(n)) == n`, `HeapReAlloc` grows a malloc'd block, and `_msize`
+(ledger-absent; `HeapSize` covers it) would agree.  Two heaps pretending to be
+one is the bug this forbids; the in-guest gate proves the agreement across the
+msvcrt→kernel32 DLL boundary.
+
+**Surface discovered from the real binaries.**  The 7-Zip gate's msvcrt surface
+was read out of the pinned **7-Zip 24.09 (Win64)** binaries themselves, fetched
+from `https://www.7-zip.org/a/7z2409-x64.exe` (an SFX; the members were
+extracted with the official Linux `7zz`).  Per the no-vendored-binary rule
+(`w32/LICENSING.md`, D8) they are **not** committed: they live in
+`build/w32bins/` (git-ignored, provenance-exempt) purely as a local
+verification aid, and the fetch+scan is reproducible.  `w32/tests/W32A13.probe.log`
+records, per binary (with sha256/size), the msvcrt name imports:
+
+- `7zFM.exe` (sha256 `dc4fdcd9…`) → **34** msvcrt imports — **real == ledger** `7zFM-24.09.imports`.
+- `7z.dll`  (sha256 `88206394…`) → **22** msvcrt imports — **real == ledger** `7z-24.09.imports`.
+- UNION(7zFM, 7z.dll) = **37 distinct symbols**, **all 37 bound** in `w32_bind.c`
+  (5 are W32A-4's C++ EH names; W32A-13 adds the remaining **32**).
+- The console `7z.exe`/`7zG.exe` pull extra stdio (`_iob`/`fflush`/`fgetc`/…) and
+  `__initenv`/`_isatty`: per §3 those are a receipt-stretch, **not** a gate
+  promise — the gate is the GUI 7zFM + 7z.dll surface.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `tests/integration/cases/test_w32a13_msvcrt.sh` (guest, QEMU) | **6/6 assertions** | `w32a13_msvcrt.exe` (`-lmsvcrt`, **15 msvcrt name imports** resolved through `w32_bind.c`) runs the bridge REAL over the personality: **heap unity across two DLLs** (a `msvcrt.dll!malloc` block measured by `kernel32.dll!HeapSize` — they agree at 100 then 200 bytes — and `kernel32.dll!HeapReAlloc` growing a CRT pointer), the string/mem core, the seeded MSVCRT `rand` LCG (`srand(1)`→41, reproducible), `_beginthreadex` over `CreateThread` (join + exit code 55), and the `_onexit` chain — the run ends through `msvcrt.dll!exit(78)`, which fires the LIFO callbacks (`OX-B` before `OX-A`) then `ExitProcess`; prints `W32A13-MSVCRT-OK`, exits 78, no fault |
+| `test_w32_a13_msvcrt` (host, ASan/UBSan) | **71 checks, 0 failures** | heap unity vs a kernel32 `HeapSize` double; string/mem core incl. overlapping `memmove`, `strchr(…,0)`, empty-needle `strstr`, the wide variants; the exact `rand` LCG; `__getmainargs` over the **real** `w32_argv.c` splitter (argc/argv-into-one-buffer/NULL env, the quoted arg `"b c"`); `_initterm` (NULL cells skipped, in order); the `_onexit` LIFO + the four exit-code paths kept distinct (exit: callbacks+terminate; `_exit`: terminate only; `_cexit`: callbacks+return; `_c_exit`: neither); `__dllonexit` growing a caller table on the process heap; `_beginthreadex` forwarding start/arg/flags/tid; `__CxxFrameHandler` continue-search + type_info dtor |
+| `w32run.elf` link | **links clean** | the whole personality (incl. `w32_msvcrt.o`) links; `w32_msvcrt_*` referenced from `w32_bind.c` and `w32_msvcrt_init` from `kernel32.c` all resolve |
+| `tools/check_provenance.sh` | **PASS (85 files)** | `src/msvcrt.c` + `tests/w32a13_msvcrt.c` recorded; the fetched 7-Zip binaries stay under git-ignored `build/` |
+| `python3 tools/check_w32app_claims.py --check` | 3 pre-existing FAILs only | the missing `patches/W32A2/A3/A4` receipts (unrelated, absent in base `a664d94`); marking W32A-13 DONE adds no new failure and the W32A-0 census still confirms `agree` — union 611, gap 28, `CHECK OK` (msvcrt is not in the K/U/G union, so the gap is unchanged) |
+
+**Honest non-goals (the plan says the words).**  C++ *catch matching* stays the
+D7 gap: `__CxxFrameHandler` returns continue-search, so a C++ exception sweeps
+its cleanups and then dies with a NAMED terminate rather than a fabricated
+catch (`_CxxThrowException` already does the sweep-then-name).  `type_info`'s
+destructor is REAL (teardown is not catch matching).  Per-DLL onexit teardown
+at `FreeLibrary` time is simplified to process-exit LIFO ordering; the
+`__dllonexit` table contract itself is REAL and host-tested.  CRT stdio
+(`_iob`/`fflush`/`fgetc`/…, the console 7z.exe surface) is out of gate scope.
+W32A-13 is not an application gate, so no `.imports` ledger with `MZ` binaries
+or REFUSE rows blocks it.
+
+Closing patch: `patches/W32A13_msvcrt.patch`.
+
 ## App-gate receipts (reserved format)
 
 Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16

@@ -1,0 +1,150 @@
+W32A-13 — msvcrt surface probe, from the pinned 7-Zip 24.09 (Win64) binaries
+==========================================================================
+Base commit: a664d94
+Tooling:     x86_64-w64-mingw32-objdump -p ; sha256sum
+Source:      https://www.7-zip.org/a/7z2409-x64.exe  (SFX; files extracted with 7zz 23.01)
+Binaries live in build/w32bins/ — gitignored, provenance-exempt (never committed).
+
+7zFM.exe   size=990720    sha256=dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58
+7z.dll     size=1907712   sha256=882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+7z.exe     size=564736    sha256=e2ca3ec168ae9c0b4115cd4fe220145ea9b2dc4b6fc79d765e91f415b34d00de
+7zG.exe    size=712704    sha256=07a6236cd92901b459cd015b05f1eeaf9d36e7b11482fcfd2e81cd9ba4767bff
+
+--- 7zFM.exe : 34 msvcrt.dll name imports ---
+    hint 0x0011 ??1type_info@@UEAA@XZ
+    hint 0x002d ?terminate@@YAXXZ
+    hint 0x0030 _CxxThrowException
+    hint 0x0036 _XcptFilter
+    hint 0x0037 __C_specific_handler
+    hint 0x0039 __CxxFrameHandler
+    hint 0x004e __dllonexit
+    hint 0x0051 __getmainargs
+    hint 0x0060 __set_app_type
+    hint 0x0062 __setusermatherr
+    hint 0x0070 _acmdln
+    hint 0x007e _beginthreadex
+    hint 0x007f _c_exit
+    hint 0x0082 _cexit
+    hint 0x008e _commode
+    hint 0x00af _exit
+    hint 0x00c6 _fmode
+    hint 0x00f4 _initterm
+    hint 0x016e _onexit
+    hint 0x0178 _purecall
+    hint 0x024c exit
+    hint 0x0264 free
+    hint 0x0299 malloc
+    hint 0x029e memcmp
+    hint 0x029f memcpy
+    hint 0x02a0 memmove
+    hint 0x02a1 memset
+    hint 0x02b0 rand
+    hint 0x02c2 srand
+    hint 0x02c6 strcmp
+    hint 0x02cc strlen
+    hint 0x02f0 wcscmp
+    hint 0x02f5 wcslen
+    hint 0x02fc wcsstr
+    ledger 7zFM-24.09.imports : 34 rows ; real==ledger : True
+
+--- 7z.dll : 22 msvcrt.dll name imports ---
+    hint 0x0011 ??1type_info@@UEAA@XZ
+    hint 0x002d ?terminate@@YAXXZ
+    hint 0x0030 _CxxThrowException
+    hint 0x0037 __C_specific_handler
+    hint 0x0039 __CxxFrameHandler
+    hint 0x004e __dllonexit
+    hint 0x007e _beginthreadex
+    hint 0x00f4 _initterm
+    hint 0x016e _onexit
+    hint 0x0178 _purecall
+    hint 0x0264 free
+    hint 0x0299 malloc
+    hint 0x029e memcmp
+    hint 0x029f memcpy
+    hint 0x02a0 memmove
+    hint 0x02a1 memset
+    hint 0x02b1 realloc
+    hint 0x02c5 strchr
+    hint 0x02c6 strcmp
+    hint 0x02cc strlen
+    hint 0x02d3 strstr
+    hint 0x02f0 wcscmp
+    ledger 7z-24.09.imports : 22 rows ; real==ledger : True
+
+--- 7z.exe : 36 msvcrt.dll name imports ---
+    hint 0x0011 ??1type_info@@UEAA@XZ
+    hint 0x002d ?terminate@@YAXXZ
+    hint 0x0030 _CxxThrowException
+    hint 0x0036 _XcptFilter
+    hint 0x0037 __C_specific_handler
+    hint 0x0039 __CxxFrameHandler
+    hint 0x004e __dllonexit
+    hint 0x0051 __getmainargs
+    hint 0x0052 __initenv
+    hint 0x0060 __set_app_type
+    hint 0x0062 __setusermatherr
+    hint 0x007e _beginthreadex
+    hint 0x007f _c_exit
+    hint 0x0082 _cexit
+    hint 0x008e _commode
+    hint 0x00af _exit
+    hint 0x00c6 _fmode
+    hint 0x00f4 _initterm
+    hint 0x00f5 _iob
+    hint 0x00f6 _isatty
+    hint 0x016e _onexit
+    hint 0x024c exit
+    hint 0x0253 fflush
+    hint 0x0254 fgetc
+    hint 0x025f fputc
+    hint 0x0260 fputs
+    hint 0x0264 free
+    hint 0x0299 malloc
+    hint 0x029e memcmp
+    hint 0x029f memcpy
+    hint 0x02a0 memmove
+    hint 0x02a1 memset
+    hint 0x02c6 strcmp
+    hint 0x02cc strlen
+    hint 0x02f0 wcscmp
+    hint 0x02fc wcsstr
+
+--- 7zG.exe : 33 msvcrt.dll name imports ---
+    hint 0x0011 ??1type_info@@UEAA@XZ
+    hint 0x002d ?terminate@@YAXXZ
+    hint 0x0030 _CxxThrowException
+    hint 0x0036 _XcptFilter
+    hint 0x0037 __C_specific_handler
+    hint 0x0039 __CxxFrameHandler
+    hint 0x004e __dllonexit
+    hint 0x0051 __getmainargs
+    hint 0x0060 __set_app_type
+    hint 0x0062 __setusermatherr
+    hint 0x0070 _acmdln
+    hint 0x007e _beginthreadex
+    hint 0x007f _c_exit
+    hint 0x0082 _cexit
+    hint 0x008e _commode
+    hint 0x00af _exit
+    hint 0x00c6 _fmode
+    hint 0x00f4 _initterm
+    hint 0x00f5 _iob
+    hint 0x00f6 _isatty
+    hint 0x016e _onexit
+    hint 0x0178 _purecall
+    hint 0x024c exit
+    hint 0x0264 free
+    hint 0x0299 malloc
+    hint 0x029e memcmp
+    hint 0x029f memcpy
+    hint 0x02a0 memmove
+    hint 0x02a1 memset
+    hint 0x02c6 strcmp
+    hint 0x02cc strlen
+    hint 0x02f0 wcscmp
+    hint 0x02fc wcsstr
+
+UNION(7zFM,7z.dll) msvcrt surface = 37 distinct symbols
+all bound in w32/src/w32_bind.c (MCRT): True  (unbound: none)
+of these, 5 are W32A-4's C++ EH names; W32A-13 adds the remaining 32.

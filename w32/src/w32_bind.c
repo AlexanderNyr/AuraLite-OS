@@ -19,6 +19,7 @@
 #include "w32/imm32.h"
 #include "w32/ws2_32.h"
 #include "w32/uxtheme.h"
+#include "w32/msvcrt.h"
 #include "w32/w32_seh.h"
 #include "w32/w32_gen.h"
 #include "w32/w32_utf.h"
@@ -704,6 +705,47 @@ static const w32_export_t exports[] = {
      * from msvcrt, not kernel32): same functions, second spelling. */
     { MCRT, "_XcptFilter",               (void *)_XcptFilter               },
     { MCRT, "__C_specific_handler",      (void *)__C_specific_handler      },
+
+    /* W32A-13: the msvcrt BRIDGE (w32/src/msvcrt.c).  The 34+22 symbols the
+     * 7-Zip gate (7zFM-24.09 / 7z-24.09) imports, forwarded onto the native
+     * libc + the W32A-2/3/4 runtimes.  Heap unity is the invariant:
+     * malloc/free/realloc are GetProcessHeap()/HeapAlloc/HeapFree/HeapReAlloc,
+     * so HeapSize(malloc(n)) == n.  The five C++ EH names above stay W32A-4's;
+     * these add __CxxFrameHandler (honest continue-search) + type_info's dtor. */
+    { MCRT, "malloc",                    (void *)w32_msvcrt_malloc         },
+    { MCRT, "free",                      (void *)w32_msvcrt_free           },
+    { MCRT, "realloc",                   (void *)w32_msvcrt_realloc        },
+    { MCRT, "memcmp",                    (void *)w32_msvcrt_memcmp         },
+    { MCRT, "memcpy",                    (void *)w32_msvcrt_memcpy         },
+    { MCRT, "memmove",                   (void *)w32_msvcrt_memmove        },
+    { MCRT, "memset",                    (void *)w32_msvcrt_memset         },
+    { MCRT, "strlen",                    (void *)w32_msvcrt_strlen         },
+    { MCRT, "strcmp",                    (void *)w32_msvcrt_strcmp         },
+    { MCRT, "strchr",                    (void *)w32_msvcrt_strchr         },
+    { MCRT, "strstr",                    (void *)w32_msvcrt_strstr         },
+    { MCRT, "wcscmp",                    (void *)w32_msvcrt_wcscmp         },
+    { MCRT, "wcslen",                    (void *)w32_msvcrt_wcslen         },
+    { MCRT, "wcsstr",                    (void *)w32_msvcrt_wcsstr         },
+    { MCRT, "rand",                      (void *)w32_msvcrt_rand           },
+    { MCRT, "srand",                     (void *)w32_msvcrt_srand          },
+    { MCRT, "__getmainargs",             (void *)w32_msvcrt_getmainargs    },
+    { MCRT, "_initterm",                 (void *)w32_msvcrt_initterm       },
+    { MCRT, "_onexit",                   (void *)w32_msvcrt_onexit         },
+    { MCRT, "__dllonexit",               (void *)w32_msvcrt_dllonexit      },
+    { MCRT, "exit",                      (void *)w32_msvcrt_exit           },
+    { MCRT, "_exit",                     (void *)w32_msvcrt__exit          },
+    { MCRT, "_cexit",                    (void *)w32_msvcrt_cexit          },
+    { MCRT, "_c_exit",                   (void *)w32_msvcrt_c_exit         },
+    { MCRT, "__set_app_type",            (void *)w32_msvcrt_set_app_type   },
+    { MCRT, "__setusermatherr",          (void *)w32_msvcrt_setusermatherr },
+    { MCRT, "_beginthreadex",            (void *)w32_msvcrt_beginthreadex  },
+    { MCRT, "__CxxFrameHandler",         (void *)w32_msvcrt_CxxFrameHandler },
+    { MCRT, "??1type_info@@UEAA@XZ",     (void *)w32_msvcrt_type_info_dtor },
+    /* Data exports: the IAT slot is filled with the ADDRESS of the cell, and
+     * the importer reads through __imp__<name>. */
+    { MCRT, "_acmdln",                   (void *)&w32_msvcrt_acmdln        },
+    { MCRT, "_fmode",                    (void *)&w32_msvcrt_fmode         },
+    { MCRT, "_commode",                  (void *)&w32_msvcrt_commode       },
 
     /* W32A-6: USER32 breadth II — dialogs, menus, timers, carets,
      * accelerators, clipboard, hooks, DrawText family, and the resource
