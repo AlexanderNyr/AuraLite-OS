@@ -1,0 +1,60 @@
+W32A-14 — PuTTY app-gate import probe, from the pinned PuTTY 0.85 (Win64) binary
+==============================================================================
+Base commit: f78365e
+Tooling:     x86_64-w64-mingw32-objdump -p ; sha256sum
+Source:      https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe
+Binary lives in build/w32bins/ — gitignored, provenance-exempt (never committed).
+
+putty.exe  size=1706136   sha256=d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87
+           (== committed ledger w32/app_ledger/putty-0.85.imports pin)
+
+--- import surface: 348 name imports across 8 DLLs ---
+    ADVAPI32.dll      15
+    COMDLG32.dll       6
+    GDI32.dll         51
+    IMM32.dll          5
+    KERNEL32.dll     148
+    SHELL32.dll        1
+    USER32.dll       119
+    ole32.dll          3
+
+--- resolution against the tree (w32_bind.c static exports[]) ---
+    total imports                : 348
+    resolved from static exports : 348   (REAL or fail-clean)
+    left on a loud TODO stub     : 0
+    unbound / generated-other    : 0
+
+Before W32A-14 the count was 334 static + 14 loud TODO stubs.  W32A-14 lands
+the 14 below as REAL (console/cursor) or fail-clean (serial, a documented
+non-goal), so PuTTY's ENTIRE 348-import surface now binds to an honest body.
+
+--- the 14 imports W32A-14 moved off the TODO stub ---
+  KERNEL32 console  (REAL, w32/src/kernel32_con.c):
+      GetConsoleMode
+      GetConsoleOutputCP
+      ReadConsoleW
+      WriteConsoleW
+      SetStdHandle
+  KERNEL32 serial   (FAIL-CLEAN — serial is a documented non-goal):
+      ClearCommBreak
+      GetCommState
+      SetCommBreak
+      SetCommState
+      SetCommTimeouts
+  USER32 terminal   (REAL, w32/src/user32_win.c):
+      MessageBeep
+      SetCursor
+      ShowCursor
+      SetClassLongPtrA
+
+IMM32 (5 imports) remains fail-clean per the ledger: PuTTY's IME support
+degrades gracefully when IMM32 is absent, so it does not gate green here.
+
+--- fixture-twin gate (tests/integration/cases/test_w32a14_putty_fixture.sh) ---
+  w32a14_putty.exe — mingw PE importing the same surface BY NAME, resolving
+  WS2_32 dynamically as PuTTY does.  In-guest QEMU result:
+      W32A14: PuTTY app-gate fixture start
+      W32A14 console: ok            (WriteConsoleW widened UTF-16 -> UTF-8)
+      W32A14-PUTTY-OK
+      '/tests/w32a14_putty.exe' (tid 8) exited (code=78)
+  6/6 gate assertions passed; no FAIL- mark, no TODO fall-through, no fault.

@@ -92,6 +92,24 @@ typedef int      W32_INT;
 typedef uint64_t W32_SIZE_T;
 typedef uint64_t W32_DWORD_PTR;
 typedef int64_t  W32_LONG_PTR;
+
+/* W32A-14 (PuTTY app gate): console mode/codepage/wide-IO and the serial
+ * (COMM) surface.  Implementations live in w32/src/kernel32_con.c; the static
+ * table in w32_bind.c binds them, shadowing the W32A-1 TODO stubs. */
+W32ABI W32_BOOL   SetStdHandle(W32_DWORD which, W32_HANDLE h);
+/* GetStdHandle consults this: a non-NULL override wins over the default. */
+W32_HANDLE        w32_std_handle_override(W32_DWORD which);
+W32ABI W32_BOOL   GetConsoleMode(W32_HANDLE h, W32_DWORD *mode);
+W32ABI W32_UINT   GetConsoleOutputCP(void);
+W32ABI W32_BOOL   WriteConsoleW(W32_HANDLE h, const void *buf, W32_DWORD n,
+                                W32_DWORD *written, void *reserved);
+W32ABI W32_BOOL   ReadConsoleW(W32_HANDLE h, void *buf, W32_DWORD n,
+                               W32_DWORD *got, void *ctrl);
+W32ABI W32_BOOL   GetCommState(W32_HANDLE h, void *dcb);
+W32ABI W32_BOOL   SetCommState(W32_HANDLE h, const void *dcb);
+W32ABI W32_BOOL   SetCommTimeouts(W32_HANDLE h, const void *timeouts);
+W32ABI W32_BOOL   SetCommBreak(W32_HANDLE h);
+W32ABI W32_BOOL   ClearCommBreak(W32_HANDLE h);
 typedef int32_t  W32_HRESULT;
 
 #define W32_MAX_PATH 260u

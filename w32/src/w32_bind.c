@@ -86,6 +86,21 @@ static const w32_export_t exports[] = {
     { K32, "VirtualFree",      (void *)VirtualFree      },
     { K32, "WriteFile",        (void *)WriteFile        },
 
+    /* W32A-14 (PuTTY app gate): the console + serial slice.  The static
+     * table shadows the W32A-1 TODO stubs of the same names -- console mode/
+     * codepage/wide-IO are REAL (w32/src/kernel32_con.c), and the serial
+     * (COMM) surface fails clean because serial is a documented non-goal. */
+    { K32, "SetStdHandle",       (void *)SetStdHandle       },
+    { K32, "GetConsoleMode",     (void *)GetConsoleMode     },
+    { K32, "GetConsoleOutputCP", (void *)GetConsoleOutputCP },
+    { K32, "WriteConsoleW",      (void *)WriteConsoleW      },
+    { K32, "ReadConsoleW",       (void *)ReadConsoleW       },
+    { K32, "GetCommState",       (void *)GetCommState       },
+    { K32, "SetCommState",       (void *)SetCommState       },
+    { K32, "SetCommTimeouts",    (void *)SetCommTimeouts    },
+    { K32, "SetCommBreak",       (void *)SetCommBreak       },
+    { K32, "ClearCommBreak",     (void *)ClearCommBreak     },
+
     /* USER32 (W32-5).  Windowing and the message loop, mapped onto the
      * existing compositor -- see w32/src/user32.c and plan decision D5. */
     { U32, "CreateWindowExA",  (void *)CreateWindowExA  },
@@ -273,6 +288,14 @@ static const w32_export_t exports[] = {
     { U32, "TrackMouseEvent",           (void *)TrackMouseEvent},
     { U32, "MessageBoxW",               (void *)MessageBoxW},
     { U32, "MessageBoxIndirectW",       (void *)MessageBoxIndirectW},
+
+    /* W32A-14 (PuTTY app gate): cursor visibility, the terminal bell and the
+     * class-long store PuTTY's terminal window drives.  REAL -- shadows the
+     * W32A-1 TODO stubs (w32/src/user32_win.c). */
+    { U32, "SetCursor",                 (void *)SetCursor},
+    { U32, "ShowCursor",                (void *)ShowCursor},
+    { U32, "MessageBeep",               (void *)MessageBeep},
+    { U32, "SetClassLongPtrA",          (void *)SetClassLongPtrA},
 
     /* W32A-5 binds the Char family under USER32: Windows exports them from
      * user32, W32A-2 wrote the code (kernel32_loc.c), and the ledger's

@@ -174,6 +174,7 @@ _Static_assert(AG_DROP_PATH_MAX == 256, "file-drop ABI drifted");
 #endif
 
 #define UI_MAX_CLASSES  32
+#define UI_CLASSLONG_SLOTS 4          /* W32A-14: cbClsExtra qword slots */
 #define UI_MAX_WINDOWS  32
 #define UI_MAX_QUEUES   16
 /* 256: a message queue must absorb a burst of creation traffic (every
@@ -215,8 +216,13 @@ struct ui_class {
     int       has_bg;
     W32_UINT  style;
     W32_HICON icon;
+    W32_HICON icon_sm;            /* W32A-14: GCLP_HICONSM (PuTTY stamps this) */
     W32_HCURSOR cursor;
     int       comctl;             /* W32A-8: a common-control class (WS_CHILD ok) */
+    /* W32A-14: generic class-long store for cbClsExtra offsets, so a
+     * SetClassLongPtr/GetClassLongPtr round-trip on a positive index works
+     * without a special field per app.  Indexed by (offset / 8). */
+    intptr_t  classlong[UI_CLASSLONG_SLOTS];
 };
 
 struct ui_inv { int32_t l, t, r, b; };
@@ -3030,6 +3036,82 @@ W32ABI W32_BOOL SetCursorPos(int32_t x, int32_t y) {
      * pretending the pointer moved. */
     w32_set_last_error(W32_ERROR_CALL_NOT_IMPLEMENTED);
     return W32_FALSE;
+}
+
+/* ------------------------------------------------------------------------
+ * W32A-14 (PuTTY app gate): cursor, bell and class-long personality.
+ *
+ * PuTTY's terminal window drives all four on its ordinary path -- it hides
+ * the pointer while a key is pressed (ShowCursor) and shows it again on the
+ * next mouse move, swaps the I-beam/arrow as the pointer crosses the
+ * selection region (SetCursor), rings the terminal bell (MessageBeep) and
+ * stamps its small icon into the window class (SetClassLongPtrA).  W32A-1
+ * bound all four to loud TODO stubs, so a real PuTTY GUI would abort the
+ * first time it drew a character.  These are the REAL implementations the
+ * app gate forces into existence.
+ * -------------------------------------------------------------------- */
+
+static W32_HCURSOR ui_current_cursor;       /* SetCursor: the one shown now  */
+static int         ui_cursor_display;       /* ShowCursor counter; >=0 visible*/
+
+W32ABI W32_HCURSOR SetCursor(W32_HCURSOR cur) {
+    /* Win32 returns the previously-set cursor (NULL if there was none).  The
+     * compositor owns the sprite, so this records intent -- PuTTY only reads
+     * back the previous handle, which it does get. */
+    W32_HCURSOR prev = ui_current_cursor;
+    ui_current_cursor = cur;
+    return prev;
+}
+
+W32ABI int32_t ShowCursor(W32_BOOL show) {
+    /* A displacement counter exactly per MSDN: +1 when shown, -1 when
+     * hidden, pointer visible while the count is >= 0.  PuTTY balances a
+     * hide on keypress against a show on mouse move and reads the count
+     * back, so a boolean toggle would drift and leave the pointer wrong. */
+    ui_cursor_display += show ? 1 : -1;
+    return ui_cursor_display;
+}
+
+W32ABI W32_BOOL MessageBeep(W32_UINT type) {
+    (void)type;
+    /* The terminal bell.  There is no audio device on the lite personality,
+     * so the honest REAL behaviour is a successful silent no-op: PuTTY's bell
+     * code only checks the BOOL, and returning FALSE here would push it into
+     * a visual-bell retry meant for platforms that genuinely can beep. */
+    return W32_TRUE;
+}
+
+/* GCLP_* indices SetClassLongPtr understands.  The negatives address named
+ * class fields; a non-negative index is a cbClsExtra byte offset. */
+#define W32_GCL_STYLE           (-26)
+#define W32_GCLP_HICON          (-14)
+#define W32_GCLP_HCURSOR        (-12)
+#define W32_GCLP_HICONSM        (-34)
+
+W32ABI intptr_t SetClassLongPtrA(W32_HWND hwnd, int32_t index, intptr_t val) {
+    int i = w32_win_index_from_hwnd(hwnd);
+    if (i < 0 || windows[i].cls < 0) {
+        w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    struct ui_class *k = &classes[windows[i].cls];
+    intptr_t prev;
+    switch (index) {
+    case W32_GCLP_HICON:   prev = (intptr_t)k->icon;    k->icon    = (W32_HICON)val;   break;
+    case W32_GCLP_HICONSM: prev = (intptr_t)k->icon_sm; k->icon_sm = (W32_HICON)val;   break;
+    case W32_GCLP_HCURSOR: prev = (intptr_t)k->cursor;  k->cursor  = (W32_HCURSOR)val; break;
+    case W32_GCL_STYLE:    prev = (intptr_t)k->style;   k->style   = (W32_UINT)val;    break;
+    default:
+        if (index >= 0 && (index / 8) < UI_CLASSLONG_SLOTS) {
+            prev = k->classlong[index / 8];
+            k->classlong[index / 8] = val;
+        } else {
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            prev = 0;
+        }
+        break;
+    }
+    return prev;
 }
 
 W32ABI void mouse_event(W32_DWORD flags, W32_DWORD dx, W32_DWORD dy,

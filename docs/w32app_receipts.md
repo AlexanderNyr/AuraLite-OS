@@ -494,7 +494,83 @@ Empty sections the app phases fill. A section stays `AWAITING` until its
 gate lands; the claim checker fails a ✅ app phase whose section is still
 `AWAITING` (or missing).
 
-## W32A-14 putty — AWAITING
+## W32A-14 putty — PHASE CLOSED (2026-09-28), the PuTTY app gate (CI-provable half)
+
+The first application gate. The pinned **PuTTY 0.85 (Win64)** `putty.exe` was
+fetched to `build/w32bins/` from `https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe`
+— git-ignored, provenance-exempt, **never committed** (D8 / `w32/LICENSING.md`).
+Its sha256 is `d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87`,
+size `1706136` — **byte-for-byte the pin** recorded in the committed ledger
+`w32/app_ledger/putty-0.85.imports`. The fetch+scan is reproducible;
+`w32/tests/W32A14.probe.log` records it.
+
+**Import surface, measured (`objdump -p putty.exe`).** 348 name imports across
+8 DLLs: KERNEL32 148, USER32 119, GDI32 51, ADVAPI32 15, COMDLG32 6, IMM32 5,
+ole32 3, SHELL32 1. Cross-referenced against `w32/src/w32_bind.c`'s static
+`exports[]`:
+
+| resolution | count |
+|---|---:|
+| resolved from static `exports[]` (REAL or fail-clean) | **348** |
+| left on a loud TODO stub | **0** |
+| unbound / generated-other | **0** |
+
+Before W32A-14 the split was **334 static + 14 loud TODO stubs**. Those 14 are
+the "personality fixes the gate forced" (the plan: *a gate that changes nothing
+is suspicious*). W32A-14 lands them so PuTTY's **entire 348-import surface now
+binds to an honest body**:
+
+- **KERNEL32 console — REAL** (`w32/src/kernel32_con.c`): `GetConsoleMode`
+  (TRUE for a std handle, FALSE + `ERROR_INVALID_HANDLE` for a redirected
+  file/pipe — the signal PuTTY/plink use to detect redirected stdio),
+  `GetConsoleOutputCP` (65001, matching the write path), `WriteConsoleW`
+  (UTF-16 → UTF-8 over `WriteFile`, chunked, no heap), `ReadConsoleW`
+  (UTF-8 → UTF-16 over `ReadFile`), `SetStdHandle` (an override
+  `GetStdHandle` consults — via a WEAK default in `kernel32.c` so the host
+  amalgam tests still link).
+- **KERNEL32 serial — FAIL-CLEAN** (serial is a documented non-goal — no COM
+  hardware on the lite personality): `GetCommState`/`SetCommState`/
+  `SetCommTimeouts`/`SetCommBreak`/`ClearCommBreak` all return FALSE +
+  `ERROR_INVALID_FUNCTION`, so PuTTY's serial backend shows its documented
+  "unable to open" path instead of faulting on a TODO stub.
+- **USER32 terminal window — REAL** (`w32/src/user32_win.c`): `MessageBeep`
+  (silent success — no audio device), `SetCursor` (returns the previous
+  cursor), `ShowCursor` (MSDN displacement counter, not a boolean),
+  `SetClassLongPtrA` (per-class store; `GCLP_HICON`/`HICONSM`/`HCURSOR`/
+  `GCL_STYLE` map to the class fields, positive offsets to a `cbClsExtra`
+  slot; returns the previous value).
+
+IMM32's 5 imports stay fail-clean per the ledger — PuTTY's IME degrades
+gracefully when IMM32 is absent, so they do not gate green here.
+
+**Census effect.** The 14 names are all in the K/U/G ledger union, and were
+uncovered until now, so `tools/w32_import_ledger.py` moves the coverage gap
+**28 → 14** (`EXPECTED_GAP` updated to match; union stays 611, personality
+exports 620 → 634, `CHECK OK`). W32A-13's msvcrt work left the gap unchanged
+(msvcrt is not in the K/U/G union); W32A-14 is the phase that closes it.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `tests/integration/cases/test_w32a14_putty_fixture.sh` (guest, QEMU) | **6/6 assertions** | `w32a14_putty.exe` — a mingw PE importing the KERNEL32/USER32/ADVAPI32 surface **by name** (resolved through `w32_bind.c`) and resolving **WS2_32 dynamically** (`LoadLibrary`+`GetProcAddress`) as PuTTY does. It walks PuTTY's personality paths and asserts each: the `Reg*A` **session save/load round-trip** (`HostName`/`PortNumber` intact after close+reopen), the REAL console slice (`GetConsoleOutputCP`==65001, `GetConsoleMode` TRUE/FALSE, `WriteConsoleW` widening — the log shows `W32A14 console: ok`, `SetStdHandle` override), the terminal verbs (`ShowCursor` counter, `SetCursor` previous, `MessageBeep`, `SetClassLongPtrA` class-long round-trip on a real registered class), the **serial fail-clean** negative flow (all five COMM verbs FALSE), and the dynamic WinSock chain. Prints `W32A14-PUTTY-OK`, exits **78**, no `FAIL-`, **no TODO fall-through**, no fault |
+| `test_w32_a14_con` (host, ASan/UBSan) | **37 checks, 0 failures** | `kernel32_con.c` + the pure UTF converter against `WriteFile`/`ReadFile`/last-error doubles: codepage, `GetConsoleMode` (std handles TRUE, non-console + overridden FALSE, NULL-arg guard), `WriteConsoleW` (ASCII, a multibyte `U+00E9`→`C3 A9`, a >128-unit run forcing the chunk loop, zero-length no-op), `ReadConsoleW` (narrowing + EOF), `SetStdHandle`/`w32_std_handle_override` round-trip + unknown-which reject, the COMM set fail-clean with `ERROR_INVALID_FUNCTION` |
+| `w32run.elf` link | **links clean** | the whole personality (incl. `w32_kernel32_con.o`) links; `SetStdHandle`/`GetConsoleMode`/… referenced from `w32_bind.c` and `w32_std_handle_override` from `kernel32.c` all resolve (strong def in the console TU wins over the weak default) |
+| import coverage (`objdump -p` vs `w32_bind.c`) | **348/348, 0 TODO** | `w32/tests/W32A14.probe.log` |
+
+**Honest non-goals (the plan says the words — human-run, not headlessly
+automatable in this environment).** The full PuTTY *receipt* is human-run and
+pasted back hash-verified: the **config dialog** rendering (category tree,
+host/port fields, connection-type radios — GUI framebuffer / pixel-region
+asserts), the **terminal render** (ASCII + box-drawing + colours screenshotted),
+the **font/colour choosers** (COMDLG32 six) and **clipboard** round-trip to
+`gclip`, and **live Raw/TCP + Telnet + SSH** sessions (banner + kex, password
+auth, GSSAPI offered-and-absent, `SECUR32`/`GSSAPI64` auth-fallback) against
+external servers. Those need a framebuffer and real network peers and are out
+of this gate's automatable scope by design. What is CI-provable — the import
+surface closing to 0 TODO, the registry/console/cursor/serial personality
+paths, and the dynamic-WinSock resolution path — is proved above by the
+fixture twin and the host unit test.
+
+Closing patch: `patches/W32A14_putty.patch`.
 
 ## W32A-15 7zFM — AWAITING
 

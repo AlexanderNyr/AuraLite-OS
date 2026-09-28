@@ -464,14 +464,18 @@ EXPECTED_UNION = 611
 # exports after W32A-6; 607 after W32A-7; 620 after the modeless-dialog /
 # MENUITEMINFO / MessageBoxIndirect completion on 2026-09-28; the W32A-0
 # baseline was 44 exports, gap 569).
-EXPECTED_GAP = 28      # W32A-7 closed 81 of the 122 W32A-6 left (GDI breadth:
+EXPECTED_GAP = 14      # W32A-7 closed 81 of the 122 W32A-6 left (GDI breadth:
                        # DCs/blits/regions/fonts/palettes + user32 FrameRect);
                        # the 2026-09-28 user32 completion closed 13 more: the
                        # three names the pinned apps blocked on at import
                        # binding (CreateDialogParamA / GetMenuItemInfoW /
                        # CreateDialogIndirectParamW) plus their families
                        # (CreateDialogParamW, DefDlgProcA, the MENUITEMINFO
-                       # round-trip octet, MessageBoxIndirectW)
+                       # round-trip octet, MessageBoxIndirectW).
+                       # W32A-14 (PuTTY app gate) closed the last of PuTTY's
+                       # blockers: the 10 KERNEL32 console/serial + 4 USER32
+                       # cursor/bell/class-long names (kernel32_con.c +
+                       # user32_win.c), so 28 -> 14.
 
 KUG = {"kernel32.dll", "user32.dll", "gdi32.dll"}
 DLL_OF = {"K32": "kernel32.dll", "U32": "user32.dll", "G32": "gdi32.dll"}

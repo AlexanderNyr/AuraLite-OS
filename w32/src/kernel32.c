@@ -49,7 +49,21 @@ W32ABI void      SetLastError(W32_DWORD c) { w32_set_last_error(c); }
 
 /* --- handles and I/O ------------------------------------------------------ */
 
+/* W32A-14: SetStdHandle installs an override consulted here.  The real table
+ * lives in kernel32_con.c; this WEAK default lets the host unit tests that
+ * amalgamate kernel32.c without the console TU still link (no override there,
+ * so it returns NULL and GetStdHandle keeps its default pseudo handles).  In
+ * the full image kernel32_con.c's strong definition wins. */
+__attribute__((weak)) W32_HANDLE w32_std_handle_override(W32_DWORD which) {
+    (void)which;
+    return (W32_HANDLE)0;
+}
+
 W32ABI W32_HANDLE GetStdHandle(W32_DWORD which) {
+    /* W32A-14: a SetStdHandle override, if one was installed, wins over the
+     * default pseudo handle.  PuTTY/plink redirect stdio this way. */
+    W32_HANDLE ov = w32_std_handle_override(which);
+    if (ov) return ov;
     switch ((int32_t)which) {
     case (int32_t)W32_STD_INPUT_HANDLE:  return (W32_HANDLE)(intptr_t)W32_STD_INPUT_HANDLE;
     case (int32_t)W32_STD_OUTPUT_HANDLE: return (W32_HANDLE)(intptr_t)W32_STD_OUTPUT_HANDLE;

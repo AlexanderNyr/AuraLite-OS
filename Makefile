@@ -1088,7 +1088,8 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_comdlg32.o $(USER_BUILD)/w32_version.o \
                 $(USER_BUILD)/w32_w32aux.o \
                 $(USER_BUILD)/w32_ws2_32.o \
-                $(USER_BUILD)/w32_msvcrt.o
+                $(USER_BUILD)/w32_msvcrt.o \
+                $(USER_BUILD)/w32_kernel32_con.o
 
 $(USER_BUILD)/w32_kernel32.o: w32/src/kernel32.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -1155,6 +1156,11 @@ $(USER_BUILD)/w32_ws2_32.o: w32/src/ws2_32.c w32/include/w32/ws2_32.h $(USER_CFL
 # process heap (heap unity), _beginthreadex onto CreateThread, the CRT
 # startup/exit surface, and the C++ EH residue onto W32A-4's unwinder.
 $(USER_BUILD)/w32_msvcrt.o: w32/src/msvcrt.c w32/include/w32/msvcrt.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# W32APP_PLAN.md W32A-14 (PuTTY app gate): the console (mode/codepage/wide-IO/
+# SetStdHandle) + serial (COMM, fail-clean) slice PuTTY imports.  Shadows the
+# W32A-1 TODO stubs of the same names via w32_bind.c.
+$(USER_BUILD)/w32_kernel32_con.o: w32/src/kernel32_con.c w32/include/w32/kernel32.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32-6: CRT startup (TLS callbacks, .CRT$XC*, setjmp-based __try/__except)
@@ -3026,6 +3032,25 @@ $(W32A13_EXE): $(W32_MINGW_STAMP)
 	@: > $@
 endif
 
+# W32APP_PLAN.md W32A-14 (App gate I: PuTTY): the CI-automatable twin of the
+# PuTTY app gate.  Same -nostdlib/winstart contract; links -lkernel32 -luser32
+# -ladvapi32 so the console/cursor/class-long/registry surface are GENUINE name
+# imports resolved through w32_bind.c, and resolves WS2_32 DYNAMICALLY at run
+# time (LoadLibrary+GetProcAddress) exactly as PuTTY does.
+W32A14_EXE := $(BUILD_DIR)/user/w32a14_putty.exe
+ifneq ($(MINGW_CC),)
+$(W32A14_EXE): w32/tests/w32a14_putty.c $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -lkernel32 -luser32 -ladvapi32 -lgcc
+	@echo "  [pe] $@ (W32A-14 PuTTY app-gate guest fixture)"
+else
+$(W32A14_EXE): $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the W32A-14 fixture (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
 # W32A-4: the real-C++ unwinding fixture.  -nostdlib + --entry=winstart like
 # the A2 probes (kernel32-only imports, no msvcrt.dll); libstdc++/libgcc come
 # in statically, and the TU carries every CRT shim the link needs (see the
@@ -3234,7 +3259,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
@@ -3458,6 +3483,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@if [ -s $(W32A12_EXE) ]; then cp $(W32A12_EXE) $(INITRD_DIR)/tests/w32a12_winsock.exe; fi
 # W32A-13: the msvcrt guest fixture, basename-preserved.
 	@if [ -s $(W32A13_EXE) ]; then cp $(W32A13_EXE) $(INITRD_DIR)/tests/w32a13_msvcrt.exe; fi
+# W32A-14: the PuTTY app-gate guest fixture, basename-preserved.
+	@if [ -s $(W32A14_EXE) ]; then cp $(W32A14_EXE) $(INITRD_DIR)/tests/w32a14_putty.exe; fi
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.
@@ -3744,6 +3771,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a11_drag $(BUILD_DIR)/test_w32_a11_probe \
                 $(BUILD_DIR)/test_w32_a12_ws2_32 \
                 $(BUILD_DIR)/test_w32_a13_msvcrt \
+                $(BUILD_DIR)/test_w32_a14_con \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -3975,6 +4003,16 @@ $(BUILD_DIR)/test_w32_a12_ws2_32: tests/unit/test_w32_a12_ws2_32.c \
 $(BUILD_DIR)/test_w32_a13_msvcrt: tests/unit/test_w32_a13_msvcrt.c \
                                    w32/src/msvcrt.c w32/include/w32/msvcrt.h \
                                    w32/src/w32_argv.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I lib/libc/include $< -o $@
+# W32A-14: the console/serial ABI-boundary logic (mode/codepage, WriteConsoleW
+# widening + chunk loop, ReadConsoleW, SetStdHandle override, COMM fail-clean).
+# Amalgamates kernel32_con.c + the pure UTF converter against WriteFile/ReadFile
+# and last-error doubles.
+$(BUILD_DIR)/test_w32_a14_con: tests/unit/test_w32_a14_con.c \
+                                w32/src/kernel32_con.c w32/src/w32_utf.c \
+                                w32/include/w32/kernel32.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I lib/libc/include $< -o $@

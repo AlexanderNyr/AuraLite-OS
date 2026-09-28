@@ -688,6 +688,13 @@ W32ABI int32_t  ToAsciiEx(W32_UINT vk, W32_UINT scan, const uint8_t *state,
                           uint16_t *out, W32_UINT flags, W32_DWORD layout);
 W32ABI W32_BOOL GetCursorPos(W32_POINT *pt);
 W32ABI W32_BOOL SetCursorPos(int32_t x, int32_t y);
+
+/* W32A-14 (PuTTY app gate): cursor visibility, the terminal bell and the
+ * class-long store PuTTY's window uses.  See w32/src/user32_win.c. */
+W32ABI W32_HCURSOR SetCursor(W32_HCURSOR cur);
+W32ABI int32_t     ShowCursor(W32_BOOL show);
+W32ABI W32_BOOL    MessageBeep(W32_UINT type);
+W32ABI intptr_t    SetClassLongPtrA(W32_HWND hwnd, int32_t index, intptr_t val);
 W32ABI void     mouse_event(W32_DWORD flags, W32_DWORD dx, W32_DWORD dy,
                             W32_DWORD data, uintptr_t extra);
 W32ABI W32_BOOL TrackMouseEvent(void *tev);
