@@ -690,6 +690,23 @@ W32ABI void     mouse_event(W32_DWORD flags, W32_DWORD dx, W32_DWORD dy,
 W32ABI W32_BOOL TrackMouseEvent(void *tev);
 W32ABI W32_LRESULT MessageBoxW(W32_HWND owner, const uint16_t *text,
                                const uint16_t *caption, W32_UINT type);
+/* MSGBOXPARAMSW (Win64 layout, sizeof = 80).  The lite alert path uses
+ * owner/text/caption/style only: lpszIcon, lpfnMsgBoxCallback and
+ * dwLanguageId are accepted and documented as ignored, never dereferenced
+ * beyond the fixed struct fields. */
+typedef struct {
+    W32_UINT        cbSize;
+    W32_HWND        hwndOwner;
+    W32_HINSTANCE   hInstance;
+    const uint16_t *lpszText;
+    const uint16_t *lpszCaption;
+    W32_DWORD       dwStyle;
+    const uint16_t *lpszIcon;
+    uintptr_t       dwContextHelpId;
+    void           *lpfnMsgBoxCallback;
+    W32_DWORD       dwLanguageId;
+} W32_MSGBOXPARAMSW;
+W32ABI int32_t MessageBoxIndirectW(const W32_MSGBOXPARAMSW *params);
 
 /* Character classification/conversion: Windows exports this family from
  * USER32, and W32A-2 wrote the code (kernel32_loc.c).  W32A-5 therefore
@@ -753,6 +770,23 @@ W32ABI W32_INT_PTR DialogBoxW(W32_HINSTANCE inst, const uint16_t *name,
                               W32_HWND owner, void *dlgproc);
 W32ABI W32_INT_PTR DialogBoxA(W32_HINSTANCE inst, const char *name,
                               W32_HWND owner, void *dlgproc);
+/* Modeless dialog creation (same lite family): the modal engine's
+ * template parser and frame-proc chain, minus owner-disable and the
+ * private loop; visibility follows the template's WS_VISIBLE bit. */
+W32ABI W32_HWND CreateDialogIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMPLATE *tmpl,
+                                           W32_HWND owner, void *dlgproc, W32_LPARAM init);
+W32ABI W32_HWND CreateDialogParamW(W32_HINSTANCE inst, const uint16_t *name,
+                                   W32_HWND owner, void *dlgproc, W32_LPARAM init);
+W32ABI W32_HWND CreateDialogParamA(W32_HINSTANCE inst, const char *name,
+                                   W32_HWND owner, void *dlgproc, W32_LPARAM init);
+/* Documented-lite default dialog proc: the personality routes dialog
+ * traffic through the dialog engine's frame proc, so these exist for
+ * guest def-proc calls and report "unhandled" -- the same result Windows
+ * DefDlgProc returns for messages it does not process. */
+W32ABI W32_LRESULT DefDlgProcW(W32_HWND dlg, W32_UINT msg,
+                               W32_WPARAM wp, W32_LPARAM lp);
+W32ABI W32_LRESULT DefDlgProcA(W32_HWND dlg, W32_UINT msg,
+                               W32_WPARAM wp, W32_LPARAM lp);
 W32ABI W32_BOOL EndDialog(W32_HWND dlg, W32_INT_PTR result);
 W32ABI W32_BOOL IsDialogMessageW(W32_HWND dlg, W32_MSG *msg);
 W32ABI W32_BOOL IsDialogMessageA(W32_HWND dlg, W32_MSG *msg);
@@ -793,6 +827,52 @@ W32ABI W32_BOOL CheckRadioButton(W32_HWND dlg, int32_t first, int32_t last, int3
 #define W32_TPM_RETURNCMD    0x0100u
 #define W32_TPM_RIGHTBUTTON  0x0002u
 
+/* MENUITEMINFO (Win64 layout, sizeof = 80; the pre-Vista form without
+ * hbmpItem is sizeof = 72 -- both cbSize values are accepted, larger or
+ * smaller ones refuse, per GetMenuItemInfoW's own contract).  The bitmap
+ * handles stay opaque void* here: gdi32.h owns the W32_HBITMAP typedef. */
+#define W32_MIIM_STATE       0x0001u
+#define W32_MIIM_ID          0x0002u
+#define W32_MIIM_SUBMENU     0x0004u
+#define W32_MIIM_CHECKMARKS  0x0008u
+#define W32_MIIM_TYPE        0x0010u
+#define W32_MIIM_DATA        0x0020u
+#define W32_MIIM_STRING      W32_MIIM_TYPE
+#define W32_MIIM_BITMAP      0x0080u
+#define W32_MIIM_FTYPE       0x0100u
+
+#define W32_MFT_STRING       0x00000000u
+#define W32_MFT_RADIOCHECK   0x00000001u
+#define W32_MFT_BITMAP       0x00000004u
+#define W32_MFT_MENUBARBREAK 0x00000020u
+#define W32_MFT_MENUBREAK    0x00000040u
+#define W32_MFT_OWNERDRAW    0x00000100u
+#define W32_MFT_SEPARATOR    0x00000800u
+
+#define W32_MFS_ENABLED      0x00000000u
+#define W32_MFS_UNCHECKED    0x00000000u
+#define W32_MFS_UNHILITE     0x00000000u
+#define W32_MFS_GRAYED       0x00000003u
+#define W32_MFS_DISABLED     W32_MFS_GRAYED
+#define W32_MFS_CHECKED      0x00000008u
+#define W32_MFS_HILITE       0x00000080u
+#define W32_MFS_DEFAULT      0x00001000u
+
+typedef struct {
+    W32_UINT     cbSize;
+    W32_UINT     fMask;
+    W32_UINT     fType;
+    W32_UINT     fState;
+    W32_UINT     wID;
+    W32_HMENU    hSubMenu;
+    void        *hbmpChecked;
+    void        *hbmpUnchecked;
+    uintptr_t    dwItemData;
+    uint16_t    *dwTypeData;
+    W32_UINT     cch;
+    void        *hbmpItem;
+} W32_MENUITEMINFOW;
+
 W32ABI W32_HMENU CreateMenu(void);
 W32ABI W32_HMENU CreatePopupMenu(void);
 W32ABI W32_BOOL DestroyMenu(W32_HMENU m);
@@ -800,6 +880,21 @@ W32ABI W32_BOOL AppendMenuW(W32_HMENU m, W32_UINT flags, uintptr_t id, const uin
 W32ABI W32_BOOL AppendMenuA(W32_HMENU m, W32_UINT flags, uintptr_t id, const char *text);
 W32ABI W32_BOOL InsertMenuW(W32_HMENU m, uint32_t pos, W32_UINT flags, uintptr_t id, const uint16_t *text);
 W32ABI W32_BOOL InsertMenuA(W32_HMENU m, uint32_t pos, W32_UINT flags, uintptr_t id, const char *text);
+W32ABI W32_BOOL InsertMenuItemW(W32_HMENU m, W32_UINT item, W32_BOOL bypos,
+                                const W32_MENUITEMINFOW *mi);
+W32ABI W32_BOOL GetMenuItemInfoW(W32_HMENU m, W32_UINT item, W32_BOOL bypos,
+                                 W32_MENUITEMINFOW *mi);
+W32ABI W32_BOOL SetMenuItemInfoW(W32_HMENU m, W32_UINT item, W32_BOOL bypos,
+                                 const W32_MENUITEMINFOW *mi);
+W32ABI W32_BOOL ModifyMenuW(W32_HMENU m, W32_UINT item, W32_UINT flags,
+                            uintptr_t id, const uint16_t *text);
+W32ABI W32_BOOL CheckMenuRadioItem(W32_HMENU m, W32_UINT first, W32_UINT last,
+                                   W32_UINT check, W32_UINT flags);
+W32ABI W32_BOOL SetMenuItemBitmaps(W32_HMENU m, W32_UINT item, W32_UINT flags,
+                                   void *hbmpUnchecked, void *hbmpChecked);
+W32ABI W32_UINT GetMenuState(W32_HMENU m, W32_UINT item, W32_UINT flags);
+W32ABI int      GetMenuStringW(W32_HMENU m, W32_UINT item, uint16_t *buf,
+                               int maxcch, W32_UINT flags);
 W32ABI W32_BOOL TrackPopupMenu(W32_HMENU m, W32_UINT flags, int32_t x, int32_t y,
                               int32_t reserved, W32_HWND owner, const W32_RECT *rect);
 W32ABI W32_BOOL TrackPopupMenuEx(W32_HMENU m, W32_UINT flags, int32_t x, int32_t y,

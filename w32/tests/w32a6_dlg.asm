@@ -13,9 +13,17 @@
 ; GetOpenClipboardWindow / IsClipboardFormatAvailable / SetClipboardData /
 ; GetClipboardData round-trip / RegisterClipboardFormatW / CloseClipboard),
 ; a string-table entry (LoadStringW from RT_STRING / 1, id 1), and
-; DrawTextW / DrawFocusRect on the host window's WM_PAINT.  Every section
-; prints A6-<NAME>-OK after all its checks, or A6-<NAME>-FAIL and exits
-; 79.  The final W32A6-DLG-OK plus exit 78 is what
+; DrawTextW / DrawFocusRect on the host window's WM_PAINT.  On top of that
+; the fixture pins the MENUITEMINFO round-trip family (GetMenuItemInfoW /
+; SetMenuItemInfoW / InsertMenuItemW / ModifyMenuW / CheckMenuRadioItem /
+; SetMenuItemBitmaps / GetMenuState / GetMenuStringW -- GetMenuItemInfoW is
+; the name 7-Zip FM 24.09 stops at) and the modeless dialog family
+; (CreateDialogParamA -- the name PuTTY 0.85 stops at -- plus
+; CreateDialogParamW, CreateDialogIndirectParamW, DefDlgProcA, and the
+; structural MessageBoxIndirectW refusals; the alert path itself is modal
+; and stays asserted on the host side).  Every section prints A6-<NAME>-OK
+; after all its checks, or A6-<NAME>-FAIL and exits 79.  The final
+; W32A6-DLG-OK plus exit 78 is what
 ; tests/integration/cases/test_w32a6_user32dlg.sh asserts; exit 1 means
 ; the personality refused to load the image at all.
 ;
@@ -76,6 +84,11 @@ extern IsDlgButtonChecked
 extern IsDialogMessageW
 extern MapDialogRect
 extern GetDialogBaseUnits
+; modeless dialog family (CreateDialogParamA is what blocks PuTTY 0.85)
+extern CreateDialogIndirectParamW
+extern CreateDialogParamW
+extern CreateDialogParamA
+extern DefDlgProcA
 
 ; ---- user32: resources (A-6) -------------------------------------------------
 extern FindResourceW
@@ -111,6 +124,18 @@ extern GetMenuItemID
 extern EnableMenuItem
 extern DrawMenuBar
 extern LoadMenuW
+; MENUITEMINFO round-trip family (GetMenuItemInfoW blocks 7-Zip FM 24.09)
+extern GetMenuItemInfoW
+extern SetMenuItemInfoW
+extern InsertMenuItemW
+extern ModifyMenuW
+extern CheckMenuRadioItem
+extern SetMenuItemBitmaps
+extern GetMenuState
+extern GetMenuStringW
+extern MessageBoxIndirectW
+extern IsWindowVisible
+extern SendMessageW
 
 ; ---- user32: timers / caret / accelerators (A-6) -----------------------------
 extern SetTimer
@@ -196,6 +221,9 @@ extern DrawIconEx
 
 %define IDT_TIMER1      42
 %define IDM_POPUP1      1001
+%define IDM_POPUP2      1002
+%define IDM_POPUP3      1003
+%define IDM_POPUP4      1004
 
 %define RT_CURSOR       1
 %define RT_ICON         3
@@ -206,6 +234,45 @@ extern DrawIconEx
 %define MF_POPUP        0x0010
 %define MF_CHECKED      0x0008
 %define MF_GRAYED       0x0001
+%define MF_BYCOMMAND    0x0000
+%define MF_BYPOSITION   0x0400
+
+; MENUITEMINFO (Win64): masks, state bits, field offsets; sizeof 80/72.
+%define MIIM_STATE      0x0001
+%define MIIM_ID         0x0002
+%define MIIM_SUBMENU    0x0004
+%define MIIM_CHECKMARKS 0x0008
+%define MIIM_STRING     0x0010
+%define MIIM_DATA       0x0020
+%define MIIM_TYPE       0x0010
+%define MFS_CHECKED     0x0008
+%define MII_cbSize      0
+%define MII_fMask       4
+%define MII_fType       8
+%define MII_fState      12
+%define MII_wID         16
+%define MII_hSubMenu    24
+%define MII_hbmpChecked 32
+%define MII_hbmpUnchecked 40
+%define MII_dwItemData  48
+%define MII_dwTypeData  56
+%define MII_cch         64
+%define MII_hbmpItem    72
+%define MIINFOW_size    80
+
+; MSGBOXPARAMSW (Win64): sizeof 80; only cbSize validation reaches the
+; guest gate -- the alert itself is modal and asserted on the host side.
+%define MBP_cbSize      0
+%define MBP_hwndOwner   8
+%define MBP_hInstance   16
+%define MBP_lpszText    24
+%define MBP_lpszCaption 32
+%define MBP_dwStyle     40
+%define MBP_lpszIcon    48
+%define MBP_dwContextHelpId 56
+%define MBP_lpfnMsgBoxCallback 64
+%define MBP_dwLanguageId 72
+%define MSGBOXPARAMSW_size 80
 
 %define BST_CHECKED     1
 
@@ -264,6 +331,10 @@ g_gotInitDialog dd 0
 g_timerTicks    dd 0
 g_hookFired     dd 0
 g_itemOk        dd 0
+g_mdlgInit      dd 0                     ; modeless WM_INITDIALOG counter
+g_mdlgClose     dd 0                     ; modeless WM_CLOSE counter
+g_hwndMdlg      dq 0
+g_hwndMdlg2     dq 0
 
 g_classHost     dw __utf16__('A6Host'),0
 g_classDlg      dw __utf16__('#32770'),0    ; the class the dialog engine creates
@@ -287,6 +358,9 @@ g_mapRect       resb RECT_size
 g_itemText      resw 32
 g_strLoaded     resw 64
 g_written       resq 1
+g_mii           resb MIINFOW_size
+g_miiBuf        resw 32
+g_mbp           resb MSGBOXPARAMSW_size
 
 ; ---- console helpers ---------------------------------------------------------
 section .text
@@ -466,6 +540,182 @@ mainCRTStartup:
     jnz  .f_menucheck
     OK s_menu_ok, s_menu_ok_l
 
+    ; ---- Phase 4b: MENUITEMINFO round-trip ------------------------------------
+    ; The struct is zeroed, then queried twice: first with a NULL buffer for
+    ; the bare length, then with storage for the copied text.  GetMenuItemInfoW
+    ; is the import 7-Zip FM stops at, so by-command addressing is exercised
+    ; before anything else.
+    lea  rdi, [g_mii]
+    xor  eax, eax
+    mov  ecx, MIINFOW_size/8
+.zmii:
+    mov  [rdi], rax
+    add  rdi, 8
+    dec  ecx
+    jnz  .zmii
+    mov  dword [g_mii+MII_cbSize], MIINFOW_size
+    mov  dword [g_mii+MII_fMask], MIIM_ID|MIIM_STATE|MIIM_STRING
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP1
+    xor  r8d, r8d                         ; bypos FALSE -> BYCOMMAND
+    lea  r9, [g_mii]
+    call GetMenuItemInfoW
+    test eax, eax
+    jz   .f_miiget
+    cmp  dword [g_mii+MII_wID], IDM_POPUP1
+    jne  .f_miiget
+    cmp  dword [g_mii+MII_cch], 8         ; L"A6-Popup" without the NUL
+    jne  .f_miiget
+    lea  rax, [g_miiBuf]
+    mov  [g_mii+MII_dwTypeData], rax
+    mov  dword [g_mii+MII_cch], 32
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP1
+    xor  r8d, r8d
+    lea  r9, [g_mii]
+    call GetMenuItemInfoW
+    test eax, eax
+    jz   .f_miiget
+    cmp  dword [g_mii+MII_cch], 8
+    jne  .f_miiget
+    cmp  word [g_miiBuf], 'A'
+    jne  .f_miiget
+    cmp  word [g_miiBuf+14], 'p'
+    jne  .f_miiget
+    cmp  word [g_miiBuf+16], 0
+    jne  .f_miiget                        ; must be NUL-terminated
+    ; an impossible cbSize refuses, the real one restores
+    mov  dword [g_mii+MII_cbSize], 44
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP1
+    xor  r8d, r8d
+    lea  r9, [g_mii]
+    call GetMenuItemInfoW
+    test eax, eax
+    jnz  .f_miisz
+    mov  dword [g_mii+MII_cbSize], MIINFOW_size
+    ; Set: retarget the id, check the item, keep a data payload
+    mov  dword [g_mii+MII_fMask], MIIM_STATE|MIIM_ID|MIIM_DATA
+    mov  dword [g_mii+MII_fState], MFS_CHECKED
+    mov  dword [g_mii+MII_wID], IDM_POPUP2
+    mov  qword [g_mii+MII_dwItemData], 0x5150
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP1
+    xor  r8d, r8d
+    lea  r9, [g_mii]
+    call SetMenuItemInfoW
+    test eax, eax
+    jz   .f_miiset
+    mov  rcx, [g_hMenu]
+    xor  edx, edx
+    call GetMenuItemID
+    cmp  eax, IDM_POPUP2
+    jne  .f_miiset
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP2
+    xor  r8d, r8d
+    call GetMenuState
+    test eax, MFS_CHECKED
+    jz   .f_miistate
+    ; InsertMenuItemW by absolute position
+    lea  rdi, [g_mii]
+    xor  eax, eax
+    mov  ecx, MIINFOW_size/8
+.zmii2:
+    mov  [rdi], rax
+    add  rdi, 8
+    dec  ecx
+    jnz  .zmii2
+    mov  dword [g_mii+MII_cbSize], MIINFOW_size
+    mov  dword [g_mii+MII_fMask], MIIM_ID|MIIM_STRING
+    mov  dword [g_mii+MII_wID], IDM_POPUP3
+    lea  rax, [g_popupTxt]
+    mov  [g_mii+MII_dwTypeData], rax
+    mov  rcx, [g_hMenu]
+    mov  edx, 1
+    mov  r8d, 1                           ; bypos TRUE
+    lea  r9, [g_mii]
+    call InsertMenuItemW
+    test eax, eax
+    jz   .f_miiins
+    mov  rcx, [g_hMenu]
+    mov  edx, 1
+    call GetMenuItemID
+    cmp  eax, IDM_POPUP3
+    jne  .f_miiins
+    ; ModifyMenuW by position retargets that very slot
+    mov  rcx, [g_hMenu]
+    mov  edx, 1
+    mov  r8d, MF_BYPOSITION
+    mov  r9d, IDM_POPUP4
+    lea  rax, [g_popupTxt]
+    mov  [rsp+0x20], rax
+    call ModifyMenuW
+    test eax, eax
+    jz   .f_miimod
+    mov  rcx, [g_hMenu]
+    mov  edx, 1
+    call GetMenuItemID
+    cmp  eax, IDM_POPUP4
+    jne  .f_miimod
+    ; CheckMenuRadioItem over positions [0..1], checking 1
+    mov  rcx, [g_hMenu]
+    xor  edx, edx
+    mov  r8d, 1
+    mov  r9d, 1
+    mov  dword [rsp+0x20], MF_BYPOSITION
+    call CheckMenuRadioItem
+    test eax, eax
+    jz   .f_miiradio
+    mov  rcx, [g_hMenu]
+    xor  edx, edx
+    mov  r8d, MF_BYPOSITION
+    call GetMenuState
+    test eax, MFS_CHECKED
+    jnz  .f_miiradio                      ; sibling must not stay checked
+    ; GetMenuStringW BYCOMMAND copies the retargeted text
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP2
+    lea  r8, [g_miiBuf]
+    mov  r9d, 32
+    mov  dword [rsp+0x20], MF_BYCOMMAND
+    call GetMenuStringW
+    cmp  eax, 8
+    jne  .f_miistr
+    cmp  word [g_miiBuf], 'A'
+    jne  .f_miistr
+    ; SetMenuItemBitmaps storage reads back verbatim via MIIM_CHECKMARKS
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP2
+    mov  r8d, MF_BYCOMMAND
+    mov  r9d, 0xB1
+    mov  qword [rsp+0x20], 0xB2
+    call SetMenuItemBitmaps
+    test eax, eax
+    jz   .f_miibmp
+    lea  rdi, [g_mii]
+    xor  eax, eax
+    mov  ecx, MIINFOW_size/8
+.zmii3:
+    mov  [rdi], rax
+    add  rdi, 8
+    dec  ecx
+    jnz  .zmii3
+    mov  dword [g_mii+MII_cbSize], MIINFOW_size
+    mov  dword [g_mii+MII_fMask], MIIM_CHECKMARKS
+    mov  rcx, [g_hMenu]
+    mov  edx, IDM_POPUP2
+    xor  r8d, r8d
+    lea  r9, [g_mii]
+    call GetMenuItemInfoW
+    test eax, eax
+    jz   .f_miibmp
+    cmp  qword [g_mii+MII_hbmpUnchecked], 0xB1
+    jne  .f_miibmp
+    cmp  qword [g_mii+MII_hbmpChecked], 0xB2
+    jne  .f_miibmp
+    OK s_mii_ok, s_mii_ok_l
+
     ; ---- Phase 5: accelerator table -------------------------------------------
     lea  rcx, [g_accelEnt]
     mov  edx, 1
@@ -642,6 +892,101 @@ mainCRTStartup:
     jb   .f_timerfire
     OK s_dlg_ok, s_dlg_ok_l
 
+    ; ---- Phase 11b: modeless CreateDialog* + DefDlgProc + MessageBoxIndirect refusals --
+    ; CreateDialogParamA is exactly the import PuTTY 0.85 stops at during
+    ; import binding; MAKEINTRESOURCE(1) names this image's own RT_DIALOG/1.
+    mov  rcx, [g_hInst]
+    mov  edx, 1
+    xor  r8d, r8d
+    lea  r9, [mdlg_proc]
+    mov  qword [rsp+0x20], 0              ; dwInitParam
+    call CreateDialogParamA
+    test rax, rax
+    jz   .f_cdlga
+    mov  [g_hwndMdlg], rax
+    cmp  dword [g_mdlgInit], 1            ; one modeless WM_INITDIALOG
+    jne  .f_cdlga
+    ; the embedded template carries no WS_VISIBLE: hidden until the app shows
+    mov  rcx, [g_hwndMdlg]
+    call IsWindowVisible
+    test eax, eax
+    jnz  .f_cdlgvis
+    ; WM_CLOSE must reach the app proc (which destroys) -- never EndDialog
+    ; and never a PostQuitMessage into a loop this process does not own.
+    mov  rcx, [g_hwndMdlg]
+    mov  edx, WM_CLOSE
+    xor  r8d, r8d
+    xor  r9d, r9d
+    call SendMessageW
+    cmp  dword [g_mdlgClose], 1
+    jne  .f_cdlgcls
+    ; absent template ids refuse, they do not create half a frame
+    mov  rcx, [g_hInst]
+    mov  edx, 999
+    xor  r8d, r8d
+    lea  r9, [mdlg_proc]
+    mov  qword [rsp+0x20], 0
+    call CreateDialogParamW
+    test rax, rax
+    jnz  .f_cdlg999
+    ; the indirect twin reuses the same template bytes
+    mov  rcx, [g_hInst]
+    mov  edx, 1
+    mov  r8d, RT_DIALOG
+    call FindResourceW
+    test rax, rax
+    jz   .f_cdlgfind
+    mov  rcx, [g_hInst]
+    mov  rdx, rax
+    call LoadResource
+    test rax, rax
+    jz   .f_cdlgfind
+    mov  rcx, rax
+    call LockResource
+    test rax, rax
+    jz   .f_cdlgfind
+    mov  rcx, [g_hInst]
+    mov  rdx, rax
+    xor  r8d, r8d
+    lea  r9, [mdlg_proc]
+    mov  qword [rsp+0x20], 0
+    call CreateDialogIndirectParamW
+    test rax, rax
+    jz   .f_cdlgind
+    mov  [g_hwndMdlg2], rax
+    mov  rcx, rax
+    call DestroyWindow
+    test eax, eax
+    jz   .f_cdlgind
+    ; DefDlgProcA exists and reports every message unhandled
+    xor  ecx, ecx
+    xor  edx, edx
+    xor  r8d, r8d
+    xor  r9d, r9d
+    call DefDlgProcA
+    test rax, rax
+    jnz  .f_cdlgdef
+    ; MessageBoxIndirectW: the alert path is modal (tested on the host);
+    ; in-guest we pin the structural refusals only.
+    lea  rdi, [g_mbp]
+    xor  eax, eax
+    mov  ecx, MSGBOXPARAMSW_size/8
+.zmbp:
+    mov  [rdi], rax
+    add  rdi, 8
+    dec  ecx
+    jnz  .zmbp
+    mov  dword [g_mbp+MBP_cbSize], 40
+    lea  rcx, [g_mbp]
+    call MessageBoxIndirectW
+    test eax, eax
+    jnz  .f_mbi
+    xor  ecx, ecx
+    call MessageBoxIndirectW
+    test eax, eax
+    jnz  .f_mbi
+    OK s_cdlg_ok, s_cdlg_ok_l
+
     ; ---- Phase 12: kill timer, destroy host window ----------------------------------
     mov  rcx, [g_hwndHost]
     mov  edx, IDT_TIMER1
@@ -703,6 +1048,40 @@ mainCRTStartup:
     FAIL f_cpmenu, f_cpmenu_l
 .f_appmenu:
     FAIL f_appmenu, f_appmenu_l
+.f_miiget:
+    FAIL f_miiget, f_miiget_l
+.f_miisz:
+    FAIL f_miisz, f_miisz_l
+.f_miiset:
+    FAIL f_miiset, f_miiset_l
+.f_miiins:
+    FAIL f_miiins, f_miiins_l
+.f_miimod:
+    FAIL f_miimod, f_miimod_l
+.f_miiradio:
+    FAIL f_miiradio, f_miiradio_l
+.f_miistr:
+    FAIL f_miistr, f_miistr_l
+.f_miibmp:
+    FAIL f_miibmp, f_miibmp_l
+.f_miistate:
+    FAIL f_miistate, f_miistate_l
+.f_cdlga:
+    FAIL f_cdlga, f_cdlga_l
+.f_cdlgvis:
+    FAIL f_cdlgvis, f_cdlgvis_l
+.f_cdlgcls:
+    FAIL f_cdlgcls, f_cdlgcls_l
+.f_cdlg999:
+    FAIL f_cdlg999, f_cdlg999_l
+.f_cdlgfind:
+    FAIL f_cdlgfind, f_cdlgfind_l
+.f_cdlgind:
+    FAIL f_cdlgind, f_cdlgind_l
+.f_cdlgdef:
+    FAIL f_cdlgdef, f_cdlgdef_l
+.f_mbi:
+    FAIL f_mbi, f_mbi_l
 .f_countmenu:
     FAIL f_countmenu, f_countmenu_l
 .f_menuid:
@@ -767,6 +1146,32 @@ mainCRTStartup:
 ; ---- host window procedure --------------------------------------------------
 ; rcx = hwnd, edx = msg, r8 = wParam, r9 = lParam.  r12-r15 and rbx belong
 ; to mainCRTStartup; this proc must not touch them.
+; Modeless dialog proc for phase 11b: INITDIALOG only counts; WM_CLOSE is
+; the app's own close gesture -- it destroys the window, which is also what
+; exercises the dialog-slot recycling on WM_DESTROY.
+mdlg_proc:
+    push rbp
+    mov  rbp, rsp
+    sub  rsp, 0x40
+    cmp  edx, WM_INITDIALOG
+    je   .init
+    cmp  edx, WM_CLOSE
+    je   .close
+    xor  eax, eax
+    leave
+    ret
+.init:
+    inc  dword [g_mdlgInit]
+    mov  eax, 1
+    leave
+    ret
+.close:
+    inc  dword [g_mdlgClose]
+    call DestroyWindow                    ; rcx = hwnd, passed through
+    mov  eax, 1
+    leave
+    ret
+
 host_wndproc:
     push rbp
     mov  rbp, rsp
@@ -1163,6 +1568,8 @@ s_reg_ok     db `A6-REGISTER-OK\n`
 s_reg_ok_l   equ $-s_reg_ok
 s_menu_ok    db `A6-MENU-OK\n`
 s_menu_ok_l  equ $-s_menu_ok
+s_mii_ok     db `A6-MENUINFO-OK\n`
+s_mii_ok_l   equ $-s_mii_ok
 s_accel_ok   db `A6-ACCEL-OK\n`
 s_accel_ok_l equ $-s_accel_ok
 s_hook_ok    db `A6-HOOK-OK\n`
@@ -1177,6 +1584,8 @@ s_clip_ok    db `A6-CLIPBOARD-OK\n`
 s_clip_ok_l  equ $-s_clip_ok
 s_dlg_ok     db `A6-DIALOG-OK\n`
 s_dlg_ok_l   equ $-s_dlg_ok
+s_cdlg_ok    db `A6-CREATEDIALOG-OK\n`
+s_cdlg_ok_l  equ $-s_cdlg_ok
 s_kill_ok    db `A6-CLEANUP-WIN-OK\n`
 s_kill_ok_l  equ $-s_kill_ok
 s_cleanup_ok db `A6-CLEANUP-ALL-OK\n`
@@ -1202,6 +1611,40 @@ f_cpmenu     db `A6-CREATEPOPUPMENU-FAIL\n`
 f_cpmenu_l   equ $-f_cpmenu
 f_appmenu    db `A6-APPENDMENU-FAIL\n`
 f_appmenu_l  equ $-f_appmenu
+f_miiget     db `A6-MIIGET-FAIL\n`
+f_miiget_l   equ $-f_miiget
+f_miisz      db `A6-MIISIZE-FAIL\n`
+f_miisz_l    equ $-f_miisz
+f_miiset     db `A6-MIISET-FAIL\n`
+f_miiset_l   equ $-f_miiset
+f_miiins     db `A6-MIIINSERT-FAIL\n`
+f_miiins_l   equ $-f_miiins
+f_miimod     db `A6-MODIFYMENU-FAIL\n`
+f_miimod_l   equ $-f_miimod
+f_miiradio   db `A6-MENURADIO-FAIL\n`
+f_miiradio_l equ $-f_miiradio
+f_miistr     db `A6-MENUSTRING-FAIL\n`
+f_miistr_l   equ $-f_miistr
+f_miibmp     db `A6-MENUBITMAPS-FAIL\n`
+f_miibmp_l   equ $-f_miibmp
+f_miistate   db `A6-MENUSTATE-FAIL\n`
+f_miistate_l equ $-f_miistate
+f_cdlga      db `A6-CREATEDLGA-FAIL\n`
+f_cdlga_l    equ $-f_cdlga
+f_cdlgvis    db `A6-CREATEDLG-VISIBLE-FAIL\n`
+f_cdlgvis_l  equ $-f_cdlgvis
+f_cdlgcls    db `A6-CREATEDLG-CLOSE-FAIL\n`
+f_cdlgcls_l  equ $-f_cdlgcls
+f_cdlg999    db `A6-CREATEDLG-ABSENT-FAIL\n`
+f_cdlg999_l  equ $-f_cdlg999
+f_cdlgfind   db `A6-CREATEDLG-RSRC-FAIL\n`
+f_cdlgfind_l equ $-f_cdlgfind
+f_cdlgind    db `A6-CREATEDLGIND-FAIL\n`
+f_cdlgind_l  equ $-f_cdlgind
+f_cdlgdef    db `A6-DEFDLGPROC-FAIL\n`
+f_cdlgdef_l  equ $-f_cdlgdef
+f_mbi        db `A6-MSGBOXINDIRECT-SIZE-FAIL\n`
+f_mbi_l      equ $-f_mbi
 f_countmenu  db `A6-MENUCOUNT-FAIL\n`
 f_countmenu_l equ $-f_countmenu
 f_menuid     db `A6-MENUID-FAIL\n`

@@ -269,6 +269,7 @@ static const w32_export_t exports[] = {
     { U32, "mouse_event",               (void *)mouse_event},
     { U32, "TrackMouseEvent",           (void *)TrackMouseEvent},
     { U32, "MessageBoxW",               (void *)MessageBoxW},
+    { U32, "MessageBoxIndirectW",       (void *)MessageBoxIndirectW},
 
     /* W32A-5 binds the Char family under USER32: Windows exports them from
      * user32, W32A-2 wrote the code (kernel32_loc.c), and the ledger's
@@ -763,6 +764,14 @@ static const w32_export_t exports[] = {
     { U32, "IsDlgButtonChecked",        (void *)IsDlgButtonChecked        },
     { U32, "CheckDlgButton",            (void *)CheckDlgButton            },
     { U32, "CheckRadioButton",          (void *)CheckRadioButton          },
+    /* Modeless dialogs on the same lite engine (CreateDialogParamA is the
+     * name that blocks PuTTY 0.85 at import binding), and the def-proc. */
+    { U32, "CreateDialogIndirectParamW", (void *)CreateDialogIndirectParamW },
+    { U32, "CreateDialogParamW",        (void *)CreateDialogParamW        },
+    { U32, "CreateDialogParamA",        (void *)CreateDialogParamA        },
+    /* DefDlgProcW exists in w32_dlg.c as the A flavor's target but is not
+     * bound: no gate binary imports it yet (D7), same as CoTaskMemRealloc. */
+    { U32, "DefDlgProcA",               (void *)DefDlgProcA               },
     /* Menus */
     { U32, "CreateMenu",                (void *)CreateMenu                },
     { U32, "CreatePopupMenu",           (void *)CreatePopupMenu           },
@@ -782,6 +791,16 @@ static const w32_export_t exports[] = {
     { U32, "LoadMenuA",                 (void *)LoadMenuA                 },
     { U32, "GetMenuItemCount",          (void *)GetMenuItemCount          },
     { U32, "GetMenuItemID",             (void *)GetMenuItemID             },
+    /* MENUITEMINFO round-trip family (GetMenuItemInfoW is the name 7-Zip
+     * FM 24.09 blocks on at import binding). */
+    { U32, "GetMenuItemInfoW",          (void *)GetMenuItemInfoW          },
+    { U32, "SetMenuItemInfoW",          (void *)SetMenuItemInfoW          },
+    { U32, "InsertMenuItemW",           (void *)InsertMenuItemW           },
+    { U32, "ModifyMenuW",               (void *)ModifyMenuW               },
+    { U32, "CheckMenuRadioItem",        (void *)CheckMenuRadioItem        },
+    { U32, "SetMenuItemBitmaps",        (void *)SetMenuItemBitmaps        },
+    { U32, "GetMenuState",              (void *)GetMenuState              },
+    { U32, "GetMenuStringW",            (void *)GetMenuStringW            },
     { U32, "DrawMenuBar",               (void *)DrawMenuBar               },
     { U32, "RemoveMenu",                (void *)RemoveMenu                },
     { U32, "DeleteMenu",                (void *)DeleteMenu                },

@@ -950,3 +950,15 @@ See [`docs/status.md`](docs/status.md) and [`TODO.md`](TODO.md).
 
 Font assets and third-party snippets are documented in their respective source
 files where applicable.
+
+---
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=alexandernyr%2Fauralite-os&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=alexandernyr/auralite-os&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=alexandernyr/auralite-os&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=alexandernyr/auralite-os&type=date&legend=top-left" />
+ </picture>
+</a>

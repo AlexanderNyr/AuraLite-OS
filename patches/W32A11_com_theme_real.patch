@@ -1,0 +1,1587 @@
+From 6debae3ffb9d7377b25a526bdcaccc3ac0ade330 Mon Sep 17 00:00:00 2001
+From: AlexanderNyr <131390634+AlexanderNyr@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 08:06:07 +0000
+Subject: [PATCH] W32A-11: REAL CLSIDFromProgID/CoCreateInstance +
+ BufferedPaintRenderAnimation
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- CLSIDFromProgID: case-insensitive HKCR\<ProgID>\CLSID lookup via the
+  W32A-9 advapi32 hive view; typed refusals (E_INVALIDARG/87,
+  CO_E_CLASSSTRING+123/+2/+13); S_OK leaves last-error untouched;
+  w32a11-progid-probe lines now carry result=0x%08x.
+- CoCreateInstance: REAL over committed EMPTY activation table
+  (W32_COM_CLASS_COUNT==0 pinned; zero CLSID/IID pairs observed in the
+  pinned-app probes) — E_POINTER/E_INVALIDARG/CLASS_E_NOAGGREGATION/
+  E_NOTIMPL for out-of-process ctx/REGDB_E_CLASSNOTREG in-proc; output
+  always cleared.
+- BufferedPaintRenderAnimation: live-buffer snapshot blit without
+  holding ux_lock over BitBlt; TRUE no-op, FALSE+INVALID_HANDLE on bad
+  target, INVALID_PARAMETER on NULL rect.
+- stub_map rows 218/219/408 TODO->REAL with evidence notes; generator
+  special-cases removed; generated surface regenerated (105 stubs).
+- Guest probe fixture seeds HKCR in-guest (RegCreateKeyExW/SetValueExW),
+  exit 78 only when positive hit + typed refusals agree; host tests:
+  probe 56 / com 203 / theme 265 checks, 0 failures.
+- Gates: test_w32a11_core_subset 20/20, theme 9/9, dragdrop 11/11,
+  tokens 7/7; ledger gap unchanged (41); docs updated.
+---
+ Makefile                                      |  40 +-
+ SHA256SUMS                                    |   6 +-
+ docs/w32app_receipts.md                       |  47 +++
+ docs/win32.md                                 |  24 +-
+ .../cases/test_w32a11_core_subset.sh          |  12 +-
+ tests/unit/test_w32_a11_com.c                 |  16 +
+ tests/unit/test_w32_a11_probe.c               | 352 ++++++++++++++----
+ tests/unit/test_w32_a11_theme.c               |  26 ++
+ tools/w32_gen_stubs.py                        |  86 +----
+ w32/include/w32/ole32.h                       |  28 ++
+ w32/include/w32/uxtheme.h                     |   8 +
+ w32/include/w32/w32_gen.h                     |   2 +-
+ w32/src/ole32.c                               | 217 ++++++++++-
+ w32/src/uxtheme.c                             |  29 ++
+ w32/src/w32_bind.c                            |  10 +-
+ w32/src/w32_stubs_gen.c                       |  73 ----
+ w32/stub_map.tsv                              |   6 +-
+ w32/tests/w32a11_probe.asm                    | 193 +++++++++-
+ 18 files changed, 893 insertions(+), 282 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index de41b90..5431125 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2605,15 +2605,17 @@ $(W32A11_FILE_EXE): w32/tests/w32a11_file_receiver.asm $(K32_IMPLIB) $(U32_IMPLI
+ 	lld-link -subsystem:console -entry:winstart -nodefaultlib \
+ 	         $(USER_BUILD)/w32a11_file_receiver.obj $(K32_IMPLIB) $(U32_IMPLIB) \
+ 	         $(SHELL32_IMPLIB) -out:$@
+-# Synthetic activation probe: confirms the generated TODO stubs log precise
+-# CLSID/IID/ProgID values, WITHOUT treating fixture IDs as app observations.
+-$(W32A11_PROBE_EXE): w32/tests/w32a11_probe.asm $(K32_IMPLIB) $(USER_BUILD)/ole32_a11.lib
++# Synthetic activation gate: REAL ProgID resolution against the guest hive
++# (seeded through ADVAPI32), the empty-table class-not-registered refusal
++# and the typed context/argument vocabulary, WITHOUT treating fixture IDs
++# as pinned-app observations.
++$(W32A11_PROBE_EXE): w32/tests/w32a11_probe.asm $(K32_IMPLIB) $(USER_BUILD)/ole32_a11.lib $(A32_IMPLIB)
+ 	@mkdir -p $(dir $@)
+ 	$(AS) -f win64 $< -o $(USER_BUILD)/w32a11_probe.obj
+ 	lld-link -subsystem:console -entry:winstart -nodefaultlib \
+ 	         $(USER_BUILD)/w32a11_probe.obj $(K32_IMPLIB) \
+-	         $(USER_BUILD)/ole32_a11.lib -out:$@
+-	@echo "  [pe] $@ (W32A-11 synthetic class-probe fixture)"
++	         $(USER_BUILD)/ole32_a11.lib $(A32_IMPLIB) -out:$@
++	@echo "  [pe] $@ (W32A-11 activation/refusal fixture)"
+ $(W32A11_DRAG_EXE): w32/tests/w32a11_drag.asm $(K32_IMPLIB) $(U32_IMPLIB) $(USER_BUILD)/ole32_a11.lib
+ 	@mkdir -p $(dir $@)
+ 	$(AS) -f win64 $< -o $(USER_BUILD)/w32a11_drag.obj
+@@ -3909,14 +3911,30 @@ $(BUILD_DIR)/test_w32_a11_com: tests/unit/test_w32_a11_com.c \
+ 	@mkdir -p $(dir $@)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+ 	          -fsanitize=address,undefined $(W32_INC) $< -lpthread -o $@
+-# Probe stubs remain TODO: check canonical GUIDs, reversible UTF-16 logging,
+-# explicit truncation and clean output parameters under ASan/UBSan.
++# Activation probes are REAL now: CLSIDFromProgID runs against the actual
++# W32A-9 hive on a scratch file (the A9 amalgamation pattern updated for
++# ole32), CoCreateInstance answers its typed refusals, the probe lines are
++# asserted byte-exact, and the empty activation table is pinned.
+ $(BUILD_DIR)/test_w32_a11_probe: tests/unit/test_w32_a11_probe.c \
+-                                     w32/src/w32_stubs_gen.c w32/include/w32/w32_gen.h
++                                     w32/src/ole32.c w32/include/w32/ole32.h \
++                                     w32/src/advapi32.c w32/src/w32_errno.c w32/src/w32_utf.c \
++                                     w32/src/kernel32_loc.c \
++                                     w32/include/w32/advapi32.h w32/include/w32/kernel32.h \
++                                     lib/libatls/src/atls_sha256.c \
++                                     lib/libatls/src/atls_sha512.c \
++                                     lib/libatls/src/atls_sha3.c \
++                                     lib/libatls/src/atls_common.c \
++                                     lib/libatls/include/atls/atls.h
+ 	@mkdir -p $(dir $@)
+-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O1 -g \
+-	          -ffunction-sections -fdata-sections -fsanitize=address,undefined \
+-	          $(W32_INC) -I . $< -Wl,--gc-sections -o $@
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
++	          -fsanitize=address,undefined $(W32_INC) -I . \
++	          -D_POSIX_C_SOURCE=200809L \
++	          -I lib/libatls/include \
++	          tests/unit/test_w32_a11_probe.c \
++	          w32/src/kernel32_loc.c \
++	          lib/libatls/src/atls_sha256.c lib/libatls/src/atls_sha512.c \
++	          lib/libatls/src/atls_sha3.c lib/libatls/src/atls_common.c \
++	          -lpthread -o $@
+ $(BUILD_DIR)/test_w32_a11_clipfmt: tests/unit/test_w32_a11_clipfmt.c \
+                                     w32/src/w32_clipfmt.c w32/src/w32_utf.c
+ 	@mkdir -p $(dir $@)
+diff --git a/SHA256SUMS b/SHA256SUMS
+index 080f647..c6c6142 100644
+--- a/SHA256SUMS
++++ b/SHA256SUMS
+@@ -1,3 +1,3 @@
+-daeff9356517303a478f51a1f675f531811a59b404a15c6605ee63f3169ff1d9  auralite.iso
+-9d9429f793e0c888e151581944815e906db7eba6c4765f34654ca545a59665dd  kernel.elf
+-dd1289eb6468f39c63f8fe3712bd5053faa30c85c87220b10dbfc549ff32cb38  initrd.tar
++5e07254848fd6cec6dc2f70b05c8fb49c7106657d2c129b1c59e40111bf191de  auralite.iso
++be3258d737f950a7d8b22f8900e571813de29d5b4e540405b9bb2d7cd02c57ef  kernel.elf
++510d64d5de3be0e5b280584c6f229cb2ebe135745bff259a416be7ae137c385e  initrd.tar
+diff --git a/docs/w32app_receipts.md b/docs/w32app_receipts.md
+index 34adc11..0c8f5f6 100644
+--- a/docs/w32app_receipts.md
++++ b/docs/w32app_receipts.md
+@@ -222,6 +222,53 @@ remain open; **W32A-11 is NOT DONE**. `check_w32app_claims.py --check`
+ still fails solely on the three pre-existing missing W32A-2/3/4 patch
+ receipts named above; this delta does not repair those earlier phases.
+ 
++### Follow-up after `d45cb71` (2026-09-28): typed probes to REAL semantics
++
++No new third-party application run is claimed. The three generated TODO
++stubs `CLSIDFromProgID`, `CoCreateInstance` and
++`BufferedPaintRenderAnimation` are replaced by **REAL** implementations
++whose claims still rest only on receipts already in this file:
++
++- `CLSIDFromProgID` (REAL): case-insensitive hive lookup
++  `HKCR\<ProgID>\CLSID` through the existing W32A-9 advapi32 view, no
++  committed ProgID table. Refusals stay typed and named: NULL argument →
++  `E_INVALIDARG`/`ERROR_INVALID_PARAMETER`; empty or over-long ProgID →
++  `CO_E_CLASSSTRING`/`ERROR_INVALID_NAME`; unregistered →
++  `CO_E_CLASSSTRING`/`ERROR_FILE_NOT_FOUND`; malformed value, wrong value
++  type or unterminated GUID text → `CO_E_CLASSSTRING`/`ERROR_INVALID_DATA`.
++  Success returns `S_OK` and leaves last-error untouched. Every call keeps
++  logging its `w32a11-progid-probe:` line (same escape/truncation rules)
++  now stamped with the per-call `result=0x%08x`.
++- `CoCreateInstance` (REAL over an **empty** activation table): the
++  previous probes observed **zero** CLSID/IID pairs, so `w32_com_classes`
++  ships with no rows and `W32_COM_CLASS_COUNT==0` is pinned by test and
++  row schema comment; the first class may be added only with a receipt
++  log line that name it. Typed vocabulary: `E_POINTER` for NULL out;
++  `E_INVALIDARG`/87 for `CLSCTX==0` or NULL CLSID/IID;
++  `CLASS_E_NOAGGREGATION` for a non-NULL outer; `E_NOTIMPL`/50 for any
++  context beyond in-process; `REGDB_E_CLASSNOTREG`/2 for in-process while
++  the table is empty. The output pointer is always cleared on failure.
++- `BufferedPaintRenderAnimation` (REAL): live-buffer snapshot blitted
++  into the target DC without holding the uxtheme animation lock across
++  the blit; `TRUE` no-op when no animation runs on the window;
++  `FALSE`/`ERROR_INVALID_HANDLE` on a dead target DC or unknown window;
++  `FALSE`/`ERROR_INVALID_PARAMETER` on a NULL target rect.
++
++| gate / command | result | scope |
++|---|---:|---|
++| `make iso` | PASS | Fixture `w32a11_probe.exe` rebuilt from the rewritten `w32/tests/w32a11_probe.asm` (seeds `HKCR\AuraW32A11.Probe\CLSID` in-guest via `RegCreateKeyExW`/`RegSetValueExW`; exits 78 only when positive lookup, malformed refusal and empty-table refusal all agree). |
++| `bash tests/integration/run_all.sh '^test_w32a11_core_subset$'` | **20/20** | Two new asserts pin the in-guest `result=0x00000000` hive hit and the `result=0x800401f3` malformed-CLSID refusal; older probe-line asserts still prefix-match. |
++| `test_w32a11_tokens` / `test_w32a11_theme` / `test_w32a11_dragdrop` | **7/7, 9/9, 11/11** | No regression in the neighbouring W32A-11 guest gates. |
++| `test_w32_a11_probe` / `_com` / `_theme` (host) | **56 / 203 / 265 checks, 0 failures** | Probe test amalgamates ole32+advapi32+w32_errno+w32_utf+kernel32_loc+atls TUs and uses a scratch hive under `/tmp/w32a11_hive_*`; the com test's always-miss `Reg*` mocks keep the real hive path exclusive to the probe test. |
++| `python3 tools/w32_gen_stubs.py --check`; `python3 tools/w32_import_ledger.py check` | PASS | Generated surface in sync (**105** stubs, down from 108); K/U/G ledger gap still 41; `stub_map.tsv` rows 218/219/408 flipped TODO→REAL with evidence notes. |
++| `python3 tools/check_test_registry.py` | **202 cases registered** | Registry parity unchanged. |
++
++Timed UxTheme effects, `test_w32a11_ole.sh`, the three pinned-app gates
++and the full `make test` remain open; **W32A-11 is still NOT DONE**: the
++USER32 import prerequisites blocking application entry are untouched, the
++COM activation table is empty by receipt, and no plugin/scripted session
++has exercised the new lookup in situ.
++
+ ## App-gate receipts (reserved format)
+ 
+ Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16
+diff --git a/docs/win32.md b/docs/win32.md
+index 58740ba..0b07e65 100644
+--- a/docs/win32.md
++++ b/docs/win32.md
+@@ -609,17 +609,19 @@ and host-tested (zero size frees), but no pinned guest import calls it.
+ All three official pinned apps again failed USER32 import binding before
+ entry on base `7d38775` with the incremental W32A-11 patch (see
+ `w32/tests/W32A11.pinned-probe.7d38775.log`). No CLSID/IID or ProgID was
+-observed: `CoCreateInstance`/`CLSIDFromProgID` remain typed, instrumented
+-`E_NOTIMPL` TODOs, not fake activations. A follow-up directly on `e4be5d9`
+-tests those generated stubs from a **synthetic**, independent Win64 PE:
+-every `CoCreateInstance` request logs the complete CLSID/IID pair and
+-CLSCTX; `CLSIDFromProgID` logs at most 192 UTF-16 code units with reversible
+-`\uXXXX` escaping (including a BMP unit and a surrogate pair) and an
+-explicit truncation bit. `E_NOTIMPL` and `ERROR_NOT_SUPPORTED` remain the
+-failure contract; output pointers/GUIDs are cleared. These fixture IDs are
+-**not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify
+-an activation table. The three pinned application sessions are still
+-blocked at the USER32 imports listed above.
++observed, so no activation table can be claimed. Since 2026-09-28 both
++exports are **REAL**, not stubs: `CLSIDFromProgID` resolves
++`HKCR\<ProgID>\CLSID` case-insensitively through the W32A-9 hive view
++(typed refusals `E_INVALIDARG`/`CO_E_CLASSSTRING` with named last-errors;
++`S_OK` leaves last-error untouched), and `CoCreateInstance` walks a
++committed **empty** class table — `REGDB_E_CLASSNOTREG` for in-process
++contexts, `E_NOTIMPL` beyond in-process, `CLASS_E_NOAGGREGATION` for
++aggregation, always clearing the output pointer. Every call still logs its
++probe line (`w32a11-clsid-probe:` with full CLSID/IID/CLSCTX;
++`w32a11-progid-probe:` with at most 192 escaped UTF-16 code units and a
++truncation bit), now stamped with the per-call `result=0x%08x`. Every
++`CoCreateInstance` request logs the complete CLSID/IID pair and CLSCTX;
++the ProgID escape stays reversible `\\uXXXX` (BMP unit and surrogate pair covered) with an explicit truncation bit. Failure HRESULTs and the named last-errors above are the refusal contract; output pointers/GUIDs are always cleared. These fixture IDs are **not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify an activation-table row. The three pinned application sessions are still blocked at the USER32 imports listed above.
+ 
+ **Automation:** the imported `OLEAUT32` ordinals
+ `#2/#4/#6/#7/#9/#10/#149/#150` bind to the project's BSTR/VARIANT
+diff --git a/tests/integration/cases/test_w32a11_core_subset.sh b/tests/integration/cases/test_w32a11_core_subset.sh
+index 0fbae44..db659bc 100644
+--- a/tests/integration/cases/test_w32a11_core_subset.sh
++++ b/tests/integration/cases/test_w32a11_core_subset.sh
+@@ -1,8 +1,10 @@
+ #!/usr/bin/env bash
+ # Incremental W32A-11 guest gate: OLE init/BSTR/VARIANT ordinals, IMM32,
+ # clipboard-format IDs and BUTTON theme pixels. A SECOND synthetic PE checks
+-# that TODO class/ProgID probes log precisely and fail cleanly. Neither PE
+-# supplies a pinned-app CLSID/IID observation or a class activation table.
++# the REAL activation surface: hive-backed ProgID resolution (positive and
++# malformed), the committed empty activation table's typed refusals and the
++# whole-request probe lines. Neither PE supplies a pinned-app CLSID/IID
++# observation, so the activation table stays empty by receipt, not by claim.
+ set -u
+ cd "$(dirname "$0")/.."
+ . lib/lib.sh
+@@ -36,8 +38,12 @@ il_assert_grep_fixed "$LOG" "w32a11-clsid-probe: CLSID=12345678-9abc-def0-1122-3
+     "second pair logged instead of suppressed by TODO-once"
+ il_assert_grep_fixed "$LOG" "w32a11-progid-probe: UTF16=NPP.\\u00e9\\ud840\\udc00\\u005c\\u000a\\u003d\\u0020 truncated=0" \
+     "Unicode ProgID logged losslessly on a single line"
++il_assert_grep_fixed "$LOG" "w32a11-progid-probe: UTF16=AuraW32A11.Probe truncated=0 result=0x00000000" \
++    "hive-seeded ProgID resolved in-guest, outcome stamped"
++il_assert_grep_fixed "$LOG" "w32a11-progid-probe: UTF16=AuraW32A11.Bad truncated=0 result=0x800401f3" \
++    "malformed registered CLSID refused with its outcome stamped"
+ il_assert_grep "$LOG" "A11-PROBE-FIXTURE-OK" \
+-    "unknown classes refused and output parameters cleared"
++    "real lookup round-trips the hive and typed refusals cleared outputs"
+ il_assert_count "$LOG" "\[shell\] '/apps/w32run' \(tid [0-9]+\) exited \(code=78\)" 2 \
+     "both independent PE fixtures exited 78"
+ il_assert_no_grep "$LOG" "W32A11-CORE-SUBSET-FAIL|A11-PROBE-FIXTURE-FAIL" "no fixture failure"
+diff --git a/tests/unit/test_w32_a11_com.c b/tests/unit/test_w32_a11_com.c
+index ff8d2d6..cf6d184 100644
+--- a/tests/unit/test_w32_a11_com.c
++++ b/tests/unit/test_w32_a11_com.c
+@@ -5,10 +5,26 @@
+ #include <pthread.h>
+ #include "w32/ole32.h"
+ #include "w32/w32_errno.h"
++#include "w32/advapi32.h"
+ static _Thread_local W32_DWORD tid;
+ W32ABI W32_DWORD GetCurrentThreadId(void) { return tid; }
+ static W32_DWORD error;
+ void w32_set_last_error(W32_DWORD code) { error=code; }
++/* Activation's hive access is the probe gate's concern (test_w32_a11_probe
++ * amalgamates the real advapi32); the init-depth tests here only need the
++ * symbols to resolve, with the always-miss result the empty hive gives. */
++W32_LONG W32ABI RegOpenKeyExW(W32_HKEY key, const uint16_t *subkey,
++                              W32_ULONG reserved, W32_ULONG sam, W32_HKEY *out) {
++    (void)key; (void)subkey; (void)reserved; (void)sam; (void)out;
++    return 2; /* ERROR_FILE_NOT_FOUND: no ProgID is registered here */
++}
++W32_LONG W32ABI RegQueryValueExW(W32_HKEY key, const uint16_t *name,
++                                 W32_ULONG *reserved, W32_DWORD *type,
++                                 uint8_t *data, W32_DWORD *len) {
++    (void)key; (void)name; (void)reserved; (void)type; (void)data; (void)len;
++    return 2;
++}
++W32_LONG W32ABI RegCloseKey(W32_HKEY key) { (void)key; return 0; }
+ #include "../../w32/src/ole32.c"
+ static volatile int n,f;
+ #define CHECK(x) do { __sync_fetch_and_add(&n,1); if (!(x)) { __sync_fetch_and_add(&f,1); fprintf(stderr,"FAIL:%d: %s\n",__LINE__,#x); } } while(0)
+diff --git a/tests/unit/test_w32_a11_probe.c b/tests/unit/test_w32_a11_probe.c
+index 5aad740..696d3fc 100644
+--- a/tests/unit/test_w32_a11_probe.c
++++ b/tests/unit/test_w32_a11_probe.c
+@@ -1,94 +1,284 @@
+-/* W32A-11: generated CoCreateInstance/CLSIDFromProgID TODO probes must be
+- * lossless, bounded and fail-clean. These GUIDs/ProgIDs are synthetic test
+- * vectors, NOT observations from any pinned application. Apache-2.0. */
++/* W32A-11 activation gate (host, ASan/UBSan): CLSIDFromProgID resolves the
++ * committed ProgID table -- the W32A-9 hive's HKCR view, seeded empty and
++ * managed through Reg* -- and CoCreateInstance serves the committed (empty)
++ * in-process activation table with typed refusals.  The GUIDs/ProgIDs here
++ * are SYNTHETIC test vectors, NOT observations from any pinned application:
++ * the pinned-app probe recorded zero CLSID/IID pairs, so the activation
++ * table MUST stay empty (pinned by W32_COM_CLASS_COUNT below and by the
++ * receipts).  SPDX-License-Identifier: Apache-2.0. */
++#define _GNU_SOURCE 1
+ #define _POSIX_C_SOURCE 200809L
++#define AURALITE_W32_HOST_TEST 1
++
++#include <stdarg.h>
++#include <stdint.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+-#include <stdint.h>
+ #include <string.h>
+ #include <unistd.h>
+-#include "w32/w32_errno.h"
++
++#include "w32/w32_abi.h"
+ #include "w32/kernel32.h"
++#include "w32/w32_errno.h"
++#include "w32/w32_utf.h"
++#include "w32/advapi32.h"
++#include "w32/ole32.h"
++
++static int checks, fails;
++static void ok(int cond, const char *what, ...) {
++    checks++;
++    if (!cond) {
++        fails++;
++        va_list ap;
++        va_start(ap, what);
++        vprintf(what, ap);
++        va_end(ap);
++        printf("\n");
++    }
++}
++
++static uint16_t *W(const char *s) {
++    static uint16_t buf[8][1024];
++    static int slot;
++    uint16_t *out = buf[slot++ & 7];
++    size_t n = strlen(s);
++    for (size_t i = 0; i <= n; i++) out[i] = (uint16_t)(unsigned char)s[i];
++    return out;
++}
+ 
+-static W32_DWORD last_error;
+-void w32_set_last_error(W32_DWORD e) { last_error = e; }
+-W32ABI void ExitProcess(W32_UINT code) { (void)code; abort(); }
+-/* Generated from the committed TSV: test the code the actual PE binder uses. */
+-#include "../../w32/src/w32_stubs_gen.c"
++/* ---- host shims ----------------------------------------------------------
++ * w32_teb_self: pre-init path (fallback last-error slot), as in the A9 gate.
++ * GetCurrentThreadId: ole32.c binds COM depth to a stable TID. */
++struct w32_teb *w32_teb_self(void) { return 0; }
++static _Thread_local W32_DWORD tid;
++W32ABI W32_DWORD GetCurrentThreadId(void) { return tid; }
+ 
+-static int n, failures;
+-#define CHECK(x) do { ++n; if (!(x)) { ++failures; \
+-    fprintf(stderr,"FAIL:%d: %s\n",__LINE__,#x); } } while (0)
++/* ---- the engines under test (libatls objects linked as separate TUs) ----- */
++#include "../../w32/src/w32_errno.c"
++#include "../../w32/src/w32_utf.c"
++#include "../../w32/src/advapi32.c"
++#include "../../w32/src/ole32.c"
+ 
+-static int count(const char *s, const char *part) {
+-    int hits=0;
+-    while ((s=strstr(s,part))!=NULL) { ++hits; s+=strlen(part); }
+-    return hits;
++static char scratch_hive[256];
++static void use_hive(const char *tag) {
++    snprintf(scratch_hive, sizeof scratch_hive, "/tmp/w32a11_hive_%s_%d.bin",
++             tag, (int)getpid());
++    unlink(scratch_hive);
++    w32_advapi_hive_override = scratch_hive;
++    w32_advapi_reset_for_host_test();
+ }
+ 
++static const W32_GUID g1 = { 0x12345678, 0x9abc, 0xdef0,
++                             { 0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88 } };
++static const W32_GUID iid_unk = { 0, 0, 0, { 0xc0,0,0,0,0,0,0,0x46 } };
++
+ int main(void) {
+-    uint8_t clsid[16]={0x78,0x56,0x34,0x12,0xbc,0x9a,0xf0,0xde,
+-                       0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88};
+-    uint8_t iid[16]={0,0,0,0,0,0,0,0,0xc0,0,0,0,0,0,0,0x46};
+-    char guid[37];
+-    probe_guid(clsid,guid);
+-    CHECK(strcmp(guid,"12345678-9abc-def0-1122-334455667788")==0);
+-    probe_guid(iid,guid);
+-    CHECK(strcmp(guid,"00000000-0000-0000-c000-000000000046")==0);
+-    probe_guid(NULL,guid);
+-    CHECK(strcmp(guid,"(null)")==0);
+-
+-    uint16_t progid[]={'N','P','P','.',0x00e9,0xd840,0xdc00,'\\','\n','=',' ',0};
+-    char name[W32A11_PROGID_MAX_UNITS*6u+1u];
+-    CHECK(probe_progid(progid,name)==0);
+-    CHECK(strcmp(name,"NPP.\\u00e9\\ud840\\udc00\\u005c\\u000a\\u003d\\u0020")==0);
+-    CHECK(probe_progid(NULL,name)==0 && !strcmp(name,"(null)"));
+-    uint16_t long_id[W32A11_PROGID_MAX_UNITS+2u];
+-    for (unsigned i=0;i<W32A11_PROGID_MAX_UNITS+1u;i++) long_id[i]='x';
+-    long_id[W32A11_PROGID_MAX_UNITS+1u]=0;
+-    CHECK(probe_progid(long_id,name)==1);
+-    CHECK(strlen(name)==W32A11_PROGID_MAX_UNITS);
+-    long_id[W32A11_PROGID_MAX_UNITS]=0;
+-    CHECK(probe_progid(long_id,name)==0); /* exact bound is complete */
+-
+-    /* One line per invocation, not a first-call-only print. Capture stdout
+-     * to assert the actual generated stubs' format and truncation markers. */
+-    int saved=dup(STDOUT_FILENO);
+-    FILE *cap=tmpfile();
+-    CHECK(saved>=0 && cap!=NULL);
+-    if (saved<0 || !cap) return 1;
+-    fflush(stdout);
+-    CHECK(dup2(fileno(cap),STDOUT_FILENO)>=0);
+-    void *out=(void *)(uintptr_t)0x1234;
+-    last_error=0;
+-    CHECK(w32_stub_ole32_CoCreateInstance(clsid,NULL,1,iid,&out)==W32_E_NOTIMPL);
+-    CHECK(out==NULL && last_error==W32_ERROR_NOT_SUPPORTED);
+-    out=(void *)(uintptr_t)0x1234;
+-    CHECK(w32_stub_ole32_CoCreateInstance(clsid,NULL,4,NULL,&out)==W32_E_NOTIMPL);
+-    CHECK(out==NULL);
+-    uint8_t out_guid[16]; memset(out_guid,0xa5,sizeof out_guid);
+-    last_error=0;
+-    CHECK(w32_stub_ole32_CLSIDFromProgID(progid,out_guid)==W32_E_NOTIMPL);
+-    uint8_t zeros[16]={0};
+-    CHECK(!memcmp(out_guid,zeros,sizeof out_guid) && last_error==W32_ERROR_NOT_SUPPORTED);
+-    CHECK(w32_stub_ole32_CLSIDFromProgID(long_id,NULL)==W32_E_NOTIMPL);
+-    long_id[W32A11_PROGID_MAX_UNITS]='x';
+-    CHECK(w32_stub_ole32_CLSIDFromProgID(long_id,NULL)==W32_E_NOTIMPL);
+-    fflush(stdout);
+-    CHECK(dup2(saved,STDOUT_FILENO)>=0);
+-    close(saved);
+-    rewind(cap);
+-    char log[4096]={0};
+-    size_t size=fread(log,1,sizeof log-1,cap);
+-    CHECK(size>0 && !ferror(cap));
+-    fclose(cap);
+-    CHECK(strstr(log,"CLSID=12345678-9abc-def0-1122-334455667788 IID=00000000-0000-0000-c000-000000000046 CLSCTX=1")!=NULL);
+-    CHECK(strstr(log,"IID=(null) CLSCTX=4")!=NULL);
+-    CHECK(count(log,"w32a11-clsid-probe:")==2);
+-    CHECK(strstr(log,"w32a11-progid-probe: UTF16=NPP.\\u00e9\\ud840\\udc00\\u005c\\u000a\\u003d\\u0020 truncated=0")!=NULL);
+-    CHECK(strstr(log,"truncated=1")!=NULL);
+-    CHECK(count(log,"w32a11-progid-probe:")==3);
+-    CHECK(count(log,"TODO ole32.dll!CoCreateInstance")==1);
+-    fprintf(stderr,"w32a11-probe: %d checks, %d failures\n",n,failures);
+-    return failures?1:0;
++    tid = 1;
++
++    /* ================= helpers: GUID text <-> bytes ======================= */
++    char text[37];
++    w32a11_guid_text(&g1, text);
++    ok(!strcmp(text, "12345678-9abc-def0-1122-334455667788"),
++       "guid_text canonical form: %s", text);
++    w32a11_guid_text(&iid_unk, text);
++    ok(!strcmp(text, "00000000-0000-0000-c000-000000000046"),
++       "guid_text IID zero data4 prefix: %s", text);
++    w32a11_guid_text(NULL, text);
++    ok(!strcmp(text, "(null)"), "guid_text NULL spelled (null): %s", text);
++    W32_GUID back;
++    ok(w32a11_guid_parse(W("{12345678-9abc-def0-1122-334455667788}"), &back) &&
++       !memcmp(&back, &g1, sizeof back), "parse round-trips the bytes");
++    ok(w32a11_guid_parse(W("{12345678-9ABC-DEF0-1122-334455667788}"), &back) &&
++       !memcmp(&back, &g1, sizeof back), "parse accepts uppercase hex");
++    ok(!w32a11_guid_parse(W("12345678-9abc-def0-1122-334455667788"), &back),
++       "parse refuses missing braces");
++    ok(!w32a11_guid_parse(W("{123456789abc-def0-1122-334455667788}"), &back),
++       "parse refuses a missing dash");
++    ok(!w32a11_guid_parse(W("{1234567g-9abc-def0-1122-334455667788}"), &back),
++       "parse refuses a non-hex digit");
++    ok(!w32a11_guid_parse(W("{12345678-9abc-def0-1122-33445566778}"), &back),
++       "parse refuses 31 nibbles");
++    ok(!w32a11_guid_parse(W("{12345678-9abc-def0-1122-33445566778800}"), &back),
++       "parse refuses trailing garbage");
++    ok(!w32a11_guid_parse(NULL, &back), "parse refuses NULL");
++
++    /* ============ helpers: lossless one-line ProgID escaping ============= */
++    uint16_t progid[] = { 'N','P','P','.',0x00e9,0xd840,0xdc00,'\\','\n','=',' ',0 };
++    char name[W32A11_PROGID_LOG_UNITS * 6u + 1u];
++    ok(w32a11_progid_escape(progid, name) == 0 &&
++       !strcmp(name, "NPP.\\u00e9\\ud840\\udc00\\u005c\\u000a\\u003d\\u0020"),
++       "progid_escape reversible single line: %s", name);
++    ok(w32a11_progid_escape(NULL, name) == 0 && !strcmp(name, "(null)"),
++       "progid_escape NULL spelled (null)");
++    uint16_t long_id[W32A11_PROGID_LOG_UNITS + 2u];
++    for (unsigned i = 0; i < W32A11_PROGID_LOG_UNITS + 1u; i++) long_id[i] = 'x';
++    long_id[W32A11_PROGID_LOG_UNITS + 1u] = 0;
++    ok(w32a11_progid_escape(long_id, name) == 1 &&
++       strlen(name) == W32A11_PROGID_LOG_UNITS, "escape marks truncation");
++    long_id[W32A11_PROGID_LOG_UNITS] = 0;
++    ok(w32a11_progid_escape(long_id, name) == 0, "exact bound is complete");
++
++    /* ================= CLSIDFromProgID over the real hive ================= */
++    use_hive("clsid");
++    W32_GUID out;
++    memset(&out, 0xa5, sizeof out);
++    ok(CLSIDFromProgID(NULL, &out) == W32_COM_E_INVALIDARG &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_PARAMETER,
++       "NULL ProgID: E_INVALIDARG + ERROR_INVALID_PARAMETER");
++    uint8_t zeros[16] = { 0 };
++    ok(!memcmp(&out, zeros, 16), "NULL ProgID leaves a zeroed CLSID");
++    memset(&out, 0xa5, sizeof out);
++    ok(CLSIDFromProgID(W(""), &out) == W32_COM_CO_E_CLASSSTRING &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_NAME &&
++       !memcmp(&out, zeros, 16), "empty ProgID: CLASSSTRING + INVALID_NAME");
++    uint16_t longest[W32A11_PROGID_MAX_UNITS + 1u];
++    for (unsigned i = 0; i < W32A11_PROGID_MAX_UNITS; i++) longest[i] = 'x';
++    longest[W32A11_PROGID_MAX_UNITS] = 0;
++    ok(CLSIDFromProgID(longest, &out) == W32_COM_CO_E_CLASSSTRING &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_NAME,
++       "unbounded ProgID: CLASSSTRING + INVALID_NAME (no unbounded scan)");
++    longest[W32A11_PROGID_MAX_UNITS - 1u] = 0;   /* 255 units: legal spelling */
++    ok(CLSIDFromProgID(longest, &out) == W32_COM_CO_E_CLASSSTRING &&
++       w32_get_last_error_raw() == W32_ERROR_FILE_NOT_FOUND &&
++       !memcmp(&out, zeros, 16), "255-unit unregistered ProgID: FILE_NOT_FOUND");
++
++    /* The committed ProgID table is the hive: seed HKCR\<progid>\CLSID
++     * default value through Reg*, resolve it back through the API. */
++    W32_HKEY k = 0;
++    W32_DWORD disp = 0;
++    ok(RegCreateKeyExW(W32_HKEY_CLASSES_ROOT, W("AuraW32A11.Probe\\CLSID"),
++                       0, NULL, 0, 0, NULL, &k, &disp) == 0,
++       "create HKCR\\AuraW32A11.Probe\\CLSID");
++    static const uint16_t g1_text[] = {
++        '{','1','2','3','4','5','6','7','8','-','9','a','b','c','-',
++        'd','e','f','0','-','1','1','2','2','-','3','3','4','4','5',
++        '5','6','6','7','7','8','8','}',0 };
++    ok(RegSetValueExW(k, NULL, 0, W32_REG_SZ,
++                      (const uint8_t *)g1_text, sizeof g1_text) == 0,
++       "write the default CLSID string");
++    ok(RegCloseKey(k) == 0, "close key");
++    w32_set_last_error(0xdeadbeefu);
++    ok(CLSIDFromProgID(W("AuraW32A11.Probe"), &out) == W32_COM_S_OK &&
++       !memcmp(&out, &g1, sizeof g1), "registered ProgID resolves");
++    ok(w32_get_last_error_raw() == 0xdeadbeefu,
++       "success leaves last-error untouched");
++    ok(CLSIDFromProgID(W("auraw32a11.PROBE"), &out) == W32_COM_S_OK &&
++       !memcmp(&out, &g1, sizeof g1), "ASCII case-insensitive resolve");
++
++    /* The HKCR merge view through the same API: HKCU half wins over HKLM. */
++    ok(RegCreateKeyExW(W32_HKEY_LOCAL_MACHINE, W("Software\\Classes\\AuraW32A11.Merge\\CLSID"),
++                       0, NULL, 0, 0, NULL, &k, &disp) == 0, "seed HKLM half");
++    static const uint16_t loser_text[] = {
++        '{','a','a','a','a','a','a','a','a','-','1','1','1','1','-',
++        '1','1','1','1','-','1','1','1','1','-','1','1','1','1','1',
++        '1','1','1','1','1','1','1','}',0 };
++    ok(RegSetValueExW(k, NULL, 0, W32_REG_SZ,
++                      (const uint8_t *)loser_text, sizeof loser_text) == 0 &&
++       RegCloseKey(k) == 0, "write HKLM CLSID");
++    W32_GUID loser = { 0xaaaaaaaa, 0x1111, 0x1111, { 0x11,0x11,0x11,0x11,0x11,0x11,0x11,0x11 } };
++    ok(CLSIDFromProgID(W("AuraW32A11.Merge"), &out) == W32_COM_S_OK &&
++       !memcmp(&out, &loser, sizeof loser), "HKLM half visible first");
++    ok(RegCreateKeyExW(W32_HKEY_CURRENT_USER, W("Software\\Classes\\AuraW32A11.Merge\\CLSID"),
++                       0, NULL, 0, 0, NULL, &k, &disp) == 0, "seed HKCU half");
++    ok(RegSetValueExW(k, NULL, 0, W32_REG_SZ,
++                      (const uint8_t *)g1_text, sizeof g1_text) == 0 &&
++       RegCloseKey(k) == 0, "write HKCU CLSID");
++    ok(CLSIDFromProgID(W("AuraW32A11.Merge"), &out) == W32_COM_S_OK &&
++       !memcmp(&out, &g1, sizeof g1), "HKCU half wins the merge");
++
++    /* Registered-but-malformed: the value IS there and is not a CLSID. */
++    ok(RegCreateKeyExW(W32_HKEY_CLASSES_ROOT, W("AuraW32A11.Bad\\CLSID"),
++                       0, NULL, 0, 0, NULL, &k, &disp) == 0, "create Bad key");
++    ok(RegSetValueExW(k, NULL, 0, W32_REG_SZ,
++                      (const uint8_t *)W("not-a-guid"), 22) == 0 &&
++       RegCloseKey(k) == 0, "write malformed text");
++    memset(&out, 0xa5, sizeof out);
++    ok(CLSIDFromProgID(W("AuraW32A11.Bad"), &out) == W32_COM_CO_E_CLASSSTRING &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_DATA &&
++       !memcmp(&out, zeros, 16), "malformed stored GUID: INVALID_DATA, zeroed");
++    ok(RegCreateKeyExW(W32_HKEY_CLASSES_ROOT, W("AuraW32A11.NoTerm\\CLSID"),
++                       0, NULL, 0, 0, NULL, &k, &disp) == 0, "create NoTerm key");
++    ok(RegSetValueExW(k, NULL, 0, W32_REG_SZ,
++                      (const uint8_t *)g1_text, sizeof g1_text - 2) == 0 &&
++       RegCloseKey(k) == 0, "write unterminated text");
++    memset(&out, 0xa5, sizeof out);
++    ok(CLSIDFromProgID(W("AuraW32A11.NoTerm"), &out) == W32_COM_CO_E_CLASSSTRING &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_DATA &&
++       !memcmp(&out, zeros, 16), "unterminated stored text refused");
++    W32_DWORD dword_val = 42;
++    ok(RegCreateKeyExW(W32_HKEY_CLASSES_ROOT, W("AuraW32A11.WrongType\\CLSID"),
++                       0, NULL, 0, 0, NULL, &k, &disp) == 0, "create WrongType key");
++    ok(RegSetValueExW(k, NULL, 0, W32_REG_DWORD,
++                      (const uint8_t *)&dword_val, sizeof dword_val) == 0 &&
++       RegCloseKey(k) == 0, "write REG_DWORD instead of REG_SZ");
++    ok(CLSIDFromProgID(W("AuraW32A11.WrongType"), &out) == W32_COM_CO_E_CLASSSTRING &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_DATA,
++       "wrong value type refused, not reinterpreted");
++
++    /* ================== CoCreateInstance typed refusals =================== */
++    void *obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, NULL, 1, &iid_unk, NULL) == W32_COM_E_POINTER &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_PARAMETER,
++       "NULL out: E_POINTER + ERROR_INVALID_PARAMETER");
++    ok(CoCreateInstance(NULL, NULL, 1, &iid_unk, &obj) == W32_COM_E_INVALIDARG &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_PARAMETER && obj == NULL,
++       "NULL CLSID: E_INVALIDARG, out cleared");
++    obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, NULL, 1, NULL, &obj) == W32_COM_E_INVALIDARG &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_PARAMETER && obj == NULL,
++       "NULL IID: E_INVALIDARG, out cleared");
++    obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, (void *)1, 1, &iid_unk, &obj) ==
++       W32_COM_CLASS_E_NOAGGREGATION &&
++       w32_get_last_error_raw() == W32_ERROR_NOT_SUPPORTED && obj == NULL,
++       "aggregation: CLASS_E_NOAGGREGATION by name");
++    obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, NULL, 0, &iid_unk, &obj) == W32_COM_E_INVALIDARG &&
++       w32_get_last_error_raw() == W32_ERROR_INVALID_PARAMETER && obj == NULL,
++       "ctx==0: E_INVALIDARG, no silent default context");
++    obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, NULL, W32_CLSCTX_LOCAL_SERVER, &iid_unk, &obj) ==
++       W32_COM_E_NOTIMPL &&
++       w32_get_last_error_raw() == W32_ERROR_NOT_SUPPORTED && obj == NULL,
++       "out-of-process context: named E_NOTIMPL, never coerced");
++    obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, NULL, W32_CLSCTX_INPROC_SERVER | 0x100u, &iid_unk, &obj) ==
++       W32_COM_E_NOTIMPL, "unknown context bits are not masked away");
++    obj = (void *)(uintptr_t)0x1234;
++    ok(CoCreateInstance(&g1, NULL, W32_CLSCTX_INPROC_SERVER, &iid_unk, &obj) ==
++       W32_COM_REGDB_E_CLASSNOTREG &&
++       w32_get_last_error_raw() == W32_ERROR_FILE_NOT_FOUND && obj == NULL,
++       "in-process activation: REGDB_E_CLASSNOTREG, out cleared");
++    ok(W32_COM_CLASS_COUNT == 0,
++       "activation table pinned EMPTY: no unobserved CLSID/IID pair exists");
++
++    /* ============== stdout probe lines (the runtime evidence) ============= */
++    int saved = dup(STDOUT_FILENO);
++    FILE *cap = tmpfile();
++    ok(saved >= 0 && cap != NULL, "stdout capture armed");
++    if (saved >= 0 && cap) {
++        fflush(stdout);
++        ok(dup2(fileno(cap), STDOUT_FILENO) >= 0, "stdout redirected");
++        memset(&out, 0xa5, sizeof out);
++        W32_DWORD rc = CLSIDFromProgID(progid, &out);
++        void *o2 = NULL;
++        W32_DWORD rc2 = CoCreateInstance(&g1, NULL, 1, &iid_unk, &o2);
++        fflush(stdout);
++        ok(dup2(saved, STDOUT_FILENO) >= 0, "stdout restored");
++        close(saved);
++        rewind(cap);
++        char log[4096];
++        size_t got = fread(log, 1, sizeof log - 1, cap);
++        log[got] = 0;
++        fclose(cap);
++        ok(rc == W32_COM_CO_E_CLASSSTRING && rc2 == W32_COM_REGDB_E_CLASSNOTREG,
++           "captured calls returned the typed refusals");
++        ok(strstr(log, "w32a11-progid-probe: UTF16=NPP.\\u00e9\\ud840\\udc00\\u005c\\u000a\\u003d\\u0020 truncated=0 result=0x800401f3\n") != NULL,
++           "progid probe line: lossless, bounded, outcome-stamped:\n%s", log);
++        ok(strstr(log, "w32a11-clsid-probe: CLSID=12345678-9abc-def0-1122-334455667788 IID=00000000-0000-0000-c000-000000000046 CLSCTX=1\n") != NULL,
++           "clsid probe line keeps its committed format:\n%s", log);
++    }
++    unlink(scratch_hive);
++    fprintf(stderr, "w32a11-probe: %d checks, %d failures\n", checks, fails);
++    return fails ? 1 : 0;
+ }
+diff --git a/tests/unit/test_w32_a11_theme.c b/tests/unit/test_w32_a11_theme.c
+index 208a329..cb5a8ee 100644
+--- a/tests/unit/test_w32_a11_theme.c
++++ b/tests/unit/test_w32_a11_theme.c
+@@ -252,6 +252,32 @@ int main(void){
+     CHECK(buf!=NULL);
+     CHECK(BufferedPaintStopAllAnimations(win)==W32_THEME_S_OK);
+     CHECK(EndBufferedAnimation(buf,1)==W32_THEME_E_HANDLE);
++
++    /* BufferedPaintRenderAnimation: the BOOL sibling of the HRESULT set --
++     * blits every live zero-duration frame, TRUE no-op when none is live. */
++    error=0;
++    CHECK(BufferedPaintRenderAnimation(win,(W32_HDC)1)==1 && error==0);
++    error=0;
++    CHECK(!BufferedPaintRenderAnimation((W32_HWND)(uintptr_t)0xdead,(W32_HDC)1)
++          && error==W32_ERROR_INVALID_HANDLE);
++    error=0;
++    CHECK(!BufferedPaintRenderAnimation(win,NULL) && error==W32_ERROR_INVALID_PARAMETER);
++    buf=BeginBufferedAnimation(win,(W32_HDC)1,&area,0,NULL,&anim,&from,&to);
++    CHECK(buf!=NULL);
++    W32_RECT whole={0,0,8,8};
++    CHECK(FillRect(to,&whole,CreateSolidBrush(0x00a5b6c7))==1);
++    memset(pixels,0,sizeof pixels);
++    error=0;
++    CHECK(BufferedPaintRenderAnimation(win,(W32_HDC)1)==1 && error==0);
++    CHECK(pixels[2][2]==0x00a5b6c7 && pixels[7][7]==0x00a5b6c7 && pixels[8][8]==0);
++    /* A failed blit (dead target DC in the mock grid) is FALSE, not silence. */
++    error=0;
++    CHECK(!BufferedPaintRenderAnimation(win,(W32_HDC)(uintptr_t)100)
++          && error==W32_ERROR_INVALID_HANDLE);
++    memset(pixels,0,sizeof pixels);
++    CHECK(EndBufferedAnimation(buf,0)==W32_THEME_S_OK);
++    CHECK(BufferedPaintRenderAnimation(win,(W32_HDC)1)==1);
++    CHECK(pixels[2][2]==0);
+     CHECK(BufferedPaintUnInit()==W32_THEME_S_OK);
+     CHECK(!BeginBufferedAnimation(win,(W32_HDC)1,&area,0,NULL,&anim,&from,&to));
+     for(int i=0;i<32;i++)CHECK(allocated[i]==NULL);
+diff --git a/tools/w32_gen_stubs.py b/tools/w32_gen_stubs.py
+index 98efe6c..b38785d 100644
+--- a/tools/w32_gen_stubs.py
++++ b/tools/w32_gen_stubs.py
+@@ -281,53 +281,11 @@ def main(argv):
+     L.append("}")
+     L.append("")
+ 
+-    # W32A-11's FIRST gate is runtime data: record which class AND interface
+-    # the pinned applications actually request.  Keep activation TODO until
+-    # a measured table exists; a name-only TODO stub discards that evidence.
+-    if any(d == "ole32.dll" and s == "CoCreateInstance"
+-           for d, s, *_ in stubs):
+-        L.extend([
+-            "static void probe_guid(const void *guid, char out[37]) {",
+-            '    if (!guid) { strcpy(out, "(null)"); return; }',
+-            "    const uint8_t *b = (const uint8_t *)guid;",
+-            '    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"',
+-            '             "%02x%02x-%02x%02x%02x%02x%02x%02x",',
+-            "             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],",
+-            "             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);",
+-            "}", "",
+-        ])
+-
+-    # Log the UTF-16 code units, not a lossy ASCII '?' approximation of a
+-    # ProgID. Keep only identifier-safe ASCII readable; escape every other
+-    # unit (including space, '=' and newline, so the trailing fields cannot
+-    # be forged by an untrusted ProgID).
+-    # A bounded, explicitly marked truncation is NOT a complete observation.
+-    if any(d == "ole32.dll" and s == "CLSIDFromProgID" and k == "TODO"
+-           for d, s, k, *_ in stubs):
+-        L.extend([
+-            "#define W32A11_PROGID_MAX_UNITS 192u",
+-            "static int probe_progid(const uint16_t *id,",
+-            "                        char out[W32A11_PROGID_MAX_UNITS * 6u + 1u]) {",
+-            '    static const char hex[] = "0123456789abcdef";',
+-            "    size_t i = 0, used = 0;",
+-            '    if (!id) { strcpy(out, "(null)"); return 0; }',
+-            "    while (i < W32A11_PROGID_MAX_UNITS && id[i]) {",
+-            "        unsigned ch = id[i++];",
+-            "        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||",
+-            "            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {",
+-            "            out[used++] = (char)ch;",
+-            "        } else {",
+-            "            out[used++] = 0x5c; out[used++] = 'u';",
+-            "            out[used++] = hex[(ch >> 12) & 15u];",
+-            "            out[used++] = hex[(ch >> 8) & 15u];",
+-            "            out[used++] = hex[(ch >> 4) & 15u];",
+-            "            out[used++] = hex[ch & 15u];",
+-            "        }",
+-            "    }",
+-            "    out[used] = 0;",
+-            "    return i == W32A11_PROGID_MAX_UNITS && id[i] != 0;",
+-            "}", "",
+-        ])
++    # W32A-11 history note: CoCreateInstance/CLSIDFromProgID used to carry
++    # generator special cases (whole-GUID/lossless-Progid TODO probes) while
++    # they were typed TODOs.  They are REAL now (w32/src/ole32.c): the
++    # helpers moved with the semantics, and the per-invocation probe lines
++    # are emitted by the real implementation instead of a placeholder.
+ 
+     for dll, sym, kind, rettype, fail, phase, note, ident in stubs:
+         tag = "%s!%s" % (dll, sym)
+@@ -346,40 +304,6 @@ def main(argv):
+             L.append("}")
+             L.append("")
+             continue
+-        if dll == "ole32.dll" and sym == "CoCreateInstance" and kind == "TODO":
+-            L.extend([
+-                "/* W32A-11 instrument: every requested CLSID/IID, NOT an activation. */",
+-                "W32ABI W32_DWORD %s(const void *clsid, void *outer," % ident,
+-                "                          W32_DWORD ctx, const void *iid, void **out) {",
+-                "    static int once = 0;",
+-                '    note_todo("ole32.dll", "CoCreateInstance", "W32A-11", &once);',
+-                "    (void)outer;",
+-                "    char class_id[37], interface_id[37];",
+-                "    probe_guid(clsid, class_id); probe_guid(iid, interface_id);",
+-                '    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\\n",',
+-                "           class_id, interface_id, ctx);",
+-                "    if (out) *out = 0;",
+-                "    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
+-                "    return W32_E_NOTIMPL;",
+-                "}", "",
+-            ])
+-            continue
+-        if dll == "ole32.dll" and sym == "CLSIDFromProgID" and kind == "TODO":
+-            L.extend([
+-                "/* W32A-11 probe: lossless UTF-16 prefix, never invent a class. */",
+-                "W32ABI W32_DWORD %s(const uint16_t *id, void *out) {" % ident,
+-                "    static int once = 0;",
+-                '    note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);',
+-                "    char name[W32A11_PROGID_MAX_UNITS * 6u + 1u];",
+-                "    unsigned truncated = (unsigned)probe_progid(id, name);",
+-                '    printf("w32a11-progid-probe: UTF16=%s truncated=%u\\n",',
+-                "           name, truncated);",
+-                "    if (out) memset(out, 0, 16); /* fail-clean GUID, no guessed CLSID */",
+-                "    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);",
+-                "    return W32_E_NOTIMPL;",
+-                "}", "",
+-            ])
+-            continue
+         width = width_of(rettype)
+         if width == "void":
+             proto = "W32ABI void %s(void)" % ident
+diff --git a/w32/include/w32/ole32.h b/w32/include/w32/ole32.h
+index 114a572..82f7ffe 100644
+--- a/w32/include/w32/ole32.h
++++ b/w32/include/w32/ole32.h
+@@ -12,6 +12,20 @@
+ #define W32_COM_E_INVALIDARG 0x80070057u
+ #define W32_COM_E_OUTOFMEMORY 0x8007000Eu
+ #define W32_COM_E_NOTINITIALIZED 0x800401F0u
++/* Activation and ProgID HRESULTs (published combase/ole2 documentation).
++ * E_NOTIMPL keeps the 0x80004001 spelling the generated stubs already use;
++ * the W32A-11 increment below replaces the TODO probe with typed refusals,
++ * so the same constant must read as one value from every call site. */
++#define W32_COM_E_POINTER 0x80004003u
++#define W32_COM_E_NOTIMPL 0x80004001u
++#define W32_COM_CO_E_CLASSSTRING 0x800401F3u
++#define W32_COM_REGDB_E_CLASSNOTREG 0x80040154u
++#define W32_COM_CLASS_E_NOAGGREGATION 0x80040110u
++/* CLSCTX values (published dwClsContext enumeration).  In-process is the
++ * only activation context this personality serves: out-of-process server
++ * bits are a named E_NOTIMPL refusal, never a silently ignored flag. */
++#define W32_CLSCTX_INPROC_SERVER 1u
++#define W32_CLSCTX_LOCAL_SERVER 4u
+ #define W32_DRAGDROP_E_NOTREGISTERED 0x80040100u
+ #define W32_DRAGDROP_E_ALREADYREGISTERED 0x80040101u
+ #define W32_DRAGDROP_E_INVALIDHWND 0x80040102u
+@@ -82,4 +96,18 @@ void w32_ole_drag_window_destroyed(W32_HWND hwnd);
+ W32ABI W32_DWORD DoDragDrop(void *data, W32_IDropSource *source,
+                             W32_DWORD allowed, W32_DWORD *effect);
+ W32ABI void ReleaseStgMedium(W32_STGMEDIUM *m);
++/* W32A-11 activation surface (REAL over the committed state):
++ * CLSIDFromProgID resolves HKCR\<progid>\CLSID default value through the
++ * W32A-9 registry (the committed ProgID table is the hive's HKCR view --
++ * seeded empty, managed through Reg*); CoCreateInstance serves the
++ * committed in-process activation table, which holds ZERO factories
++ * because the pinned-app probe observed NO CLSID/IID pair, so every
++ * in-process activation is a named REGDB_E_CLASSNOTREG refusal with the
++ * request logged whole (w32a11-clsid-probe:) for the future probe.
++ * `out` is zeroed on every failure path; GetLastError carries the Win32
++ * companion code on failures and is left untouched on success. */
++W32ABI W32_DWORD CLSIDFromProgID(const uint16_t *progid, W32_GUID *out);
++W32ABI W32_DWORD CoCreateInstance(const W32_GUID *clsid, void *outer,
++                                  W32_DWORD ctx, const W32_GUID *iid,
++                                  void **out);
+ #endif
+diff --git a/w32/include/w32/uxtheme.h b/w32/include/w32/uxtheme.h
+index 518c178..6c11804 100644
+--- a/w32/include/w32/uxtheme.h
++++ b/w32/include/w32/uxtheme.h
+@@ -94,4 +94,12 @@ W32ABI void *BeginBufferedAnimation(W32_HWND hwnd, W32_HDC target,
+                                      W32_HDC *from, W32_HDC *to);
+ W32ABI W32_DWORD EndBufferedAnimation(void *buffer, W32_BOOL update);
+ W32ABI W32_DWORD BufferedPaintStopAllAnimations(W32_HWND hwnd);
++/* BOOL API (not the HRESULT family): TRUE when every live zero-duration
++ * animation owned by hwnd was blitted into hdcTarget at its animation
++ * rect, TRUE also when the window owns no live animation (an honest
++ * no-op -- the window simply has no animation pixels); FALSE with
++ * GetLastError on an invalid HWND/HDC or a failed blit.  The current
++ * frame is the "to" state: no frame scheduler exists in this personality,
++ * so there is no in-between blend to render. */
++W32ABI W32_BOOL BufferedPaintRenderAnimation(W32_HWND hwnd, W32_HDC target);
+ #endif
+diff --git a/w32/include/w32/w32_gen.h b/w32/include/w32/w32_gen.h
+index 1ce832c..5d7646e 100644
+--- a/w32/include/w32/w32_gen.h
++++ b/w32/include/w32/w32_gen.h
+@@ -1,7 +1,7 @@
+ /* Generated by tools/w32_gen_stubs.py -- do not edit.
+  * SPDX-License-Identifier: Apache-2.0 -- generated file, repository licence.
+  *
+- * W32A-1 loader tables: 15 ordinals, 108 stubs,
++ * W32A-1 loader tables: 15 ordinals, 105 stubs,
+  * 3 data cells.  Sources: w32/ordinal_map.tsv (ordinal facts,
+  * cited per row) and w32/stub_map.tsv (one row per ladder import the
+  * static table in w32/src/w32_bind.c does not implement yet).
+diff --git a/w32/src/ole32.c b/w32/src/ole32.c
+index 3607530..0a58d77 100644
+--- a/w32/src/ole32.c
++++ b/w32/src/ole32.c
+@@ -1,11 +1,17 @@
+ /* W32A-11 COM-lite partial: genuine per-thread balanced init and task heap.
+  * No native TLS segment in AuraLite libc: bind depth to a stable Win32 TID.
+- * CLSID/IID activation remains typed TODO until pinned-app observations.
++ * CLSIDFromProgID/CoCreateInstance are REAL over the committed state: the
++ * hive's HKCR view is the ProgID table, and the in-process activation table
++ * holds zero factories because no pinned-app CLSID/IID pair was observed
++ * (docs/w32app_receipts.md) -- requests are logged whole, never invented.
+  * SPDX-License-Identifier: Apache-2.0 */
+ #include "w32/ole32.h"
+ #include "w32/kernel32.h"
++#include "w32/advapi32.h"
+ #include "w32/w32_errno.h"
+ #include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
+ #include <stdint.h>
+ 
+ #define W32_COM_MAX_THREADS 128
+@@ -97,3 +103,212 @@ int w32_com_ole_ready(void) {
+     unlock_com();
+     return ready;
+ }
++
++/* ---------------------------------------------------------------------------
++ * W32A-11 activation: ProgID lookup and in-process class activation.
++ *
++ * What is REAL here and what is a named refusal:
++ *   * CLSIDFromProgID is a genuine registry query against the W32A-9 hive:
++ *     HKCR\<progid>\CLSID, default value, REG_SZ, strict "{...}" GUID text.
++ *     The hive's HKCR view IS the committed ProgID table -- it is seeded
++ *     empty and is managed through RegSetValueEx/RegCreateKeyEx; nothing is
++ *     hardcoded per application and no class exists only in a comment.
++ *   * CoCreateInstance has full argument/context vocabulary (E_POINTER,
++ *     E_INVALIDARG, CLASS_E_NOAGGREGATION, context E_NOTIMPL) and looks up
++ *     the committed in-process activation table.  The table holds ZERO
++ *     factories: the pinned-app probe (docs/w32app_receipts.md) observed
++ *     no CLSID/IID pair, so no row is defensible and every activation
++ *     answers REGDB_E_CLASSNOTREG with the request logged whole.
++ * Both keep per-invocation probe lines (w32a11-clsid-probe: /
++ * w32a11-progid-probe:) so a future scripted app session still produces
++ * the phase's runtime table -- now with its outcome, not instead of it.
++ * ------------------------------------------------------------------------ */
++
++/* Canonical GUID text, little-endian Data1/Data2/Data3 memory layout -- the
++ * same order the generated probe printed (guest gate asserts the format). */
++static void w32a11_guid_text(const W32_GUID *guid, char out[37]) {
++    if (!guid) { strcpy(out, "(null)"); return; }
++    const uint8_t *b = (const uint8_t *)guid;
++    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"
++             "%02x%02x-%02x%02x%02x%02x%02x%02x",
++             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],
++             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
++}
++
++/* Strict "{01234567-89ab-cdef-0123-456789abcdef}" -> W32_GUID.  Returns 1 on
++ * success; any wrong brace, dash, non-hex digit or length is refused.  The
++ * inverse of w32a11_guid_text: parse(text(g)) byte-equals g. */
++static int w32a11_hex(uint16_t ch) {
++    if (ch >= '0' && ch <= '9') return ch - '0';
++    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
++    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
++    return -1;
++}
++static int w32a11_guid_parse(const uint16_t *text, W32_GUID *out) {
++    static const int dash_at[4] = { 9, 14, 19, 24 };
++    uint8_t nib[32];
++    if (!text || text[0] != '{' || text[37] != '}' || text[38] != 0) return 0;
++    for (int i = 0; i < 4; ++i)
++        if (text[dash_at[i]] != '-') return 0;
++    int n = 0;
++    for (int i = 1; i < 37 && n < 32; ++i) {
++        if (text[i] == '-') continue;
++        int v = w32a11_hex(text[i]);
++        if (v < 0) return 0;
++        nib[n++] = (uint8_t)v;
++    }
++    if (n != 32) return 0;
++    out->data1 = (uint32_t)(nib[0] << 4 | nib[1]) << 24 |
++                 (uint32_t)(nib[2] << 4 | nib[3]) << 16 |
++                 (uint32_t)(nib[4] << 4 | nib[5]) << 8 |
++                 (uint32_t)(nib[6] << 4 | nib[7]);
++    out->data2 = (uint16_t)((nib[8] << 4 | nib[9]) << 8 | (nib[10] << 4 | nib[11]));
++    out->data3 = (uint16_t)((nib[12] << 4 | nib[13]) << 8 | (nib[14] << 4 | nib[15]));
++    for (int i = 0; i < 8; ++i)
++        out->data4[i] = (uint8_t)(nib[16 + 2 * i] << 4 | nib[17 + 2 * i]);
++    return 1;
++}
++
++/* Log the UTF-16 code units, never a lossy ASCII '?' approximation of an
++ * untrusted ProgID: identifier-safe ASCII stays readable, every other unit
++ * (space, '=', newline included) is escaped so the line cannot be forged.
++ * A bounded, explicitly marked truncation is NOT a complete observation.
++ * Semantics byte-identical to the generated probe this replaces. */
++#define W32A11_PROGID_LOG_UNITS 192u
++static int w32a11_progid_escape(const uint16_t *id,
++                                char out[W32A11_PROGID_LOG_UNITS * 6u + 1u]) {
++    static const char hex[] = "0123456789abcdef";
++    size_t i = 0, used = 0;
++    if (!id) { strcpy(out, "(null)"); return 0; }
++    while (i < W32A11_PROGID_LOG_UNITS && id[i]) {
++        unsigned ch = id[i++];
++        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
++            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {
++            out[used++] = (char)ch;
++        } else {
++            out[used++] = 0x5c; out[used++] = 'u';
++            out[used++] = hex[(ch >> 12) & 15u];
++            out[used++] = hex[(ch >> 8) & 15u];
++            out[used++] = hex[(ch >> 4) & 15u];
++            out[used++] = hex[ch & 15u];
++        }
++    }
++    out[used] = 0;
++    return i == W32A11_PROGID_LOG_UNITS && id[i] != 0;
++}
++
++/* ProgID spelling bound: the HKCR key path must be found NUL-terminated
++ * within 256 units.  Anything longer is a named refusal, not a silent
++ * truncation against the registry. */
++#define W32A11_PROGID_MAX_UNITS 256u
++
++W32ABI W32_DWORD CLSIDFromProgID(const uint16_t *progid, W32_GUID *out) {
++    if (out) memset(out, 0, sizeof *out);   /* fail-clean on every path */
++    char escaped[W32A11_PROGID_LOG_UNITS * 6u + 1u];
++    unsigned truncated = (unsigned)w32a11_progid_escape(progid, escaped);
++    W32_DWORD result = W32_COM_S_OK;
++    if (!progid) {
++        result = W32_COM_E_INVALIDARG;
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++    } else {
++        size_t n = 0;
++        while (n < W32A11_PROGID_MAX_UNITS && progid[n]) ++n;
++        if (n == 0 || n == W32A11_PROGID_MAX_UNITS) {
++            result = W32_COM_CO_E_CLASSSTRING;
++            w32_set_last_error(W32_ERROR_INVALID_NAME);
++        } else {
++            W32_HKEY key = 0;
++            /* HKCR\<progid> is the registered class key; its CLSID subkey's
++             * default value carries the "{...}" GUID text (the documented
++             * registry layout, the W32A-9 merge view supplies HKCR). */
++            uint16_t subkey[W32A11_PROGID_MAX_UNITS + 7u];
++            static const uint16_t leaf[7] = { '\\','C','L','S','I','D',0 };
++            memcpy(subkey, progid, n * sizeof *subkey);
++            memcpy(subkey + n, leaf, sizeof leaf);
++            if (RegOpenKeyExW(W32_HKEY_CLASSES_ROOT, subkey, 0, 0, &key) != 0) {
++                result = W32_COM_CO_E_CLASSSTRING;
++                w32_set_last_error(W32_ERROR_FILE_NOT_FOUND);
++            } else {
++                uint16_t text[40];
++                W32_DWORD type = 0, len = sizeof text;
++                long rc = RegQueryValueExW(key, NULL, NULL, &type,
++                                           (uint8_t *)text, &len);
++                RegCloseKey(key);
++                if (rc != 0 || type != W32_REG_SZ || len < 2 ||
++                    len % 2 || len / 2 > 39 || text[len / 2 - 1] != 0 ||
++                    !w32a11_guid_parse(text, out)) {
++                    /* The value IS registered but is not a CLSID string:
++                     * CO_E_CLASSSTRING's documented meaning. */
++                    memset(out, 0, sizeof *out);
++                    result = W32_COM_CO_E_CLASSSTRING;
++                    w32_set_last_error(W32_ERROR_INVALID_DATA);
++                }
++            }
++        }
++    }
++    printf("w32a11-progid-probe: UTF16=%s truncated=%u result=0x%08lx\n",
++           escaped, truncated, (unsigned long)result);
++    return result;
++}
++
++/* The committed in-process activation table: row schema {clsid, iid}, ZERO
++ * rows.  tools/check_w32app_claims.py and the receipts pin the row count to
++ * the pinned-app probe state (no observed pair).  An observed class adds a
++ * row here -- the lookup below must not change shape when that happens. */
++struct w32_com_class_row { W32_GUID clsid, iid; };
++static const struct w32_com_class_row w32_com_class_table[1];
++#define W32_COM_CLASS_COUNT 0u
++
++W32ABI W32_DWORD CoCreateInstance(const W32_GUID *clsid, void *outer,
++                                  W32_DWORD ctx, const W32_GUID *iid,
++                                  void **out) {
++    if (!out) {
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++        return W32_COM_E_POINTER;
++    }
++    *out = NULL;                            /* fail-clean on every path */
++    char class_id[37], interface_id[37];
++    w32a11_guid_text(clsid, class_id);
++    w32a11_guid_text(iid, interface_id);
++    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\n",
++           class_id, interface_id, (unsigned)ctx);
++    W32_DWORD result;
++    if (!clsid || !iid) {
++        result = W32_COM_E_INVALIDARG;
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++    } else if (outer) {
++        /* Aggregation is not served by any class here; say so by name. */
++        result = W32_COM_CLASS_E_NOAGGREGATION;
++        w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
++    } else if (ctx == 0) {
++        result = W32_COM_E_INVALIDARG;
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++    } else if (ctx != W32_CLSCTX_INPROC_SERVER) {
++        /* No out-of-process/local/remote COM server exists in this
++         * personality; the context cookie is refused, never coerced. */
++        result = W32_COM_E_NOTIMPL;
++        w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
++    } else {
++        const struct w32_com_class_row *row = NULL;
++        /* The count is a committed literal zero (pinned by the receipts);
++         * reading it into a variable keeps -Wtype-limits silent without
++         * hiding that the loop body is unreachable until the first
++         * observed class lands a row. */
++        unsigned rows = W32_COM_CLASS_COUNT;
++        for (unsigned i = 0; i < rows; ++i) {
++            const struct w32_com_class_row *cand = &w32_com_class_table[i];
++            if (!memcmp(&cand->clsid, clsid, sizeof *clsid) &&
++                !memcmp(&cand->iid, iid, sizeof *iid)) { row = cand; break; }
++        }
++        if (row) {
++            /* Unreachable while the table is empty; the row's factory lands
++             * with the first observed class, per the schema comment above. */
++            result = W32_COM_E_NOTIMPL;
++            w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
++        } else {
++            result = W32_COM_REGDB_E_CLASSNOTREG;
++            w32_set_last_error(W32_ERROR_FILE_NOT_FOUND);
++        }
++    }
++    return result;
++}
+diff --git a/w32/src/uxtheme.c b/w32/src/uxtheme.c
+index 4e52ad1..a193e6d 100644
+--- a/w32/src/uxtheme.c
++++ b/w32/src/uxtheme.c
+@@ -501,3 +501,32 @@ W32ABI W32_DWORD BufferedPaintStopAllAnimations(W32_HWND hwnd) {
+     discard_animations(hwnd);
+     return W32_THEME_S_OK;
+ }
++W32ABI W32_BOOL BufferedPaintRenderAnimation(W32_HWND hwnd, W32_HDC target) {
++    if (!hwnd || !IsWindow(hwnd)) {
++        w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0;
++    }
++    if (!target) {
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
++    }
++    /* Snapshot the owned buffers before any GDI call: destroy_anim already
++     * avoids callbacks under ux_lock, and a render must not hold it across
++     * BitBlt either.  A buffer cannot be consumed concurrently -- its owner
++     * window is THIS hwnd, and the only mutation paths run on its thread. */
++    struct animation_buffer live[UX_MAX_ANIMS];
++    int n = 0;
++    lock_ux();
++    for (int i = 0; i < UX_MAX_ANIMS; ++i)
++        if (animations[i].used && animations[i].hwnd == hwnd)
++            live[n++] = animations[i];
++    unlock_ux();
++    for (int i = 0; i < n; ++i) {
++        const struct animation_buffer *a = &live[i];
++        int w = a->rect.right - a->rect.left, h = a->rect.bottom - a->rect.top;
++        if (!a->to || w <= 0 || h <= 0 ||
++            !BitBlt(target, a->rect.left, a->rect.top, w, h,
++                    a->to, 0, 0, W32_SRCCOPY)) {
++            w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0;
++        }
++    }
++    return 1;
++}
+diff --git a/w32/src/w32_bind.c b/w32/src/w32_bind.c
+index 97bdd9f..55bac5f 100644
+--- a/w32/src/w32_bind.c
++++ b/w32/src/w32_bind.c
+@@ -390,7 +390,10 @@ static const w32_export_t exports[] = {
+ 
+     /* W32A-11: in-process OLE targets, typed STGMEDIUM, flat theme pixels.
+      * No cross-process COM marshalling, external source or timed animation.
+-     * Activation stays an instrumented refusal until the pinned app probe. */
++     * Activation is REAL over the committed state: the activation table is
++     * empty because the pinned-app probe observed no CLSID/IID pair, so
++     * every in-process activation is a named REGDB_E_CLASSNOTREG and the
++     * request is still logged whole for the future probe. */
+     { O32, "CoInitialize", (void *)CoInitialize },
+     { O32, "CoUninitialize", (void *)CoUninitialize },
+     { O32, "OleInitialize", (void *)OleInitialize },
+@@ -402,6 +405,10 @@ static const w32_export_t exports[] = {
+     { O32, "RegisterDragDrop", (void *)RegisterDragDrop },
+     { O32, "RevokeDragDrop", (void *)RevokeDragDrop },
+     { O32, "ReleaseStgMedium", (void *)ReleaseStgMedium },
++    /* W32A-11 activation: hive-backed ProgID lookup and the committed
++     * (empty) in-process activation table with typed refusals. */
++    { O32, "CLSIDFromProgID", (void *)CLSIDFromProgID },
++    { O32, "CoCreateInstance", (void *)CoCreateInstance },
+     { UX32, "OpenThemeData", (void *)OpenThemeData },
+     { UX32, "CloseThemeData", (void *)CloseThemeData },
+     { UX32, "DrawThemeBackground", (void *)DrawThemeBackground },
+@@ -418,6 +425,7 @@ static const w32_export_t exports[] = {
+     { UX32, "BeginBufferedAnimation", (void *)BeginBufferedAnimation },
+     { UX32, "EndBufferedAnimation", (void *)EndBufferedAnimation },
+     { UX32, "BufferedPaintStopAllAnimations", (void *)BufferedPaintStopAllAnimations },
++    { UX32, "BufferedPaintRenderAnimation", (void *)BufferedPaintRenderAnimation },
+     { I32, "ImmGetContext", (void *)ImmGetContext },
+     { I32, "ImmReleaseContext", (void *)ImmReleaseContext },
+     { I32, "ImmGetCompositionStringW", (void *)ImmGetCompositionStringW },
+diff --git a/w32/src/w32_stubs_gen.c b/w32/src/w32_stubs_gen.c
+index 92c86bf..7f59317 100644
+--- a/w32/src/w32_stubs_gen.c
++++ b/w32/src/w32_stubs_gen.c
+@@ -84,38 +84,6 @@ static void note_failclean(const char *dll, const char *sym,
+     printf("w32: %s!%s: %s\n", dll, sym, why);
+ }
+ 
+-static void probe_guid(const void *guid, char out[37]) {
+-    if (!guid) { strcpy(out, "(null)"); return; }
+-    const uint8_t *b = (const uint8_t *)guid;
+-    snprintf(out, 37, "%02x%02x%02x%02x-%02x%02x-%02x%02x-"
+-             "%02x%02x-%02x%02x%02x%02x%02x%02x",
+-             b[3],b[2],b[1],b[0],b[5],b[4],b[7],b[6],
+-             b[8],b[9],b[10],b[11],b[12],b[13],b[14],b[15]);
+-}
+-
+-#define W32A11_PROGID_MAX_UNITS 192u
+-static int probe_progid(const uint16_t *id,
+-                        char out[W32A11_PROGID_MAX_UNITS * 6u + 1u]) {
+-    static const char hex[] = "0123456789abcdef";
+-    size_t i = 0, used = 0;
+-    if (!id) { strcpy(out, "(null)"); return 0; }
+-    while (i < W32A11_PROGID_MAX_UNITS && id[i]) {
+-        unsigned ch = id[i++];
+-        if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+-            (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-') {
+-            out[used++] = (char)ch;
+-        } else {
+-            out[used++] = 0x5c; out[used++] = 'u';
+-            out[used++] = hex[(ch >> 12) & 15u];
+-            out[used++] = hex[(ch >> 8) & 15u];
+-            out[used++] = hex[(ch >> 4) & 15u];
+-            out[used++] = hex[ch & 15u];
+-        }
+-    }
+-    out[used] = 0;
+-    return i == W32A11_PROGID_MAX_UNITS && id[i] != 0;
+-}
+-
+ /* kernel32.dll!ClearCommBreak: TODO (phase-owned).  Fails loudly until W32A-2 lands. */
+ W32ABI W32_DWORD w32_stub_kernel32_ClearCommBreak(void) {
+     static int once = 0;
+@@ -591,34 +559,6 @@ W32ABI void *w32_stub_msvcrt_wcsstr(void) {
+     return 0;
+ }
+ 
+-/* W32A-11 probe: lossless UTF-16 prefix, never invent a class. */
+-W32ABI W32_DWORD w32_stub_ole32_CLSIDFromProgID(const uint16_t *id, void *out) {
+-    static int once = 0;
+-    note_todo("ole32.dll", "CLSIDFromProgID", "W32A-11", &once);
+-    char name[W32A11_PROGID_MAX_UNITS * 6u + 1u];
+-    unsigned truncated = (unsigned)probe_progid(id, name);
+-    printf("w32a11-progid-probe: UTF16=%s truncated=%u\n",
+-           name, truncated);
+-    if (out) memset(out, 0, 16); /* fail-clean GUID, no guessed CLSID */
+-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
+-    return W32_E_NOTIMPL;
+-}
+-
+-/* W32A-11 instrument: every requested CLSID/IID, NOT an activation. */
+-W32ABI W32_DWORD w32_stub_ole32_CoCreateInstance(const void *clsid, void *outer,
+-                          W32_DWORD ctx, const void *iid, void **out) {
+-    static int once = 0;
+-    note_todo("ole32.dll", "CoCreateInstance", "W32A-11", &once);
+-    (void)outer;
+-    char class_id[37], interface_id[37];
+-    probe_guid(clsid, class_id); probe_guid(iid, interface_id);
+-    printf("w32a11-clsid-probe: CLSID=%s IID=%s CLSCTX=%u\n",
+-           class_id, interface_id, ctx);
+-    if (out) *out = 0;
+-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
+-    return W32_E_NOTIMPL;
+-}
+-
+ /* user32.dll!BeginDeferWindowPos: TODO (phase-owned).  Fails loudly until W32A-5 lands. */
+ W32ABI W32_DWORD w32_stub_user32_BeginDeferWindowPos(void) {
+     static int once = 0;
+@@ -979,14 +919,6 @@ W32ABI W32_DWORD w32_stub_user32_wsprintfW(void) {
+     return 0;
+ }
+ 
+-/* uxtheme.dll!BufferedPaintRenderAnimation: TODO (phase-owned).  Fails loudly until W32A-11 lands. */
+-W32ABI W32_DWORD w32_stub_uxtheme_BufferedPaintRenderAnimation(void) {
+-    static int once = 0;
+-    note_todo("uxtheme.dll", "BufferedPaintRenderAnimation", "W32A-11", &once);
+-    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
+-    return 0;
+-}
+-
+ /* ---- generated export table ------------------------------------- */
+ 
+ static const w32_export_t gen_exports[] = {
+@@ -1053,8 +985,6 @@ static const w32_export_t gen_exports[] = {
+     { "msvcrt.dll", "wcscmp", (void *)&w32_stub_msvcrt_wcscmp },
+     { "msvcrt.dll", "wcslen", (void *)&w32_stub_msvcrt_wcslen },
+     { "msvcrt.dll", "wcsstr", (void *)&w32_stub_msvcrt_wcsstr },
+-    { "ole32.dll", "CLSIDFromProgID", (void *)&w32_stub_ole32_CLSIDFromProgID },
+-    { "ole32.dll", "CoCreateInstance", (void *)&w32_stub_ole32_CoCreateInstance },
+     { "user32.dll", "BeginDeferWindowPos", (void *)&w32_stub_user32_BeginDeferWindowPos },
+     { "user32.dll", "CallNextHookEx", (void *)&w32_stub_user32_CallNextHookEx },
+     { "user32.dll", "CharPrevExA", (void *)&w32_stub_user32_CharPrevExA },
+@@ -1100,7 +1030,6 @@ static const w32_export_t gen_exports[] = {
+     { "user32.dll", "TranslateAcceleratorW", (void *)&w32_stub_user32_TranslateAcceleratorW },
+     { "user32.dll", "UnhookWindowsHookEx", (void *)&w32_stub_user32_UnhookWindowsHookEx },
+     { "user32.dll", "wsprintfW", (void *)&w32_stub_user32_wsprintfW },
+-    { "uxtheme.dll", "BufferedPaintRenderAnimation", (void *)&w32_stub_uxtheme_BufferedPaintRenderAnimation },
+     { 0, 0, 0 }
+ };
+ 
+@@ -1113,9 +1042,7 @@ static const char *const gen_modules[] = {
+     "kernel32",
+     "mpr",
+     "msvcrt",
+-    "ole32",
+     "user32",
+-    "uxtheme",
+     0
+ };
+ 
+diff --git a/w32/stub_map.tsv b/w32/stub_map.tsv
+index 75215fa..5916008 100644
+--- a/w32/stub_map.tsv
++++ b/w32/stub_map.tsv
+@@ -215,8 +215,8 @@ msvcrt.dll	strstr	REAL	TODO	PTR64	0	W32A-13	phase-owned
+ msvcrt.dll	wcscmp	REAL	TODO	int	0	W32A-13	phase-owned
+ msvcrt.dll	wcslen	REAL	TODO	size_t	0	W32A-13	phase-owned
+ msvcrt.dll	wcsstr	REAL	TODO	PTR64	0	W32A-13	phase-owned
+-ole32.dll	CLSIDFromProgID	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
+-ole32.dll	CoCreateInstance	REAL	TODO	HRESULT	E_NOTIMPL	W32A-11	phase-owned
++ole32.dll	CLSIDFromProgID	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: HKCR\<progid>\CLSID via the W32A-9 hive; typed CO_E_CLASSSTRING refusals
++ole32.dll	CoCreateInstance	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: committed (empty) activation table; named context/argument refusals
+ ole32.dll	CoInitialize	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	ole32.c: thread-local init depth / task heap
+ ole32.dll	CoTaskMemAlloc	REAL	REAL	PTR64	0	W32A-11	ole32.c: thread-local init depth / task heap
+ ole32.dll	CoTaskMemFree	REAL	REAL	void	-	W32A-11	ole32.c: thread-local init depth / task heap
+@@ -405,7 +405,7 @@ user32.dll	SetWindowsHookExA	REAL	REAL	HHOOK	0	W32A-6	phase-owned
+ user32.dll	SizeofResource	REAL	REAL	DWORD	0	W32A-6	phase-owned
+ user32.dll	TranslateAcceleratorA	REAL	REAL	int	0	W32A-6	phase-owned
+ uxtheme.dll	BeginBufferedAnimation	REAL	REAL	HANIMATIONBUFFER	0	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
+-uxtheme.dll	BufferedPaintRenderAnimation	REAL	TODO	WINBOOL	0	W32A-11	phase-owned
++uxtheme.dll	BufferedPaintRenderAnimation	REAL	REAL	WINBOOL	0	W32A-11	uxtheme.c: blits live zero-duration frames; TRUE no-op with no animation
+ uxtheme.dll	BufferedPaintStopAllAnimations	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: flat palette / zero-duration buffers; unsupported effects refuse
+ uxtheme.dll	CloseThemeData	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+ uxtheme.dll	DrawThemeBackground	REAL	REAL	HRESULT	E_NOTIMPL	W32A-11	uxtheme.c: tested part matrix; other parts explicit E_NOTIMPL
+diff --git a/w32/tests/w32a11_probe.asm b/w32/tests/w32a11_probe.asm
+index 18483cf..22c4615 100644
+--- a/w32/tests/w32a11_probe.asm
++++ b/w32/tests/w32a11_probe.asm
+@@ -1,18 +1,35 @@
+-; W32A-11 independent PE: exercise the *generated TODO probe* through the
+-; real Win64 import binder. These identifiers are SYNTHETIC test vectors, not
+-; pinned-app CLSID/IID requests or a class activation table. Apache-2.0.
++; W32A-11 activation/refusal fixture: exercise the REAL ProgID lookup and
++; the committed (empty) in-process activation table through the Win64 import
++; binder. Positive path: HKCR\<progid>\CLSID is seeded through the W32A-9
++; registry and resolved back byte-exact. These identifiers are SYNTHETIC
++; test vectors, not pinned-app CLSID/IID requests -- the pinned-app probe
++; observed no pair, so the activation table stays empty and every in-process
++; activation is REGDB_E_CLASSNOTREG. Apache-2.0.
+ bits 64
+ default rel
+ extern CoInitialize
+ extern CoUninitialize
+ extern CoCreateInstance
+ extern CLSIDFromProgID
++extern RegCreateKeyExW
++extern RegSetValueExW
++extern RegCloseKey
+ extern GetLastError
+ extern GetStdHandle
+ extern WriteFile
+ extern ExitProcess
++%define E_INVALIDARG 0x80070057
+ %define E_NOTIMPL 0x80004001
++%define CO_E_CLASSSTRING 0x800401f3
++%define REGDB_E_CLASSNOTREG 0x80040154
++%define CLASS_E_NOAGGREGATION 0x80040110
++%define ERROR_FILE_NOT_FOUND 2
++%define ERROR_INVALID_DATA 13
+ %define ERROR_NOT_SUPPORTED 50
++%define ERROR_INVALID_PARAMETER 87
++%define ERROR_SUCCESS 0
++%define HKCR 0x80000000
++%define REG_SZ 1
+ section .rdata
+ ; GUID memory layout is little-endian for Data1/Data2/Data3.
+ clsid: dd 0x12345678
+@@ -24,7 +41,14 @@ iid_one: dd 0
+ iid_two: times 16 db 0
+ ; Includes a BMP code point, a surrogate pair, a backslash, newline,
+ ; equals sign and space. The logger must escape it into ONE reversible line.
+-progid: dw 'N','P','P','.',0x00e9,0xd840,0xdc00,0x005c,0x000a,'=',' ',0
++progid_any: dw 'N','P','P','.',0x00e9,0xd840,0xdc00,0x005c,0x000a,'=',' ',0
++key_probe: dw 'A','u','r','a','W','3','2','A','1','1','.','P','r','o','b','e',0x5c,'C','L','S','I','D',0
++progid_probe: dw 'A','u','r','a','W','3','2','A','1','1','.','P','r','o','b','e',0
++key_bad: dw 'A','u','r','a','W','3','2','A','1','1','.','B','a','d',0x5c,'C','L','S','I','D',0
++progid_badcls: dw 'A','u','r','a','W','3','2','A','1','1','.','B','a','d',0
++guid_text: dw '{','1','2','3','4','5','6','7','8','-','9','a','b','c','-','d','e','f','0','-', \
++              '1','1','2','2','-','3','3','4','4','5','5','6','6','7','7','8','8','}',0
++bad_text: dw 'n','o','t','-','a','-','g','u','i','d',0
+ ok_msg: db 'A11-PROBE-FIXTURE-OK',13,10
+ ok_len equ $-ok_msg
+ fail_msg: db 'A11-PROBE-FIXTURE-FAIL',13,10
+@@ -32,6 +56,8 @@ fail_len equ $-fail_msg
+ section .bss
+ stdout: resq 1
+ written: resd 1
++disp: resd 1
++hkey: resq 1
+ result_ptr: resq 1
+ result_guid: resq 2
+ section .text
+@@ -46,7 +72,7 @@ global winstart
+ %endmacro
+ winstart:
+     push rbx
+-    sub rsp,80 ; shadow + fifth arg, 16-byte aligned at every Win64 call
++    sub rsp,80 ; shadow + up to five stack args, 16-byte aligned at calls
+     mov ecx,-11
+     call GetStdHandle
+     mov [stdout],rax
+@@ -54,21 +80,24 @@ winstart:
+     call CoInitialize
+     test eax,eax
+     jnz fail
++    ; ---- activation vocabulary, committed empty table ---------------------
++    ; in-process on an unobserved CLSID: REGDB_E_CLASSNOTREG, out cleared.
+     mov qword [result_ptr],-1
+     lea rcx,[clsid]
+     xor edx,edx
+     mov r8d,1
+     lea r9,[iid_one]
+     lea rax,[result_ptr]
+-    mov [rsp+32],rax ; CoCreateInstance's fifth argument
++    mov [rsp+32],rax
+     call CoCreateInstance
+-    cmp eax,E_NOTIMPL
++    cmp eax,REGDB_E_CLASSNOTREG
+     jne fail
+     cmp qword [result_ptr],0
+     jne fail
+     call GetLastError
+-    cmp eax,ERROR_NOT_SUPPORTED
++    cmp eax,ERROR_FILE_NOT_FOUND
+     jne fail
++    ; out-of-process context: named E_NOTIMPL, never coerced to in-proc.
+     mov qword [result_ptr],-1
+     lea rcx,[clsid]
+     xor edx,edx
+@@ -81,19 +110,157 @@ winstart:
+     jne fail
+     cmp qword [result_ptr],0
+     jne fail
+-    mov qword [result_guid],-1
+-    mov qword [result_guid+8],-1
+-    lea rcx,[progid]
++    call GetLastError
++    cmp eax,ERROR_NOT_SUPPORTED
++    jne fail
++    ; ctx==0: invalid argument, not a silent default context.
++    mov qword [result_ptr],-1
++    lea rcx,[clsid]
++    xor edx,edx
++    xor r8d,r8d
++    lea r9,[iid_one]
++    lea rax,[result_ptr]
++    mov [rsp+32],rax
++    call CoCreateInstance
++    cmp eax,E_INVALIDARG
++    jne fail
++    cmp qword [result_ptr],0
++    jne fail
++    call GetLastError
++    cmp eax,ERROR_INVALID_PARAMETER
++    jne fail
++    ; aggregation: refused by name.
++    mov qword [result_ptr],-1
++    lea rcx,[clsid]
++    mov edx,1
++    mov r8d,1
++    lea r9,[iid_one]
++    lea rax,[result_ptr]
++    mov [rsp+32],rax
++    call CoCreateInstance
++    cmp eax,CLASS_E_NOAGGREGATION
++    jne fail
++    cmp qword [result_ptr],0
++    jne fail
++    ; ---- ProgID lookup: refusals, then the hive round-trip ----------------
++    mov rax,-1
++    mov [result_guid],rax
++    mov [result_guid+8],rax
++    xor ecx,ecx
+     lea rdx,[result_guid]
+     call CLSIDFromProgID
+-    cmp eax,E_NOTIMPL
++    cmp eax,E_INVALIDARG
+     jne fail
+     cmp qword [result_guid],0
+     jne fail
+     cmp qword [result_guid+8],0
+     jne fail
+     call GetLastError
+-    cmp eax,ERROR_NOT_SUPPORTED
++    cmp eax,ERROR_INVALID_PARAMETER
++    jne fail
++    ; unregistered (lossy-hostile Unicode) ProgID: not found, output zeroed.
++    mov rax,-1
++    mov [result_guid],rax
++    mov [result_guid+8],rax
++    lea rcx,[progid_any]
++    lea rdx,[result_guid]
++    call CLSIDFromProgID
++    cmp eax,CO_E_CLASSSTRING
++    jne fail
++    cmp qword [result_guid],0
++    jne fail
++    cmp qword [result_guid+8],0
++    jne fail
++    call GetLastError
++    cmp eax,ERROR_FILE_NOT_FOUND
++    jne fail
++    ; seed HKCR\AuraW32A11.Probe\CLSID default value through the registry.
++    mov rcx,HKCR
++    lea rdx,[key_probe]
++    xor r8d,r8d
++    xor r9d,r9d
++    mov qword [rsp+32],0
++    mov qword [rsp+40],0
++    mov qword [rsp+48],0
++    lea rax,[hkey]
++    mov [rsp+56],rax
++    lea rax,[disp]
++    mov [rsp+64],rax
++    call RegCreateKeyExW
++    test eax,eax
++    jnz fail
++    mov rcx,[hkey]
++    xor edx,edx
++    xor r8d,r8d
++    mov r9d,REG_SZ
++    lea rax,[guid_text]
++    mov [rsp+32],rax
++    mov qword [rsp+40],78
++    call RegSetValueExW
++    test eax,eax
++    jnz fail
++    mov rcx,[hkey]
++    call RegCloseKey
++    test eax,eax
++    jnz fail
++    ; resolve it back: S_OK and the CLSID bytes are exact.
++    mov rax,-1
++    mov [result_guid],rax
++    mov [result_guid+8],rax
++    lea rcx,[progid_probe]
++    lea rdx,[result_guid]
++    call CLSIDFromProgID
++    test eax,eax
++    jnz fail
++    mov rax,0xdef09abc12345678
++    cmp [result_guid],rax
++    jne fail
++    mov rax,0x8877665544332211
++    cmp [result_guid+8],rax
++    jne fail
++    ; registered but malformed CLSID text: refused as invalid data.
++    mov rcx,HKCR
++    lea rdx,[key_bad]
++    xor r8d,r8d
++    xor r9d,r9d
++    mov qword [rsp+32],0
++    mov qword [rsp+40],0
++    mov qword [rsp+48],0
++    lea rax,[hkey]
++    mov [rsp+56],rax
++    lea rax,[disp]
++    mov [rsp+64],rax
++    call RegCreateKeyExW
++    test eax,eax
++    jnz fail
++    mov rcx,[hkey]
++    xor edx,edx
++    xor r8d,r8d
++    mov r9d,REG_SZ
++    lea rax,[bad_text]
++    mov [rsp+32],rax
++    mov qword [rsp+40],22
++    call RegSetValueExW
++    test eax,eax
++    jnz fail
++    mov rcx,[hkey]
++    call RegCloseKey
++    test eax,eax
++    jnz fail
++    mov rax,-1
++    mov [result_guid],rax
++    mov [result_guid+8],rax
++    lea rcx,[progid_badcls]
++    lea rdx,[result_guid]
++    call CLSIDFromProgID
++    cmp eax,CO_E_CLASSSTRING
++    jne fail
++    cmp qword [result_guid],0
++    jne fail
++    cmp qword [result_guid+8],0
++    jne fail
++    call GetLastError
++    cmp eax,ERROR_INVALID_DATA
+     jne fail
+     call CoUninitialize
+     PRINT ok_msg,ok_len
+-- 
+2.47.3
+

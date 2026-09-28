@@ -226,6 +226,16 @@ static W32_LRESULT W32ABI dlgproc_cmd(W32_HWND h,W32_UINT m,W32_WPARAM wp,W32_LP
     if(m==W32_WM_COMMAND && wp==W32_IDOK){EndDialog(h,(W32_INT_PTR)wp);return 1;}
     return 0;
 }
+/* Modeless dialog proc: the app owns the loop and the close gesture --
+ * WM_CLOSE here destroys the window, exactly like a real config dialog
+ * whose WM_CLOSE branch calls DestroyWindow (never EndDialog). */
+static int ml_close;
+static W32_LRESULT W32ABI mdlgproc(W32_HWND h,W32_UINT m,W32_WPARAM wp,W32_LPARAM lp){
+    (void)wp;(void)lp;
+    if(m==W32_WM_INITDIALOG){init_count++;return 1;}
+    if(m==W32_WM_CLOSE){ml_close++;DestroyWindow(h);return 1;}
+    return 0;
+}
 
 /* Timer callback (file scope, not nested). */
 static int cb_fired;
@@ -350,6 +360,75 @@ int main(void) {
         (void)dlgproc_cmd; (void)hw;
     }
 
+    /* ---- Modeless CreateDialog* family ---- */
+    {
+        uint8_t tmpl_buf[sizeof(W32_DLGTEMPLATE) + 8]; memset(tmpl_buf,0,sizeof tmpl_buf);
+        W32_DLGTEMPLATE *tmpl = (W32_DLGTEMPLATE*)tmpl_buf;
+        tmpl->style=W32_WS_POPUP|W32_WS_CAPTION|W32_WS_SYSMENU;   /* no WS_VISIBLE */
+        tmpl->cx=100;tmpl->cy=80;
+
+        SetLastError(0);
+        ok(CreateDialogIndirectParamW(fake_main_module,0,0,mdlgproc,0)==0 &&
+           GetLastError()==W32_ERROR_INVALID_PARAMETER,
+           "NULL template refused with INVALID_PARAMETER");
+        SetLastError(0);
+        ok(CreateDialogIndirectParamW(fake_main_module,tmpl,0,0,0)==0 &&
+           GetLastError()==W32_ERROR_INVALID_PARAMETER,
+           "NULL dlgproc refused with INVALID_PARAMETER");
+
+        init_count=0; ml_close=0;
+        W32_HWND d1=CreateDialogIndirectParamW(fake_main_module,tmpl,0,mdlgproc,0);
+        ok(d1!=0,"modeless dialog created from an indirect template");
+        ok(init_count==1,"WM_INITDIALOG fired exactly once");
+        ok(IsWindowVisible(d1)==0,
+           "template without WS_VISIBLE leaves the dialog hidden");
+        /* WM_CLOSE must NOT quit the app's loop: it reaches the dlgproc,
+         * which destroys the window itself (the modal EndDialog shortcut
+         * is only for DialogBox*). */
+        SendMessageW(d1,W32_WM_CLOSE,0,0);
+        ok(ml_close==1,"modeless WM_CLOSE reached the app dlgproc");
+
+        /* The 8-slot dialog table must recycle on WM_DESTROY: a dozen
+         * create/destroy rounds fail at round 9 if slots leak. */
+        int leak_fail=0;
+        for (int i=0;i<12;i++) {
+            W32_HWND d=CreateDialogIndirectParamW(fake_main_module,tmpl,0,mdlgproc,0);
+            if (!d) { leak_fail=1; break; }
+            DestroyWindow(d);
+        }
+        ok(leak_fail==0,"dialog slots recycle across 12 create/destroy rounds");
+
+        /* Resource-backed creation: RT_DIALOG/1 lives in the synthetic PE. */
+        W32_HWND d2=CreateDialogParamW(fake_main_module,(const uint16_t*)(uintptr_t)1,0,mdlgproc,0);
+        ok(d2!=0,"CreateDialogParamW resolves RT_DIALOG/1 from the image");
+        DestroyWindow(d2);
+        SetLastError(0);
+        ok(CreateDialogParamW(fake_main_module,(const uint16_t*)(uintptr_t)999,0,mdlgproc,0)==0 &&
+           GetLastError()==W32_ERROR_RESOURCE_DATA_NOT_FOUND,
+           "absent RT_DIALOG id refused RESOURCE_DATA_NOT_FOUND");
+        SetLastError(0);
+        ok(CreateDialogParamA(fake_main_module,"CONFIG",0,mdlgproc,0)==0 &&
+           GetLastError()==W32_ERROR_NOT_SUPPORTED,
+           "string template names refused NOT_SUPPORTED, same as DialogBoxParamA");
+        ok(DefDlgProcA(0,0,0,0)==0 && DefDlgProcW(0,0,0,0)==0,
+           "DefDlgProc* exist and report unhandled");
+    }
+
+    /* ---- MessageBoxIndirectW ---- */
+    {
+        static const uint16_t tt[]={'H','i',0};
+        W32_MSGBOXPARAMSW mb; memset(&mb,0,sizeof mb);
+        SetLastError(0);
+        ok(MessageBoxIndirectW(0)==0 && GetLastError()==W32_ERROR_INVALID_PARAMETER,
+           "NULL params refused INVALID_PARAMETER");
+        mb.cbSize=(W32_UINT)sizeof mb - 8;
+        ok(MessageBoxIndirectW(&mb)==0 && GetLastError()==W32_ERROR_INVALID_PARAMETER,
+           "truncated struct refused INVALID_PARAMETER");
+        memset(&mb,0,sizeof mb); mb.cbSize=(W32_UINT)sizeof mb;
+        mb.lpszText=tt; mb.lpszCaption=tt;
+        ok(MessageBoxIndirectW(&mb)==1,"alert path answers IDOK like MessageBoxW");
+    }
+
     /* ---- DlgItem accessors ---- */
     {
         static const uint16_t cls[]={'S','t','a','t','i','c',0};
@@ -401,6 +480,99 @@ int main(void) {
         ok(DestroyMenu(m)==1 && DestroyMenu(pop)==1 && DestroyMenu(lm)==1,
            "DestroyMenu reclaims slots");
         DestroyWindow(hw);
+    }
+
+    /* ---- MENUITEMINFO round-trip family ---- */
+    {
+        W32_HMENU m=CreateMenu();
+        static const uint16_t fi[]={'F','i','l','e',0};
+        static const uint16_t op[]={'O','p','e','n',0};
+        AppendMenuW(m,0,100,fi);
+        AppendMenuW(m,0,101,op);
+        ok(GetMenuItemCount(m)==2,"two base items for the info family");
+
+        /* Get: id, state, string length query, string copy, truncation. */
+        W32_MENUITEMINFOW mi; memset(&mi,0,sizeof mi);
+        mi.cbSize=(W32_UINT)sizeof mi;
+        mi.fMask=W32_MIIM_ID|W32_MIIM_STATE|W32_MIIM_TYPE;
+        mi.dwTypeData=0; mi.cch=0;
+        ok(GetMenuItemInfoW(m,100,0,&mi)==1 && mi.wID==100,
+           "GetMenuItemInfoW by command finds the item");
+        ok(mi.cch==4,"NULL buffer asks for the length ('File' = 4)");
+        uint16_t buf[16]; memset(buf,0,sizeof buf);
+        mi.dwTypeData=buf; mi.cch=16;
+        ok(GetMenuItemInfoW(m,100,0,&mi)==1 && mi.cch==4 && buf[0]=='F' && buf[4]==0,
+           "string copies NUL-terminated");
+        memset(buf,0xAB,sizeof buf); mi.dwTypeData=buf; mi.cch=3;
+        ok(GetMenuItemInfoW(m,100,0,&mi)==1 && mi.cch==2 && buf[1]=='i' && buf[2]==0,
+           "small buffer truncates to cch-1");
+        SetLastError(0);
+        mi.cbSize=44;
+        ok(GetMenuItemInfoW(m,100,0,&mi)==0 && GetLastError()==W32_ERROR_INVALID_PARAMETER,
+           "neither-72-nor-80 cbSize refused INVALID_PARAMETER");
+        SetLastError(0);
+        mi.cbSize=(W32_UINT)sizeof mi;
+        ok(GetMenuItemInfoW(m,999,0,&mi)==0 && GetLastError()==W32_ERROR_INVALID_PARAMETER,
+           "unknown item id refused INVALID_PARAMETER");
+        memset(&mi,0,sizeof mi); mi.cbSize=72; mi.fMask=W32_MIIM_ID;
+        ok(GetMenuItemInfoW(m,100,0,&mi)==1 && mi.wID==100,
+           "pre-Vista 72-byte struct accepted");
+
+        /* Set: retarget id, flip checked, item data -- then read back. */
+        memset(&mi,0,sizeof mi); mi.cbSize=(W32_UINT)sizeof mi;
+        mi.fMask=W32_MIIM_STATE|W32_MIIM_ID|W32_MIIM_DATA;
+        mi.fState=W32_MFS_CHECKED; mi.wID=200; mi.dwItemData=(uintptr_t)0xDEADBEEFu;
+        ok(SetMenuItemInfoW(m,100,0,&mi)==1 && GetMenuItemID(m,0)==200,
+           "SetMenuItemInfoW retargets the id");
+        ok((GetMenuState(m,200,W32_MF_BYCOMMAND)&W32_MF_CHECKED)!=0,
+           "checked state set from MFS_CHECKED");
+        memset(&mi,0,sizeof mi); mi.cbSize=(W32_UINT)sizeof mi; mi.fMask=W32_MIIM_DATA;
+        ok(GetMenuItemInfoW(m,200,0,&mi)==1 && mi.dwItemData==(uintptr_t)0xDEADBEEFu,
+           "dwItemData round-trips verbatim");
+
+        /* Insert: by absolute position and ahead of a named command. */
+        memset(&mi,0,sizeof mi); mi.cbSize=(W32_UINT)sizeof mi;
+        mi.fMask=W32_MIIM_ID|W32_MIIM_TYPE; mi.wID=150; mi.dwTypeData=(uint16_t*)op;
+        ok(InsertMenuItemW(m,1,1,&mi)==1 && GetMenuItemID(m,1)==150,
+           "InsertMenuItemW by position inserts at index 1");
+        memset(&mi,0,sizeof mi); mi.cbSize=(W32_UINT)sizeof mi;
+        mi.fMask=W32_MIIM_ID; mi.wID=201;
+        ok(InsertMenuItemW(m,200,0,&mi)==1 &&
+           GetMenuItemID(m,0)==201 && GetMenuItemID(m,3)==101,
+           "BYCOMMAND insert takes the named item's place");
+
+        /* Modify, radio range, bitmaps, state packing, string fetch. */
+        ok(ModifyMenuW(m,1,W32_MF_BYPOSITION,555,fi)==1 && GetMenuItemID(m,1)==555,
+           "ModifyMenuW by position retargets id and text");
+        ok(CheckMenuRadioItem(m,0,2,2,W32_MF_BYPOSITION)==1,
+           "radio check applies inside the range");
+        ok((GetMenuState(m,2,W32_MF_BYPOSITION)&W32_MF_CHECKED)!=0,
+           "radio target is checked");
+        ok((GetMenuState(m,0,W32_MF_BYPOSITION)&W32_MF_CHECKED)==0,
+           "sibling in the range is unchecked");
+        ok(CheckMenuRadioItem(m,1000,1001,555,W32_MF_BYCOMMAND)==0,
+           "select outside the range refused");
+        ok(SetMenuItemBitmaps(m,150,W32_MF_BYCOMMAND,
+                              (void*)(uintptr_t)0xB1,(void*)(uintptr_t)0xB2)==1,
+           "SetMenuItemBitmaps stores the pair");
+        memset(&mi,0,sizeof mi); mi.cbSize=(W32_UINT)sizeof mi; mi.fMask=W32_MIIM_CHECKMARKS;
+        ok(GetMenuItemInfoW(m,150,0,&mi)==1 &&
+           mi.hbmpUnchecked==(void*)(uintptr_t)0xB1 && mi.hbmpChecked==(void*)(uintptr_t)0xB2,
+           "bitmaps round-trip verbatim through MIIM_CHECKMARKS");
+        W32_HMENU sub=CreatePopupMenu();
+        AppendMenuW(sub,0,700,op); AppendMenuW(sub,0,701,op);
+        AppendMenuW(m,W32_MF_POPUP,(uintptr_t)sub,fi);
+        W32_UINT st=GetMenuState(m,4,W32_MF_BYPOSITION);
+        ok((st&(W32_UINT)W32_MF_POPUP)!=0 && ((st>>8)&0xFFu)==2u,
+           "GetMenuState packs the popup's item count in the high byte");
+        memset(buf,0,sizeof buf);
+        ok(GetMenuStringW(m,150,buf,16,W32_MF_BYCOMMAND)==4 && buf[1]=='p' && buf[3]=='n',
+           "GetMenuStringW by command copies the text");
+        ok(GetMenuStringW(m,42,buf,16,W32_MF_BYPOSITION)==0,
+           "GetMenuStringW on a bad position returns 0");
+        ok(GetMenuState(m,999,W32_MF_BYCOMMAND)==(W32_UINT)-1,
+           "GetMenuState names its failure -1");
+        DestroyMenu(sub); DestroyMenu(m);
     }
 
     /* ---- Timers ---- */

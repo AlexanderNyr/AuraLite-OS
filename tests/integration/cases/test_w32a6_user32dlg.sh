@@ -82,7 +82,7 @@ il_assert_grep "$LOG1" "w32run: .*w32a6_dlg\.exe mapped at 0x[0-9a-f]+, [0-9][0-
     "fixture PE mapped and imports resolved"
 
 # --- one marker per section ----------------------------------------------------
-for m in RESOURCE LOADSTRING REGISTER MENU ACCEL HOOK HOSTWND TIMER CARET CLIPBOARD DIALOG CLEANUP-WIN CLEANUP-ALL; do
+for m in RESOURCE LOADSTRING REGISTER MENU MENUINFO ACCEL HOOK HOSTWND TIMER CARET CLIPBOARD DIALOG CREATEDIALOG CLEANUP-WIN CLEANUP-ALL; do
     il_assert_grep "$LOG1" "A6-$m-OK" \
         "the fixture passed its $m section"
 done
@@ -124,7 +124,7 @@ il_assert_grep "$LOG2" "GTHEME ACCENT 0xAA3311" \
     "the tinted theme survived the reboot (dotfile read back)"
 il_assert_grep "$LOG2" "\\[glaunch\\] theme loaded from /disk/.aura-theme" \
     "glaunch applied the dotfile to the compositor"
-for m in RESOURCE LOADSTRING REGISTER MENU ACCEL HOOK HOSTWND TIMER CARET CLIPBOARD DIALOG CLEANUP-WIN CLEANUP-ALL; do
+for m in RESOURCE LOADSTRING REGISTER MENU MENUINFO ACCEL HOOK HOSTWND TIMER CARET CLIPBOARD DIALOG CREATEDIALOG CLEANUP-WIN CLEANUP-ALL; do
     il_assert_grep "$LOG2" "A6-$m-OK" \
         "section $m still passes under the tinted theme"
 done

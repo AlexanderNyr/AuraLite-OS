@@ -269,6 +269,61 @@ USER32 import prerequisites blocking application entry are untouched, the
 COM activation table is empty by receipt, and no plugin/scripted session
 has exercised the new lookup in situ.
 
+### 2026-09-28 (same-day second delta): USER32 prerequisites the pinned apps named
+
+The stale `stub_map.tsv` REAL rows with no code behind them — 13 USER32
+symbols, including all three names the committed probe
+`w32/tests/W32A11.pinned-probe.7d38775.log` recorded as import-binding
+failures (`CreateDialogParamA` PuTTY, `GetMenuItemInfoW` 7-Zip FM,
+`CreateDialogIndirectParamW` Notepad++) — are implemented and bound.
+**No application binary was downloaded, run or re-probed for this delta**;
+closer-to-entry claims wait for the next external probe. What this delta
+proves is binding plus in-guest real semantics on synthetic fixtures:
+
+| gate / command | result | scope |
+|---|---:|---|
+| `make iso` | PASS | New binds link into the personality; `user32.def` gains the same 13 names (its header contract: one row per bind-table entry). |
+| `bash tests/integration/run_all.sh '^test_w32a6_user32dlg$'` | **43/43** | Fixture `w32a6_dlg.asm` gains phase 4b (MENUITEMINFO round-trip: length-only query, copy+truncation, cbSize 44 refused, set/get state-id-data, insert by position and by command, modify, radio range, bitmaps verbatim, `GetMenuState` popup-count packing, `GetMenuStringW`) and phase 11b (`CreateDialogParamA` MAKEINTRESOURCE(1) creates the modeless frame hidden, WM_CLOSE reaches the app proc which destroys, id 999 refused, indirect twin + destroy, `DefDlgProcA==0`, `MessageBoxIndirectW` refuses NULL and cbSize 40). 72 imports bound in-guest, exit 78. |
+| `test_w32a5_user32win` / `test_w32a7_gdi` / `test_w32a8_comctl32` / `test_w32a10_furniture` / `test_w32_integration` / `test_w32_user32` | PASS | No regression in the neighbouring W32 guest gates. |
+| `test_w32a11_core_subset` / `_theme` / `_dragdrop` / `_tokens` | **20/20, 9/9, 11/11, 7/7** | The W32A-11 family is untouched by the change. |
+| `test_w32_a6` (host, ASan/UBSan) | **113 checks** (was 75), **0 failures** | NULL-template/NULL-proc INVALID_PARAMETER, hidden-without-WS_VISIBLE, modeless WM_CLOSE semantics, 12-round slot recycling, RT_DIALOG/1 creation, absent-id RESOURCE_DATA_NOT_FOUND, string-name NOT_SUPPORTED, full MENUITEMINFO round-trip, MessageBoxIndirectW alert parity with MessageBoxW. |
+| `python3 tools/w32_import_ledger.py check` | PASS, **gap 41 → 28**, personality **607 → 620** | The `EXPECTED_GAP` pin cites the 13 closed names. |
+| `python3 tools/w32_gen_stubs.py --check`; `check_test_registry.py` | PASS | Generated surface unchanged (105 stubs); 202 cases registered. |
+| `check_w32app_claims.py --check` | FAIL — **same 3 pre-existing problems** | Only the known missing `patches/W32A2/A3/A4` receipts; this delta adds none and repairs none. |
+
+Semantics live in `w32/src/w32_dlg.c` (modeless family on the modal
+engine's frame-proc chain; MENUITEMINFO over the same item records) and
+`w32/src/user32_win.c` (`MessageBoxIndirectW` over the shared alert path);
+`dlg_frameproc` now distinguishes modeless WM_CLOSE and reclaims slots on
+WM_DESTROY. The guest gate never calls the live alert: `ag_alert` is
+modal, so only the two structural refusals are pinned in-guest, with the
+positive path covered by the host test — the receipts record the split
+rather than imply end-to-end alert coverage. Moderating note: modeless
+dialogs still create no child controls, exactly like the W32A-6 modal
+engine (documented there); menu bitmaps are stored verbatim but never
+rendered. **W32A-11 and the W32A-14/15/16 application gates remain NOT
+DONE.**
+
+## 2026-09-28 (same-day probe): all three pinned apps pass USER32 import binding
+
+The fresh runtime probe (`w32/tests/W32A6.pinned-probe.639388d.log`) replaces
+the USER32 import blockers recorded below with observed facts only.  All
+four pinned PEs were re-verified byte-identical to the ledger's sha256 pins
+before the probe; binaries, archives, the FAT image and the screenshot PPM
+stay outside Git.
+
+### Gates and results
+
+| Gate / command | Result | Semantics |
+| --- | --- | --- |
+| PuTTY 0.85 via `run /apps/glaunch &` + `run /apps/w32run /fat/PUTTY.EXE` (UEFI/OVMF framebuffer) | **348/348 imports bound, no unresolved name, no exit** | PuTTY reaches WinMain and raises its own "PuTTY Fatal Error" message box through glaunch: *"Unable to load any WinSock library"* (QMP screendump evidence, kept local).  The next observed prerequisite is W32A-12, in plan order |
+| 7-Zip FM 24.09 via `run /apps/w32run /fat/7ZFM.EXE` | **292/292 imports bound** | CRT startup runs and logs the three named blockers `TODO msvcrt.dll!__set_app_type/_initterm/__getmainargs needs W32A-13`, then `W32-SEH-UNHANDLED code=0xc0000005 pc=0x4000ebb3`, exit code 139 |
+| Notepad++ 8.8.9 portable via `run /apps/w32run /fat/NPP.EXE` | **590/590 imports bound** | two USER-mode page faults immediately after binding, exit code 139; no msvcrt TODO lines, no SEH chain entry, no COM probe lines — the receipts name no cause |
+| TODO manifest reception | unchanged | 0 `w32a11-clsid-probe` lines across all three sessions; the COM activation table stays EMPTY by this receipt |
+
+**W32A-11 and the W32A-12/13/14/15/16 phases remain NOT DONE.**  The import
+ledger gap is now 28 (was 41) because the 13 USER32 rows below closed.
+
 ## App-gate receipts (reserved format)
 
 Application phases (W32A-14 PuTTY, W32A-15 7-Zip FM, W32A-16

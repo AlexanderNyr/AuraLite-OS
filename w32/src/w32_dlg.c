@@ -1,8 +1,12 @@
 /* w32_dlg.c — USER32 breadth II (W32APP_PLAN.md phase W32A-6).
  *
  * Implements dialog engine (DialogBoxParam(A/W)/Indirect/EndDialog/IsDialogMessage/
- * MapDialogRect/GetDialogBaseUnits/DlgItem*), menus (HMENU Create/Append/Insert/
- * Destroy/Track/Get/Set/Load/Check), timers (Set/KillTimer), caret, accelerators,
+ * MapDialogRect/GetDialogBaseUnits/DlgItem*, plus the modeless CreateDialog*
+ * family on the same frame-proc chain and a documented-lite DefDlgProc*),
+ * menus (HMENU Create/Append/Insert/Destroy/Track/Get/Set/Load/Check, and the
+ * MENUITEMINFO round-trip: Get/Set/InsertMenuItemW, ModifyMenuW,
+ * CheckMenuRadioItem, SetMenuItemBitmaps, GetMenuState, GetMenuStringW),
+ * timers (Set/KillTimer), caret, accelerators,
  * clipboard (mapped to libauragui ag_set_clipboard/ag_get_clipboard), thread-local
  * hooks, and DrawText/DrawFocusRect/DrawEdge/DrawFrameControl/DrawIconEx/DrawIcon/
  * NotifyWinEvent helpers.
@@ -92,7 +96,7 @@ static W32_HWND dlg_next_sibling(W32_HWND child, W32_HWND parent) {
 #define W32_DLG_MAX 8
 typedef struct {
     int used; W32_HWND hwnd; W32_HWND owner; void *proc;
-    W32_INT_PTR result; int ended; W32_LRESULT prev_wndproc;
+    W32_INT_PTR result; int ended; int modeless; W32_LRESULT prev_wndproc;
 } w32_dlg_t;
 static w32_dlg_t dlg_table[W32_DLG_MAX];
 
@@ -118,7 +122,11 @@ static const uint16_t dlg_cls_w[] = {'#','3','2','7','7','0',0};
 static W32_LRESULT W32ABI dlg_frameproc(W32_HWND hw, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     w32_dlg_t *d = dlg_by_hwnd(hw);
     typedef W32_LRESULT (W32ABI *wndproc_t)(W32_HWND,W32_UINT,W32_WPARAM,W32_LPARAM);
-    if (msg == W32_WM_CLOSE && d) { EndDialog(hw, W32_IDCANCEL); return 0; }
+    W32_LRESULT out = 0;
+    /* WM_CLOSE dismisses a MODAL box through EndDialog; a modeless dialog
+     * belongs to the app's own message loop, so closing it falls through
+     * to the default chain (DestroyWindow), never PostQuitMessage. */
+    if (msg == W32_WM_CLOSE && d && !d->modeless) { EndDialog(hw, W32_IDCANCEL); return 0; }
     if (d && d->proc) {
         typedef W32_INT_PTR (W32ABI *dp_t)(W32_HWND,W32_UINT,W32_WPARAM,W32_LPARAM);
         W32_INT_PTR r = ((dp_t)d->proc)(hw, msg, wp, lp);
@@ -126,9 +134,19 @@ static W32_LRESULT W32ABI dlg_frameproc(W32_HWND hw, W32_UINT msg, W32_WPARAM wp
         if (r) return 0;
     }
     if (d && d->prev_wndproc) {
-        return ((wndproc_t)(uintptr_t)d->prev_wndproc)(hw, msg, wp, lp);
+        out = ((wndproc_t)(uintptr_t)d->prev_wndproc)(hw, msg, wp, lp);
+    } else {
+        out = DefWindowProcW(hw, msg, wp, lp);
     }
-    return DefWindowProcW(hw, msg, wp, lp);
+    /* DestroyWindow sends WM_DESTROY in-line; the slot dies with the
+     * window so modeless dialogs cannot leak the 8-entry table.  The
+     * modal path already zeroed its slot by then, so this is a no-op
+     * there. */
+    if (d && msg == W32_WM_DESTROY) {
+        int slot = (int)(d - dlg_table);
+        memset(&dlg_table[slot], 0, sizeof dlg_table[slot]);
+    }
+    return out;
 }
 
 static const uint16_t *dlg_skip_z_or_id(const uint16_t *p) {
@@ -218,6 +236,68 @@ W32ABI W32_INT_PTR DialogBoxParamA(W32_HINSTANCE inst, const char *name,
 }
 W32ABI W32_INT_PTR DialogBoxW(W32_HINSTANCE i,const uint16_t*n,W32_HWND o,void*p){return DialogBoxParamW(i,n,o,p,0);}
 W32ABI W32_INT_PTR DialogBoxA(W32_HINSTANCE i,const char*n,W32_HWND o,void*p){return DialogBoxParamA(i,n,o,p,0);}
+
+/* Modeless creation: identical creation half of the modal engine
+ * (parse, size, frame window, dlg slot, subclass, WM_INITDIALOG) but no
+ * owner disable, no private loop, and visibility only when the template
+ * asks for it -- the app shows the dialog itself with ShowWindow.  The
+ * slot is reclaimed in dlg_frameproc's WM_DESTROY path. */
+W32ABI W32_HWND CreateDialogIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMPLATE *tmpl,
+                                           W32_HWND owner, void *proc, W32_LPARAM init) {
+    if (!tmpl || !proc) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    (void)dlg_parse_header(tmpl);
+
+    int32_t w = (int32_t)(tmpl->cx * 8 / 4);
+    int32_t h = (int32_t)(tmpl->cy * 16 / 8);
+    if (w < 100) w = 240;
+    if (h < 50) h = 160;
+    uint32_t ws = W32_WS_POPUP | W32_WS_CAPTION | W32_WS_SYSMENU | W32_WS_DLGFRAME;
+    if (tmpl->style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
+    if (tmpl->style & W32_WS_VISIBLE) ws |= W32_WS_VISIBLE;
+    W32_HWND hw = CreateWindowExW(tmpl->exStyle & 0x00040000u, dlg_cls_w, (const uint16_t*)0,
+                                  ws, tmpl->x, tmpl->y, w, h, owner, 0, inst, 0);
+    if (!hw) return 0;
+
+    w32_dlg_t *d = dlg_alloc();
+    if (!d) { DestroyWindow(hw); return 0; }
+    d->hwnd = hw; d->owner = owner; d->proc = proc; d->ended = 0; d->result = 0; d->modeless = 1;
+    d->prev_wndproc = GetWindowLongPtrW(hw, W32_GWLP_WNDPROC);
+    SetWindowLongPtrW(hw, W32_GWLP_WNDPROC, (W32_LRESULT)(uintptr_t)dlg_frameproc);
+
+    if (ws & W32_WS_VISIBLE) { ShowWindow(hw, W32_SW_SHOW); UpdateWindow(hw); }
+    typedef W32_INT_PTR (W32ABI *dp_t)(W32_HWND,W32_UINT,W32_WPARAM,W32_LPARAM);
+    ((dp_t)proc)(hw, W32_WM_INITDIALOG, (W32_WPARAM)0, init);
+    return hw;
+}
+W32ABI W32_HWND CreateDialogParamW(W32_HINSTANCE inst, const uint16_t *name,
+                                   W32_HWND owner, void *proc, W32_LPARAM init) {
+    void *h = FindResourceW(inst, name, (const uint16_t *)(uintptr_t)W32_RT_DIALOG);
+    if (!h) { w32_set_last_error(W32_ERROR_RESOURCE_DATA_NOT_FOUND); return 0; }
+    void *hr = LoadResource(inst, h);
+    const void *tmpl = hr ? LockResource(hr) : 0;
+    if (!tmpl) { w32_set_last_error(W32_ERROR_RESOURCE_DATA_NOT_FOUND); return 0; }
+    return CreateDialogIndirectParamW(inst, (const W32_DLGTEMPLATE *)tmpl, owner, proc, init);
+}
+W32ABI W32_HWND CreateDialogParamA(W32_HINSTANCE inst, const char *name,
+                                   W32_HWND owner, void *proc, W32_LPARAM init) {
+    /* Same documented limitation as DialogBoxParamA: MAKEINTRESOURCE ids
+     * only; string resource names are refused by name, not misread. */
+    uintptr_t v = (uintptr_t)name;
+    if (v >> 16) { w32_set_last_error(W32_ERROR_NOT_SUPPORTED); return 0; }
+    return CreateDialogParamW(inst, (const uint16_t *)(v & 0xFFFF), owner, proc, init);
+}
+
+/* The dialog engine itself is the default proc for dialog traffic;
+ * DefDlgProc* exists so code that forwards unhandled messages through it
+ * resolves, and reports unhandled exactly like Windows for messages it
+ * does not process.  No message is swallowed here. */
+W32ABI W32_LRESULT DefDlgProcW(W32_HWND dlg, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
+    (void)dlg; (void)msg; (void)wp; (void)lp;
+    return 0;
+}
+W32ABI W32_LRESULT DefDlgProcA(W32_HWND dlg, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
+    return DefDlgProcW(dlg, msg, wp, lp);
+}
 
 W32ABI W32_BOOL EndDialog(W32_HWND hw, W32_INT_PTR result) {
     w32_dlg_t *d = dlg_by_hwnd(hw);
@@ -313,7 +393,12 @@ W32ABI W32_BOOL CheckRadioButton(W32_HWND dlg,int32_t f,int32_t l,int32_t c){(vo
  * ===================================================================== */
 #define W32_MENU_MAX 32
 #define W32_MENU_ITEMS 32
-typedef struct { uint32_t flags; uintptr_t id; const void *text_w; W32_HMENU sub; uint32_t state; } w32_menu_item_t;
+typedef struct {
+    uint32_t flags; uintptr_t id; const void *text_w; W32_HMENU sub; uint32_t state;
+    uintptr_t data;          /* MIIM_DATA payload, verbatim round-trip */
+    W32_HMENU hbmp_c;        /* check-mark bitmaps (stored opaque, not    */
+    W32_HMENU hbmp_u;        /* rendered -- the menu engine draws none) */
+} w32_menu_item_t;
 typedef struct w32_menu { int used; w32_menu_item_t items[W32_MENU_ITEMS]; int n; W32_HWND attached; } w32_menu_t;
 static w32_menu_t menus[W32_MENU_MAX];
 static w32_menu_t *menu_from_h(W32_HMENU h) {
@@ -413,6 +498,207 @@ W32ABI W32_BOOL CheckMenuItem(W32_HMENU h, uint32_t item, W32_UINT fl) {
 }
 W32ABI int GetMenuItemCount(W32_HMENU h) { w32_menu_t *m=menu_from_h(h); return m?m->n:-1; }
 W32ABI uint32_t GetMenuItemID(W32_HMENU h, int pos) { w32_menu_t *m=menu_from_h(h); if(!m||pos<0||pos>=m->n)return (uint32_t)-1; return (uint32_t)m->items[pos].id; }
+
+/* MENUITEMINFO round-trip over the same item records AppendMenu/InsertMenu
+ * fill.  cbSize accepts the two real Win64 sizes (72 without hbmpItem, 80
+ * with); anything else refuses FALSE with INVALID_PARAMETER, and the hbmp
+ * field is beyond a 72-byte struct so it is simply not touched then.
+ * fType/fState are derived from the stored MF_* bits: item types the lite
+ * engine does not render (ownerdraw/bitmap type) still round-trip their
+ * bits so a set->get sequence is lossless. */
+static int mi_cbsize_ok(W32_UINT cb) { return cb == 72u || cb == 80u; }
+static W32_UINT mi_ftype_of(const w32_menu_item_t *it) {
+    W32_UINT t = 0;
+    if (it->flags & W32_MF_SEPARATOR)  t |= W32_MFT_SEPARATOR;
+    if (it->flags & W32_MF_BARBREAK)   t |= W32_MFT_MENUBARBREAK;
+    if (it->flags & W32_MF_BREAK)      t |= W32_MFT_MENUBREAK;
+    return t;
+}
+static W32_UINT mi_fstate_of(const w32_menu_item_t *it) {
+    W32_UINT s = 0;
+    if (it->state & W32_MF_CHECKED)  s |= W32_MFS_CHECKED;
+    if (it->flags & W32_MF_GRAYED)   s |= W32_MFS_GRAYED;
+    return s;
+}
+static uint32_t mi_wcslen16(const uint16_t *s) { uint32_t n = 0; if (s) while (s[n]) n++; return n; }
+
+W32ABI W32_BOOL GetMenuItemInfoW(W32_HMENU h, W32_UINT item, W32_BOOL bypos,
+                                 W32_MENUITEMINFOW *mi) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m || !mi || !mi_cbsize_ok(mi->cbSize)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE;
+    }
+    W32_UINT fl = bypos ? W32_MF_BYPOSITION : W32_MF_BYCOMMAND;
+    int idx = menu_find(m, item, fl);
+    if (idx < 0) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
+    const w32_menu_item_t *it = &m->items[idx];
+    if (mi->fMask & W32_MIIM_STATE)    mi->fState  = mi_fstate_of(it);
+    if (mi->fMask & W32_MIIM_ID)       mi->wID     = (W32_UINT)it->id;
+    if (mi->fMask & W32_MIIM_SUBMENU)  mi->hSubMenu = it->sub;
+    if (mi->fMask & W32_MIIM_CHECKMARKS) {
+        mi->hbmpChecked   = (void *)it->hbmp_c;
+        mi->hbmpUnchecked = (void *)it->hbmp_u;
+    }
+    if (mi->fMask & W32_MIIM_DATA)     mi->dwItemData = it->data;
+    if (mi->fMask & (W32_MIIM_TYPE | W32_MIIM_FTYPE | W32_MIIM_BITMAP)) {
+        mi->fType = mi_ftype_of(it);
+        if (mi->cbSize == 80u && (mi->fMask & W32_MIIM_BITMAP)) mi->hbmpItem = 0;
+    }
+    if (mi->fMask & W32_MIIM_TYPE) {
+        /* String query: cch==0/dwTypeData==NULL asks for the length only
+         * (chars without NUL); otherwise copy min(cch-1, len) + NUL and
+         * report the copied count, like the real API.  Items the engine
+         * never stored text for read back as empty. */
+        const uint16_t *t = (const uint16_t *)it->text_w;
+        uint32_t len = mi_wcslen16(t);
+        if (!mi->dwTypeData || mi->cch == 0) {
+            mi->cch = len;
+        } else {
+            uint32_t n = len < (mi->cch - 1u) ? len : (mi->cch - 1u);
+            for (uint32_t i = 0; i < n; i++) mi->dwTypeData[i] = t[i];
+            mi->dwTypeData[n] = 0;
+            mi->cch = n;
+        }
+    }
+    return W32_TRUE;
+}
+W32ABI W32_BOOL SetMenuItemInfoW(W32_HMENU h, W32_UINT item, W32_BOOL bypos,
+                                 const W32_MENUITEMINFOW *mi) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m || !mi || !mi_cbsize_ok(mi->cbSize)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE;
+    }
+    W32_UINT fl = bypos ? W32_MF_BYPOSITION : W32_MF_BYCOMMAND;
+    int idx = menu_find(m, item, fl);
+    if (idx < 0) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
+    w32_menu_item_t *it = &m->items[idx];
+    if (mi->fMask & W32_MIIM_STATE) {
+        it->state &= ~(uint32_t)W32_MF_CHECKED;
+        it->state |= (mi->fState & W32_MFS_CHECKED) ? (uint32_t)W32_MF_CHECKED : 0u;
+        it->flags &= ~(uint32_t)(W32_MF_GRAYED | W32_MF_DISABLED);
+        if (mi->fState & W32_MFS_GRAYED) it->flags |= (uint32_t)W32_MF_GRAYED;
+    }
+    if (mi->fMask & W32_MIIM_ID)       it->id  = mi->wID;
+    if (mi->fMask & W32_MIIM_SUBMENU) { it->sub = mi->hSubMenu;
+        if (mi->hSubMenu) it->flags |= (uint32_t)W32_MF_POPUP; }
+    if (mi->fMask & W32_MIIM_CHECKMARKS) {
+        it->hbmp_c = (W32_HMENU)mi->hbmpChecked;
+        it->hbmp_u = (W32_HMENU)mi->hbmpUnchecked;
+    }
+    if (mi->fMask & W32_MIIM_DATA)     it->data = mi->dwItemData;
+    if (mi->fMask & (W32_MIIM_TYPE | W32_MIIM_FTYPE)) {
+        it->flags &= ~(uint32_t)(W32_MF_SEPARATOR | W32_MF_BARBREAK | W32_MF_BREAK);
+        if (mi->fType & W32_MFT_SEPARATOR)    it->flags |= (uint32_t)W32_MF_SEPARATOR;
+        if (mi->fType & W32_MFT_MENUBARBREAK) it->flags |= (uint32_t)W32_MF_BARBREAK;
+        if (mi->fType & W32_MFT_MENUBREAK)    it->flags |= (uint32_t)W32_MF_BREAK;
+        it->text_w = mi->dwTypeData;
+    }
+    return W32_TRUE;
+}
+W32ABI W32_BOOL InsertMenuItemW(W32_HMENU h, W32_UINT item, W32_BOOL bypos,
+                                const W32_MENUITEMINFOW *mi) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m || !mi || !mi_cbsize_ok(mi->cbSize) || m->n >= W32_MENU_ITEMS)
+        return W32_FALSE;
+    /* BYPOSITION: item is the insertion index (clamped).  BYCOMMAND: the
+     * new item takes the place of the one `item` names. */
+    int pos;
+    if (bypos) {
+        pos = (item > (W32_UINT)m->n) ? m->n : (int)item;
+    } else {
+        pos = menu_find(m, item, W32_MF_BYCOMMAND);
+        if (pos < 0) return W32_FALSE;
+    }
+    for (int i = m->n; i > pos; i--) m->items[i] = m->items[i-1];
+    m->n++;
+    w32_menu_item_t *it = &m->items[pos];
+    memset(it, 0, sizeof *it);
+    it->id   = mi->wID;
+    it->sub  = (mi->fMask & W32_MIIM_SUBMENU) ? mi->hSubMenu : 0;
+    it->data = (mi->fMask & W32_MIIM_DATA) ? mi->dwItemData : 0;
+    it->text_w = mi->dwTypeData;
+    if (it->sub) it->flags |= (uint32_t)W32_MF_POPUP;
+    if (mi->fType & W32_MFT_SEPARATOR) it->flags |= (uint32_t)W32_MF_SEPARATOR;
+    if (mi->fState & W32_MFS_CHECKED)  it->state |= (uint32_t)W32_MF_CHECKED;
+    if (mi->fState & W32_MFS_GRAYED)   it->flags |= (uint32_t)W32_MF_GRAYED;
+    return W32_TRUE;
+}
+W32ABI W32_BOOL ModifyMenuW(W32_HMENU h, W32_UINT item, W32_UINT flags,
+                            uintptr_t id, const uint16_t *text) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m) return W32_FALSE;
+    int idx = menu_find(m, item, flags);
+    if (idx < 0) return W32_FALSE;
+    w32_menu_item_t *it = &m->items[idx];
+    it->flags = flags;
+    it->id    = id;
+    it->text_w = text;
+    it->sub   = (flags & W32_MF_POPUP) ? (W32_HMENU)id : 0;
+    return W32_TRUE;
+}
+W32ABI W32_BOOL CheckMenuRadioItem(W32_HMENU h, W32_UINT first, W32_UINT last,
+                                   W32_UINT check, W32_UINT flags) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m) return W32_FALSE;
+    /* Range [first..last] in the addressing `flags` selects; every item in
+     * the range is unchecked except the one `check` names. */
+    if (check < first || check > last) return W32_FALSE;
+    int fpos = menu_find(m, first, flags);
+    int lpos = menu_find(m, last,  flags);
+    int cpos = menu_find(m, check, flags);
+    if (cpos < 0) return W32_FALSE;
+    int lo = (fpos >= 0) ? fpos : 0;
+    int hi = (lpos >= 0 && lpos < m->n) ? lpos : m->n - 1;
+    for (int i = lo; i <= hi; i++) m->items[i].state &= ~(uint32_t)W32_MF_CHECKED;
+    m->items[cpos].state |= (uint32_t)W32_MF_CHECKED;
+    return W32_TRUE;
+}
+W32ABI W32_BOOL SetMenuItemBitmaps(W32_HMENU h, W32_UINT item, W32_UINT flags,
+                                   void *hbmpUnchecked, void *hbmpChecked) {
+    /* The lite menu engine draws text only; the pair is stored verbatim so
+     * GetMenuItemInfoW(MIIM_CHECKMARKS) reports it back unchanged. */
+    w32_menu_t *m = menu_from_h(h);
+    if (!m) return W32_FALSE;
+    int idx = menu_find(m, item, flags);
+    if (idx < 0) return W32_FALSE;
+    m->items[idx].hbmp_u = (W32_HMENU)hbmpUnchecked;
+    m->items[idx].hbmp_c = (W32_HMENU)hbmpChecked;
+    return W32_TRUE;
+}
+W32ABI W32_UINT GetMenuState(W32_HMENU h, W32_UINT item, W32_UINT flags) {
+    /* Win32 packs the state bits low and, for popups, the submenu count
+     * in the high byte (count << 8); (UINT)-1 names the failure. */
+    w32_menu_t *m = menu_from_h(h);
+    if (!m) return (W32_UINT)-1;
+    int idx = menu_find(m, item, flags);
+    if (idx < 0) return (W32_UINT)-1;
+    const w32_menu_item_t *it = &m->items[idx];
+    W32_UINT st = 0;
+    if (it->state & W32_MF_CHECKED)  st |= (W32_UINT)W32_MF_CHECKED;
+    if (it->flags & W32_MF_GRAYED)   st |= (W32_UINT)W32_MF_GRAYED;
+    if (it->flags & W32_MF_DISABLED) st |= (W32_UINT)W32_MF_DISABLED;
+    if (it->flags & W32_MF_SEPARATOR) st |= (W32_UINT)W32_MF_SEPARATOR;
+    if (it->flags & W32_MF_POPUP) {
+        st |= (W32_UINT)W32_MF_POPUP;
+        w32_menu_t *sub = menu_from_h(it->sub);
+        if (sub) st |= (W32_UINT)((sub->n & 0xFF) << 8);
+    }
+    return st;
+}
+W32ABI int GetMenuStringW(W32_HMENU h, W32_UINT item, uint16_t *buf,
+                          int maxcch, W32_UINT flags) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m) return 0;
+    int idx = menu_find(m, item, flags);
+    if (idx < 0) return 0;
+    const uint16_t *t = (const uint16_t *)m->items[idx].text_w;
+    uint32_t len = mi_wcslen16(t);
+    if (!buf || maxcch <= 0) return 0;
+    int32_t n = ((int32_t)len < maxcch - 1) ? (int32_t)len : maxcch - 1;
+    for (int32_t i = 0; i < n; i++) buf[i] = t[i];
+    buf[n] = 0;
+    return n;
+}
 W32ABI W32_BOOL DrawMenuBar(W32_HWND w){(void)w;return 1;}
 W32ABI W32_BOOL RemoveMenu(W32_HMENU h, uint32_t item, W32_UINT fl) {
     w32_menu_t *m=menu_from_h(h); if(!m)return 0;

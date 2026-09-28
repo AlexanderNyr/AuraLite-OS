@@ -621,7 +621,7 @@ probe line (`w32a11-clsid-probe:` with full CLSID/IID/CLSCTX;
 `w32a11-progid-probe:` with at most 192 escaped UTF-16 code units and a
 truncation bit), now stamped with the per-call `result=0x%08x`. Every
 `CoCreateInstance` request logs the complete CLSID/IID pair and CLSCTX;
-the ProgID escape stays reversible `\\uXXXX` (BMP unit and surrogate pair covered) with an explicit truncation bit. Failure HRESULTs and the named last-errors above are the refusal contract; output pointers/GUIDs are always cleared. These fixture IDs are **not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify an activation-table row. The three pinned application sessions are still blocked at the USER32 imports listed above.
+the ProgID escape stays reversible `\\uXXXX` (BMP unit and surrogate pair covered) with an explicit truncation bit. Failure HRESULTs and the named last-errors above are the refusal contract; output pointers/GUIDs are always cleared. These fixture IDs are **not** requests observed from PuTTY, 7-Zip or Notepad++ and cannot justify an activation-table row. The USER32 imports those three sessions had stopped at are now bound (see the next section).  The same-day re-probe under identical rules (`w32/tests/W32A6.pinned-probe.639388d.log`) observed all three images binding every import: PuTTY 0.85 (348 bound) reached WinMain and raised its own *unable to load any WinSock library* message box through glaunch — the W32A-12 prerequisite sits exactly where the roadmap put it; 7-Zip FM 24.09 (292 bound) entered CRT startup and logged the W32A-13 msvcrt TODO triplet before a SEH 0xc0000005; Notepad++ 8.8.9 (590 bound) faulted before any instrumented call, cause not yet identified.  No `w32a11-clsid-probe` line fired in any session, so the activation table stays EMPTY.
 
 **Automation:** the imported `OLEAUT32` ordinals
 `#2/#4/#6/#7/#9/#10/#149/#150` bind to the project's BSTR/VARIANT
@@ -669,6 +669,57 @@ non-emoji supplementary code point (U+20000) through an owned HDROP; it is
 not an end-to-end guest file-drop claim. No outside-personality OLE source is
 claimed. Scripted application CLSID/IID sessions and the full W32A-11 gate
 remain open.
+
+## USER32 modeless dialogs and MENUITEMINFO complete the ledgers' rows
+
+Thirteen `stub_map.tsv` rows claimed REAL but had neither code nor a bind:
+exactly the names the three pinned applications had stopped on during
+import binding (`CreateDialogParamA`/PuTTY, `GetMenuItemInfoW`/7-Zip FM,
+`CreateDialogIndirectParamW`/Notepad++ in the last committed probe,
+`w32/tests/W32A11.pinned-probe.7d38775.log`), plus their families. All
+thirteen are now implemented and bound, on the existing W32A-6 machinery:
+
+**Modeless dialogs:** `CreateDialogIndirectParamW`, `CreateDialogParamW`
+and `CreateDialogParamA` reuse the modal engine's template parsing and
+frame-proc chain, minus owner-disable and the private message loop.
+Visibility follows the template's `WS_VISIBLE` bit (the guest fixture's
+template omits it and `IsWindowVisible` reads 0 until the app shows the
+window); `WM_CLOSE` reaches the application's dialog proc — which destroys
+the window itself — instead of `EndDialog`ing into a loop the app does not
+have. Dialog slots recycle on `WM_DESTROY` (twelve create/destroy rounds
+succeed over the 8-slot table). String resource names in the A flavor keep
+the documented refusal `ERROR_NOT_SUPPORTED`, exactly like
+`DialogBoxParamA`; absent ids refuse `ERROR_RESOURCE_DATA_NOT_FOUND`.
+`DefDlgProcA` (and the unbound `DefDlgProcW` it forwards to, D7-style)
+exists and reports every message unhandled.
+
+**MENUITEMINFO round-trip:** `GetMenuItemInfoW`/`SetMenuItemInfoW`/
+`InsertMenuItemW`/`ModifyMenuW`/`CheckMenuRadioItem`/`SetMenuItemBitmaps`/
+`GetMenuState`/`GetMenuStringW` operate on the same menu-item records
+`AppendMenuW` fills. `cbSize` accepts the two real Win64 sizes (72 and
+80); a length-only string query (`cch==0`, NULL buffer) returns the bare
+char count, copies NUL-terminate and truncation reports the copied count.
+State/id/submenu/data/checkmark-bitmap fields round-trip verbatim;
+`GetMenuState` packs a popup's item count in the high byte like Win32;
+`CheckMenuRadioItem` clears the rest of the addressed range.
+
+**MessageBoxIndirectW** validates `cbSize` against the real struct size,
+then drives the same one-button alert path `MessageBoxW` uses; icon,
+callback and language-id fields are accepted and ignored by name. The
+modal alert itself is impossible in the headless guest gate, so the guest
+fixture pins only the two structural refusals (NULL and truncated
+`cbSize`); the positive path is asserted in the host test.
+
+The import-library `.def` rows mirror the bind table one-to-one, the A-6
+guest fixture gained two sections (`A6-MENUINFO-OK`,
+`A6-CREATEDIALOG-OK`, 72 imports bound in-guest), the W32A-6 host test
+grows from 75 to 113 checks, and the personality ledger now covers 620
+exports with the K/U/G union gap down from 41 to **28**
+(`tools/w32_import_ledger.py`'s pin records which names closed).
+The same-day external probe then re-ran all three pinned binaries under
+identical rules (`w32/tests/W32A6.pinned-probe.639388d.log`): every image
+now binds cleanly, PuTTY reached WinMain and reported the next named
+prerequisite (W32A-12 WinSock) through its own message box.
 
 ## Not implemented at all
 

@@ -1,0 +1,78 @@
+# W32 user32 completion — pinned-app runtime probe, 2026-09-28.
+# Second probe of the three officially pinned applications; the first is
+# W32A11.pinned-probe.7d38775.log (all three stopped at USER32 import
+# binding).  This file replaces that state with observed facts only.
+base-commit: 94b1847951f7aa8e6931d7851f8f221527b35275 (main, "W32A11 update 5")
+working-tree: base plus the 2026-09-28 user32 completion (branch w32-user32,
+  commit 639388dfa25786b84037ac60bde0c722fc7e4696), make iso
+machine: QEMU x86_64 BIOS, 512 MiB, fast kernel self-test (UEFI/OVMF for the
+  PuTTY screenshot session)
+transport: external 128 MiB FAT32 image, BPB at LBA 64, AHCI mounted at /fat
+verification: all four ORIGINAL extracted PE files below matched the ledger's
+  committed sha256 pins BEFORE being copied to FAT.  Archives, extracted PEs,
+  the FAT image and the screenshot PPMs are kept OUTSIDE Git.  No PEs were
+  added to the ISO and no PE bytes were committed.
+
+app: PuTTY 0.85
+url: https://the.earth.li/~sgtatham/putty/0.85/w64/putty.exe
+PE: putty.exe -> /fat/PUTTY.EXE
+sha256: d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87
+command: run /apps/glaunch & ; run /apps/w32run /fat/PUTTY.EXE
+seen: w32run: manifest: comctl v6, exec=asInvoker, dpi-aware
+seen: w32run: /fat/PUTTY.EXE mapped at 0x400000000000, 348 import(s) bound
+seen: NO "unresolved import" (was: USER32.dll!CreateDialogParamA)
+seen: NO process exit in-session (was: exited code=1 in 11 seconds)
+seen: framebuffer screenshot (QMP screendump, not committed): PuTTY reached
+  WinMain and raised ITS OWN message box, caption "PuTTY Fatal Error", text
+  "Unable to load any WinSock library", one OK button, composited by glaunch
+  with a taskbar entry.  Sequence number of the artefact kept local.
+consequence: binding gap CLOSED for PuTTY; the next observed prerequisite is
+  W32A-12 (WS2_32 WinSock over the native socket stack), exactly the order
+  the roadmap planned.  PuTTY did not reach a shell prompt/config window in
+  this session because it refuses to start without WinSock.
+
+app: 7-Zip File Manager 24.09
+url: https://www.7-zip.org/a/7z2409-x64.exe
+PE: 7zFM.exe -> /fat/7ZFM.EXE
+sha256: dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58
+companion: 7z.dll -> /fat/7Z.DLL
+companion-sha256: 882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+command: run /apps/w32run /fat/7ZFM.EXE
+seen: w32run: /fat/7ZFM.EXE mapped at 0x400000000000, 292 import(s) bound
+seen: NO "unresolved import" (was: USER32.dll!GetMenuItemInfoW)
+seen: w32: TODO msvcrt.dll!__set_app_type needs W32A-13 (not yet implemented)
+seen: w32: TODO msvcrt.dll!_initterm needs W32A-13 (not yet implemented)
+seen: w32: TODO msvcrt.dll!__getmainargs needs W32A-13 (not yet implemented)
+seen: W32-SEH-UNHANDLED code=0xc0000005 pc=0x4000ebb3
+seen: '/apps/w32run' (tid 8) exited (code=139)
+consequence: binding gap CLOSED for 7-Zip FM; CRT startup then faults.  The
+  named blockers are the W32A-13 msvcrt data/EH bridge entries, observed by
+  their typed TODO lines in order.  The fault pc is inside the image's own
+  startup code (_initterm-driven initialisation walking uninitialised CRT
+  state is the documented W32A-13 gap), not in w32run itself.
+
+app: Notepad++ 8.8.9 (portable x64)
+url: https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.8.9/npp.8.8.9.portable.x64.zip
+PE: notepad++.exe -> /fat/NPP.EXE
+sha256: a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d
+command: run /apps/w32run /fat/NPP.EXE
+seen: w32run: /fat/NPP.EXE mapped at 0x400000000000, 590 import(s) bound
+seen: NO "unresolved import" (was: USER32.dll!CreateDialogIndirectParamW)
+seen: [EXCEPTION] Page Fault (vector 14) from USER mode (cpu0)  x2
+seen: '/apps/w32run' (tid 8) exited (code=139)
+consequence: binding gap CLOSED for Notepad++; the image faults BEFORE any
+  instrumented API call logs: no msvcrt TODO lines, no SEH handler chain
+  entry, no COM probe lines.  The faulting instruction is not yet
+  identified; this log names no cause.  Plugins were not included, as before.
+
+observed-CLSID/IID-pairs: NONE (0 w32a11-clsid-probe lines in all three logs)
+observed-ProgIDs: NONE (0 w32a11-progid-probe lines in all three logs)
+consequence: the COM activation table stays EMPTY by receipt; W32A-11 is
+  still NOT DONE and W32A-12/13/14/15/16 remain open.  What changed and is
+  now a FACT: all three pinned applications pass USER32 import binding.
+raw-serial-logs-local-only: /home/user/pinned_probe/probe_{putty,7zfm,npp}.log
+screenshot-local-only: /home/user/pinned_probe/putty_screen.ppm (1280x800,
+  QMP screendump of the UEFI session; binary artefact, not committed)
+reproduction: identical to W32A11.pinned-probe.7d38775.log except the PuTTY
+  session additionally started `run /apps/glaunch &` ten seconds earlier so
+  the compositor owned the framebuffer before the app created its window.

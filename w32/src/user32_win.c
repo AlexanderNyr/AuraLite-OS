@@ -3076,6 +3076,23 @@ W32ABI int32_t MessageBoxA(W32_HWND owner, const char *text,
     return 1;
 }
 
+W32ABI int32_t MessageBoxIndirectW(const W32_MSGBOXPARAMSW *params) {
+    /* Lite alert semantics, spelled out: owner/text/caption/style feed the
+     * same ag_alert path MessageBoxW uses; lpszIcon, dwContextHelpId,
+     * lpfnMsgBoxCallback and dwLanguageId are accepted and ignored by name
+     * (the engine has no icons or callbacks), and cbSize is validated
+     * against the real Win64 struct size so a truncated struct is refused,
+     * never misread. */
+    if (!params) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    if (params->cbSize != (W32_UINT)sizeof(W32_MSGBOXPARAMSW)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
+    }
+    (void)params->lpszIcon; (void)params->dwContextHelpId;
+    (void)params->lpfnMsgBoxCallback; (void)params->dwLanguageId;
+    return (int32_t)MessageBoxW(params->hwndOwner, params->lpszText,
+                                params->lpszCaption, params->dwStyle);
+}
+
 /* Helper for dialog-item enumeration: list children of `parent` in
  * creation order.  Used by w32_dlg.c's GetDlgItem so it can walk
  * children regardless of the top-level z-order.  Returns the count

@@ -3,7 +3,9 @@
 ; it with the window/message core, and W32A-6 adds dialogs, menus,
 ; clipboard, timers, accelerators, hooks, resources and the Draw* family
 ; (the W32A-6 guest fixture imports these, and every name here is a row in
-; w32/src/w32_bind.c's static table).
+; w32/src/w32_bind.c's static table).  The modeless CreateDialog*, the
+; MENUITEMINFO round-trip family and MessageBoxIndirectW close out the
+; USER32 rows the pinned applications named during import binding.
 ; Names only; no Microsoft file is used and no DLL is shipped.
 LIBRARY USER32.dll
 EXPORTS
@@ -74,17 +76,21 @@ IsWindowVisible
     ChangeClipboardChain
     CheckDlgButton
     CheckMenuItem
+    CheckMenuRadioItem
     CheckRadioButton
     CloseClipboard
     CopyAcceleratorTableW
     CreateAcceleratorTableW
     CreateCaret
+    CreateDialogIndirectParamW
+    CreateDialogParamW
     CreateMenu
     CreatePopupMenu
     DestroyAcceleratorTable
     DestroyCaret
     DestroyCursor
     DestroyIcon
+    DefDlgProcA
     DestroyMenu
     DialogBoxIndirectParamW
     DialogBoxParamW
@@ -110,10 +116,14 @@ IsWindowVisible
     GetMenu
     GetMenuItemCount
     GetMenuItemID
+    GetMenuItemInfoW
+    GetMenuState
+    GetMenuStringW
     GetMessageW
     GetSubMenu
     GetSystemMenu
     HideCaret
+    InsertMenuItemW
     InsertMenuW
     IsClipboardFormatAvailable
     IsDialogMessageW
@@ -127,7 +137,9 @@ IsWindowVisible
     LoadStringW
     LockResource
     MapDialogRect
+    MessageBoxIndirectW
     MessageBoxW
+    ModifyMenuW
     NotifyWinEvent
     OpenClipboard
     PeekMessageW
@@ -139,6 +151,8 @@ IsWindowVisible
     SetDlgItemInt
     SetDlgItemTextW
     SetMenu
+    SetMenuItemBitmaps
+    SetMenuItemInfoW
     SetTimer
     SetWindowsHookExW
     ShowCaret
@@ -150,6 +164,7 @@ IsWindowVisible
 ; -- W32A-6 (continued): A-variants and the remaining bound surface --
     AppendMenuA
     CountClipboardFormats
+    CreateDialogParamA
     DeleteMenu
     DialogBoxA
     DialogBoxIndirectParamA
