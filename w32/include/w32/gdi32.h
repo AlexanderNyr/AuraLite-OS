@@ -595,6 +595,9 @@ const uint32_t *w32_gdi_icon_pixels(W32_HICON hicon, int32_t *w, int32_t *hgt); 
 /* Register a resource blob the loader handed out (it alone knows the
  * size; DrawIconEx only gets the pointer). */
 void w32_gdi_icon_cache_add(const uint8_t *blob, size_t len);
+/* W32A-15: turn a packed DIB (RT_BITMAP resource shape) into a device
+ * HBITMAP, expanding 1/4/8bpp through the palette to native 32bpp. */
+W32_HBITMAP w32_gdi_bitmap_from_dib(const void *dib, uint32_t dibsz);
 /* user32.c's DrawIconEx / FillRect draw through the raster engine. */
 W32_BOOL w32_gdi_draw_icon(W32_HDC hdc, int32_t x, int32_t y, W32_HICON icon,
                            int32_t cx, int32_t cy);

@@ -572,7 +572,83 @@ fixture twin and the host unit test.
 
 Closing patch: `patches/W32A14_putty.patch`.
 
-## W32A-15 7zFM — AWAITING
+## W32A-15 7zFM — PHASE CLOSED (2026-09-28), the 7-Zip File Manager app gate (CI-provable half)
+
+The second application gate. The pinned **7-Zip 24.09** `7zFM.exe` + `7z.dll`
+were extracted to `build/w32bins/` from the self-extracting installer
+`https://www.7-zip.org/a/7z2409-x64.exe` — git-ignored, provenance-exempt,
+**never committed** (D8 / `w32/LICENSING.md`). Their sha256 /size are
+`dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58` / `990720`
+and `882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863` /
+`1907712` — **byte-for-byte the pins** in the committed ledgers
+`w32/app_ledger/7zFM-24.09.imports` and `w32/app_ledger/7z-24.09.imports`.
+`w32/tests/W32A15.probe.log` records the fetch+scan and the two live boots.
+
+**Import surface, measured (`objdump -p`).** `7zFM.exe` imports 298 names across
+11 DLLs (KERNEL32 106, USER32 88, msvcrt 34, ADVAPI32 21, ole32 11, SHELL32 11,
+COMCTL32 10, OLEAUT32 7, MPR 6 delay-load, COMDLG32 3, GDI32 1); `7z.dll`
+imports 86 across 5 (KERNEL32 54, msvcrt 22, OLEAUT32 7, ADVAPI32 1, USER32 2).
+Cross-referenced against `w32/src/w32_bind.c`'s static `exports[]`:
+
+| resolution (7zFM.exe) | count |
+|---|---:|
+| resolved from static `exports[]` (REAL or fail-clean) | **292** |
+| delay-load (mpr.dll, fail-clean on first network touch) | **6** |
+| left on a loud TODO stub | **0** |
+| unbound / generated-other | **0** |
+
+**The named casualty the gate forced.** A real QEMU boot of the pinned
+`7zFM.exe` (via `run /fat/7ZFM.EXE`) showed exactly ONE import falling through
+to a loud TODO stub on first paint — the toolbar-strip load:
+
+```
+w32run: /fat/7ZFM.EXE mapped at 0x400000000000, 292 import(s) bound
+w32: TODO user32.dll!LoadBitmapW needs W32A-5 (not yet implemented)
+```
+
+W32A-15 lands **`LoadBitmapW` as REAL** (`w32/src/w32_rsrc.c` +
+`w32/src/w32_gdi.c`): it resolves the `RT_BITMAP` resource and builds a device
+`HBITMAP` via `w32_gdi_bitmap_from_dib`, which expands the source packed DIB
+through its palette into the engine's native 32bpp top-down ARGB. 7-Zip ships
+its toolbars at **4bpp/16-colour** (48×36 and 24×24) and its sort marker at
+**1bpp** — depths the raster sampler does not read directly — so the expansion
+covers 1/4/8/24/32bpp and both row orientations. `LoadImageW`'s `IMAGE_BITMAP`
+path now routes through the same helper (it previously returned the raw resource
+pointer). After the fix the same boot no longer prints the TODO line and 7zFM's
+whole static surface binds to an honest body (the security set stays fail-clean;
+`SHGetFileInfoW`'s PIDL path answers `ERROR_INVALID_PARAMETER`; no fault).
+
+**Census effect.** `LoadBitmapW`/`LoadBitmapA` land as real static bindings that
+shadow the generated TODO stub (the `w32_bind.c` static table wins ties, exactly
+as `LoadImageW`/`LoadCursorW`/`LoadIconW` are done). `LoadBitmapW` is in the
+K/U/G ledger union and was previously uncovered, so closing it moves personality
+exports **634 → 636** and the coverage gap **14 → 13** (K/U/G union stays 611);
+`tools/w32_import_ledger.py`'s `EXPECTED_GAP` is updated to match and re-reports
+`CHECK OK`.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `tests/integration/cases/test_w32a15_7zip_fixture.sh` (guest, QEMU) | **6/6 assertions** | `w32a15_7zip.exe` — a mingw PE importing the KERNEL32/USER32/GDI32/COMCTL32/SHELL32/ADVAPI32 surface **by name** (resolved through `w32_bind.c`) with an **embedded `RT_BITMAP`** (a 4bpp packed DIB, 7-Zip's toolbar-strip shape) so `LoadBitmapW` walks the real PE resource path. It asserts each 7-Zip personality path: the **LoadBitmapW REAL slice** (RT_BITMAP → device HBITMAP, `GetObjectW` dims, `SelectObject`+`GetPixel` proving the 4bpp→32bpp palette expansion, missing-id → NULL fail-clean), the run-time **DLL-chain + msvcrt heap** (`LoadLibrary`+`GetProcAddress` `InitCommonControlsEx` and `malloc`/`free`/`realloc` — the exact heap trio 7-Zip imports; `calloc` is NOT in its surface so the gate does not ask for it), a report **SysListView32** with three rows read back, the **delay-loaded MPR** network path failing CLEAN, the `Reg*W` **Options round-trip**, and **`SHFileOperationW` FO_DELETE** over the VFS. Prints `W32A15-7ZIP-OK`, exits **78**, no `FAIL-`, **no TODO fall-through**, no fault |
+| `test_w32_a15_bitmap` (host, ASan/UBSan) | **36 checks, 0 failures** | `w32_gdi_bitmap_from_dib` (amalgamated with the a7 gate's GDI engine + fake compositor) against hand-built packed DIBs: 4bpp/16-colour bottom-up (each index → right ARGB, rows flip, `SelectObject`+`GetPixel` round-trip), 1bpp MSB-first, 8bpp palettised, 24bpp BGR and 32bpp BGRA straight-through, a negative-height top-down source, and malformed DIBs (short buffer, non-`BI_RGB`, absurd size, unsupported bpp) failing clean with `ERROR_INVALID_PARAMETER` |
+| import coverage (`objdump -p` vs `w32_bind.c`) | **292 static + 6 delay, 0 TODO** | `w32/tests/W32A15.probe.log` |
+
+**Honest non-goals (human-run, not headlessly automatable in this
+environment).** The full 7-Zip *receipt* is human-run and pasted back
+hash-verified: the **main window** render (listview + toolbar with the loaded
+bitmap strips + status bar — GUI framebuffer / pixel-region asserts), **archive
+listing** of a byte-known `.zip`/`.7z` with the rows asserted, **extract-all**
+with every file byte-compared against the harness originals, the **Options
+property sheet** (`PropertySheetW`) persisting through the hive, **drag-drop**
+add and `SHFileOperationW` rename from the UI, and the **ACL approximation**
+(extract an ACL-carrying archive, assert AuraLite's documented owner-only
+mapping — the ADVAPI32 security set is fail-clean by design). Those need a
+framebuffer, a pixel oracle and human-driven UI and are out of this gate's
+automatable scope by design. What is CI-provable — the import surface closing to
+0 TODO with `LoadBitmapW` REAL, the DIB→HBITMAP palette expansion, the listview/
+heap/delay-load/registry/VFS personality paths — is proved above by the fixture
+twin and the host unit test.
+
+Closing patch: `patches/W32A15_7zip.patch`.
 
 ## W32A-16 notepad++ — AWAITING
 

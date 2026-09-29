@@ -3051,6 +3051,31 @@ $(W32A14_EXE): $(W32_MINGW_STAMP)
 	@: > $@
 endif
 
+# W32A-15: the 7-Zip File Manager app-gate guest fixture.  One mingw-w64 TU
+# (-nostdlib, --entry=winstart, no CRT) importing the exact KERNEL32/USER32/
+# GDI32/COMCTL32/SHELL32/ADVAPI32 surface real 7zFM.exe drives BY NAME, plus an
+# embedded RT_BITMAP (a 4bpp packed DIB, 7-Zip's toolbar-strip format) so
+# LoadBitmapW walks the real PE resource path.  windres compiles the .rc/.bmp.
+MINGW_WINDRES := $(patsubst %gcc,%windres,$(MINGW_CC))
+W32A15_RES := $(BUILD_DIR)/user/w32a15_7zip.res
+W32A15_EXE := $(BUILD_DIR)/user/w32a15_7zip.exe
+ifneq ($(MINGW_CC),)
+$(W32A15_RES): w32/tests/w32a15_7zip.rc w32/tests/w32a15_glyph.bmp $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_WINDRES) $< -O coff -o $@
+$(W32A15_EXE): w32/tests/w32a15_7zip.c $(W32A15_RES) $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin $< $(W32A15_RES) -o $@ \
+	    -nostdlib -Wl,--entry=winstart \
+	    -lkernel32 -luser32 -lgdi32 -lcomctl32 -lshell32 -ladvapi32 -lgcc
+	@echo "  [pe] $@ (W32A-15 7-Zip FM app-gate guest fixture)"
+else
+$(W32A15_EXE): $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the W32A-15 fixture (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
 # W32A-4: the real-C++ unwinding fixture.  -nostdlib + --entry=winstart like
 # the A2 probes (kernel32-only imports, no msvcrt.dll); libstdc++/libgcc come
 # in statically, and the TU carries every CRT shim the link needs (see the
@@ -3259,7 +3284,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
@@ -3485,6 +3510,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@if [ -s $(W32A13_EXE) ]; then cp $(W32A13_EXE) $(INITRD_DIR)/tests/w32a13_msvcrt.exe; fi
 # W32A-14: the PuTTY app-gate guest fixture, basename-preserved.
 	@if [ -s $(W32A14_EXE) ]; then cp $(W32A14_EXE) $(INITRD_DIR)/tests/w32a14_putty.exe; fi
+# W32A-15: the 7-Zip FM app-gate guest fixture, basename-preserved.
+	@if [ -s $(W32A15_EXE) ]; then cp $(W32A15_EXE) $(INITRD_DIR)/tests/w32a15_7zip.exe; fi
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.
@@ -3772,6 +3799,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a12_ws2_32 \
                 $(BUILD_DIR)/test_w32_a13_msvcrt \
                 $(BUILD_DIR)/test_w32_a14_con \
+                $(BUILD_DIR)/test_w32_a15_bitmap \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -4016,6 +4044,17 @@ $(BUILD_DIR)/test_w32_a14_con: tests/unit/test_w32_a14_con.c \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I lib/libc/include $< -o $@
+# W32A-15: LoadBitmapW / w32_gdi_bitmap_from_dib, the packed-DIB -> device
+# HBITMAP palette expansion (4bpp/1bpp/8bpp/24bpp/32bpp, orientation, malformed
+# fail-clean).  Amalgamates the GDI engine + the a7 gate's fake compositor.
+$(BUILD_DIR)/test_w32_a15_bitmap: tests/unit/test_w32_a15_bitmap.c \
+                                w32/src/w32_gdi.c w32/src/user32.c \
+                                w32/src/user32_win.c w32/src/w32_utf.c \
+                                w32/src/w32_errno.c w32/include/w32/gdi32.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . \
+	          tests/unit/test_w32_a15_bitmap.c -lpthread -o $@
 $(BUILD_DIR)/test_w32_a11_com: tests/unit/test_w32_a11_com.c \
                                 w32/src/ole32.c w32/include/w32/ole32.h
 	@mkdir -p $(dir $@)

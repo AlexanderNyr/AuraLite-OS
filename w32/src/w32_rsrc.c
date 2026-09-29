@@ -150,6 +150,24 @@ W32ABI W32_HICON   LoadIconW(void *m, const uint16_t *n) { return (W32_HICON)loa
 W32ABI W32_HICON   LoadIconA(void *m, const char *n)    { return (W32_HICON)load_img(m,(const uint16_t *)(uintptr_t)n,W32_RT_ICON); }
 W32ABI W32_HCURSOR LoadCursorW(void *m, const uint16_t *n){ return (W32_HCURSOR)load_img(m,n,W32_RT_CURSOR); }
 W32ABI W32_HCURSOR LoadCursorA(void *m, const char *n)   { return (W32_HCURSOR)load_img(m,(const uint16_t *)(uintptr_t)n,W32_RT_CURSOR); }
+/* W32A-15: LoadBitmapW resolves an RT_BITMAP resource and hands back a real
+ * device HBITMAP (not the raw resource pointer) so the caller can SelectObject
+ * it into a memory DC and BitBlt/ImageList_AddMasked it -- exactly what
+ * 7-Zip's file manager does with its toolbar strips at first paint.  The
+ * named W32A-5 casualty (a loud TODO until now) becomes real here. */
+W32ABI W32_HBITMAP LoadBitmapW(void *m, const uint16_t *name) {
+    void *r = FindResourceW(m, name, (const uint16_t *)(uintptr_t)W32_RT_BITMAP);
+    if (!r) { w32_set_last_error(W32_ERROR_RESOURCE_DATA_NOT_FOUND); return 0; }
+    const void *blob = LockResource(r);
+    W32_DWORD sz = SizeofResource(m, r);
+    if (!blob || !sz) { w32_set_last_error(W32_ERROR_RESOURCE_DATA_NOT_FOUND); return 0; }
+    return w32_gdi_bitmap_from_dib(blob, (uint32_t)sz);
+}
+W32ABI W32_HBITMAP LoadBitmapA(void *m, const char *name) {
+    /* Integer resource IDs (MAKEINTRESOURCE) pass through unchanged; only
+     * string names differ by charset and 7-Zip's bitmaps are all id-named. */
+    return LoadBitmapW(m, (const uint16_t *)(uintptr_t)name);
+}
 W32ABI void *LoadImageW(void *m, const uint16_t *n, W32_UINT t, int cx, int cy, W32_UINT fl) {
     (void)cx; (void)cy; (void)fl; uint32_t rt;
     switch (t) {
@@ -158,6 +176,11 @@ W32ABI void *LoadImageW(void *m, const uint16_t *n, W32_UINT t, int cx, int cy, 
     case 3: rt = W32_RT_CURSOR; break;
     default: w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
     }
+    /* IMAGE_BITMAP goes through the DIB->HBITMAP path so a bitmap loaded via
+     * LoadImage is as usable as one from LoadBitmap; icons/cursors keep the
+     * pointer-cache contract DrawIconEx relies on. */
+    if (rt == W32_RT_BITMAP)
+        return (void *)LoadBitmapW(m, n);
     return load_img(m, n, rt);
 }
 W32ABI void *LoadImageA(void *m, const char *n, W32_UINT t, int cx, int cy, W32_UINT fl) {

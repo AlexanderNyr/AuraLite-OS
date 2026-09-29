@@ -805,6 +805,8 @@ static const w32_export_t exports[] = {
     { U32, "LoadCursorA",               (void *)LoadCursorA               },
     { U32, "LoadImageW",                (void *)LoadImageW                },
     { U32, "LoadImageA",                (void *)LoadImageA                },
+    { U32, "LoadBitmapW",               (void *)LoadBitmapW               },
+    { U32, "LoadBitmapA",               (void *)LoadBitmapA               },
     { U32, "DestroyIcon",               (void *)DestroyIcon               },
     { U32, "DestroyCursor",             (void *)DestroyCursor             },
     { U32, "EnumResourceNamesW",        (void *)EnumResourceNamesW        },

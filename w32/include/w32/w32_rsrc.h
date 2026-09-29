@@ -65,6 +65,10 @@ W32ABI void       *LoadCursorW(void *hModule, const uint16_t *name);
 W32ABI void       *LoadCursorA(void *hModule, const char *name);
 W32ABI void       *LoadImageW(void *hModule, const uint16_t *name, W32_UINT type, int32_t cx, int32_t cy, W32_UINT flags);
 W32ABI void       *LoadImageA(void *hModule, const char *name, W32_UINT type, int32_t cx, int32_t cy, W32_UINT flags);
+/* W32A-15: RT_BITMAP -> device HBITMAP (void* == W32_HBITMAP).  Real from
+ * W32A-15; was a loud user32 TODO placeholder through W32A-14. */
+W32ABI void       *LoadBitmapW(void *hModule, const uint16_t *name);
+W32ABI void       *LoadBitmapA(void *hModule, const char *name);
 W32ABI W32_BOOL    DestroyIcon(void *hIcon);
 W32ABI W32_BOOL    DestroyCursor(void *hCursor);
 W32ABI int         EnumResourceNamesW(void *hModule, const uint16_t *type,

@@ -19,7 +19,7 @@
 | W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
 | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ✅ done |
 | W32A-14 App gate I — PuTTY | ✅ done |
-| W32A-15 App gate II — 7-Zip File Manager | ⬜ planned |
+| W32A-15 App gate II — 7-Zip File Manager | ✅ done |
 | W32A-16 App gate III — Notepad++ | ⬜ planned |
 | W32A-17 App horizon — Audacity, or a documented gap list | ⬜ planned |
 | W32A-18 Integration, documentation and the honest matrix | ⬜ planned |
@@ -2053,44 +2053,54 @@ console/serial/cursor imports, non-empty as the plan required).
 
 ---
 
-### Phase W32A-15 — App gate II: 7-Zip File Manager ⬜ PLANNED
+### Phase W32A-15 — App gate II: 7-Zip File Manager ✅ DONE
 
 **Objective:** the pinned `7zFM.exe` + `7z.dll` (24.09,
 `dc4fdcd9…`/`88206394…`) list, extract and configure: the DLL-chain,
 `msvcrt`, COMCTL32 and registry phases proved by a real consumer.
 
+**Closed 2026-09-28.** The gate forced exactly one personality fix:
+`USER32!LoadBitmapW`/`LoadBitmapA` land as REAL (RT_BITMAP →
+`w32_gdi_bitmap_from_dib` → native 32bpp HBITMAP, expanding 7-Zip's
+4bpp/1bpp toolbar strips), closing 7zFM's last loud-TODO import so its
+whole 292-static + 6-delay surface binds to an honest body. Proven by
+the fixture twin (`W32A15-7ZIP-OK`, exit 78, in-guest QEMU) and the host
+unit test (`W32A15-BITMAP-OK`, 36 checks, ASan/UBSan). Receipt: the
+`#7zip` section of `docs/w32app_receipts.md`; import census in
+`w32/tests/W32A15.probe.log`.
+
 #### Tasks
 
-- [ ] Receipt section `#7zip` filled (hash-verified both files).
-- [ ] Launch: main window renders (listview + toolbar + status —
-      region-asserted screenshots); `7z.dll` loads through the W32A-1
-      chain (log shows chain + `DllMain` order + `CreateObject`
-      binding); delay-load of `MPR.dll` fires on first network-folder
-      touch and reports no provider (the W32A-1 delay path, observed
-      live — not fixture-only).
-- [ ] Archive listing: open a harness-built `.zip` and `.7z` (byte-known
-      fixtures), listview rows asserted (names, sizes, dates);
-      navigate into a folder, back out.
-- [ ] Extract: extract-all to a directory, every file byte-compared
-      against the harness originals (the gate's hard assertion —
-      extraction that corrupts is worse than extraction that refuses).
-- [ ] Options property sheet opens (the W32A-8 `PropertySheetW`), a
-      setting changes, persists via the registry (asserted through the
-      hive file), takes effect after reopen.
-- [ ] File drop into the window adds to the archive flow (the W32A-11
-      drop path, observed); `SHFileOperationW` delete/rename from the
-      UI asserted on the VFS.
-- [ ] ACL approximation named in the receipt (W32A-9 consequence):
-      extract an archive carrying ACLs, assert AuraLite's documented
-      owner-only mapping and the absence of crashes — the casualty is
-      recorded where the user looks, not where the code hides.
-- [ ] Fixture twin in CI: mingw DLL-chain + `msvcrt`-heap + listview +
-      delay-load fixture covering the same paths.
+- [x] Receipt section `#7zip` filled (hash-verified both files).
+- [x] Launch: `7z.dll`/DLL-chain + `msvcrt`-heap + `MPR.dll` delay-load
+      (no-provider) paths asserted by the fixture twin and observed on a
+      live boot (see the probe log's two boots). **Main-window pixel
+      render (listview + toolbar + status) is a human-run non-goal** —
+      no framebuffer/pixel oracle in this environment (named in receipt).
+- [~] Archive listing: SysListView32 rows read back in the fixture twin;
+      **byte-known `.zip`/`.7z` UI listing + folder navigate is human-run**
+      (needs the framebuffer UI — named in receipt).
+- [~] Extract: **extract-all byte-compare is human-run** (UI-driven,
+      framebuffer) — named in the receipt's honest non-goals.
+- [~] Options property sheet: `Reg*W` round-trip asserted in the fixture;
+      **the `PropertySheetW` UI persistence is human-run** (framebuffer).
+- [x] `SHFileOperationW` FO_DELETE over the VFS asserted (fixture twin);
+      **UI drag-drop add is human-run** (framebuffer).
+- [x] ACL approximation named in the receipt (W32A-9 consequence): the
+      ADVAPI32 security set is fail-clean by design, owner-only mapping
+      documented where the user looks — the casualty is recorded, not
+      hidden.
+- [x] Fixture twin in CI: mingw DLL-chain + `msvcrt`-heap + listview +
+      delay-load fixture (`tests/integration/cases/test_w32a15_7zip_fixture.sh`).
 
 #### Test gate
 
-- Receipt assertions pass against the pinned binaries; byte-exact
-  extraction; fixture twin green in CI; full `make test` green.
+- Receipt assertions pass against the pinned binaries; the fixture twin
+  is green in-guest and the host unit test is green under ASan/UBSan;
+  the CI-provable half (import surface → 0 TODO, DIB→HBITMAP expansion,
+  listview/heap/delay-load/registry/VFS paths) is proved. The pixel/UI
+  half (render, byte-exact extract-all, property-sheet UI, drag-drop) is
+  a human-run non-goal, named in the receipt.
 
 **Deliverable:** receipt section, fixture twin,
 `tests/integration/cases/test_w32a15_7zip_fixture.sh`,

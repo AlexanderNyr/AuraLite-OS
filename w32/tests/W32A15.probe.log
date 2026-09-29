@@ -1,0 +1,80 @@
+W32A-15 — 7-Zip File Manager app-gate import probe, from the pinned 7-Zip 24.09
+==============================================================================
+Base commit: c4c1006
+Tooling:     x86_64-w64-mingw32-objdump -p ; sha256sum ; a real QEMU boot
+Source:      https://www.7-zip.org/a/7z2409-x64.exe  (7zFM.exe + 7z.dll extracted)
+Binaries live in build/w32bins/ — gitignored, provenance-exempt (never committed).
+
+7zFM.exe   size=990720    sha256=dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58
+7z.dll     size=1907712   sha256=882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863
+           (== committed ledgers w32/app_ledger/7zFM-24.09.imports and
+            w32/app_ledger/7z-24.09.imports)
+
+--- 7zFM.exe import surface: 298 name imports across 11 DLLs ---
+    ADVAPI32.dll      21
+    COMCTL32.dll      10
+    COMDLG32.dll       3
+    GDI32.dll          1
+    KERNEL32.dll     106
+    MPR.dll            6   (delay-load — network folders)
+    msvcrt.dll        34
+    ole32.dll         11
+    OLEAUT32.dll       7
+    SHELL32.dll       11
+    USER32.dll        88
+
+--- 7z.dll import surface: 86 name imports across 5 DLLs ---
+    ADVAPI32.dll       1
+    KERNEL32.dll      54
+    msvcrt.dll        22   (malloc/free/realloc + the memcpy/str* set)
+    OLEAUT32.dll       7
+    USER32.dll         2
+
+--- resolution against the tree (w32_bind.c static exports[]) ---
+    7zFM.exe imports              : 298
+    resolved from static exports  : 292   (REAL or fail-clean)
+    delay-load (mpr.dll)          :   6   (fail-clean on first network touch)
+    left on a loud TODO stub      :   0
+    unbound / generated-other     :   0
+
+Before W32A-15, exactly ONE 7zFM import fell through to a loud TODO stub:
+USER32!LoadBitmapW.  The pinned 7zFM.exe hits it on its first paint, when it
+loads its toolbar bitmap strips — a real boot printed:
+
+    w32run: /fat/7ZFM.EXE mapped at 0x400000000000, 292 import(s) bound
+    w32: TODO user32.dll!LoadBitmapW needs W32A-5 (not yet implemented)
+
+W32A-15 lands LoadBitmapW as REAL (w32/src/w32_rsrc.c + w32/src/w32_gdi.c):
+RT_BITMAP resource -> device HBITMAP, expanding the 4bpp/16-colour toolbar
+strips (and the 1bpp marker glyph) through their palette into native 32bpp.
+LoadImageW's IMAGE_BITMAP path routes through the same helper.  After the fix
+the same boot no longer prints the TODO line, and 7zFM's entire static surface
+binds to an honest body.  Re-probed live:
+
+    w32run: /fat/7ZFM.EXE mapped at 0x400000000000, 292 import(s) bound
+    w32: advapi32!LsaOpenPolicy: refused -- no LSA database (STATUS_ACCESS_DENIED)
+    w32: advapi32!OpenProcessToken: refused -- no token (ERROR_NO_TOKEN)
+    w32: [shell32] SHGetFileInfoW: PIDL addressing is section 7 (ERROR_INVALID_PARAMETER)
+    (no LoadBitmapW TODO; no fault)
+
+--- the security set stays fail-clean per the ledger (documented non-goals) ---
+  ADVAPI32 (15 of 21 on 7zFM): AdjustTokenPrivileges, GetFileSecurityW,
+  LookupAccountNameW, LookupPrivilegeValueW, the Lsa* family, OpenProcessToken,
+  SetFileSecurityW — a single-user machine with no LSA/token database.  7-Zip's
+  ACL-carrying archives extract with AuraLite's documented owner-only mapping;
+  the casualty is named here and in the #7zip receipt, not hidden.
+  MPR (6, delay): WNet* fail clean — no network provider (a documented non-goal).
+
+--- fixture-twin gate (tests/integration/cases/test_w32a15_7zip_fixture.sh) ---
+  w32a15_7zip.exe — mingw PE importing the same surface BY NAME with an embedded
+  RT_BITMAP (a 4bpp packed DIB, 7-Zip's toolbar-strip shape) so LoadBitmapW
+  walks the real PE resource path.  In-guest QEMU result:
+      W32A15: 7-Zip FM app-gate fixture start
+      W32A15-7ZIP-OK
+      '/tests/w32a15_7zip.exe' (tid 8) exited (code=78)
+  6/6 gate assertions passed; no FAIL- mark, no TODO fall-through, no fault.
+
+--- host gate (tests/unit/test_w32_a15_bitmap.c) ---
+  w32_gdi_bitmap_from_dib driven against hand-built packed DIBs at 1/4/8/24/32
+  bpp, bottom-up and top-down, plus malformed inputs that must fail clean.
+      W32A15-BITMAP-OK (36 checks)   [ASan+UBSan]

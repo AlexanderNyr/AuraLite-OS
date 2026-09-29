@@ -1,0 +1,8 @@
+/* w32/tests/w32a15_7zip.rc — RT_BITMAP resource for the W32A-15 fixture.
+ *
+ * windres strips the BITMAPFILEHEADER and embeds the packed DIB (a 4bpp,
+ * 16-colour, bottom-up image — the exact shape 7-Zip's toolbar strips ship
+ * in) as an RT_BITMAP so LoadBitmapW walks the real PE resource path.
+ *
+ * SPDX-License-Identifier: Apache-2.0 */
+100 BITMAP "w32a15_glyph.bmp"

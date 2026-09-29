@@ -1661,6 +1661,64 @@ W32ABI W32_HBITMAP CreateDIBSection(W32_HDC hdc, const W32_BITMAPINFO *bi,
     return (W32_HBITMAP)handle_of_bmp(b);
 }
 
+/* W32A-15: build a device HBITMAP from a packed DIB -- the on-disk shape
+ * of an RT_BITMAP resource (BITMAPINFOHEADER, optional colour table, then
+ * the pixel bits; no BITMAPFILEHEADER prefix).  7-Zip's toolbars ship at
+ * 4bpp (16-colour) and the sort-marker glyph is 1bpp -- depths the raster
+ * sampler above does not read directly -- so every source depth is
+ * expanded through its palette into the engine's native 32bpp top-down
+ * ARGB, the one format the fast path handles everywhere.  Rows in a DIB
+ * are bottom-up unless biHeight is negative; the expansion flips them so
+ * the result is top-down like every other engine bitmap. */
+W32_HBITMAP w32_gdi_bitmap_from_dib(const void *dib, uint32_t dibsz) {
+    if (!dib || dibsz < 40) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    const uint8_t *blob = (const uint8_t *)dib;
+    const W32_BITMAPINFOHEADER *bh = (const W32_BITMAPINFOHEADER *)(const void *)blob;
+    uint32_t hdr = bh->biSize;
+    if (hdr < 40 || hdr > dibsz) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    if (bh->biCompression != W32_BI_RGB) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    int bpp = bh->biBitCount;
+    if (bpp != 1 && bpp != 4 && bpp != 8 && bpp != 24 && bpp != 32) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
+    }
+    int32_t w = bh->biWidth, h = bh->biHeight, top_down = 0;
+    if (h < 0) { top_down = 1; h = -h; }
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    uint32_t ct_n = bh->biClrUsed;
+    if (ct_n == 0 && bpp <= 8) ct_n = 1u << bpp;
+    if (ct_n > 256) ct_n = 256;
+    const W32_RGBQUAD *ct = (const W32_RGBQUAD *)(const void *)(blob + hdr);
+    uint64_t ct_bytes = (uint64_t)ct_n * sizeof(W32_RGBQUAD);
+    if ((uint64_t)hdr + ct_bytes > dibsz) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    const uint8_t *pix = blob + hdr + ct_bytes;
+    uint32_t src_stride = (uint32_t)(((uint64_t)w * (uint64_t)bpp + 31u) / 32u * 4u);
+    uint64_t need = (uint64_t)src_stride * (uint64_t)h;
+    if ((uint64_t)(pix - blob) + need > dibsz) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    gdi_bitmap_t *b = bmp_create_internal(w, h, 32, 0, 0, 0, 0);
+    if (!b) { w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    uint32_t *dst = (uint32_t *)(void *)b->bits;
+    int32_t dstride = (int32_t)(b->stride / 4u);
+    for (int32_t y = 0; y < h; y++) {
+        int32_t sy = top_down ? y : (h - 1 - y);
+        const uint8_t *srow = pix + (uint32_t)sy * src_stride;
+        for (int32_t x = 0; x < w; x++) {
+            uint32_t r, g, bl;
+            if (bpp == 32) { const uint8_t *p = srow + 4 * (uint32_t)x; bl = p[0]; g = p[1]; r = p[2]; }
+            else if (bpp == 24) { const uint8_t *p = srow + 3 * (uint32_t)x; bl = p[0]; g = p[1]; r = p[2]; }
+            else {
+                uint32_t idx;
+                if (bpp == 8)      idx = srow[x];
+                else if (bpp == 4) idx = (x & 1) ? (srow[x >> 1] & 0x0Fu) : (uint32_t)(srow[x >> 1] >> 4);
+                else               idx = (uint32_t)(srow[x >> 3] >> (7 - (x & 7))) & 1u;  /* 1bpp, MSB first */
+                if (idx >= ct_n) idx = 0;
+                r = ct[idx].red; g = ct[idx].green; bl = ct[idx].blue;
+            }
+            dst[y * dstride + x] = 0xFF000000u | (r << 16) | (g << 8) | bl;
+        }
+    }
+    return (W32_HBITMAP)handle_of_bmp(b);
+}
+
 /* DIB row packing for GetDIBits/SetDIBits: caller's BITMAPINFOHEADER
  * governs the format; we support the formats the engine stores. */
 static int dib_pack(gdi_bitmap_t *b, W32_BITMAPINFOHEADER *bh,
