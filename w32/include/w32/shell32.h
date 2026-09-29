@@ -34,7 +34,11 @@
  *     drop-list model now fed by compositor GUI_EVT_DROP; REAL against it;
  *   - SHBrowseForFolderW — the folder picker over the W32A-6 dialog
  *     engine;
- *   - SHGetDesktopFolder — E_NOTIMPL, the namespace object is §7.
+ *   - SHGetDesktopFolder — REAL (W32RUN_PLAN WR-1): a minimal-but-honest
+ *     IShellFolder/IEnumIDList/PIDL namespace, Desktop -> My Computer ->
+ *     C: -> CFSFolder over the VFS (FindFirstFileW).  The object graph is
+ *     w32/src/shell32_ns.c; the ABI is w32/include/w32/shell32_priv.h.  The
+ *     GUI-object verbs (CreateViewObject/GetUIObjectOf) fail clean, named.
  *
  * Licensed Apache-2.0; interface facts only.
  */
@@ -80,7 +84,7 @@ W32_LONG W32ABI SHGetSpecialFolderLocation(W32_HWND owner, W32_DWORD csidl,
                                            void **pidl);
 /* Decodes a PIDL back to its path.  TRUE + the path in buf. */
 W32_BOOL W32ABI SHGetPathFromIDListW(const void *pidl, W32_LPWSTR buf);
-/* The desktop folder object (IShellFolder) is plan §7. */
+/* The desktop folder object (IShellFolder) — REAL (WR-1), see shell32_priv.h. */
 W32_LONG W32ABI SHGetDesktopFolder(void **out);
 
 /* ---- the PIDL model (ours, documented; not byte-compatible) ------------------

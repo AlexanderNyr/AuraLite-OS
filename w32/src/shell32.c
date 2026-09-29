@@ -17,6 +17,7 @@
  */
 
 #include "w32/shell32.h"
+#include "w32/shell32_priv.h"  /* WR-1: the IShellFolder/PIDL namespace (§7) */
 #include "w32/shlwapi.h"       /* PathMatchSpecW for wildcards */
 #include "w32/w32_errno.h"
 #include "w32/w32_utf.h"
@@ -232,10 +233,10 @@ W32_BOOL W32ABI SHGetPathFromIDListW(const void *pidl, W32_LPWSTR buf) {
 }
 
 W32_LONG W32ABI SHGetDesktopFolder(void **out) {
-    if (out) *out = NULL;
-    sh_note("SHGetDesktopFolder: the namespace object is plan section 7 "
-            "(E_NOTIMPL)");
-    return 0x80004001uL;            /* E_NOTIMPL */
+    /* WR-1 (W32RUN_PLAN.md): the namespace is REAL now — a minimal-but-honest
+     * IShellFolder rooted at Desktop -> My Computer -> C: -> CFSFolder(VFS).
+     * The object graph lives in w32/src/shell32_ns.c. */
+    return ns_get_desktop_folder(out);
 }
 
 /* ---- IShellItem (minimal, REAL) ---------------------------------------------------- */
@@ -514,15 +515,40 @@ W32_DWORD_PTR W32ABI SHGetFileInfoW(W32_LPCWSTR path, W32_DWORD attrs,
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
+    /* WR-1: PIDL addressing is REAL now — decode one of our namespace PIDLs to
+     * its filesystem path and fall through to the by-path body.  A virtual
+     * PIDL (My Computer) has no filesystem path: answer the display/type name
+     * from the namespace and return. */
+    uint16_t pidl_path[300];
+    W32_LPCWSTR effective = path;
     if (flags & W32_SHGFI_PIDL) {
-        sh_note("SHGetFileInfoW: PIDL addressing is section 7 "
-                "(ERROR_INVALID_PARAMETER)");
-        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
-        return 0;
+        int pr = ns_pidl_to_path(path, pidl_path, 300);
+        if (pr < 0) {
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        if (pr == 0) {
+            /* the "Computer" root: it is a folder with no filesystem path */
+            if (flags & W32_SHGFI_DISPLAYNAME) {
+                uint16_t w[16]; sh_a2w("Computer", w, 16);
+                size_t i = 0; while (w[i] && i < 259) { sfi->szDisplayName[i] = w[i]; i++; }
+                sfi->szDisplayName[i] = 0;
+            }
+            if (flags & W32_SHGFI_TYPENAME) {
+                uint16_t w[16]; sh_a2w("System Folder", w, 16);
+                size_t i = 0; while (w[i] && i < 79) { sfi->szTypeName[i] = w[i]; i++; }
+                sfi->szTypeName[i] = 0;
+            }
+            if (flags & W32_SHGFI_ATTRIBUTES) sfi->dwAttributes = 0x10u; /* DIRECTORY */
+            if (flags & W32_SHGFI_ICON) { sfi->hIcon = sh_doc_icon(); sfi->iIcon = 0; }
+            return 1;
+        }
+        effective = pidl_path;
+        flags &= ~(W32_DWORD)W32_SHGFI_PIDL;   /* now a plain path request */
     }
 
     char a[512];
-    if (sh_w2a(path, a, sizeof a) <= 0) {
+    if (sh_w2a(effective, a, sizeof a) <= 0) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }

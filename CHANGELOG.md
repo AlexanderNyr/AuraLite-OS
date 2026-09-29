@@ -2,6 +2,44 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WR-1 — The SHELL32 namespace is real (§7 closed)] 2026-09-29
+
+Closes the long-standing SHELL32 "plan section 7": the shell namespace object,
+which `SHGetDesktopFolder` refused with `E_NOTIMPL` and `SHGetFileInfoW` refused
+for PIDL addressing. It is the one hard dependency for the WR-2 live 7-Zip
+panel, which gives `E_FAIL` instead of a file listing without it.
+
+- **A real `IShellFolder` graph.** `w32/src/shell32_ns.c` (ABI in
+  `w32/include/w32/shell32_priv.h`) builds a minimal-but-honest namespace
+  rooted `Desktop → My Computer → C: → the filesystem (CFSFolder)`.
+  `EnumObjects` walks the real VFS through `FindFirstFileW`/`FindNextFileW`
+  into an `IEnumIDList`; `BindToObject` descends; `GetDisplayNameOf`
+  (normal / in-folder / for-parsing), `GetAttributesOf` (`SFGAO_FOLDER`/
+  `FILESYSTEM`/`STREAM`/`CANRENAME`/`CANDELETE`/…), `CompareIDs` and
+  `ParseDisplayName` answer against real entries. PIDLs are byte-compatible
+  with the existing single-item pair, so `SHGetPathFromIDListW` and the graph
+  share one layout.
+- **Scoped by measurement (D-WR1).** Only the surface the pinned `7zFM.exe`
+  imports. The GUI-object verbs a single-user file panel does not need —
+  `CreateViewObject`, `GetUIObjectOf`, `BindToStorage`, `SetNameOf` — fail
+  clean `E_NOTIMPL`, named, not faked (D-WR4).
+- **`SHGetFileInfoW` accepts PIDLs.** The `SHGFI_PIDL` early-out is gone:
+  a filesystem PIDL decodes to its path and reuses the by-path body for
+  name/type/icon/attrs; the virtual "Computer" root answers
+  "Computer"/"System Folder"/`DIRECTORY` without a filesystem path.
+- **The gates.** Host twin `tests/unit/test_shell_ns.c` amalgamates the
+  namespace and mocks `FindFirstFileW`/`FindNextFileW`/`FindClose` against a
+  scripted VFS, driving the whole graph through the vtable under ASan/UBSan —
+  **45 checks, 0 failures, Find handles balanced 9/9**; wired into
+  `UNIT_TESTS`. Guest twin `w32/tests/wr1_shellns.c` +
+  `tests/integration/cases/test_wr1_shell_namespace.sh` (registered in
+  `run_all.sh`) drive the SAME ABI from a compiler-emitted PE in the booted
+  OS, asserting `WR1-SHELLNS-OK`/exit 78; it loud-SKIPs without the
+  cross-compiler, like every W32A-2…A-16 fixture. Provenance and
+  test-registry gates green (210 cases). `docs/win32.md` updated: SHELL32
+  is 19/19 REAL with the namespace described, not `§7`.
+
+
 ## [WR-0 — The live-GUI lane and its oracles] 2026-09-29
 
 Opens the W32RUN ladder (`docs/plans/W32RUN_PLAN.md`): the successor to

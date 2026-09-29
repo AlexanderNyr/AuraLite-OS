@@ -3101,6 +3101,27 @@ $(W32A16_EXE): $(W32_MINGW_STAMP)
 	@: > $@
 endif
 
+# W32RUN_PLAN.md WR-1: the SHELL32 namespace guest fixture.  One mingw-w64 TU
+# (-nostdlib, --entry=winstart, no CRT) that drives the IShellFolder /
+# IEnumIDList / PIDL surface the pinned 7zFM.exe imports, through the documented
+# COM vtable — the same call path a real consumer takes.  -lshell32 supplies
+# SHGetDesktopFolder, -lole32 the CoInitialize/CoTaskMemFree the consumer frees
+# PIDLs through, and -luuid the IID_IShellFolder/IEnumIDList/IUnknown GUIDs.
+W32WR1_EXE := $(BUILD_DIR)/user/wr1_shellns.exe
+ifneq ($(MINGW_CC),)
+$(W32WR1_EXE): w32/tests/wr1_shellns.c $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart \
+	    -lshell32 -lole32 -luuid -lkernel32 -luser32 -lgcc
+	@echo "  [pe] $@ (WR-1 SHELL32 namespace guest fixture)"
+else
+$(W32WR1_EXE): $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "  [pe] skipping the WR-1 fixture (no x86_64-w64-mingw32-gcc)"
+	@: > $@
+endif
+
 # W32A-4: the real-C++ unwinding fixture.  -nostdlib + --entry=winstart like
 # the A2 probes (kernel32-only imports, no msvcrt.dll); libstdc++/libgcc come
 # in statically, and the TU carries every CRT shim the link needs (see the
@@ -3309,7 +3330,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
@@ -3539,6 +3560,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@if [ -s $(W32A15_EXE) ]; then cp $(W32A15_EXE) $(INITRD_DIR)/tests/w32a15_7zip.exe; fi
 # W32A-16: the Notepad++ app-gate guest fixture, basename-preserved.
 	@if [ -s $(W32A16_EXE) ]; then cp $(W32A16_EXE) $(INITRD_DIR)/tests/w32a16_npp.exe; fi
+# WR-1: the SHELL32 namespace guest fixture, basename-preserved.
+	@if [ -s $(W32WR1_EXE) ]; then cp $(W32WR1_EXE) $(INITRD_DIR)/tests/wr1_shellns.exe; fi
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.
@@ -3829,6 +3852,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a15_bitmap \
                 $(BUILD_DIR)/test_w32_a16_shlwapi \
                 $(BUILD_DIR)/test_w32_a16_layout_icon \
+                $(BUILD_DIR)/test_shell_ns \
                 $(BUILD_DIR)/test_fsformat \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -4116,6 +4140,15 @@ $(BUILD_DIR)/test_w32_a11_com: tests/unit/test_w32_a11_com.c \
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) $< -lpthread -o $@
+# WR-1 (W32RUN_PLAN.md): the SHELL32 namespace. The test amalgamates
+# shell32_ns.c and mocks the ONLY kernel32 surface it uses (FindFirstFileW/
+# FindNextFileW/FindClose), so it links shell32_ns.c alone — no kernel32_fs.c.
+$(BUILD_DIR)/test_shell_ns: tests/unit/test_shell_ns.c \
+                                w32/src/shell32_ns.c \
+                                w32/include/w32/shell32_priv.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+	          -fsanitize=address,undefined $(W32_INC) -I . $< -o $@
 # Activation probes are REAL now: CLSIDFromProgID runs against the actual
 # W32A-9 hive on a scratch file (the A9 amalgamation pattern updated for
 # ole32), CoCreateInstance answers its typed refusals, the probe lines are

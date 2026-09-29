@@ -130,6 +130,7 @@ ALL_CASES=(
     test_w32a14_putty_fixture
     test_w32a15_7zip_fixture
     test_w32a16_npp_fixture
+    test_wr1_shell_namespace
     test_ahci_large_read
     test_doom
     test_stack_guard

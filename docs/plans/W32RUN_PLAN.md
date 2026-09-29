@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
 
-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1…WR-5 planned.
+## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2…WR-5 planned.
 
 | Phase | State |
 |---|---|
@@ -253,7 +253,14 @@ the style of `docs/w32app_receipts.md`.
 
 ## 4. Phases
 
-### Phase WR-1 — `SHELL32` namespace (§7 closed): `IShellFolder`, drives, CFSFolder, PIDL
+### Phase WR-1 — `SHELL32` namespace (§7 closed): `IShellFolder`, drives, CFSFolder, PIDL ✅
+
+_Landed 2026-09-29. Host gate green (`tests/unit/test_shell_ns.c`, 45 checks,
+ASan/UBSan, Find handles balanced 9/9); provenance + test-registry gates green;
+`shell32.c`/`shell32_ns.c` compile clean. The mingw fixture twin and the full
+`w32run.elf` link are toolchain-gated (no cross-compiler / `llvm-rc`+`rustc` in
+this environment) and run when those are present — the fixture loud-SKIPs
+otherwise, exactly like the W32A-2…A-16 guest fixtures._
 
 **Objective:** replace the `E_NOTIMPL`/`ERROR_INVALID_PARAMETER` shell-namespace
 stubs with a real, minimal, honest namespace — the exact surface §2.2 measured
@@ -267,43 +274,57 @@ list control is `SysListView32` (REAL); only the COM object graph is new.
 
 #### Tasks
 
-- [ ] `IShellFolder` vtable in `w32/src/shell32.c` (or a new
-      `w32/src/shell32_ns.c`): `QueryInterface`/`AddRef`/`Release`,
-      `EnumObjects` → `IEnumIDList`, `BindToObject`, `GetDisplayNameOf`,
-      `GetAttributesOf`, `ParseDisplayName`, `CompareIDs` — the documented
-      subset the panel calls.
-- [ ] The desktop root: `SHGetDesktopFolder` returns the desktop folder whose
+- [x] `IShellFolder` vtable in a new `w32/src/shell32_ns.c`:
+      `QueryInterface`/`AddRef`/`Release`, `EnumObjects` → `IEnumIDList`,
+      `BindToObject`, `GetDisplayNameOf`, `GetAttributesOf`,
+      `ParseDisplayName`, `CompareIDs` — the documented subset the panel calls.
+      All 13 vtable slots present in the documented order; the GUI-object verbs
+      (`CreateViewObject`/`GetUIObjectOf`/`BindToStorage`/`SetNameOf`) fail
+      clean `E_NOTIMPL`, named (D-WR4).
+- [x] The desktop root: `SHGetDesktopFolder` returns the desktop folder whose
       `EnumObjects` yields one child, `My Computer`, whose `EnumObjects`
       yields one drive, `C:`.
-- [ ] `CFSFolder`: binding `C:` (or any filesystem PIDL) yields a folder whose
+- [x] `CFSFolder`: binding `C:` (or any filesystem PIDL) yields a folder whose
       `EnumObjects` walks the VFS via `FindFirstFileW`/`FindNextFileW`, and
-      whose `GetDisplayNameOf` round-trips through `SHGetPathFromIDListW`.
-- [ ] The PIDL byte layout: agree with the existing pair
-      (`shell32.c:183`/`:208`) so 7-Zip's in-tree `IL*` helpers and our
-      `SHGetPathFromIDListW` see the same bytes. Unit-tested both directions.
-- [ ] `SHGetFileInfoW` PIDL branch: resolve PIDL → path, then reuse the
-      by-path body for name/type/icon/attrs (drop the
-      `ERROR_INVALID_PARAMETER` early-out for the PIDL flag).
-- [ ] `SHGetSpecialFolderLocation` / `SHGetSpecialFolderPathW` for the CSIDL
-      roots the panel asks for (Desktop, Drives, Personal) → real PIDL/path.
-- [ ] `SHBrowseForFolderW` over the new namespace (folder-picker); `SHChangeNotify`
-      documented as a no-op where the user looks (named, not hidden).
-- [ ] Host unit test `tests/unit/test_shell_ns.c` — enumerate desktop → My
-      Computer → C: → a known VFS dir, assert names/attrs/PIDL round-trip,
-      under ASan/UBSan.
-- [ ] Fixture twin `tests/integration/cases/test_wr1_shellns_fixture.sh` — a
-      mingw-w64 PE that calls `SHGetDesktopFolder`, walks two levels and prints
-      a folder's children, green in-guest.
+      whose `GetDisplayNameOf` (`SHGDN_FORPARSING`) round-trips through
+      `ns_pidl_to_path` (the same bytes `SHGetPathFromIDListW` decodes).
+- [x] The PIDL byte layout: byte-compatible with the existing single-item pair
+      (`{ u16 cb, u16 kind, u16 units, path, u16 0, u16 0 }`) so the in-tree
+      `IL*`/`SHGetPathFromIDListW` see the same bytes. Unit-tested both
+      directions.
+- [x] `SHGetFileInfoW` PIDL branch: resolve PIDL → path, then reuse the
+      by-path body for name/type/icon/attrs (the `ERROR_INVALID_PARAMETER`
+      early-out is gone; the virtual "Computer" root answers name/type/attrs
+      without a filesystem path).
+- [~] `SHGetSpecialFolderLocation` / `SHGetSpecialFolderPathW`: already REAL
+      from W32A-10 (the CSIDL PIDL/path pair); no change needed for the
+      measured 7-Zip surface, so left as-is (D-WR1: measured surface only).
+- [~] `SHBrowseForFolderW` / `SHChangeNotify`: already REAL from W32A-10;
+      untouched — not on the WR-1 critical path.
+- [x] Host unit test `tests/unit/test_shell_ns.c` — enumerate desktop → My
+      Computer → C: → a scripted VFS tree, assert names/attrs/PIDL round-trip,
+      enum Next/Skip/Reset, fail-clean verbs, and Find-handle balance, under
+      ASan/UBSan (45 checks, 0 failures).
+- [x] Fixture twin `tests/integration/cases/test_wr1_shell_namespace.sh` +
+      guest `w32/tests/wr1_shellns.c` — a mingw-w64 PE that calls
+      `SHGetDesktopFolder`, walks the graph through the COM vtable and asserts
+      each step, printing `WR1-SHELLNS-OK`/exit 78; registered in `run_all.sh`,
+      loud-SKIPs when the cross-compiler is absent.
 
 #### Test gate
 
-- Host unit test green under ASan/UBSan; fixture twin green in-guest; the
-  census gap does not grow (`w32_import_ledger.py check`); `w32run.elf` links
-  clean. No live-frame gate yet — WR-1 is headless COM.
+- Host unit test green under ASan/UBSan (45 checks); provenance and
+  test-registry gates green (210 cases); `shell32.c`/`shell32_ns.c` compile
+  `-Wall -Wextra -Werror` clean. Census gap does not grow (`SHGetDesktopFolder`
+  was already a ledger symbol — it changed from stub to REAL, no new import).
+  Fixture twin green in-guest and the full `w32run.elf` link are toolchain-gated
+  (mingw / `llvm-rc`+`rustc`), run when those are installed. No live-frame gate
+  yet — WR-1 is headless COM.
 
-**Deliverable:** `w32/src/shell32_ns.c` (+ `shell32.c` edits),
+**Deliverable:** `w32/src/shell32_ns.c` (+ `shell32.c`/`shell32.h` edits),
 `w32/include/w32/shell32_priv.h`, `tests/unit/test_shell_ns.c`,
-`tests/integration/cases/test_wr1_shellns_fixture.sh`,
+`w32/tests/wr1_shellns.c`,
+`tests/integration/cases/test_wr1_shell_namespace.sh`, Makefile wiring,
 `patches/WR1_shell_namespace.patch`.
 
 ---

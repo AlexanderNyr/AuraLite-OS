@@ -467,8 +467,9 @@ flows but carry a documented approximation. Each has its own section:
 - **CryptoAPI is hash-only.** `crypt32` (`Cert*`/`CryptMsg*`) is `FAIL-CLEAN`;
   only the `advapi32` `Crypt*Hash` surface is `REAL` — see "CryptoAPI is hash-only".
 - **Shell PIDL subset and no-undo file ops.** The namespace is a real
-  filesystem view over a PIDL subset, and `SHFileOperation` deletes without a
-  recycle-bin undo — see "The shell is a real filesystem view".
+  `IShellFolder` filesystem view over a PIDL subset (WR-1), and
+  `SHFileOperation` deletes without a recycle-bin undo — see "The shell is a
+  real filesystem view".
 - **Unthemed fallbacks.** `uxtheme` draws the classic (unthemed) control when a
   visual style part is unknown rather than refusing — see the theme note under
   "W32A-11 incremental COM, IME and themed controls".
@@ -709,9 +710,24 @@ else `/tmp` with the volatility logged once. `CSIDL_FLAG_CREATE` creates
 the directory.
 
 **PIDL** (`SHGetSpecialFolderLocation` + `SHGetPathFromIDListW`): one
-item `{ u16 cb, u16 csidl, u16 path_units, UTF-16 path, u16 0 }`. The two
-functions round-trip; nothing else accepts a PIDL (full PIDL algebra is
-§7). `SHGetDesktopFolder` is `E_NOTIMPL`.
+item `{ u16 cb, u16 kind, u16 path_units, UTF-16 path, u16 0 }`. The
+functions round-trip, and the namespace object below now consumes and
+produces the same byte layout.
+
+**The namespace** (`SHGetDesktopFolder`, WR-1): a minimal-but-real
+`IShellFolder` / `IEnumIDList` / PIDL graph rooted
+`Desktop → My Computer → C: → the filesystem (CFSFolder)`. `EnumObjects`
+walks the real VFS through `FindFirstFileW`; `BindToObject` descends;
+`GetDisplayNameOf`/`GetAttributesOf`/`CompareIDs`/`ParseDisplayName` answer
+against real entries (a directory reports `SFGAO_FOLDER|SFGAO_FILESYSTEM`,
+a file `SFGAO_STREAM|SFGAO_CANRENAME|SFGAO_CANDELETE`). The GUI-object
+verbs are a documented non-goal on this layer and fail clean by name:
+`CreateViewObject`/`GetUIObjectOf`/`BindToStorage`/`SetNameOf` →
+`E_NOTIMPL` (the shell *view* is a compositor object; rename lives on
+`SHFileOperationW`). The private ABI is `w32/include/w32/shell32_priv.h`;
+the graph is `w32/src/shell32_ns.c`. `SHGetFileInfoW` now decodes a
+namespace PIDL to its path (or answers "Computer"/"System Folder" for the
+virtual root) instead of refusing `SHGFI_PIDL`.
 
 **IShellItem** (`SHCreateItemFromParsingName`): a minimal `IShellItem`
 for filesystem paths; `GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)`
@@ -734,7 +750,8 @@ notification engine (`ag_notify`).
 executes via `CreateProcessW` and returns `>32`; every other verb
 (`runas` → `SE_ERR_ACCESSDENIED`, `print`/`edit`/unknown → `SE_ERR_NOASSOC`)
 is refused by name. Documents and directories refuse as `NOASSOC` (no
-association table, desktop namespace is §7).
+association table; the namespace object that would host a default-verb
+lookup is the WR-1 `IShellFolder` above, which does not implement one).
 
 **Notifications** (`Shell_NotifyIconW`): 8 slots keyed `(hwnd, id)`;
 `ADD` shows `ag_notify`, `MODIFY` updates, `DELETE` removes;
