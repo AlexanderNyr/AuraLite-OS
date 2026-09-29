@@ -2,6 +2,80 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-18 — Integration, documentation and the honest matrix] 2026-09-29
+
+Closes the Win32-application ladder (W32APP_PLAN W32A-0 – W32A-18): the plan is
+now machine-tied to the tree and the whole surface is legible.
+
+- **`docs/win32.md` is the honest matrix.** `tools/gen_w32_api_table.py` grew
+  past its 6-module cap to **every** module the export table binds — **929
+  functions across 21 modules** — and now stamps each function with the **D9
+  class read from `w32/app_ledger/*.imports`** (894 REAL, 35 FAIL-CLEAN). The
+  table regenerates **byte-identical**; `--check` is a `make test-unit` gate.
+  Approximations (version-identity constant, single-user SIDs, PIDL subset,
+  no-undo file ops, unthemed fallbacks, IME stubs, offline assumptions) are
+  indexed above their per-topic sections.
+- **`tools/check_w32app_claims.py` is complete and wired into `make
+  test-unit`.** Artefact pins now cover every `✅` phase W32A-0 – W32A-18
+  (module source + header, unit test, in-guest case, ledgers, receipts,
+  provenance rule); receipt greps cover W32A-5 – W32A-18. Two drift bugs fixed:
+  the checker no longer pins uncommitted `patches/W32A{2,3,4}_*.patch` as
+  tree-existence (its docstring says patch existence is *not* asserted — they
+  are RECEIPT greps now), and a new **Outcome-B guard** holds Audacity (W32A-17)
+  green only while its `.gap` ledger enumerates unmet modules and its receipt is
+  filled. `--check` and `--selftest` are green.
+- **`docs/status.md` / `README.md`.** The `w32` row is refreshed to the real
+  surface and **stays 🧪** with the gate list: the app gates are green on their
+  CI-provable half (ledgers + fixtures) while the human-run in-guest launch
+  receipts remain `AWAITING`, and Audacity is a deliberate Outcome B.
+- **`w32/examples/`** gains `dialog-app`, `listview-app` and `delay-load-app`
+  (mingw-w64), built against the staged SDK by `tools/w32_sdk_check.sh`.
+- **Residue ratchet reconciled.** The W32A-17 landing had left the residue
+  harvest drifting (`W32APP_PLAN.md` marker lines moved without moving
+  `tools/residue_baseline.txt`); this commit moves the baseline **and** the
+  ledger together per the RESIDUE_PLAN protocol and records the surviving W32
+  residue as hand-off rows owned by the next series, **W32U**.
+
+Combined deliverable: `patches/W32A18_integration.patch` carries **both** W32A-17
+and W32A-18.
+
+## [W32A-17 — App horizon: Audacity → OUTCOME B (does not run)] 2026-09-29
+
+The horizon phase, modelled on W32-7 ("`LoadLibrary`, or a documented refusal"):
+it succeeds by **deciding with evidence**. Decision: **Audacity 3.7.5 does not
+run**, and the committed artefact is the gap ledger
+`w32/app_ledger/audacity-3.7.5.gap`, not a launch receipt.
+
+Pinned **Audacity 3.7.5** 64-bit portable zip (`Audacity.exe` sha256
+`e82c5ef5…`, 13 302 832 B — obtained from the publisher, never committed; chosen
+over 4.0.0 because the plan asks for a portable x64 zip and anticipated
+wxWidgets, bundled here as 3.1.3).
+
+**The horizon surprise:** the single-binary ledger model breaks. Measured with
+the loader's own parser (`build/w32_peinfo`), **Audacity.exe imports 6349 symbols
+across 34 modules — every one a BUNDLED DLL** (`lib-*` + `wxmsw313u_*`), zero
+Windows system imports at the exe level. The real gap is transitive across the
+117 bundled DLLs: **33 system modules / 1241 symbols, of which 14 modules / 822
+symbols are MET and 19 modules / 419 symbols are the GAP** — the whole Universal
+CRT api-set (`api-ms-win-crt-*`, 302 syms; the personality bridges only legacy
+`msvcrt.dll`), `winmm` audio (74), `wsock32` (31), plus `rpcrt4`/`msimg32`/
+`oleacc`/`winspool.drv`/`bcrypt`.
+
+**Real launch attempt** (Audacity.exe staged into the initrd, booted under QEMU,
+`run /tests/audacity.exe`): `w32run: too many relocations`, exit 1. **First fatal
+gap:** Audacity.exe has **90 932** base relocations vs w32run's fixed
+`pe_reloc_t relocs[16384]` (`userspace/apps/w32run/w32run.c:167`) — it dies
+before import resolution. Three independent walls, each fatal: scale (relocations)
+→ shape (117-DLL bundled graph) → runtime (UCRT + audio).
+
+**Next-plan seed** ("W32U" — the modern-runtime horizon), dependency-ordered:
+(a) a dynamic-scale loader (heap-allocated reloc/import tables + a multi-DLL
+bundled-application module graph); (b) a Universal CRT bridge (`api-ms-win-crt-*`
+over the W32A-13 `msvcrt` engine); (c) a `winmm`/WASAPI audio subsystem. **No
+personality `.c` code changed** — an honest gap list beats a padded
+implementation of the wrong order of magnitude. Patch:
+`patches/W32A17_audacity.patch`.
+
 ## [W32A-16 — App gate III: Notepad++ (CI-provable half)] 2026-09-29
 
 The third application gate. The pinned **Notepad++ 8.8.9** `notepad++.exe`

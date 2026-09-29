@@ -44,29 +44,34 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*697 functions across 6 modules. This table is generated from
-`w32/src/w32_bind.c` by `tools/gen_w32_api_table.py`; edit the export table, not this list.*
+*929 functions across 21 modules (894 REAL, 35 FAIL-CLEAN). This table is generated from
+`w32/src/w32_bind.c` and the D9 classes in `w32/app_ledger/*.imports` by
+`tools/gen_w32_api_table.py`; edit the export table or the ledgers, not this list.*
 
-**ADVAPI32.dll** (46)
+*D9 class per function: **REAL** — full behaviour for the ladder's flows; **FAIL-CLEAN** — binds, then reports honest failure (never a success-shaped lie); **REFUSE** — load-time refusal naming the symbol. A function no ledger records defaults to REAL.*
 
-- `AdjustTokenPrivileges` · `AllocateAndInitializeSid` · `CheckTokenMembership`
-- `CopySid` · `CryptAcquireContextW` · `CryptCreateHash`
-- `CryptDestroyHash` · `CryptGetHashParam` · `CryptHashData`
-- `CryptReleaseContext` · `EqualSid` · `FreeSid`
-- `GetFileSecurityW` · `GetLengthSid` · `GetUserNameA`
-- `GetUserNameW` · `InitializeSecurityDescriptor` · `IsTextUnicode`
-- `LookupAccountNameW` · `LookupPrivilegeValueW` · `LsaAddAccountRights`
-- `LsaClose` · `LsaOpenPolicy` · `OpenProcessToken`
-- `RegCloseKey` · `RegCreateKeyExA` · `RegCreateKeyExW`
-- `RegDeleteKeyA` · `RegDeleteKeyExW` · `RegDeleteKeyW`
-- `RegDeleteValueW` · `RegEnumKeyA` · `RegEnumKeyExW`
-- `RegFlushKey` · `RegGetValueW` · `RegOpenKeyExA`
-- `RegOpenKeyExW` · `RegQueryInfoKeyW` · `RegQueryValueExA`
-- `RegQueryValueExW` · `RegSetValueExA` · `RegSetValueExW`
-- `SetFileSecurityW` · `SetSecurityDescriptorDacl` · `SetSecurityDescriptorOwner`
+**ADVAPI32.dll** (46) — 37 REAL, 9 FAIL-CLEAN
+
+- `AllocateAndInitializeSid` · `CheckTokenMembership` · `CopySid`
+- `CryptAcquireContextW` · `CryptCreateHash` · `CryptDestroyHash`
+- `CryptGetHashParam` · `CryptHashData` · `CryptReleaseContext`
+- `EqualSid` · `FreeSid` · `GetLengthSid`
+- `GetUserNameA` · `GetUserNameW` · `InitializeSecurityDescriptor`
+- `IsTextUnicode` · `RegCloseKey` · `RegCreateKeyExA`
+- `RegCreateKeyExW` · `RegDeleteKeyA` · `RegDeleteKeyExW`
+- `RegDeleteKeyW` · `RegDeleteValueW` · `RegEnumKeyA`
+- `RegEnumKeyExW` · `RegFlushKey` · `RegGetValueW`
+- `RegOpenKeyExA` · `RegOpenKeyExW` · `RegQueryInfoKeyW`
+- `RegQueryValueExA` · `RegQueryValueExW` · `RegSetValueExA`
+- `RegSetValueExW` · `SetSecurityDescriptorDacl` · `SetSecurityDescriptorOwner`
 - `SystemFunction036`
 
-**COMCTL32.dll** (27)
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `AdjustTokenPrivileges` · `GetFileSecurityW` · `LookupAccountNameW`
+- `LookupPrivilegeValueW` · `LsaAddAccountRights` · `LsaClose`
+- `LsaOpenPolicy` · `OpenProcessToken` · `SetFileSecurityW`
+
+**COMCTL32.dll** (27) — 27 REAL
 
 - `CreateStatusWindowW` · `CreateToolbarEx` · `DefSubclassProc`
 - `GetWindowSubclass` · `ImageList_AddMasked` · `ImageList_BeginDrag`
@@ -78,7 +83,32 @@ way `make sdk-check` does for the native SDK.
 - `InitCommonControlsEx` · `LoadIconWithScaleDown` · `PropertySheetW`
 - `RemoveWindowSubclass` · `SetWindowSubclass` · `_TrackMouseEvent`
 
-**GDI32.dll** (87)
+**COMDLG32.dll** (10) — 9 REAL, 1 FAIL-CLEAN
+
+- `ChooseColorA` · `ChooseColorW` · `ChooseFontA`
+- `ChooseFontW` · `CommDlgExtendedError` · `GetOpenFileNameA`
+- `GetOpenFileNameW` · `GetSaveFileNameA` · `GetSaveFileNameW`
+
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `PrintDlgW`
+
+**CRYPT32.dll** (8) — 8 FAIL-CLEAN
+
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `CertCloseStore` · `CertFindCertificateInStore` · `CertGetCertificateContextProperty`
+- `CertGetNameStringW` · `CertNameToStrW` · `CryptMsgClose`
+- `CryptMsgGetParam` · `CryptQueryObject`
+
+**DBGHELP.dll** (1) — 1 REAL
+
+- `ImageNtHeader`
+
+**DWMAPI.dll** (2) — 2 FAIL-CLEAN
+
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `DwmGetColorizationColor` · `DwmSetWindowAttribute`
+
+**GDI32.dll** (87) — 87 REAL
 
 - `BitBlt` · `CombineRgn` · `CreateBitmap`
 - `CreateCompatibleBitmap` · `CreateCompatibleDC` · `CreateDIBSection`
@@ -110,118 +140,189 @@ way `make sdk-check` does for the native SDK.
 - `StartDocW` · `StartPage` · `TextOutA`
 - `TranslateCharsetInfo` · `UnrealizeObject` · `UpdateColors`
 
-**KERNEL32.dll** (265)
+**IMM32.dll** (10) — 10 FAIL-CLEAN
+
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `ImmEscapeW` · `ImmGetCompositionStringW` · `ImmGetContext`
+- `ImmNotifyIME` · `ImmReleaseContext` · `ImmSetCandidateWindow`
+- `ImmSetCompositionFontA` · `ImmSetCompositionFontW` · `ImmSetCompositionStringW`
+- `ImmSetCompositionWindow`
+
+**KERNEL32.dll** (277) — 276 REAL, 1 FAIL-CLEAN
 
 - `AcquireSRWLockExclusive` · `Beep` · `CancelIo`
-- `CloseHandle` · `CloseThreadpoolWork` · `CompareFileTime`
-- `CompareStringEx` · `CompareStringW` · `ConnectNamedPipe`
-- `CopyFileExW` · `CopyFileW` · `CreateDirectoryW`
-- `CreateEventA` · `CreateEventW` · `CreateFileA`
-- `CreateFileMappingA` · `CreateFileMappingW` · `CreateFileW`
-- `CreateHardLinkW` · `CreateMutexA` · `CreateMutexW`
-- `CreateNamedPipeA` · `CreatePipe` · `CreateProcessA`
-- `CreateProcessW` · `CreateSemaphoreW` · `CreateThread`
-- `CreateThreadpoolWork` · `CreateToolhelp32Snapshot` · `DecodePointer`
-- `DeleteCriticalSection` · `DeleteFileA` · `DeleteFileW`
-- `DeviceIoControl` · `DosDateTimeToFileTime` · `EncodePointer`
-- `EnterCriticalSection` · `EnumResourceNamesA` · `EnumResourceNamesW`
-- `EnumSystemLocalesW` · `ExitProcess` · `ExitThread`
-- `ExpandEnvironmentStringsW` · `FileTimeToDosDateTime` · `FileTimeToLocalFileTime`
-- `FileTimeToSystemTime` · `FindClose` · `FindCloseChangeNotification`
-- `FindFirstChangeNotificationW` · `FindFirstFileA` · `FindFirstFileExW`
-- `FindFirstFileW` · `FindFirstStreamW` · `FindNextChangeNotification`
-- `FindNextFileA` · `FindNextFileW` · `FindNextStreamW`
-- `FindResourceA` · `FindResourceExA` · `FindResourceExW`
-- `FindResourceW` · `FlsAlloc` · `FlsFree`
-- `FlsGetValue` · `FlsSetValue` · `FlushFileBuffers`
-- `FormatMessageA` · `FormatMessageW` · `FreeEnvironmentStringsW`
-- `FreeLibrary` · `FreeLibraryAndExitThread` · `FreeResource`
-- `GetACP` · `GetApplicationRestartSettings` · `GetCPInfo`
+- `ClearCommBreak` · `CloseHandle` · `CloseThreadpoolWork`
+- `CompareFileTime` · `CompareStringEx` · `CompareStringW`
+- `ConnectNamedPipe` · `CopyFileExW` · `CopyFileW`
+- `CreateDirectoryW` · `CreateEventA` · `CreateEventW`
+- `CreateFileA` · `CreateFileMappingA` · `CreateFileMappingW`
+- `CreateFileW` · `CreateHardLinkW` · `CreateMutexA`
+- `CreateMutexW` · `CreateNamedPipeA` · `CreatePipe`
+- `CreateProcessA` · `CreateProcessW` · `CreateSemaphoreW`
+- `CreateThread` · `CreateThreadpoolWork` · `CreateToolhelp32Snapshot`
+- `DecodePointer` · `DeleteCriticalSection` · `DeleteFileA`
+- `DeleteFileW` · `DeviceIoControl` · `DosDateTimeToFileTime`
+- `EncodePointer` · `EnterCriticalSection` · `EnumResourceNamesA`
+- `EnumResourceNamesW` · `EnumSystemLocalesW` · `ExitProcess`
+- `ExitThread` · `ExpandEnvironmentStringsW` · `FileTimeToDosDateTime`
+- `FileTimeToLocalFileTime` · `FileTimeToSystemTime` · `FindClose`
+- `FindCloseChangeNotification` · `FindFirstChangeNotificationW` · `FindFirstFileA`
+- `FindFirstFileExW` · `FindFirstFileW` · `FindFirstStreamW`
+- `FindNextChangeNotification` · `FindNextFileA` · `FindNextFileW`
+- `FindNextStreamW` · `FindResourceA` · `FindResourceExA`
+- `FindResourceExW` · `FindResourceW` · `FlsAlloc`
+- `FlsFree` · `FlsGetValue` · `FlsSetValue`
+- `FlushFileBuffers` · `FormatMessageA` · `FormatMessageW`
+- `FreeEnvironmentStringsW` · `FreeLibrary` · `FreeLibraryAndExitThread`
+- `FreeLibraryWhenCallbackReturns` · `FreeResource` · `GetACP`
+- `GetApplicationRestartSettings` · `GetCPInfo` · `GetCommState`
 - `GetCommandLineA` · `GetCommandLineW` · `GetCompressedFileSizeW`
-- `GetCurrentDirectoryA` · `GetCurrentDirectoryW` · `GetCurrentProcess`
-- `GetCurrentProcessId` · `GetCurrentThread` · `GetCurrentThreadId`
-- `GetDateFormatEx` · `GetDateFormatW` · `GetDiskFreeSpaceExW`
-- `GetDiskFreeSpaceW` · `GetDriveTypeW` · `GetEnvironmentStringsW`
-- `GetEnvironmentVariableA` · `GetExitCodeProcess` · `GetExitCodeThread`
-- `GetFileAttributesExW` · `GetFileAttributesW` · `GetFileInformationByHandle`
-- `GetFileSize` · `GetFileSizeEx` · `GetFileType`
-- `GetFinalPathNameByHandleW` · `GetFullPathNameW` · `GetLargePageMinimum`
-- `GetLastError` · `GetLocalTime` · `GetLocaleInfoA`
-- `GetLocaleInfoEx` · `GetLocaleInfoW` · `GetLogicalDriveStringsW`
-- `GetLongPathNameW` · `GetModuleFileNameA` · `GetModuleFileNameW`
-- `GetModuleHandleA` · `GetModuleHandleExW` · `GetModuleHandleW`
-- `GetNativeSystemInfo` · `GetOEMCP` · `GetOverlappedResult`
-- `GetProcAddress` · `GetProcessAffinityMask` · `GetProcessHeap`
-- `GetProcessTimes` · `GetProductInfo` · `GetStartupInfoA`
-- `GetStartupInfoW` · `GetStdHandle` · `GetStringTypeExA`
-- `GetStringTypeExW` · `GetStringTypeW` · `GetSystemDefaultLangID`
-- `GetSystemDirectoryA` · `GetSystemInfo` · `GetSystemTimeAsFileTime`
-- `GetTempPathA` · `GetTempPathW` · `GetThreadId`
-- `GetThreadTimes` · `GetTickCount` · `GetTickCount64`
-- `GetTimeFormatEx` · `GetTimeFormatW` · `GetTimeZoneInformation`
-- `GetUserDefaultLCID` · `GetUserDefaultLangID` · `GetVersion`
-- `GetVersionExW` · `GetVolumeInformationW` · `GetWindowsDirectoryA`
-- `GetWindowsDirectoryW` · `GlobalAlloc` · `GlobalFree`
-- `GlobalLock` · `GlobalMemoryStatus` · `GlobalMemoryStatusEx`
-- `GlobalSize` · `GlobalUnlock` · `HeapAlloc`
-- `HeapFree` · `HeapReAlloc` · `HeapSize`
-- `InitOnceBeginInitialize` · `InitOnceComplete` · `InitializeCriticalSection`
-- `InitializeCriticalSectionAndSpinCount` · `InitializeCriticalSectionEx` · `InitializeSListHead`
-- `InterlockedFlushSList` · `IsDBCSLeadByteEx` · `IsDebuggerPresent`
-- `IsProcessorFeaturePresent` · `IsValidCodePage` · `IsValidLocale`
-- `LCMapStringA` · `LCMapStringEx` · `LCMapStringW`
-- `LeaveCriticalSection` · `LoadLibraryA` · `LoadLibraryExA`
-- `LoadLibraryExW` · `LoadLibraryW` · `LoadResource`
-- `LoadStringA` · `LoadStringW` · `LocalAlloc`
-- `LocalFileTimeToFileTime` · `LocalFree` · `LockResource`
-- `MapViewOfFile` · `MoveFileExW` · `MoveFileW`
-- `MoveFileWithProgressW` · `MulDiv` · `MultiByteToWideChar`
-- `OpenProcess` · `OutputDebugStringW` · `Process32FirstW`
-- `Process32NextW` · `QueryPerformanceCounter` · `QueryPerformanceFrequency`
-- `QueueUserAPC` · `RaiseException` · `ReadFile`
+- `GetConsoleMode` · `GetConsoleOutputCP` · `GetCurrentDirectoryA`
+- `GetCurrentDirectoryW` · `GetCurrentProcess` · `GetCurrentProcessId`
+- `GetCurrentThread` · `GetCurrentThreadId` · `GetDateFormatEx`
+- `GetDateFormatW` · `GetDiskFreeSpaceExW` · `GetDiskFreeSpaceW`
+- `GetDriveTypeW` · `GetEnvironmentStringsW` · `GetEnvironmentVariableA`
+- `GetExitCodeProcess` · `GetExitCodeThread` · `GetFileAttributesExW`
+- `GetFileAttributesW` · `GetFileInformationByHandle` · `GetFileSize`
+- `GetFileSizeEx` · `GetFileType` · `GetFinalPathNameByHandleW`
+- `GetFullPathNameW` · `GetLargePageMinimum` · `GetLastError`
+- `GetLocalTime` · `GetLocaleInfoA` · `GetLocaleInfoEx`
+- `GetLocaleInfoW` · `GetLogicalDriveStringsW` · `GetLongPathNameW`
+- `GetModuleFileNameA` · `GetModuleFileNameW` · `GetModuleHandleA`
+- `GetModuleHandleExW` · `GetModuleHandleW` · `GetNativeSystemInfo`
+- `GetOEMCP` · `GetOverlappedResult` · `GetProcAddress`
+- `GetProcessAffinityMask` · `GetProcessHeap` · `GetProcessTimes`
+- `GetProductInfo` · `GetStartupInfoA` · `GetStartupInfoW`
+- `GetStdHandle` · `GetStringTypeExA` · `GetStringTypeExW`
+- `GetStringTypeW` · `GetSystemDefaultLangID` · `GetSystemDirectoryA`
+- `GetSystemInfo` · `GetSystemTimeAsFileTime` · `GetTempPathA`
+- `GetTempPathW` · `GetThreadId` · `GetThreadTimes`
+- `GetTickCount` · `GetTickCount64` · `GetTimeFormatEx`
+- `GetTimeFormatW` · `GetTimeZoneInformation` · `GetUserDefaultLCID`
+- `GetUserDefaultLangID` · `GetVersion` · `GetVersionExW`
+- `GetVolumeInformationW` · `GetWindowsDirectoryA` · `GetWindowsDirectoryW`
+- `GlobalAlloc` · `GlobalFree` · `GlobalLock`
+- `GlobalMemoryStatus` · `GlobalMemoryStatusEx` · `GlobalSize`
+- `GlobalUnlock` · `HeapAlloc` · `HeapFree`
+- `HeapReAlloc` · `HeapSize` · `InitOnceBeginInitialize`
+- `InitOnceComplete` · `InitializeCriticalSection` · `InitializeCriticalSectionAndSpinCount`
+- `InitializeCriticalSectionEx` · `InitializeSListHead` · `InterlockedFlushSList`
+- `IsDBCSLeadByteEx` · `IsDebuggerPresent` · `IsProcessorFeaturePresent`
+- `IsValidCodePage` · `IsValidLocale` · `LCMapStringA`
+- `LCMapStringEx` · `LCMapStringW` · `LeaveCriticalSection`
+- `LoadLibraryA` · `LoadLibraryExA` · `LoadLibraryExW`
+- `LoadLibraryW` · `LoadResource` · `LoadStringA`
+- `LoadStringW` · `LocalAlloc` · `LocalFileTimeToFileTime`
+- `LocalFree` · `LockResource` · `MapViewOfFile`
+- `MoveFileExW` · `MoveFileW` · `MoveFileWithProgressW`
+- `MulDiv` · `MultiByteToWideChar` · `OpenProcess`
+- `OutputDebugStringW` · `Process32FirstW` · `Process32NextW`
+- `QueryPerformanceCounter` · `QueryPerformanceFrequency` · `QueueUserAPC`
+- `RaiseException` · `ReadConsoleW` · `ReadFile`
 - `RegisterApplicationRestart` · `ReleaseMutex` · `ReleaseSRWLockExclusive`
 - `ReleaseSemaphore` · `RemoveDirectoryW` · `ReplaceFileW`
 - `ResetEvent` · `ResumeThread` · `RtlCaptureContext`
 - `RtlLookupFunctionEntry` · `RtlPcToFileHeader` · `RtlUnwind`
-- `RtlUnwindEx` · `RtlVirtualUnwind` · `SetCurrentDirectoryA`
+- `RtlUnwindEx` · `RtlVirtualUnwind` · `SetCommBreak`
+- `SetCommState` · `SetCommTimeouts` · `SetCurrentDirectoryA`
 - `SetCurrentDirectoryW` · `SetEndOfFile` · `SetEnvironmentVariableW`
 - `SetEvent` · `SetFileAttributesW` · `SetFilePointer`
 - `SetFilePointerEx` · `SetFileTime` · `SetHandleInformation`
-- `SetLastError` · `SetThreadAffinityMask` · `SetUnhandledExceptionFilter`
-- `SizeofResource` · `Sleep` · `SleepConditionVariableSRW`
-- `SleepEx` · `SubmitThreadpoolWork` · `SystemTimeToTzSpecificLocalTime`
-- `TerminateProcess` · `TerminateThread` · `TlsAlloc`
-- `TlsFree` · `TlsGetValue` · `TlsSetValue`
-- `TryAcquireSRWLockExclusive` · `TryEnterCriticalSection` · `UnhandledExceptionFilter`
-- `UnmapViewOfFile` · `UnregisterApplicationRestart` · `VirtualAlloc`
-- `VirtualFree` · `VirtualProtect` · `WaitForMultipleObjects`
-- `WaitForSingleObject` · `WaitForSingleObjectEx` · `WaitNamedPipeA`
-- `WakeAllConditionVariable` · `WideCharToMultiByte` · `WriteFile`
-- `_XcptFilter` · `__C_specific_handler` · `lstrcatW`
-- `lstrcmpW` · `lstrcmpiA` · `lstrcmpiW`
-- `lstrcpyW` · `lstrcpynA` · `lstrcpynW`
-- `lstrlenW`
+- `SetLastError` · `SetStdHandle` · `SetThreadAffinityMask`
+- `SetUnhandledExceptionFilter` · `SizeofResource` · `Sleep`
+- `SleepConditionVariableSRW` · `SleepEx` · `SubmitThreadpoolWork`
+- `SystemTimeToTzSpecificLocalTime` · `TerminateProcess` · `TerminateThread`
+- `TlsAlloc` · `TlsFree` · `TlsGetValue`
+- `TlsSetValue` · `TryAcquireSRWLockExclusive` · `TryEnterCriticalSection`
+- `UnhandledExceptionFilter` · `UnmapViewOfFile` · `UnregisterApplicationRestart`
+- `VirtualAlloc` · `VirtualFree` · `VirtualProtect`
+- `WaitForMultipleObjects` · `WaitForSingleObject` · `WaitForSingleObjectEx`
+- `WaitNamedPipeA` · `WakeAllConditionVariable` · `WideCharToMultiByte`
+- `WriteConsoleW` · `WriteFile` · `_XcptFilter`
+- `__C_specific_handler` · `lstrcatW` · `lstrcmpW`
+- `lstrcmpiA` · `lstrcmpiW` · `lstrcpyW`
+- `lstrcpynA` · `lstrcpynW` · `lstrlenW`
 
-**USER32.dll** (267)
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `ReadDirectoryChangesW`
+
+**MSVCRT.dll** (37) — 37 REAL
+
+- `??1type_info@@UEAA@XZ` · `?terminate@@YAXXZ` · `_CxxThrowException`
+- `_XcptFilter` · `__C_specific_handler` · `__CxxFrameHandler`
+- `__dllonexit` · `__getmainargs` · `__set_app_type`
+- `__setusermatherr` · `_acmdln` · `_beginthreadex`
+- `_c_exit` · `_cexit` · `_commode`
+- `_exit` · `_fmode` · `_initterm`
+- `_onexit` · `_purecall` · `exit`
+- `free` · `malloc` · `memcmp`
+- `memcpy` · `memmove` · `memset`
+- `rand` · `realloc` · `srand`
+- `strchr` · `strcmp` · `strlen`
+- `strstr` · `wcscmp` · `wcslen`
+- `wcsstr`
+
+**OLE32.dll** (13) — 13 REAL
+
+- `CLSIDFromProgID` · `CoCreateInstance` · `CoInitialize`
+- `CoTaskMemAlloc` · `CoTaskMemFree` · `CoTaskMemRealloc`
+- `CoUninitialize` · `DoDragDrop` · `OleInitialize`
+- `OleUninitialize` · `RegisterDragDrop` · `ReleaseStgMedium`
+- `RevokeDragDrop`
+
+**OLEAUT32.dll** (8) — 8 REAL
+
+- `SysAllocString` · `SysAllocStringByteLen` · `SysAllocStringLen`
+- `SysFreeString` · `SysStringByteLen` · `SysStringLen`
+- `VariantClear` · `VariantCopy`
+
+**SENSAPI.dll** (2) — 2 FAIL-CLEAN
+
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `IsDestinationReachableW` · `IsNetworkAlive`
+
+**SHELL32.dll** (19) — 19 REAL
+
+- `DragFinish` · `DragQueryFileW` · `DragQueryPoint`
+- `ExtractIconExW` · `SHBrowseForFolderW` · `SHChangeNotify`
+- `SHCreateDirectory` · `SHCreateItemFromParsingName` · `SHFileOperationW`
+- `SHGetDesktopFolder` · `SHGetFileInfoW` · `SHGetFolderPathW`
+- `SHGetPathFromIDListW` · `SHGetSpecialFolderLocation` · `SHGetSpecialFolderPathW`
+- `ShellExecuteA` · `ShellExecuteExW` · `ShellExecuteW`
+- `Shell_NotifyIconW`
+
+**SHLWAPI.dll** (18) — 18 REAL
+
+- `AssocQueryStringW` · `ColorAdjustLuma` · `ColorHLSToRGB`
+- `ColorRGBToHLS` · `PathAddExtensionW` · `PathAppendW`
+- `PathCombineW` · `PathCompactPathExW` · `PathFileExistsW`
+- `PathFindExtensionW` · `PathFindFileNameW` · `PathGetDriveNumberW`
+- `PathIsNetworkPathW` · `PathIsRelativeW` · `PathMatchSpecW`
+- `PathRemoveExtensionW` · `PathRemoveFileSpecW` · `PathStripPathW`
+
+**USER32.dll** (293) — 292 REAL, 1 FAIL-CLEAN
 
 - `AdjustWindowRectEx` · `AppendMenuA` · `AppendMenuW`
-- `BeginPaint` · `BringWindowToTop` · `CallNextHookEx`
-- `CallWindowProcW` · `ChangeClipboardChain` · `CharLowerW`
-- `CharUpperW` · `CheckDlgButton` · `CheckMenuItem`
-- `CheckRadioButton` · `ChildWindowFromPointEx` · `ClientToScreen`
-- `CloseClipboard` · `CopyAcceleratorTableW` · `CountClipboardFormats`
-- `CreateAcceleratorTableW` · `CreateCaret` · `CreateMenu`
+- `BeginDeferWindowPos` · `BeginPaint` · `BringWindowToTop`
+- `CallNextHookEx` · `CallWindowProcW` · `ChangeClipboardChain`
+- `CharLowerW` · `CharUpperW` · `CheckDlgButton`
+- `CheckMenuItem` · `CheckMenuRadioItem` · `CheckRadioButton`
+- `ChildWindowFromPointEx` · `ClientToScreen` · `CloseClipboard`
+- `CopyAcceleratorTableW` · `CountClipboardFormats` · `CreateAcceleratorTableW`
+- `CreateCaret` · `CreateDialogIndirectParamW` · `CreateDialogParamA`
+- `CreateDialogParamW` · `CreateIconIndirect` · `CreateMenu`
 - `CreatePopupMenu` · `CreateWindowExA` · `CreateWindowExW`
-- `DefWindowProcA` · `DefWindowProcW` · `DeleteMenu`
-- `DestroyAcceleratorTable` · `DestroyCaret` · `DestroyCursor`
-- `DestroyIcon` · `DestroyMenu` · `DestroyWindow`
-- `DialogBoxA` · `DialogBoxIndirectParamA` · `DialogBoxIndirectParamW`
-- `DialogBoxParamA` · `DialogBoxParamW` · `DialogBoxW`
-- `DispatchMessageA` · `DispatchMessageW` · `DrawEdge`
-- `DrawFocusRect` · `DrawFrameControl` · `DrawIcon`
-- `DrawIconEx` · `DrawMenuBar` · `DrawTextA`
-- `DrawTextExW` · `DrawTextW` · `EmptyClipboard`
-- `EnableMenuItem` · `EnableWindow` · `EndDialog`
+- `DefDlgProcA` · `DefWindowProcA` · `DefWindowProcW`
+- `DeferWindowPos` · `DeleteMenu` · `DestroyAcceleratorTable`
+- `DestroyCaret` · `DestroyCursor` · `DestroyIcon`
+- `DestroyMenu` · `DestroyWindow` · `DialogBoxA`
+- `DialogBoxIndirectParamA` · `DialogBoxIndirectParamW` · `DialogBoxParamA`
+- `DialogBoxParamW` · `DialogBoxW` · `DispatchMessageA`
+- `DispatchMessageW` · `DrawEdge` · `DrawFocusRect`
+- `DrawFrameControl` · `DrawIcon` · `DrawIconEx`
+- `DrawMenuBar` · `DrawTextA` · `DrawTextExW`
+- `DrawTextW` · `EmptyClipboard` · `EnableMenuItem`
+- `EnableWindow` · `EndDeferWindowPos` · `EndDialog`
 - `EndPaint` · `EnumChildWindows` · `EnumClipboardFormats`
 - `EnumDisplayMonitors` · `EnumResourceNamesA` · `EnumResourceNamesW`
 - `EnumThreadWindows` · `EqualRect` · `FillRect`
@@ -237,73 +338,145 @@ way `make sdk-check` does for the native SDK.
 - `GetDialogBaseUnits` · `GetDlgCtrlID` · `GetDlgItem`
 - `GetDlgItemInt` · `GetDlgItemTextA` · `GetDlgItemTextW`
 - `GetDoubleClickTime` · `GetFocus` · `GetForegroundWindow`
-- `GetKeyState` · `GetKeyboardLayout` · `GetKeyboardState`
-- `GetKeyboardType` · `GetLastActivePopup` · `GetMenu`
-- `GetMenuBarInfo` · `GetMenuItemCount` · `GetMenuItemID`
-- `GetMessageA` · `GetMessagePos` · `GetMessageTime`
-- `GetMessageW` · `GetMonitorInfoA` · `GetMonitorInfoW`
-- `GetOpenClipboardWindow` · `GetParent` · `GetPropW`
-- `GetQueueStatus` · `GetScrollInfo` · `GetScrollPos`
-- `GetScrollRange` · `GetShellWindow` · `GetSubMenu`
-- `GetSysColor` · `GetSysColorBrush` · `GetSystemMenu`
-- `GetSystemMetrics` · `GetUpdateRgn` · `GetWindow`
-- `GetWindowDC` · `GetWindowLongPtrA` · `GetWindowLongPtrW`
-- `GetWindowLongW` · `GetWindowPlacement` · `GetWindowRect`
-- `GetWindowTextA` · `GetWindowTextLengthA` · `GetWindowTextLengthW`
-- `GetWindowTextW` · `GetWindowThreadProcessId` · `HideCaret`
-- `InSendMessage` · `InflateRect` · `InsertMenuA`
-- `InsertMenuW` · `IntersectRect` · `InvalidateRect`
-- `IsCharAlphaNumericW` · `IsCharAlphaW` · `IsCharLowerW`
-- `IsCharUpperW` · `IsChild` · `IsClipboardFormatAvailable`
-- `IsDialogMessageA` · `IsDialogMessageW` · `IsDlgButtonChecked`
-- `IsIconic` · `IsRectEmpty` · `IsWindow`
-- `IsWindowEnabled` · `IsWindowVisible` · `IsZoomed`
-- `KillTimer` · `LoadAcceleratorsA` · `LoadAcceleratorsW`
-- `LoadCursorA` · `LoadCursorW` · `LoadIconA`
-- `LoadIconW` · `LoadImageA` · `LoadImageW`
-- `LoadMenuA` · `LoadMenuW` · `LoadResource`
-- `LoadStringA` · `LoadStringW` · `LockResource`
-- `LockWindowUpdate` · `MapDialogRect` · `MapVirtualKeyW`
-- `MapWindowPoints` · `MessageBoxA` · `MessageBoxW`
-- `MonitorFromPoint` · `MonitorFromRect` · `MonitorFromWindow`
-- `MoveWindow` · `MsgWaitForMultipleObjects` · `NotifyWinEvent`
-- `OffsetRect` · `OpenClipboard` · `PeekMessageA`
-- `PeekMessageW` · `PostMessageA` · `PostMessageW`
-- `PostQuitMessage` · `PtInRect` · `RedrawWindow`
-- `RegisterClassA` · `RegisterClassExA` · `RegisterClassExW`
-- `RegisterClassW` · `RegisterClipboardFormatA` · `RegisterClipboardFormatW`
-- `RegisterWindowMessageA` · `RegisterWindowMessageW` · `ReleaseCapture`
-- `ReleaseDC` · `RemoveMenu` · `RemovePropW`
-- `ReplyMessage` · `ScreenToClient` · `ScrollWindow`
-- `SendDlgItemMessageA` · `SendDlgItemMessageW` · `SendMessageA`
-- `SendMessageW` · `SetActiveWindow` · `SetCapture`
-- `SetCaretPos` · `SetClipboardData` · `SetClipboardViewer`
+- `GetIconInfo` · `GetKeyState` · `GetKeyboardLayout`
+- `GetKeyboardState` · `GetKeyboardType` · `GetLastActivePopup`
+- `GetMenu` · `GetMenuBarInfo` · `GetMenuItemCount`
+- `GetMenuItemID` · `GetMenuItemInfoW` · `GetMenuState`
+- `GetMenuStringW` · `GetMessageA` · `GetMessagePos`
+- `GetMessageTime` · `GetMessageW` · `GetMonitorInfoA`
+- `GetMonitorInfoW` · `GetOpenClipboardWindow` · `GetParent`
+- `GetPropW` · `GetQueueStatus` · `GetScrollInfo`
+- `GetScrollPos` · `GetScrollRange` · `GetShellWindow`
+- `GetSubMenu` · `GetSysColor` · `GetSysColorBrush`
+- `GetSystemMenu` · `GetSystemMetrics` · `GetUpdateRgn`
+- `GetWindow` · `GetWindowDC` · `GetWindowLongPtrA`
+- `GetWindowLongPtrW` · `GetWindowLongW` · `GetWindowPlacement`
+- `GetWindowRect` · `GetWindowTextA` · `GetWindowTextLengthA`
+- `GetWindowTextLengthW` · `GetWindowTextW` · `GetWindowThreadProcessId`
+- `HideCaret` · `InSendMessage` · `InflateRect`
+- `InsertMenuA` · `InsertMenuItemW` · `InsertMenuW`
+- `IntersectRect` · `InvalidateRect` · `IsCharAlphaNumericW`
+- `IsCharAlphaW` · `IsCharLowerW` · `IsCharUpperW`
+- `IsChild` · `IsClipboardFormatAvailable` · `IsDialogMessageA`
+- `IsDialogMessageW` · `IsDlgButtonChecked` · `IsIconic`
+- `IsRectEmpty` · `IsWindow` · `IsWindowEnabled`
+- `IsWindowVisible` · `IsZoomed` · `KillTimer`
+- `LoadAcceleratorsA` · `LoadAcceleratorsW` · `LoadBitmapA`
+- `LoadBitmapW` · `LoadCursorA` · `LoadCursorW`
+- `LoadIconA` · `LoadIconW` · `LoadImageA`
+- `LoadImageW` · `LoadMenuA` · `LoadMenuW`
+- `LoadResource` · `LoadStringA` · `LoadStringW`
+- `LockResource` · `LockWindowUpdate` · `MapDialogRect`
+- `MapVirtualKeyW` · `MapWindowPoints` · `MessageBeep`
+- `MessageBoxA` · `MessageBoxIndirectW` · `MessageBoxW`
+- `ModifyMenuW` · `MonitorFromPoint` · `MonitorFromRect`
+- `MonitorFromWindow` · `MoveWindow` · `MsgWaitForMultipleObjects`
+- `NotifyWinEvent` · `OffsetRect` · `OpenClipboard`
+- `PeekMessageA` · `PeekMessageW` · `PostMessageA`
+- `PostMessageW` · `PostQuitMessage` · `PtInRect`
+- `RedrawWindow` · `RegisterClassA` · `RegisterClassExA`
+- `RegisterClassExW` · `RegisterClassW` · `RegisterClipboardFormatA`
+- `RegisterClipboardFormatW` · `RegisterWindowMessageA` · `RegisterWindowMessageW`
+- `ReleaseCapture` · `ReleaseDC` · `RemoveMenu`
+- `RemovePropW` · `ReplyMessage` · `ScreenToClient`
+- `ScrollWindow` · `SendDlgItemMessageA` · `SendDlgItemMessageW`
+- `SendMessageA` · `SendMessageW` · `SetActiveWindow`
+- `SetCapture` · `SetCaretPos` · `SetClassLongPtrA`
+- `SetClipboardData` · `SetClipboardViewer` · `SetCursor`
 - `SetCursorPos` · `SetDlgItemInt` · `SetDlgItemTextA`
 - `SetDlgItemTextW` · `SetFocus` · `SetForegroundWindow`
 - `SetKeyboardState` · `SetLayeredWindowAttributes` · `SetMenu`
-- `SetParent` · `SetPropW` · `SetRectEmpty`
-- `SetScrollInfo` · `SetScrollPos` · `SetScrollRange`
-- `SetTimer` · `SetWindowLongPtrA` · `SetWindowLongPtrW`
-- `SetWindowLongW` · `SetWindowPlacement` · `SetWindowPos`
-- `SetWindowTextA` · `SetWindowTextW` · `SetWindowsHookExA`
-- `SetWindowsHookExW` · `ShowCaret` · `ShowScrollBar`
+- `SetMenuItemBitmaps` · `SetMenuItemInfoW` · `SetParent`
+- `SetPropW` · `SetRectEmpty` · `SetScrollInfo`
+- `SetScrollPos` · `SetScrollRange` · `SetTimer`
+- `SetWindowLongPtrA` · `SetWindowLongPtrW` · `SetWindowLongW`
+- `SetWindowPlacement` · `SetWindowPos` · `SetWindowTextA`
+- `SetWindowTextW` · `SetWindowsHookExA` · `SetWindowsHookExW`
+- `ShowCaret` · `ShowCursor` · `ShowScrollBar`
 - `ShowWindow` · `SizeofResource` · `SystemParametersInfoA`
 - `SystemParametersInfoW` · `ToAscii` · `ToAsciiEx`
 - `TrackMouseEvent` · `TrackPopupMenu` · `TrackPopupMenuEx`
 - `TranslateAcceleratorA` · `TranslateAcceleratorW` · `TranslateMessage`
 - `UnhookWindowsHookEx` · `UnregisterClassW` · `UpdateWindow`
 - `ValidateRect` · `WindowFromPoint` · `mouse_event`
+- `wsprintfW`
 
-**msvcrt.dll** (5)
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `GetComboBoxInfo`
 
-- `?terminate@@YAXXZ` · `_CxxThrowException` · `_XcptFilter`
-- `__C_specific_handler` · `_purecall`
+**UXTHEME.dll** (17) — 17 REAL
+
+- `BeginBufferedAnimation` · `BufferedPaintInit` · `BufferedPaintRenderAnimation`
+- `BufferedPaintStopAllAnimations` · `BufferedPaintUnInit` · `CloseThemeData`
+- `DrawThemeBackground` · `DrawThemeParentBackground` · `DrawThemeTextEx`
+- `EnableThemeDialogTexture` · `EndBufferedAnimation` · `GetThemeBackgroundContentRect`
+- `GetThemeFont` · `GetThemePartSize` · `GetThemeTransitionDuration`
+- `OpenThemeData` · `SetWindowTheme`
+
+**VERSION.dll** (3) — 3 REAL
+
+- `GetFileVersionInfoSizeW` · `GetFileVersionInfoW` · `VerQueryValueW`
+
+**WININET.dll** (1) — 1 REAL
+
+- `InternetCrackUrlW`
+
+**WINTRUST.dll** (1) — 1 FAIL-CLEAN
+
+*FAIL-CLEAN (binds, then reports honest failure)*
+- `WinVerifyTrust`
+
+**WS2_32.dll** (49) — 49 REAL
+
+- `WSAAddressToStringA` · `WSAAsyncSelect` · `WSACleanup`
+- `WSACloseEvent` · `WSACreateEvent` · `WSAEnumNetworkEvents`
+- `WSAEventSelect` · `WSAGetLastError` · `WSAIoctl`
+- `WSAResetEvent` · `WSASetEvent` · `WSASetLastError`
+- `WSAStartup` · `WSAStringToAddressA` · `WSAWaitForMultipleEvents`
+- `__WSAFDIsSet` · `accept` · `bind`
+- `closesocket` · `connect` · `freeaddrinfo`
+- `getaddrinfo` · `gethostbyaddr` · `gethostbyname`
+- `gethostname` · `getnameinfo` · `getpeername`
+- `getservbyname` · `getservbyport` · `getsockname`
+- `getsockopt` · `htonl` · `htons`
+- `inet_addr` · `inet_ntoa` · `inet_ntop`
+- `inet_pton` · `ioctlsocket` · `listen`
+- `ntohl` · `ntohs` · `recv`
+- `recvfrom` · `select` · `send`
+- `sendto` · `setsockopt` · `shutdown`
+- `socket`
 
 <!-- END GENERATED: w32 export table -->
 
 A function absent from this list is absent from the personality: a binary
 importing it fails at load with the name reported, rather than at the first
 call. That is deliberate — see "one bounded import set" (decision D7).
+
+### Approximations at a glance (every `FAIL-CLEAN` and behaviour constant)
+
+The `FAIL-CLEAN` functions above bind and return an honest failure rather than
+a success-shaped lie; the `REAL` functions below are full for the ladder's
+flows but carry a documented approximation. Each has its own section:
+
+- **Version identity is a constant.** `GetVersion`/`GetVersionExW` report one
+  pinned Windows identity; `VerQueryValueW` walks the image's own resource, not
+  the host's — see "Version" under COM/IME/theme below.
+- **Single-user security model.** SIDs, tokens and `CheckTokenMembership`
+  resolve one local user; `OpenProcessToken`/privilege and `Lsa*`/`GetFileSecurityW`
+  are `FAIL-CLEAN` — see "SIDs, tokens, and the single-user model".
+- **CryptoAPI is hash-only.** `crypt32` (`Cert*`/`CryptMsg*`) is `FAIL-CLEAN`;
+  only the `advapi32` `Crypt*Hash` surface is `REAL` — see "CryptoAPI is hash-only".
+- **Shell PIDL subset and no-undo file ops.** The namespace is a real
+  filesystem view over a PIDL subset, and `SHFileOperation` deletes without a
+  recycle-bin undo — see "The shell is a real filesystem view".
+- **Unthemed fallbacks.** `uxtheme` draws the classic (unthemed) control when a
+  visual style part is unknown rather than refusing — see the theme note under
+  "W32A-11 incremental COM, IME and themed controls".
+- **IME stubs.** `imm32` is `FAIL-CLEAN`: it binds and reports the IME
+  unavailable rather than pretending composition — see the IME note there.
+- **Offline assumptions.** `sensapi` (`IsNetworkAlive`/`IsDestinationReachableW`)
+  assumes the offline answer; there are no network drives (`mpr`/`WNet*` are
+  absent, a `FAIL-CLEAN` module) — see "Not implemented at all".
 
 ## Structured exception handling unwinds `.pdata`/`.xdata` for real
 

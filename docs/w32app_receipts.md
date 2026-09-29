@@ -738,4 +738,153 @@ above by the fixture twin and the host unit test.
 
 Closing patch: `patches/W32A16_npp.patch`.
 
-## W32A-17 final — AWAITING
+## W32A-17 — App horizon: Audacity — PHASE CLOSED (2026-09-29), OUTCOME B (does not run)
+
+The horizon phase. Modelled on W32-7 ("`LoadLibrary`, or a documented refusal"),
+it succeeds by **deciding with evidence**, not by running. It decided: **Audacity
+3.7.5 does not run on the personality**, and the committed artefact is the gap
+ledger `w32/app_ledger/audacity-3.7.5.gap`, not a receipt of a launch.
+
+**Pinned subject (obtained from the publisher, never committed — §1.1).** Audacity
+3.7.5, 64-bit portable zip (`audacity-win-3.7.5-64bit.zip`, sha256
+`0bc382a8…`, 26 834 384 B) → `Audacity.exe` sha256
+`e82c5ef5…`, 13 302 832 B, PE32+ GUI x64. Chosen over Audacity 4.0.0 because the
+plan asks for a "portable x64 zip" (4.0.0 ships only an MSI) and anticipated
+**wxWidgets** breadth — 3.7.5 is the last wxWidgets-era line (it bundles
+wxWidgets 3.1.3).
+
+**The horizon surprise: the single-binary ledger model breaks.** PuTTY/7-Zip/
+Notepad++ import the Win32 system DLLs directly, so the W32A-0 tool measured them
+from the `.exe`. Audacity's `.exe` does not: measured with the loader's own
+parser (`build/w32_peinfo`), **Audacity.exe imports 6349 symbols across 34
+modules, and every module is a BUNDLED DLL** (`lib-*.dll` + `wxmsw313u_*`), every
+symbol a C++-mangled wx/Audacity name — **zero Windows system imports at the exe
+level**. The real gap is therefore *transitive*, aggregated across the 117
+bundled DLLs: **33 system modules, 1241 symbol imports**, of which **14 modules /
+822 symbols are already MET** by the personality and **19 modules / 419 symbols
+are the GAP** — the whole **Universal CRT api-set** (12 `api-ms-win-crt-*`
+modules, 302 symbols; the personality bridges only legacy `msvcrt.dll`), **`winmm`
+audio** (74), `wsock32` (31), `rpcrt4`/`msimg32`/`oleacc`/`winspool.drv`/`bcrypt`.
+
+| gate / command | result | scope |
+|---|---:|---|
+| transitive import walk (117 bundled DLLs + exe) | **33 system modules, 1241 syms; 822 MET / 419 GAP** | `w32/app_ledger/audacity-3.7.5.gap` |
+| launch attempt (real, in-guest QEMU) | **`too many relocations`, exit 1** | `run /tests/audacity.exe` → w32run |
+| loader parser cross-check | **6349 imports, all bundled DLLs, 90932 relocations** | `build/w32_peinfo Audacity.exe` |
+
+**The launch attempt (real).** Audacity.exe was staged into the initrd and booted
+under QEMU. Verbatim:
+
+```
+[shell] /tests/audacity.exe imports Win32 DLLs; running via /apps/w32run
+[elf]  loaded 3 segment(s), entry 0x40074a00
+[proc] entering Ring 3 at 0x40074a00
+w32run: manifest: comctl v5, exec=asInvoker
+w32run: too many relocations
+[thread] '/apps/w32run' (tid 8) exited (code=1)
+```
+
+**First fatal gap (measured live): the loader's fixed relocation buffer.**
+Audacity.exe carries **90 932** base relocations (a 236 KB `.reloc`); w32run maps
+them through a fixed `static pe_reloc_t relocs[16384]`
+(`userspace/apps/w32run/w32run.c:167`), so it dies at `too many relocations`
+**before import resolution begins**. It never reaches the bundled-DLL graph or
+the 419-symbol system gap — those are the second and third walls, established
+statically in the gap ledger.
+
+**Decision — three independent walls, each fatal on its own:** (1) *scale* —
+90 932 relocations vs a 16 384-entry loader buffer (live); (2) *shape* — a
+117-DLL bundled application graph (wxWidgets 3.1.3 + ~60 `lib-*` + FFmpeg/FLAC),
+an order of magnitude past Notepad++'s one-exe gate; (3) *runtime* — the UCRT
+api-set (302 syms) + `winmm` audio (74), whole subsystems the personality does
+not have. Audacity is **not the next rung of this ladder; it defines its
+boundary.**
+
+**Next-plan seed (this plan's §7 gains the measured line).** A future plan
+("W32U" — the modern-runtime horizon) would need, in dependency order: (a) a
+dynamic-scale loader (heap-allocated relocation/import tables + a multi-DLL
+bundled-application module graph); (b) a Universal CRT bridge (`api-ms-win-crt-*`
+re-exported over the `msvcrt` engine already built in W32A-13); (c) a
+`winmm`/WASAPI audio subsystem (a kernel-level audio device, not just a Win32
+shim). Cheapest first, biggest payoff: (a) then (b); (c) is a separate audio
+plan.
+
+**No personality `.c` code changed** — an honest gap list beats a padded
+implementation of the wrong order of magnitude (the Outcome-B shape the plan
+allowed). Closing patch: `patches/W32A17_audacity.patch` (the gap ledger + this
+receipt + the plan/CHANGELOG/PROVENANCE lines; no code).
+
+## W32A-18 — Integration, documentation and the honest matrix — PHASE CLOSED (2026-09-29)
+
+This gate has no in-guest launch step: its subject is the *documentation and the
+checkers*, and its receipts are the commands `make test-unit` runs. All are
+CI-provable and green.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `python3 tools/gen_w32_api_table.py --check` | **PASS: 929 functions, 21 modules** | `docs/win32.md` table is byte-identical with `w32/src/w32_bind.c` + `w32/app_ledger/*.imports` |
+| `python3 tools/gen_w32_api_table.py --write` (twice) | **second run is a no-op** | regenerates byte-identical (the `sdk-check` pattern) |
+| `python3 tools/check_w32app_claims.py --check` | **PASS: done-phase claims are backed by the tree** | pins W32A-0 – W32A-18 artefacts + receipts; reruns the W32A-0 census; REFUSE guard + Outcome-B guard |
+| `python3 tools/check_w32app_claims.py --selftest` | **PASS: violation detected as required** | plants a lying tree; 53 problems flagged |
+| `python3 tools/check_residue_claims.py` | **PASS** | residue harvest matches the moved baseline; ledger arithmetic + class pins hold |
+| `make w32-sdk-check` | builds `console`/`gui`/`unsupported` + `dialog`/`listview`/`delay-load` examples against the staged SDK | skips cleanly when `x86_64-w64-mingw32-gcc` is absent |
+
+**D9 matrix, generated.** `docs/win32.md` now carries every module the export
+table binds (929 functions / 21 modules), each function stamped with the D9
+class the ledgers record (894 REAL, 35 FAIL-CLEAN; REAL is the documented
+default for a function no ledger mentions). Regenerating cannot drift from the
+code, because both inputs (`w32_bind.c` and the ledgers) are committed and the
+`--check` gate fails the build on any divergence.
+
+**Verdict.** The `w32` status row **stays 🧪** (not graduated). The reason is
+honest, not ambition: the three running app gates (W32A-14/15/16) are green on
+their **CI-provable half** — the committed import ledger plus the in-guest
+*fixture* — while the **human-run half** below (a real, publisher-obtained
+binary launched in QEMU with a pasted serial excerpt) stays `AWAITING`; and the
+fourth app gate (W32A-17, Audacity) is a deliberate **Outcome B**. The verdict
+follows the receipts.
+
+Closing patch: `patches/W32A18_integration.patch` (this receipt + the docs +
+the checker wiring + the examples + the residue reconciliation; combined with
+W32A-17 in one patch).
+
+## How to run a receipt (the protocol, followed blind)
+
+A receipt is only a gate if a *second person* — not its author — can reproduce
+it from these steps alone. Every app gate above (W32A-14 … W32A-17) is filled by
+following this page; the CI-provable half needs no binary, the human-run half
+does.
+
+**The CI-provable half (no binary needed).** From a clean checkout:
+
+1. `make test-unit` — runs every checker, including `check_w32app_claims.py`
+   (`--check` + `--selftest`), `gen_w32_api_table.py --check`, and
+   `check_provenance.sh`. Green here means the ledgers, the table and the plan
+   agree with the tree.
+2. `bash tests/integration/run_all.sh --group w32` — runs the W32A per-phase
+   fixture cases (the loader, kernel32, the app fixtures). This is the half the
+   `PHASE CLOSED … (CI-provable half)` receipts assert.
+
+**The human-run half (needs the publisher's binary — never committed, §1.1).**
+
+1. **Obtain** the pinned binary yourself from the publisher named in
+   *The ladder binaries (pinned inputs)* at the top of this file (e.g. the exact
+   PuTTY / 7-Zip / Notepad++ / Audacity version and URL).
+2. **Verify** it: `sha256sum <file>` must equal the sha256 pinned in that table
+   and in the app's ledger header. A mismatch means you have a different binary —
+   stop; the receipt is about *that* one.
+3. **Stage** it into the guest without committing it: copy it to `initrd/tests/`
+   (git-ignored) and `make iso` (this does not add the binary to the tree — the
+   provenance checker forbids committing it).
+4. **Boot** it: `make run` (QEMU, TCG when `/dev/kvm` is absent), and at the
+   shell run `run /tests/<binary>.exe`.
+5. **Paste** the serial excerpt verbatim into the app's receipt section under a
+   dated `— <date>, in-guest launch` heading, replacing its `AWAITING` line.
+6. **Grep** the assertion phrase the gate names (e.g. the app's own banner, or
+   for a refusal the exact `w32run:` line such as `too many relocations`). The
+   phrase present in the pasted excerpt is the receipt; its absence is a failure,
+   not a footnote.
+
+The rule that makes this a gate and not a diary: **a section stays `AWAITING`
+until a real pasted excerpt replaces it**, and `check_w32app_claims.py` fails any
+`✅` app gate whose receipt section is still `AWAITING`.

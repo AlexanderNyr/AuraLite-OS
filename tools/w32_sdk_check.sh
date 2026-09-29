@@ -40,7 +40,8 @@ SCRATCH="$(mktemp -d)"
 trap 'rm -rf "$SCRATCH"' EXIT
 cp -r "$DIR/examples/." "$SCRATCH/"
 
-for ex in console-app gui-app unsupported-app; do
+for ex in console-app gui-app unsupported-app \
+          dialog-app listview-app delay-load-app; do
     [ -d "$SCRATCH/$ex" ] || { check 1 "$ex is staged"; continue; }
     (cd "$SCRATCH/$ex" && make clean >/dev/null 2>&1; \
      cd "$SCRATCH/$ex" && make >/dev/null 2>&1)

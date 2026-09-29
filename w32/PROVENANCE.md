@@ -49,11 +49,15 @@ ReactOS.
 | `examples/console-app/hello.c` | Console example, mingw-w64 built (W32-8) |
 | `examples/gui-app/window.c` | GUI example over the compositor (W32-8) |
 | `examples/unsupported-app/registry.c` | A deliberately refused program (W32-8) |
+| `examples/dialog-app/dialog.c` | Common-dialog example, mingw-w64 built (W32A-18) |
+| `examples/listview-app/listview.c` | COMCTL32 list-view example, mingw-w64 built (W32A-18) |
+| `examples/delay-load-app/delayload.c` | Runtime/delay-load example, mingw-w64 built (W32A-18) |
 | `app_ledger/putty-0.85.imports` | Measured import ledger, PuTTY 0.85 (W32A-0) |
 | `app_ledger/7zFM-24.09.imports` | Measured import ledger, 7-Zip FM 24.09 (W32A-0) |
 | `app_ledger/7z-24.09.imports` | Measured import ledger, 7z.dll 24.09 (W32A-0) |
 | `app_ledger/notepad++-8.8.9.imports` | Measured import ledger, NPP 8.8.9 (W32A-0) |
 | `app_ledger/npp-plugins-8.8.9.imports` | Measured import ledger, NPP plugins (W32A-0) |
+| `app_ledger/audacity-3.7.5.gap` | W32A-17 gap ledger: Audacity 3.7.5 transitive import surface vs the personality (names/counts/hashes only, no bytes). Outcome B: does not run |
 | `include/w32/oleaut32.h` | BSTR/VARIANT API, REAL (W32A-1) |
 | `src/w32_oleaut32.c` | BSTR/VARIANT memory management, pure libc (W32A-1) |
 | `include/w32/w32_manifest.h` | Manifest probing API (W32A-1) |
@@ -181,6 +185,13 @@ DLL names, symbol names, counts and hashes -- facts about an interface,
 no bytes -- in the same spirit as the `.def` files below. The provenance
 gate scans the tree for the `MZ` magic so a renamed binary fails like a
 committed one.
+
+`app_ledger/*.gap` (W32A-17) is the same class of fact for a binary that does
+NOT run: `audacity-3.7.5.gap` records Audacity 3.7.5's transitive import surface
+(names/counts/hashes across its 117 bundled DLLs) diffed against the personality.
+Because Audacity's `.exe` imports only its own bundle, the surface was measured
+transitively (the W32A-0 tool's single-binary model plus the loader's own parser,
+`build/w32_peinfo`); no bytes from the binary enter the tree.
 
 ### On the Win32 names and error codes
 

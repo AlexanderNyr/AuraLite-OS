@@ -4387,6 +4387,19 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@python3 tools/check_lx_claims.py || exit 1
 	@python3 tools/check_lx_claims.py --selftest || exit 1
 
+# W32APP_PLAN.md W32A-18: the Win32-application plan cannot drift from the
+# tree.  Every ✅ phase W32A-0..W32A-18 is pinned to its artefacts (ledgers,
+# module sources + headers, unit + integration cases, the receipts doc, the
+# provenance rule) AND its greppable receipts (patch line + case name); the
+# W32A-0 census reruns from the committed ledgers + live exports, the REFUSE
+# guard blocks any app gate whose ledger still has REFUSE rows, and the
+# Outcome-B guard holds Audacity (W32A-17) green only while its .gap ledger
+# enumerates unmet modules and its receipt is filled.  Negative control as
+# usual (a checker that never fails checks nothing).
+	@echo "[unit] running tools/check_w32app_claims.py"
+	@python3 tools/check_w32app_claims.py --check || exit 1
+	@python3 tools/check_w32app_claims.py --selftest || exit 1
+
 # REALTEK_PLAN RT3: the Realtek NIC plan cannot drift from the tree.
 # Every ✅ phase is pinned to its artefacts (the descriptor surface, the
 # driver core + chip model + host gates, the net_init wiring + catalog

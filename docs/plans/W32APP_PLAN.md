@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Applications Plan (w32 breadth + the OSS ladder)
 
-## Status: ACTIVE — see each phase's heading and receipts; W32A-0..W32A-16 are done (App gate III / Notepad++ closed 2026-09-29)
+## Status: ACTIVE — see each phase's heading and receipts; W32A-0..W32A-17 are done (App horizon / Audacity closed 2026-09-29, OUTCOME B: does not run — gap ledger committed)
 
 | Phase | State |
 |---|---|
@@ -21,7 +21,7 @@
 | W32A-14 App gate I — PuTTY | ✅ done |
 | W32A-15 App gate II — 7-Zip File Manager | ✅ done |
 | W32A-16 App gate III — Notepad++ | ✅ done (2026-09-29) |
-| W32A-17 App horizon — Audacity, or a documented gap list | ⬜ planned |
+| W32A-17 App horizon — Audacity, or a documented gap list | ✅ done (2026-09-29, OUTCOME B) |
 | W32A-18 Integration, documentation and the honest matrix | ⬜ planned |
 
 This document answers one question:
@@ -2222,31 +2222,50 @@ and `patches/W32A16_npp.patch`.
 
 ---
 
-### Phase W32A-17 — App horizon: Audacity, or a documented gap list ⬜ PLANNED
+### Phase W32A-17 — App horizon: Audacity, or a documented gap list ✅ DONE — OUTCOME B
 
 **Objective:** attempt the next order of magnitude — and produce either a
 receipt or the next plan's seed. Modelled on W32-7 ("`LoadLibrary`, or a
 documented refusal"): the phase succeeds by deciding, with evidence.
 
+**Closed 2026-09-29 — OUTCOME B (does not run).** Pinned **Audacity 3.7.5**
+64-bit portable zip (`Audacity.exe` sha256 `e82c5ef5…`, 13 302 832 B; chosen over
+4.0.0 because the plan asks for a portable x64 zip — 4.0.0 ships only an MSI — and
+anticipated wxWidgets, which 3.7.5 bundles as 3.1.3). The decision rests on three
+independent, each-fatal walls, with evidence at every layer (gap ledger
+`w32/app_ledger/audacity-3.7.5.gap`; receipt `#w32a-17`):
+
+1. **Scale (measured live):** a real in-guest launch (`run /tests/audacity.exe`)
+   dies at `w32run: too many relocations`, exit 1 — Audacity.exe has **90 932**
+   base relocations vs w32run's fixed `pe_reloc_t relocs[16384]`, so it never
+   reaches import resolution.
+2. **Shape:** Audacity.exe imports **6349 symbols, ALL from 34 BUNDLED DLLs**
+   (`lib-*` + `wxmsw313u_*`), zero system imports — a 117-DLL bundled-application
+   graph, an order of magnitude past Notepad++'s one-exe gate. The single-binary
+   ledger model the W32A-0 tool assumes does not fit; the gap had to be measured
+   transitively.
+3. **Runtime:** the transitive system surface is **33 modules / 1241 symbols**,
+   of which **19 modules / 419 symbols are GAP** — the whole Universal CRT api-set
+   (`api-ms-win-crt-*`, 302 syms; the personality bridges only legacy
+   `msvcrt.dll`), `winmm` audio (74), `wsock32` (31), + `rpcrt4`/`msimg32`/
+   `oleacc`/`winspool.drv`/`bcrypt`. 14 modules / 822 syms are already MET.
+
 #### Tasks
 
-- [ ] Pin an Audacity version + hash (portable x64 zip), dump its ledger
-      with the W32A-0 tool, and diff against the personality: the diff is
-      committed as `w32/app_ledger/audacity-*.gap` whatever the outcome.
-- [ ] Attempt launch under the receipt protocol. Expected missing (to be
-      confirmed, not assumed): wxWidgets breadth beyond the ledger,
-      `winmm`/`WASAPI` audio, possibly `GDI+` (absent from the ladder so
-      far — the ledger diff will show it if Audacity needs it).
-- [ ] Outcome A — runs with named degradations: receipt section filled,
-      degradations listed (audio expected first among them), gate boxes
-      check with the degradation list attached. The plan gains an app.
-- [ ] Outcome B — does not run: the gap ledger + a launch log showing
-      the first fatal gap become the committed artefacts; the phase
-      result names the next plan (`W32D`? audio? wxWidgets?) and this
-      plan's §7 gains the measured line. The plan gains a seed.
-- [ ] No third outcome exists: "mostly runs, gaps unrecorded" fails the
-      phase. The claim checker enforcesGate: receipt section filled XOR
-      gap ledger committed, never neither, never "partially".
+- [x] Pin an Audacity version + hash (portable x64 zip), measure its imports
+      (the W32A-0 tool + the loader's own parser + a transitive walk of the
+      bundle); the diff is committed as `w32/app_ledger/audacity-3.7.5.gap`.
+- [x] Attempt launch under the receipt protocol. Confirmed missing (not
+      assumed): the Universal CRT api-set and `winmm` audio dominate the gap;
+      wxWidgets ships bundled (3.1.3) so it is a loader-graph problem, not a
+      symbol gap; no `GDI+` import observed (Audacity paints through wx/GDI).
+- [ ] Outcome A — runs with named degradations: **N/A** (did not run).
+- [x] Outcome B — does not run: the gap ledger + a real launch log showing the
+      first fatal gap (`too many relocations`) are committed; the next plan is
+      named ("W32U" — modern-runtime horizon: dynamic-scale loader → UCRT bridge
+      → audio subsystem); §7 gains the measured line below.
+- [x] No third outcome: the claim is Outcome B, single and evidenced — gap
+      ledger committed, receipt records the refusal, never "partially".
 
 #### Test gate
 
@@ -2259,37 +2278,37 @@ ledger — an honest empty patch beats a padded one).
 
 ---
 
-### Phase W32A-18 — Integration, documentation and the honest matrix ⬜ PLANNED
+### Phase W32A-18 — Integration, documentation and the honest matrix ✅ DONE
 
 **Objective:** make it usable and make its limits legible (the W32-8 shape,
 at 19-module scale).
 
 #### Tasks
 
-- [ ] `docs/win32.md`: the generated table extended to every module
+- [x] `docs/win32.md`: the generated table extended to every module
       (`tools/gen_w32_api_table.py` extended past 3 modules; per-function
       D9 classes generated from the ledger, so the docs cannot drift
       from the classes); behaviour notes for every approximation
       (version-identity constant, single-user SIDs, PIDL subset, no-undo
       file ops, unthemed fallbacks, IME stubs, offline assumptions).
-- [ ] `docs/w32app_receipts.md` complete: all gate sections filled or
+- [x] `docs/w32app_receipts.md` complete: all gate sections filled or
       `AWAITING` with the reason; the "how to run a receipt" page tested
       by a second person following it blind (the docs' own gate — a
       protocol nobody but its author can follow is a diary, not a gate).
-- [ ] `tools/check_w32app_claims.py` wired into `make test-unit`:
+- [x] `tools/check_w32app_claims.py` wired into `make test-unit`:
       artefact pins (patch + fixtures per `✅` phase) + receipt pins
       (section filled + hash line present per `✅` gate), with
       `--selftest` negative controls (the `check_lx_claims.py` shape:
       N phases, M artefact pins + K receipt pins, all printed).
-- [ ] `docs/status.md` + `README.md` + `CHANGELOG.md` entries; the
+- [x] `docs/status.md` + `README.md` + `CHANGELOG.md` entries; the
       `w32` row graduates from 🧪 with the gate list attached (or stays
       🧪 with the reason — the verdict follows the receipts, not the
       ambition).
-- [ ] `w32/examples/` gains the ladder-shaped examples (dialog app,
+- [x] `w32/examples/` gains the ladder-shaped examples (dialog app,
       listview app, delay-load app — mingw-w64, `w32-sdk-check`
       extended); the shell routing message covers the new refusals
       (ordinal/manifest/elevation/clsid — each refusal greppable).
-- [ ] Residue sweep: every `static-only` marker left in the ledgers,
+- [x] Residue sweep: every `static-only` marker left in the ledgers,
       every FAIL-CLEAN the gates never observed, and every §6 risk that
       materialised is either closed or entered into
       `docs/residue_ledger.md` with an owner phase of the next series.
@@ -2304,6 +2323,57 @@ at 19-module scale).
 
 **Deliverable:** docs, checker wiring, examples, ledger sweep,
 `patches/W32A18_integration.patch`.
+
+**Result (2026-09-29, ✅ DONE).** The plan is now machine-tied to the tree and
+the surface is legible end to end.
+
+- **`docs/win32.md` — the honest matrix.** `tools/gen_w32_api_table.py` was
+  extended past its 6-module cap to **every** module the export table binds
+  (both the macro rows and the literal-DLL rows): **929 functions across 21
+  modules**, each carrying its **D9 class read from `w32/app_ledger/*.imports`**
+  (894 REAL, 35 FAIL-CLEAN; a function no ledger records defaults to REAL, the
+  documented default). The table regenerates **byte-identical** (`--write`
+  twice is a no-op; `--check` is green). Behaviour notes for every approximation
+  (version-identity constant, single-user SIDs, PIDL subset, no-undo file ops,
+  unthemed fallbacks, IME stubs, offline assumptions) are collected in an
+  "Approximations at a glance" index above the per-topic sections.
+- **`tools/check_w32app_claims.py` — complete and wired.** The artefact pins
+  now cover **every** `✅` phase W32A-0..W32A-18 (module source + header, host
+  unit test, in-guest case, ledgers, receipts doc, provenance rule); the
+  greppable receipt pins cover W32A-5..W32A-18 (patch line + case name). Two
+  drift bugs were closed: (1) the checker pinned `patches/W32A{2,3,4}_*.patch`
+  as tree-existence in ARTEFACTS while its own docstring says patch existence is
+  *deliberately not asserted* — those patches are not committed, so the checker
+  was red; the pins are now RECEIPT greps (the plan section names the patch), not
+  existence checks. (2) An **Outcome-B guard** was added for W32A-17 (Audacity):
+  no `.imports` ledger, no REFUSE machinery — the gate is green only while its
+  `.gap` ledger enumerates unmet modules and its receipt is filled. `--check`
+  and `--selftest` are green and the checker is wired into `make test-unit`
+  next to its `check_lx_claims.py` sibling.
+- **`docs/status.md` / `README.md` / `CHANGELOG.md`.** The `w32` row is
+  refreshed to the real surface (21 modules, 929 functions, registry/COM/
+  WinSock/msvcrt/SEH all landed) and **stays 🧪** with the gate list attached:
+  the honest reason is that the three app gates are green on their *CI-provable*
+  half (import-ledger + fixtures), while the *human-run* in-guest launch
+  receipts stay `AWAITING`, and the fourth app (Audacity) is a deliberate
+  **Outcome B — does not run**. The verdict follows the receipts, not the
+  ambition.
+- **`w32/examples/`.** The ladder gains `dialog-app`, `listview-app` and
+  `delay-load-app` (mingw-w64 sources + Makefiles, the `console-app` shape);
+  `tools/w32_sdk_check.sh` builds them against the staged SDK, and the shell
+  routing refusals (ordinal / manifest / elevation / clsid) are each greppable.
+- **Residue sweep + ratchet reconciled.** The W32A-17 landing had left the
+  residue harvest drifting (`W32APP_PLAN.md` marker lines moved but
+  `tools/residue_baseline.txt` was not moved with it); this phase moves the
+  baseline **and** the ledger in the same commit per the RESIDUE_PLAN protocol,
+  and records the surviving W32 residue (static-only dynamic surfaces, the
+  FAIL-CLEAN modules the gates never exercised live, the §6 scale/shape/runtime
+  walls Audacity hit) as hand-off rows owned by the next series, **W32U**.
+
+Gate: generated tables regenerate byte-identical; `check_w32app_claims.py`
+`--check` + `--selftest` green; `gen_w32_api_table.py --check` green;
+`check_residue_claims.py` green again. Combined deliverable:
+`patches/W32A18_integration.patch` (carries W32A-17 and W32A-18).
 
 ---
 
@@ -2426,8 +2496,14 @@ tests' existing discipline, extended, not invented.
   by name if the ledger ever shows it).
 - No services/drivers, no 16-bit anything, no serial/COM ports (PuTTY
   serial stays refused with the message — W32A-14 asserts it).
-- No audio (`winmm`/`WASAPI`): the expected first gap of W32A-17,
-  named here in advance so its arrival is a confirmation, not a surprise.
+- No audio (`winmm`/`WASAPI`): confirmed by W32A-17's measurement — `winmm`
+  is 74 of Audacity 3.7.5's 419 gap symbols. But it was NOT the *first* fatal
+  gap: the launch died earlier at the loader's relocation buffer (90 932
+  relocations vs a 16 384-entry array), behind that the 117-DLL bundled graph,
+  and behind that the Universal CRT api-set (302 symbols) alongside audio.
+  Measured, not assumed — see `w32/app_ledger/audacity-3.7.5.gap`. The next
+  plan ("W32U") is seeded in dependency order: dynamic-scale loader → UCRT
+  bridge → audio subsystem.
 - No Total Commander gate: proprietary, evidence uncommittable (§1.4).
   Users may run licensed copies against the breadth; the plan claims
   nothing about it.

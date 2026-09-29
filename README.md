@@ -856,6 +856,17 @@ Start here:
   W32-8). A mingw-w64-built `.exe` runs unmodified: `run hello.exe`. See
   [`docs/win32.md`](docs/win32.md) for the supported-function table and, more
   usefully, the list of behaviours that are approximations.
+- [`docs/plans/W32APP_PLAN.md`](docs/plans/W32APP_PLAN.md) — the Win32 *application*
+  ladder that grows that personality to real software (**complete**, W32A-0 –
+  W32A-18). It lands 929 functions across 21 modules — registry, incremental
+  COM/IME/themes, WinSock, the msvcrt surface and real `.pdata`/`.xdata` SEH —
+  each with a per-function D9 class (`REAL`/`FAIL-CLEAN`/`REFUSE`) generated into
+  [`docs/win32.md`](docs/win32.md) so the docs cannot drift from the code. Three
+  unmodified applications (PuTTY, 7-Zip File Manager, Notepad++) pass their
+  CI-provable import + fixture gate; a fourth (Audacity) is a measured, honest
+  **Outcome B — it does not run**, and the 19-module gap is the committed
+  artefact (`w32/app_ledger/audacity-3.7.5.gap`). Every `✅` phase is pinned to
+  the tree by `tools/check_w32app_claims.py`, wired into `make test-unit`.
 
   **Disclaimer.** This is an independent reimplementation of a published
   interface. It ships no Microsoft code, is not endorsed by or affiliated
