@@ -247,6 +247,25 @@ W32ABI W32_BOOL ReadFile(W32_HANDLE h, void *buf, W32_DWORD len,
     return W32_TRUE;
 }
 
+/* W32A-16 (Notepad++ gate): asynchronous directory-change notification.
+ * AuraLite's VFS has no change-journal / inotify equivalent to drive this,
+ * so it fails clean rather than pretending: FALSE with ERROR_NOT_SUPPORTED,
+ * zero bytes returned, the OVERLAPPED left untouched.  Notepad++ uses this
+ * only for its optional "monitor (tail -f)" and auto-reload-on-external-
+ * change features; a FALSE here disables live monitoring and NPP falls back
+ * to its manual "reload from disk" path, which runs entirely on the
+ * fully-supported CreateFileW / ReadFile surface. */
+W32ABI W32_BOOL ReadDirectoryChangesW(W32_HANDLE dir, void *buf, W32_DWORD buflen,
+                                      W32_BOOL subtree, W32_DWORD filter,
+                                      W32_DWORD *returned, void *overlapped,
+                                      void *completion) {
+    (void)dir; (void)buf; (void)buflen; (void)subtree; (void)filter;
+    (void)overlapped; (void)completion;
+    if (returned) *returned = 0;
+    w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
+    return W32_FALSE;
+}
+
 W32ABI W32_HANDLE CreateFileA(const char *path, W32_DWORD access,
                               W32_DWORD share, void *sa,
                               W32_DWORD disposition, W32_DWORD flags,

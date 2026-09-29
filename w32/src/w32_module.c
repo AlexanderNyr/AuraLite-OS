@@ -799,6 +799,19 @@ int W32ABI w32_FreeLibrary(W32_HMODULE mod) {
     return 1;
 }
 
+/* W32A-16 (Notepad++ gate): a thread-pool teardown helper.  A plugin's work
+ * callback calls this so its own DLL is unloaded once the callback returns,
+ * instead of freeing the module out from under the still-running callback.
+ * AuraLite runs the callback inline -- there is no separate pool thread to
+ * hand the deferral to -- so the safe, observable equivalent is to drop the
+ * reference now through the loader-aware FreeLibrary: the refcount ends
+ * exactly where Windows' deferred free would leave it.  The callback-
+ * instance handle carries no pool context here and is ignored. */
+void W32ABI FreeLibraryWhenCallbackReturns(void *instance, W32_HMODULE mod) {
+    (void)instance;
+    if (mod) w32_FreeLibrary(mod);
+}
+
 /* W32A-4: the exe slot.  Builtin (never unmapped/detached) but WITH a
  * mapping, unlike the loader-code built-ins: the unwinder must resolve
  * fault PCs inside it. */

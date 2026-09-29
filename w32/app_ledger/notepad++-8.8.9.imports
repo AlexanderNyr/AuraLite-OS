@@ -278,7 +278,7 @@ kernel32.dll QueryPerformanceFrequency REAL static-only
 kernel32.dll QueueUserAPC REAL static-only
 kernel32.dll RaiseException REAL static-only
 kernel32.dll ReadConsoleW REAL static-only
-kernel32.dll ReadDirectoryChangesW REAL static-only
+kernel32.dll ReadDirectoryChangesW FAIL-CLEAN static-only
 kernel32.dll ReadFile REAL static-only
 kernel32.dll RegisterApplicationRestart REAL static-only
 kernel32.dll ReleaseMutex REAL static-only
@@ -440,7 +440,7 @@ user32.dll GetClassNameA REAL static-only
 user32.dll GetClassNameW REAL static-only
 user32.dll GetClientRect REAL static-only
 user32.dll GetClipboardData REAL static-only
-user32.dll GetComboBoxInfo REAL static-only
+user32.dll GetComboBoxInfo FAIL-CLEAN static-only
 user32.dll GetCursorPos REAL static-only
 user32.dll GetDC REAL static-only
 user32.dll GetDCEx REAL static-only

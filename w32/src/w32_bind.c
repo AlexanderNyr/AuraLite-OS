@@ -70,6 +70,7 @@ static const w32_export_t exports[] = {
     /* W32-7: dynamic loading.  GetProcAddress can hand back a pointer to any
      * of the above, including itself. */
     { K32, "FreeLibrary",      (void *)w32_FreeLibrary     },
+    { K32, "FreeLibraryWhenCallbackReturns", (void *)FreeLibraryWhenCallbackReturns }, /* W32A-16 */
     { K32, "GetModuleHandleA", (void *)w32_GetModuleHandleA },
     { K32, "GetProcAddress",   (void *)w32_GetProcAddress  },
     { K32, "LoadLibraryA",     (void *)w32_LoadLibraryA    },
@@ -80,6 +81,7 @@ static const w32_export_t exports[] = {
     { K32, "HeapAlloc",        (void *)HeapAlloc        },
     { K32, "HeapFree",         (void *)HeapFree         },
     { K32, "ReadFile",         (void *)ReadFile         },
+    { K32, "ReadDirectoryChangesW", (void *)ReadDirectoryChangesW }, /* W32A-16: fail-clean */
     { K32, "SetLastError",     (void *)SetLastError     },
     { K32, "Sleep",            (void *)Sleep            },
     { K32, "VirtualAlloc",     (void *)VirtualAlloc     },
@@ -193,6 +195,11 @@ static const w32_export_t exports[] = {
     { U32, "BringWindowToTop",          (void *)BringWindowToTop},
     { U32, "SetWindowPos",              (void *)SetWindowPos},
     { U32, "MoveWindow",                (void *)MoveWindow},
+    /* W32A-16: Notepad++ lays its whole frame out in one flicker-free pass. */
+    { U32, "BeginDeferWindowPos",       (void *)BeginDeferWindowPos},
+    { U32, "DeferWindowPos",            (void *)DeferWindowPos},
+    { U32, "EndDeferWindowPos",         (void *)EndDeferWindowPos},
+    { U32, "GetComboBoxInfo",           (void *)GetComboBoxInfo},
     { U32, "AdjustWindowRectEx",        (void *)AdjustWindowRectEx},
     { U32, "ClientToScreen",            (void *)ClientToScreen},
     { U32, "ScreenToClient",            (void *)ScreenToClient},
@@ -923,6 +930,13 @@ static const w32_export_t exports[] = {
     { U32, "DrawFrameControl",          (void *)DrawFrameControl          },
     { U32, "DrawIconEx",                (void *)DrawIconEx                },
     { U32, "DrawIcon",                  (void *)DrawIcon                  },
+    /* W32A-16: the icon<->bitmap bridge NPP uses on its tab/tray icons.
+     * Impl lives in w32_gdi.c beside the icon object model it builds on. */
+    { U32, "CreateIconIndirect",        (void *)CreateIconIndirect        },
+    { U32, "GetIconInfo",               (void *)GetIconInfo               },
+    /* W32A-16: the ms_abi wsprintfW twin (the sysv shell is the host test's;
+     * the guest needs the Microsoft x64 varargs convention). */
+    { U32, "wsprintfW",                 (void *)w32_user32_wsprintfW      },
     { U32, "NotifyWinEvent",            (void *)NotifyWinEvent            },
 
     /* COMCTL32 (W32A-8).  The 27 ladder-measured symbols, all REAL in

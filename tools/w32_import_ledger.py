@@ -464,7 +464,24 @@ EXPECTED_UNION = 611
 # exports after W32A-6; 607 after W32A-7; 620 after the modeless-dialog /
 # MENUITEMINFO / MessageBoxIndirect completion on 2026-09-28; the W32A-0
 # baseline was 44 exports, gap 569).
-EXPECTED_GAP = 13      # W32A-7 closed 81 of the 122 W32A-6 left (GDI breadth:
+EXPECTED_GAP = 4       # W32A-16 (Notepad++ app gate) closed the 9 symbols the
+                       # pinned notepad++.exe named that still fell through to a
+                       # loud TODO stub: the DeferWindowPos layout batch
+                       # (Begin/Defer/EndDeferWindowPos, user32_win.c) and the
+                       # CreateIconIndirect/GetIconInfo icon<->bitmap bridge
+                       # (w32_gdi.c) landed REAL; FreeLibraryWhenCallbackReturns
+                       # (w32_module.c) drops the ref through w32_FreeLibrary;
+                       # wsprintfW bound its ms_abi guest twin (kernel32_loc.c);
+                       # GetComboBoxInfo (no COMBOBOX control) and
+                       # ReadDirectoryChangesW (no VFS change-journal) are
+                       # documented FAIL-CLEAN.  13 -> 4.  The 4 that remain are
+                       # NOT notepad++.exe imports: CharPrevExA + SetPriorityClass
+                       # (7-Zip/PuTTY surface) and GetPrivateProfileIntW +
+                       # GetPrivateProfileSectionNamesW (the NppConverter plugin's
+                       # unimplemented INI-profile family) -- other phases' work.
+                       #
+                       # History of the count:
+                       # W32A-7 closed 81 of the 122 W32A-6 left (GDI breadth:
                        # DCs/blits/regions/fonts/palettes + user32 FrameRect);
                        # the 2026-09-28 user32 completion closed 13 more: the
                        # three names the pinned apps blocked on at import

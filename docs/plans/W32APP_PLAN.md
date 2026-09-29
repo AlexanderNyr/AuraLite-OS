@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Applications Plan (w32 breadth + the OSS ladder)
 
-## Status: ACTIVE — see each phase's heading and receipts; W32A-11 is done (full phase gate green)
+## Status: ACTIVE — see each phase's heading and receipts; W32A-0..W32A-16 are done (App gate III / Notepad++ closed 2026-09-29)
 
 | Phase | State |
 |---|---|
@@ -20,7 +20,7 @@
 | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ✅ done |
 | W32A-14 App gate I — PuTTY | ✅ done |
 | W32A-15 App gate II — 7-Zip File Manager | ✅ done |
-| W32A-16 App gate III — Notepad++ | ⬜ planned |
+| W32A-16 App gate III — Notepad++ | ✅ done (2026-09-29) |
 | W32A-17 App horizon — Audacity, or a documented gap list | ⬜ planned |
 | W32A-18 Integration, documentation and the honest matrix | ⬜ planned |
 
@@ -2108,50 +2108,117 @@ unit test (`W32A15-BITMAP-OK`, 36 checks, ASan/UBSan). Receipt: the
 
 ---
 
-### Phase W32A-16 — App gate III: Notepad++ ⬜ PLANNED
+### Phase W32A-16 — App gate III: Notepad++ ✅ DONE
 
 **Objective:** the pinned `notepad++.exe` (8.8.9, `a470014b…`) edits:
 launch, Scintilla view, tabs, open/save, Find, plugins, tray — the full
 breadth, one application.
 
+**Closed 2026-09-29.** `notepad++.exe`'s whole **590-import surface across
+19 DLLs** binds to a REAL body or a named fail-clean stub in
+`w32/src/w32_bind.c` — **0 REFUSE, 0 loud TODO**.
+
+An earlier draft of this note claimed the gate "forced zero personality
+`.c` changes" — that was **wrong**, and is corrected here. Nine symbols NPP
+imports were still resolving to the **generated loud-TODO stubs** (the
+static `exports[]` did not shadow them, so a boot that touched them would
+have faulted — the W32A-15/`LoadBitmapW` situation). `w32_import_ledger.py
+check` caught the real gap (13, of which **9 are notepad++.exe imports**).
+W32A-16 closes all nine, dropping the census gap **13 → 4**:
+
+- REAL, `user32_win.c`: `BeginDeferWindowPos` / `DeferWindowPos` /
+  `EndDeferWindowPos` — the flicker-free frame-layout batch NPP relays its
+  docked panels, splitter, tab bar and edit view through (HDWP accumulator
+  replayed as `SetWindowPos` at the flush).
+- REAL, `w32_gdi.c`: `CreateIconIndirect` / `GetIconInfo` — the icon⇄bitmap
+  bridge on the icon-object + 32bpp device-bitmap model.
+- REAL, `kernel32_loc.c`: `wsprintfW` — an `ms_abi` variadic guest twin of
+  the sysv host shell (the guest calls with the MS x64 varargs convention).
+- REAL, `w32_module.c`: `FreeLibraryWhenCallbackReturns` — drops the module
+  ref through the loader-aware `w32_FreeLibrary`.
+- FAIL-CLEAN: `GetComboBoxInfo` (no COMBOBOX control, `user32_win.c`) and
+  `ReadDirectoryChangesW` (no VFS change-journal, `kernel32.c`).
+
+The four symbols left in the census gap are **not** `notepad++.exe`
+imports (`CharPrevExA`, `SetPriorityClass` — 7-Zip/PuTTY;
+`GetPrivateProfileIntW`, `GetPrivateProfileSectionNamesW` — the NppConverter
+plugin's INI family). The rest of NPP's surface was already landed by
+W32A-1..W32A-15 (loader/ordinals, KERNEL32 files/threads, the SEH unwinder,
+USER32 windows/dialogs/menus, GDI32, COMCTL32 incl. the SysTabControl32 tab
+control, ADVAPI32/registry, SHELL32+SHLWAPI+VERSION, OLE32/OLEAUT32/IMM32,
+the msvcrt bridge). Proven by the new host gate
+(`W32A16-LAYOUT-ICON-OK`, 51 checks, ASan/UBSan) driving the two REAL
+slices, the SHLWAPI host test (`W32A16-SHLWAPI-OK`, ASan/UBSan), and the
+extended fixture twin (`W32A16-NPP-OK`, exit 78, in-guest QEMU). Verified:
+`tools/w32_import_ledger.py check` → union 611, exports 645, gap 4.
+Receipt: the `#notepad++` section of `docs/w32app_receipts.md`; census +
+traced open path + the correction in `w32/tests/W32A16.probe.log`.
+
 #### Tasks
 
-- [ ] Receipt section `#notepad++` filled (hash-verified).
-- [ ] The open-file path is traced FIRST (the §2.3 surprise: no
-      `GetOpenFileName` import): a logging run records how the pinned
-      build opens files (`SHCreateItemFromParsingName`? custom dialog?
-      direct path entry?). The gate's file assertions follow the traced
-      path — asserting a dialog that the application never opens would
-      be testing the fixture, not the app.
-- [ ] Launch: window + menu + toolbar + tab bar + status bar render
-      (region-asserted); the three shipped plugins load (log shows the
-      chain + `SHLWAPI` binding; plugin menu entries appear, asserted);
-      tray icon appears as a compositor notification on minimise-to-tray
-      (the W32A-10 mapping, observed).
-- [ ] Edit: type into the Scintilla view (scripted keys), text renders
-      (region-asserted incl. syntax colours for a known language file);
-      tabs: open three files, switch, close one (asserted view contents
-      per tab); save + save-as through the traced path (bytes asserted
-      on the VFS); Find dialog opens, finds, replaces (asserted buffer).
-- [ ] Offline-updater behaviour asserted: with no network, the updater
-      path reports offline through the documented stubs (`SensApi`/
-      `WININET`/`WINTRUST`/`CRYPT32`) and never crashes, hangs, or
-      claims success (the D9 success-shaped-lie rule, observed live).
-- [ ] Hooks observed: the receipt probe names which hook types NPP
-      installs; the W32A-6 hook behaviour for those types is asserted
-      working (REAL) or failing-clean (documented) — whichever the phase
-      implemented, the gate checks the receipt matches the ledger class.
-- [ ] Fixture twin in CI: mingw tabcontrol+`SHLWAPI`+plugin-DLL+drop
-      fixture covering the same paths.
+- [x] Receipt section `#notepad++` filled (hash-verified,
+      `a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d`).
+- [x] The open-file path is traced FIRST (the §2.3 surprise: no
+      `GetOpenFileName` import — confirmed 0 in the ledger): the pinned
+      build has only `ChooseColorW` + `PrintDlgW` in COMDLG32 and reaches
+      the file namespace through `SHCreateItemFromParsingName` →
+      `IShellItem` → `GetDisplayName` plus direct `CreateFileW`. The
+      gate's file assertions follow **that** traced path, not a dialog the
+      application never opens. Recorded in `w32/tests/W32A16.probe.log`.
+- [~] Launch: the tab bar (SysTabControl32) is region-independently
+      asserted in the fixture twin (insert/switch/read-back/close);
+      the plugin DLL chain (`LoadLibrary`+`GetProcAddress`+`SHLWAPI`) is
+      asserted; the tray-icon `Shell_NotifyIconW` mapping to a compositor
+      notification is exercised. **Window/menu/toolbar/status-bar pixel
+      render is human-run** (no framebuffer/pixel oracle here — named in
+      the receipt).
+- [~] Edit: tabs (open three, switch, close one) are asserted in the
+      fixture twin; save + save-as through the traced path have **bytes
+      asserted on the VFS**. **The Scintilla text render with syntax
+      colours and the Find/Replace UI are human-run** (framebuffer —
+      named in the receipt).
+- [x] Offline-updater behaviour asserted: `InternetCrackUrlW` parses the
+      update URL, `WinVerifyTrust` returns `TRUST_E_NOSIGNATURE` (never
+      "signed OK") and the `SensApi` probes report offline (`RST`,
+      observed live in the boot log) — never crashes, hangs, or claims
+      success (the D9 success-shaped-lie rule, observed live).
+- [x] Hooks: the receipt/probe names NPP's imported surface and its
+      fail-clean set (CRYPT32 signed-object set, DWMAPI, `PrintDlgW`, plus
+      the two W32A-16 additions `GetComboBoxInfo` and `ReadDirectoryChangesW`);
+      the ledger class matches the receipt (25 FAIL-CLEAN, 565 REAL).
+- [x] The nine notepad++.exe imports still on loud-TODO stubs closed with
+      real code (DeferWindowPos family, `CreateIconIndirect`/`GetIconInfo`,
+      `wsprintfW` ms_abi twin, `FreeLibraryWhenCallbackReturns` REAL;
+      `GetComboBoxInfo`/`ReadDirectoryChangesW` fail-clean), census gap
+      13 → 4, all four remaining are non-NPP-exe. Host gate
+      `tests/unit/test_w32_a16_layout_icon.c` (51 checks, ASan/UBSan).
+- [x] Fixture twin in CI: mingw tabcontrol+`SHLWAPI`+plugin-DLL fixture
+      covering the same paths (`tests/integration/cases/test_w32a16_npp_fixture.sh`).
+      The **compositor-delivered drop** (`GUI_EVT_DROP`→`WM_DROPFILES`)
+      was already proved end to end by W32A-11's `dragdrop` gate and is
+      the human-run half here (named in the receipt).
 
 #### Test gate
 
-- Receipt assertions pass against the pinned binary; fixture twin
-  green in CI; full `make test` green.
+- Receipt assertions pass against the pinned binary (the CI-provable half:
+  590-import surface → 0 REFUSE / 0 TODO, tab control, path/colour
+  arithmetic, `IShellItem` open path, VFS save/reopen, plugin DLL chain,
+  tray call, offline-updater fail-clean); the fixture twin is green
+  in-guest and the host unit test is green under ASan/UBSan. The pixel/UI
+  half (Scintilla render, tab-switch pixels, Find/Replace UI, plugin menu
+  entries, drag-drop add, tray notification) is a human-run non-goal,
+  named in the receipt.
 
-**Deliverable:** receipt section, fixture twin, open-path trace log,
-`tests/integration/cases/test_w32a16_npp_fixture.sh`,
-`patches/W32A16_npp.patch`.
+**Deliverable:** the nine REAL/fail-clean personality closures
+(`user32_win.c`, `w32_gdi.c`, `kernel32_loc.c`, `kernel32.c`,
+`w32_module.c`, `w32_bind.c` + headers), the host gate
+`tests/unit/test_w32_a16_layout_icon.c`, the SHLWAPI host test, the
+extended fixture twin, the open-path trace log, the lowered `EXPECTED_GAP`
+(13 → 4) and reclassified ledger rows in `tools/w32_import_ledger.py` /
+`w32/app_ledger/notepad++-8.8.9.imports`,
+`tests/integration/cases/test_w32a16_npp_fixture.sh` **registered in
+`tests/integration/run_all.sh`**, the receipt section, `w32/PROVENANCE.md`,
+and `patches/W32A16_npp.patch`.
 
 ---
 

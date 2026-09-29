@@ -3013,6 +3013,92 @@ const uint32_t *w32_gdi_icon_pixels(W32_HICON hicon, int32_t *w, int32_t *hgt) {
     return o->u.icon.argb;
 }
 
+/* ===================================================================== *
+ * CreateIconIndirect / GetIconInfo (W32A-16, Notepad++ gate)            *
+ * ===================================================================== *
+ * Notepad++ takes its tab and tray icons apart with GetIconInfo (to
+ * recolour or re-mask them) and mints new HICONs with CreateIconIndirect.
+ * Both run on the engine's own icon object (32bpp ARGB, top-down) and its
+ * device bitmaps (32bpp, laid out exactly like w32_gdi_bitmap_from_dib's
+ * output so GetPixel/SelectObject read them back unchanged).  The pair is
+ * a lossless round-trip for the fully-opaque / fully-transparent pixels
+ * real icons use; where an icon carries partial alpha it collapses to the
+ * 1-bit AND mask Win32 also falls back to below 32bpp. */
+
+/* GetIconInfo: split the icon into the two device bitmaps the API promises.
+ *   hbmColor -- the ARGB pixels, 32bpp, ready for the raster path.
+ *   hbmMask  -- the AND mask, one word per pixel: white (0x00FFFFFF) where
+ *               the icon is transparent, black where it is opaque.
+ * Both bitmaps are the caller's to DeleteObject (the Win32 contract). */
+W32ABI W32_BOOL GetIconInfo(W32_HICON hicon, W32_ICONINFO *ii) {
+    gdi_obj_t *o = obj_from_h(hicon, GOBJ_ICON);
+    if (!o || !ii) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
+    int32_t w = o->u.icon.w, h = o->u.icon.h;
+    const uint32_t *src = o->u.icon.argb;
+    gdi_bitmap_t *col = bmp_create_internal(w, h, 32, 0, 0, 0, 0);
+    if (!col) { w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return W32_FALSE; }
+    gdi_bitmap_t *msk = bmp_create_internal(w, h, 32, 0, 0, 0, 0);
+    if (!msk) { w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return W32_FALSE; }
+    uint32_t *cd = (uint32_t *)(void *)col->bits;
+    uint32_t *md = (uint32_t *)(void *)msk->bits;
+    int32_t cs = (int32_t)(col->stride / 4u), ms = (int32_t)(msk->stride / 4u);
+    for (int32_t y = 0; y < h; y++)
+        for (int32_t x = 0; x < w; x++) {
+            uint32_t p = src[y * w + x];
+            cd[y * cs + x] = p;
+            md[y * ms + x] = ((p >> 24) & 0xFFu) ? 0x00000000u : 0x00FFFFFFu;
+        }
+    ii->fIcon = W32_TRUE;
+    ii->xHotspot = (W32_DWORD)(w / 2);
+    ii->yHotspot = (W32_DWORD)(h / 2);
+    ii->hbmColor = (W32_HBITMAP)handle_of_bmp(col);
+    ii->hbmMask  = (W32_HBITMAP)handle_of_bmp(msk);
+    return W32_TRUE;
+}
+
+/* CreateIconIndirect: the inverse.  Read the colour bitmap's 32bpp ARGB and,
+ * where a mask is supplied, force each pixel transparent (alpha 0) wherever
+ * the mask marks it and opaque otherwise; with no mask the colour bitmap's
+ * own alpha stands (a colour bitmap that carries none is taken opaque, as
+ * Win32 does for a 24bpp source).  The pixels are copied into a fresh icon
+ * object, so the caller may delete its bitmaps immediately. */
+W32ABI W32_HICON CreateIconIndirect(const W32_ICONINFO *ii) {
+    if (!ii) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    gdi_obj_t *co = obj_from_h(ii->hbmColor, GOBJ_BITMAP);
+    if (!co) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+    gdi_bitmap_t *cb = &co->u.bmp;
+    if (cb->bpp != 32 || cb->w <= 0 || cb->h <= 0) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0;
+    }
+    int32_t w = cb->w, h = cb->h;
+    gdi_bitmap_t *mb = 0;
+    if (ii->hbmMask) {
+        gdi_obj_t *mo = obj_from_h(ii->hbmMask, GOBJ_BITMAP);
+        if (mo && mo->u.bmp.bpp == 32 && mo->u.bmp.w == w && mo->u.bmp.h == h)
+            mb = &mo->u.bmp;
+    }
+    gdi_obj_t *io;
+    W32_HICON hi = icon_obj_alloc(w, h, &io);
+    if (!hi) { w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return 0; }
+    const uint32_t *cd = (const uint32_t *)(const void *)cb->bits;
+    int32_t cs = (int32_t)(cb->stride / 4u);
+    const uint32_t *md = mb ? (const uint32_t *)(const void *)mb->bits : 0;
+    int32_t ms = mb ? (int32_t)(mb->stride / 4u) : 0;
+    uint32_t *dst = io->u.icon.argb;
+    for (int32_t y = 0; y < h; y++)
+        for (int32_t x = 0; x < w; x++) {
+            uint32_t p = cd[y * cs + x];
+            if (md) {
+                if (md[y * ms + x] & 0x00FFFFFFu) p &= 0x00FFFFFFu;  /* transparent */
+                else                              p |= 0xFF000000u;  /* opaque      */
+            } else if ((p & 0xFF000000u) == 0) {
+                p |= 0xFF000000u;
+            }
+            dst[y * w + x] = p;
+        }
+    return hi;
+}
+
 W32_HICON w32_gdi_icon_decode(const uint8_t *bytes, size_t len) {
     if (!bytes || len < 40) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
     /* already decoded?  the blob address is the identity */

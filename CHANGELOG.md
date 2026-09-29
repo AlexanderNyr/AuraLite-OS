@@ -2,6 +2,66 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [W32A-16 — App gate III: Notepad++ (CI-provable half)] 2026-09-29
+
+The third application gate. The pinned **Notepad++ 8.8.9** `notepad++.exe`
+(`a470014b…`, 8 365 216 bytes, kept outside Git) binds its whole **590-import
+surface across 19 DLLs** to a REAL body or a named fail-clean stub in
+`w32/src/w32_bind.c` — **0 REFUSE, 0 loud TODO**.
+
+**Correction to an earlier draft of this entry** (which claimed "zero new
+personality code / an honest empty patch"): that was wrong. Nine symbols
+`notepad++.exe` imports were still falling through to the **generated loud-TODO
+stubs** — `exports[]` did not shadow them, so a boot that exercised them would
+have faulted (the same shape as W32A-15's `LoadBitmapW`). `w32_import_ledger.py
+check` flagged the real gap (13, of which **9 are notepad++.exe imports**).
+W32A-16 closes all nine with real code, dropping the census gap **13 → 4**:
+
+- **`BeginDeferWindowPos` / `DeferWindowPos` / `EndDeferWindowPos`** — REAL
+  (`w32/src/user32_win.c`): the flicker-free frame-layout batch NPP relays its
+  docked panels, splitter, tab bar and edit view through. An HDWP accumulator
+  replays as `SetWindowPos` at the flush.
+- **`CreateIconIndirect` / `GetIconInfo`** — REAL (`w32/src/w32_gdi.c`): the
+  icon⇄bitmap bridge on the icon-object + 32bpp device-bitmap model; a lossless
+  round-trip for opaque/transparent pixels.
+- **`wsprintfW`** — REAL (`w32/src/kernel32_loc.c`): an `ms_abi` variadic guest
+  twin of the sysv host shell (the guest calls the bound pointer with the MS x64
+  varargs convention; a sysv callee would read the wrong slots).
+- **`FreeLibraryWhenCallbackReturns`** — REAL (`w32/src/w32_module.c`): drops
+  the module reference through the loader-aware `w32_FreeLibrary`.
+- **`GetComboBoxInfo`** — documented FAIL-CLEAN (`user32_win.c`): no COMBOBOX
+  control class. **`ReadDirectoryChangesW`** — documented FAIL-CLEAN
+  (`kernel32.c`): no VFS change-journal; `ERROR_NOT_SUPPORTED`, NPP falls back
+  to manual reload.
+
+The four symbols left in the census gap are **not** `notepad++.exe` imports
+(`CharPrevExA`, `SetPriorityClass` — 7-Zip/PuTTY; `GetPrivateProfileIntW`,
+`GetPrivateProfileSectionNamesW` — the NppConverter plugin's INI family), so
+NPP's whole surface binds with 0 loud TODO. Verified:
+`tools/w32_import_ledger.py check` → union 611, exports 645, gap 4.
+
+Also traced the open path (the §2.3 surprise): `notepad++.exe` has **no
+`GetOpenFileName` import** — it reaches the file namespace through
+`SHCreateItemFromParsingName` → `IShellItem` → `GetDisplayName` plus direct
+`CreateFileW`, so the gate asserts that path, not a dialog it never opens.
+
+New this phase: a new host gate `tests/unit/test_w32_a16_layout_icon.c`
+(`W32A16-LAYOUT-ICON-OK`, 51 checks, ASan/UBSan) that drives the two REAL
+slices deterministically (batch deferral, HDWP lifetime, lossless icon
+round-trip, mask semantics, fail-clean edges); the extended mingw-w64 fixture
+twin `w32/tests/w32a16_npp.c` (`W32A16-NPP-OK`, exit 78, in-guest QEMU — now
+also driving the nine new imports alongside the tab bar, SHLWAPI Path*/Color*,
+IShellItem open path, VFS save/reopen, plugin DLL chain, tray icon and offline
+updater); the SHLWAPI host test `tests/unit/test_w32_a16_shlwapi.c`
+(`W32A16-SHLWAPI-OK`, ASan/UBSan); the integration case
+`tests/integration/cases/test_w32a16_npp_fixture.sh`, **now registered in
+`tests/integration/run_all.sh`**; a lowered `EXPECTED_GAP` (13 → 4) in
+`tools/w32_import_ledger.py`; the reclassified ledger rows; the refreshed trace
+log `w32/tests/W32A16.probe.log`; `w32/PROVENANCE.md`; the receipt `#notepad++`;
+and `patches/W32A16_npp.patch`. The Scintilla render, tab-switch pixels,
+Find/Replace UI, plugin menu entries, compositor-delivered drop and tray
+notification remain human-run non-goals, named in the receipt.
+
 ## [W32A-11 — incremental OLE32/IMM32/UxTheme work; phase NOT DONE] 2026-09-24
 
 Added balanced COM initialization and task memory, expanded BSTR/VARIANT

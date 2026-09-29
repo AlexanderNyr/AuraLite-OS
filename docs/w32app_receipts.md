@@ -650,6 +650,92 @@ twin and the host unit test.
 
 Closing patch: `patches/W32A15_7zip.patch`.
 
-## W32A-16 notepad++ — AWAITING
+## W32A-16 notepad++ — PHASE CLOSED (2026-09-29), the Notepad++ app gate (CI-provable half)
+
+The third application gate. The pinned **Notepad++ 8.8.9** `notepad++.exe` was
+downloaded (portable x64) to `build/w32bins/` — git-ignored, provenance-exempt,
+**never committed** (D2 / `w32/PROVENANCE.md`). Its sha256 / size are
+`a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d` / `8365216`
+— **byte-for-byte the pin** in the committed ledger
+`w32/app_ledger/notepad++-8.8.9.imports` (its plugins are pinned separately in
+`w32/app_ledger/npp-plugins-8.8.9.imports`). `w32/tests/W32A16.probe.log`
+records the census, the traced open path and the live fixture boot.
+
+**Import surface, measured (`objdump -p`).** `notepad++.exe` imports **590**
+names across **19 DLLs** (USER32 214, KERNEL32 186, GDI32 63, COMCTL32 23,
+ADVAPI32 20, SHLWAPI 17, UXTHEME 15, OLE32 11, SHELL32 10, IMM32 9, CRYPT32 8,
+VERSION 3, SENSAPI 2, OLEAUT32 2, DWMAPI 2, COMDLG32 2, WININET 1, WINTRUST 1,
+DBGHELP 1), including nine ordinal imports (COMCTL32 `#17 #381 #410 #411 #412
+#413`, OLEAUT32 `#4 #6`, SHELL32 `#165`). Cross-referenced against
+`w32/src/w32_bind.c`:
+
+| class (notepad++.exe) | count |
+|---|---:|
+| REAL | **565** |
+| FAIL-CLEAN (crypt32 signed-object set, dwmapi, PrintDlgW, SENSAPI probes, WinVerifyTrust, + W32A-16's `GetComboBoxInfo` and `ReadDirectoryChangesW`) | **25** |
+| REFUSE / unresolved ordinal | **0** |
+| left on a loud TODO stub | **0** |
+
+**Correction — this gate DID force new personality code.** An earlier draft of
+this receipt claimed "NO new personality code / an honest empty patch." That was
+wrong: **nine symbols `notepad++.exe` imports were still resolving to the
+generated loud-TODO stubs** in `w32_stubs_gen.c` — the static `exports[]` table
+did not shadow them, so a real boot that exercised them would have faulted (the
+same shape as W32A-15's `LoadBitmapW`; the earlier fixture simply never called
+them, so it went green while a real boot would not have). `w32_import_ledger.py
+check` flagged the true gap (**13**, of which **9 are notepad++.exe imports**).
+W32A-16 closes all nine with real code, taking the census gap **13 → 4**:
+
+| symbol(s) | DLL | class | where |
+|---|---|---|---|
+| `BeginDeferWindowPos` / `DeferWindowPos` / `EndDeferWindowPos` | USER32 | REAL | `user32_win.c` — flicker-free frame-layout batch (HDWP → `SetWindowPos` at flush) |
+| `CreateIconIndirect` / `GetIconInfo` | USER32 | REAL | `w32_gdi.c` — icon⇄bitmap bridge (icon-object + 32bpp device-bitmap; lossless round-trip) |
+| `wsprintfW` | USER32 | REAL | `kernel32_loc.c` — `ms_abi` variadic guest twin of the sysv host shell |
+| `FreeLibraryWhenCallbackReturns` | KERNEL32 | REAL | `w32_module.c` — drops the module ref via loader-aware `w32_FreeLibrary` |
+| `GetComboBoxInfo` | USER32 | FAIL-CLEAN | `user32_win.c` — no COMBOBOX control class |
+| `ReadDirectoryChangesW` | KERNEL32 | FAIL-CLEAN | `kernel32.c` — no VFS change-journal; `ERROR_NOT_SUPPORTED`, NPP falls back to manual reload |
+
+The **four** symbols left in the census gap are **not** `notepad++.exe` imports
+(`CharPrevExA`, `SetPriorityClass` — 7-Zip/PuTTY surface; `GetPrivateProfileIntW`,
+`GetPrivateProfileSectionNamesW` — the NppConverter plugin's unimplemented INI
+family), so `notepad++.exe`'s whole 590-import surface now binds to a REAL body
+or a named fail-clean stub with **zero loud-TODO fall-through**. Everything else
+NPP names was already landed by W32A-1..W32A-15 (the loader + ordinals, KERNEL32
+files/threads, the SEH unwinder, USER32 windows/dialogs/menus, GDI32, COMCTL32
+**including the SysTabControl32 tab control**, ADVAPI32/registry, SHELL32 +
+SHLWAPI + VERSION, OLE32/OLEAUT32/IMM32, the msvcrt bridge). Census after this
+phase: personality exports **645**, K/U/G union **611**, gap **4** —
+`tools/w32_import_ledger.py check` `CHECK OK`.
+
+**The traced open path (the §2.3 surprise).** `notepad++.exe` has **no
+`GetOpenFileNameW`/`GetSaveFileNameW` import** — its only COMDLG32 imports are
+`ChooseColorW` (REAL) and `PrintDlgW` (fail-clean). It reaches the file
+namespace through the shell object model: `SHCreateItemFromParsingName` →
+`IShellItem` → `GetDisplayName`, plus direct `CreateFileW` on a typed/dropped
+path. The gate asserts THAT path (an `IShellItem` round-trip and a
+`CreateFileW` save/reopen), not a common dialog the application never opens.
+
+| gate / command | result | scope |
+|---|---:|---|
+| `tests/integration/cases/test_w32a16_npp_fixture.sh` (guest, QEMU) | **6/6 assertions** | `w32a16_npp.exe` — a mingw PE importing the KERNEL32/USER32/GDI32/COMCTL32/SHELL32/SHLWAPI/OLE32/WININET/SENSAPI/WINTRUST surface **by name** (resolved through `w32_bind.c`). It asserts each Notepad++ personality path: the **SysTabControl32** open-files tab strip (insert three pages, `TCM_GETITEMCOUNT`==3, `TCM_SETCURSEL`/`TCM_GETCURSEL` switch, `TCM_GETITEMW` read-back, `TCM_DELETEITEM` close → 2), the **SHLWAPI `Path*`** filename family and the **`Color*`** dark-mode arithmetic, the **traced open path** (`SHCreateItemFromParsingName` → `IShellItem` → `GetDisplayName` round-trip; NULL path fail-clean), a **save + reopen** and **save-as** over the VFS (bytes asserted), the run-time **plugin DLL chain + msvcrt heap** (`LoadLibrary`+`GetProcAddress` `InitCommonControlsEx`, `malloc`/`free`), the **minimise-to-tray** `Shell_NotifyIconW` NIM_ADD/DELETE, and the **offline updater** (`InternetCrackUrlW` parse → scheme HTTPS + host, `WinVerifyTrust` → `TRUST_E_NOSIGNATURE`, the SENSAPI probes answering a clean boolean without a fault). **Extended this phase** with a "REAL slices" section that drives the nine newly-landed imports in-guest: the `DeferWindowPos` batch on three `WS_POPUP` frames (defer → flush → `GetClientRect` before/after), the `CreateIconIndirect`/`GetIconInfo` round-trip (4×4 32bpp + 1bpp mask, `GetObjectW` dims), `wsprintfW` (`"%s=%d/%x"` → `"line=42/ff"`, n==10), `FreeLibraryWhenCallbackReturns` (double-load), and `ReadDirectoryChangesW` fail-clean (`ERROR_NOT_SUPPORTED`). Prints `W32A16-NPP-OK`, exits **78**, no `FAIL-`, **no TODO fall-through**, no fault |
+| `test_w32_a16_layout_icon` (host, ASan/UBSan) | **51 checks, 0 failures** | the two REAL slices this phase landed, amalgamating the USER32 window core + the GDI engine + a pos/size-tracking fake compositor. **DeferWindowPos:** a three-window batch is deferred (nothing moves until `EndDeferWindowPos`), the flush applies every entry (`GetWindowRect`/`GetClientRect` checked), the HDWP is consumed (second `End` fails clean), and a bad child frees the HDWP and returns NULL; `GetComboBoxInfo` fails clean. **Icons:** a lossless icon → `GetIconInfo` → `CreateIconIndirect` → icon round-trip for opaque/transparent pixels, the colour bitmap reads back through `GetPixel`, the AND mask carries the alpha, the no-mask path treats the colour bitmap as opaque, and malformed inputs fail clean with `ERROR_INVALID_PARAMETER` |
+| `test_w32_a16_shlwapi` (host, ASan/UBSan) | **33 checks, 0 failures** | the pure `shlwapi.c` modules (amalgamated with `w32_utf.c`): `PathFindFileNameW`/`PathFindExtensionW` split points, `PathStripPathW`/`PathRemoveFileSpecW`/`PathRemoveExtensionW`/`PathAddExtensionW` in-place mutation, `PathCombineW` (incl. an absolute second component overriding the first), `PathMatchSpecW` `*`/`?` case-insensitive globbing, `PathIsRelativeW` drive/UNC vs relative, `PathCompactPathExW` ellipsis-from-the-front + verbatim-when-it-fits, the `ColorRGBToHLS`→`ColorHLSToRGB` channel-close round-trip, grey staying achromatic, `ColorAdjustLuma` darkening/lightening monotonically, and `AssocQueryStringW`'s empty-table `S_FALSE` |
+| import coverage (`w32_import_ledger.py check`) | **590 imports, 0 REFUSE, 0 TODO; census gap 13 → 4** | `w32/tests/W32A16.probe.log` |
+
+**Honest non-goals (human-run, not headlessly automatable in this
+environment).** The full Notepad++ *receipt* is human-run and pasted back
+hash-verified: the **Scintilla** text render with syntax colours, the
+**tab-switch** pixels, the **Find/Replace** dialog UI, the three shipped
+**plugins'** menu entries loading through `SHLWAPI`, **drag-drop add** from the
+compositor (the `GUI_EVT_DROP` → `WM_DROPFILES` path W32A-11 already proved end
+to end), and **minimise-to-tray** shown as a live compositor notification.
+Those need a framebuffer, a pixel oracle and human-driven UI and are out of this
+gate's automatable scope by design. What is CI-provable — the 590-import
+surface binding with 0 REFUSE / 0 TODO, the tab control, the path/colour
+arithmetic, the `IShellItem` open path, the VFS save/reopen, the plugin DLL
+chain, the tray call and the offline-updater fail-clean behaviour — is proved
+above by the fixture twin and the host unit test.
+
+Closing patch: `patches/W32A16_npp.patch`.
 
 ## W32A-17 final — AWAITING

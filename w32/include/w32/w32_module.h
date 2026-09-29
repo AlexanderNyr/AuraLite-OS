@@ -108,6 +108,11 @@ void *W32ABI w32_GetProcAddress(W32_HMODULE mod, const char *name);
  * DllMain(DLL_PROCESS_DETACH). */
 int W32ABI w32_FreeLibrary(W32_HMODULE mod);
 
+/* W32A-16: KERNEL32!FreeLibraryWhenCallbackReturns -- a thread-pool callback
+ * asks for its own DLL to be freed when it returns.  AuraLite runs callbacks
+ * inline, so this drops the reference now via w32_FreeLibrary (see the .c). */
+void W32ABI FreeLibraryWhenCallbackReturns(void *instance, W32_HMODULE mod);
+
 /* kernel32_ps.c owns a second module table (LoadLibrary cookies,
  * 0x4D000000+slot — disjoint from the loader's 0x4000+i handles).
  * w32_FreeLibrary tries the loader first, then this. */

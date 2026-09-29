@@ -28,6 +28,12 @@ W32ABI W32_BOOL   WriteFile(W32_HANDLE h, const void *buf, W32_DWORD len,
                             W32_DWORD *written, void *overlapped);
 W32ABI W32_BOOL   ReadFile(W32_HANDLE h, void *buf, W32_DWORD len,
                            W32_DWORD *got, void *overlapped);
+/* W32A-16: async directory-change notification -- documented fail-clean
+ * (no VFS change-journal); NPP falls back to manual reload. */
+W32ABI W32_BOOL   ReadDirectoryChangesW(W32_HANDLE dir, void *buf, W32_DWORD buflen,
+                                        W32_BOOL subtree, W32_DWORD filter,
+                                        W32_DWORD *returned, void *overlapped,
+                                        void *completion);
 
 /* Desired-access and creation-disposition values used by CreateFileA. */
 #define W32_GENERIC_READ   0x80000000u
@@ -1030,6 +1036,9 @@ W32ABI W32_INT w32_wsprintf_core(W32_LPWSTR buf, W32_LPCWSTR fmt,
  * an ms_abi varargs callee; see kernel32_loc.c).  The guest path feeds
  * the core, never this shell. */
 W32_INT wsprintfW(W32_LPWSTR buf, W32_LPCWSTR fmt, ...);
+/* W32A-16: the ms_abi twin the guest binds as USER32!wsprintfW (the sysv
+ * shell above is the host test's; see kernel32_loc.c for why they are split). */
+W32ABI W32_INT w32_user32_wsprintfW(W32_LPWSTR buf, W32_LPCWSTR fmt, ...);
 W32ABI W32_DWORD FormatMessageA(W32_DWORD flags, const void *src,
                                W32_DWORD msgId, W32_DWORD langId,
                                W32_LPSTR buf, W32_DWORD cch, void *args);

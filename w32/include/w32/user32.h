@@ -582,6 +582,37 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
                              W32_UINT flags);
 W32ABI W32_BOOL MoveWindow(W32_HWND hwnd, int32_t x, int32_t y,
                            int32_t w, int32_t h, W32_BOOL repaint);
+
+/* ---- DeferWindowPos: batched multi-window layout (W32A-16) -------------
+ * Notepad++ relays its whole frame (docked-panel splitters, tab bar, the
+ * Scintilla view) through one Begin/Defer/End batch so the children move
+ * and resize together instead of flickering one at a time.  The HDWP is a
+ * server-side accumulator; EndDeferWindowPos replays it as SetWindowPos
+ * calls, so the batch composes on the one window model USER32 already
+ * owns -- the only observable difference from N separate calls is that
+ * they land in a single flush, which is the point. */
+typedef void *W32_HDWP;
+W32ABI W32_HDWP BeginDeferWindowPos(int32_t n);
+W32ABI W32_HDWP DeferWindowPos(W32_HDWP hdwp, W32_HWND hwnd, W32_HWND after,
+                               int32_t x, int32_t y, int32_t cx, int32_t cy,
+                               W32_UINT flags);
+W32ABI W32_BOOL EndDeferWindowPos(W32_HDWP hdwp);
+
+/* ---- GetComboBoxInfo (W32A-16): documented fail-clean ------------------
+ * AuraLite's window model has no COMBOBOX control class, so this reports
+ * failure rather than fabricating the three child handles the struct
+ * promises.  Kept here (not in a private header) because the struct layout
+ * IS the interface Notepad++ compiled against. */
+typedef struct {
+    W32_DWORD cbSize;
+    W32_RECT  rcItem;
+    W32_RECT  rcButton;
+    W32_DWORD stateButton;
+    W32_HWND  hwndCombo;
+    W32_HWND  hwndItem;
+    W32_HWND  hwndList;
+} W32_COMBOBOXINFO;
+W32ABI W32_BOOL GetComboBoxInfo(W32_HWND hwndCombo, W32_COMBOBOXINFO *pcbi);
 W32ABI W32_BOOL AdjustWindowRectEx(W32_RECT *r, W32_DWORD style,
                                    W32_BOOL menu, W32_DWORD exstyle);
 W32ABI W32_BOOL ClientToScreen(W32_HWND hwnd, W32_POINT *pt);

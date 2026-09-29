@@ -3202,3 +3202,108 @@ int w32_win_count_and_list(W32_HWND parent, W32_HWND *out, int max) {
     }
     return n;
 }
+
+/* ===================================================================== *
+ * DeferWindowPos: batched multi-window layout (W32A-16, Notepad++ gate)  *
+ * ===================================================================== *
+ * Notepad++ lays its whole frame out in one pass -- the docked-panel
+ * splitters, the SysTabControl32 tab bar and the Scintilla edit view move
+ * and resize together -- by opening an HDWP with BeginDeferWindowPos,
+ * queueing each child with DeferWindowPos, then flushing the lot with
+ * EndDeferWindowPos.  Win32 accumulates the requests and applies them in
+ * order at the end; here the HDWP is a small server-side record and the
+ * flush is just SetWindowPos per entry, so the batch reuses the one window
+ * manager the rest of USER32 already agrees on (D5) rather than growing a
+ * second geometry path.  The only behaviour that differs from N separate
+ * SetWindowPos calls is that they land in a single flush -- exactly the
+ * flicker-free semantics Notepad++ asked for. */
+#define UI_MAX_DWP      8
+#define UI_DWP_ENTRIES  64
+struct ui_dwp_entry {
+    W32_HWND hwnd, after;
+    int32_t  x, y, cx, cy;
+    W32_UINT flags;
+};
+struct ui_dwp {
+    int in_use;
+    int n;
+    struct ui_dwp_entry e[UI_DWP_ENTRIES];
+};
+static struct ui_dwp dwp_pool[UI_MAX_DWP];
+
+static struct ui_dwp *dwp_from_handle(W32_HDWP h) {
+    for (int i = 0; i < UI_MAX_DWP; i++)
+        if (h == (W32_HDWP)&dwp_pool[i] && dwp_pool[i].in_use)
+            return &dwp_pool[i];
+    return 0;
+}
+
+W32ABI W32_HDWP BeginDeferWindowPos(int32_t n) {
+    (void)n;                    /* a sizing hint on Windows; the pool is fixed */
+    for (int i = 0; i < UI_MAX_DWP; i++) {
+        if (!dwp_pool[i].in_use) {
+            dwp_pool[i].in_use = 1;
+            dwp_pool[i].n = 0;
+            return (W32_HDWP)&dwp_pool[i];
+        }
+    }
+    w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+    return 0;
+}
+
+W32ABI W32_HDWP DeferWindowPos(W32_HDWP hdwp, W32_HWND hwnd, W32_HWND after,
+                               int32_t x, int32_t y, int32_t cx, int32_t cy,
+                               W32_UINT flags) {
+    struct ui_dwp *d = dwp_from_handle(hdwp);
+    if (!d) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
+    /* Win32 frees the HDWP and returns NULL if a request is malformed, so a
+     * caller that chains DeferWindowPos calls stops at the first failure. */
+    if (w32_win_index_from_hwnd(hwnd) < 0) {
+        d->in_use = 0;
+        w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    if (d->n >= UI_DWP_ENTRIES) {
+        d->in_use = 0;
+        w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
+    struct ui_dwp_entry *e = &d->e[d->n++];
+    e->hwnd = hwnd; e->after = after;
+    e->x = x; e->y = y; e->cx = cx; e->cy = cy; e->flags = flags;
+    return hdwp;
+}
+
+W32ABI W32_BOOL EndDeferWindowPos(W32_HDWP hdwp) {
+    struct ui_dwp *d = dwp_from_handle(hdwp);
+    if (!d) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
+    W32_BOOL ok = W32_TRUE;
+    for (int i = 0; i < d->n; i++) {
+        struct ui_dwp_entry *e = &d->e[i];
+        if (!SetWindowPos(e->hwnd, e->after, e->x, e->y, e->cx, e->cy, e->flags))
+            ok = W32_FALSE;
+    }
+    d->in_use = 0;            /* the HDWP is consumed whether or not all applied */
+    return ok;
+}
+
+/* GetComboBoxInfo (W32A-16): AuraLite has no COMBOBOX control class -- the
+ * Find/Replace combos Notepad++ queries are the compositor's own edit+list
+ * furniture, not a Win32 combobox that owns the three child HWNDs this call
+ * reports.  Rather than hand back three fabricated handles no other USER32
+ * call would recognise, it fails clean: FALSE with ERROR_INVALID_PARAMETER,
+ * the same answer Windows returns for a window that is not a combobox.  NPP
+ * reads a FALSE here as "no combo info" and sizes the control from its own
+ * layout instead. */
+W32ABI W32_BOOL GetComboBoxInfo(W32_HWND hwndCombo, W32_COMBOBOXINFO *pcbi) {
+    if (w32_win_index_from_hwnd(hwndCombo) < 0) {
+        w32_set_last_error(W32_ERROR_INVALID_HANDLE);
+        return W32_FALSE;
+    }
+    if (!pcbi || pcbi->cbSize != (W32_DWORD)sizeof(W32_COMBOBOXINFO)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+        return W32_FALSE;
+    }
+    w32_set_last_error(W32_ERROR_INVALID_PARAMETER);   /* not a combobox here */
+    return W32_FALSE;
+}

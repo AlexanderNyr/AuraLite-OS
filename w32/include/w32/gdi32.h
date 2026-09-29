@@ -592,6 +592,20 @@ W32_HDC w32_gdi_screen_dc(void);
 W32_HICON w32_gdi_icon_decode(const uint8_t *bytes, size_t len);
 W32_HICON w32_gdi_icon_from_argb(int32_t w, int32_t hgt, const uint32_t *argb); /* W32A-8: ImageList_GetIcon's mint */
 const uint32_t *w32_gdi_icon_pixels(W32_HICON hicon, int32_t *w, int32_t *hgt); /* W32A-8: ImageList_ReplaceIcon's read */
+
+/* W32A-16 (Notepad++ gate): the icon<->bitmap bridge.  ICONINFO is a USER32
+ * struct but references W32_HBITMAP (owned here), so its layout and the two
+ * calls that pair with it live in gdi32.h beside the icon object helpers
+ * they build on. */
+typedef struct {
+    W32_BOOL    fIcon;          /* TRUE = icon, FALSE = cursor (hotspot used) */
+    W32_DWORD   xHotspot;
+    W32_DWORD   yHotspot;
+    W32_HBITMAP hbmMask;        /* AND mask (opaque=black, transparent=white) */
+    W32_HBITMAP hbmColor;       /* 32bpp colour bitmap */
+} W32_ICONINFO;
+W32ABI W32_HICON CreateIconIndirect(const W32_ICONINFO *ii);
+W32ABI W32_BOOL  GetIconInfo(W32_HICON hicon, W32_ICONINFO *ii);
 /* Register a resource blob the loader handed out (it alone knows the
  * size; DrawIconEx only gets the pointer). */
 void w32_gdi_icon_cache_add(const uint8_t *blob, size_t len);
