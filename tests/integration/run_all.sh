@@ -58,6 +58,7 @@ ALL_CASES=(
     test_metal_null
     test_selftest_modes
     test_gui_dirty_uefi
+    test_gui_lane_smoke
     test_shell_commands
     test_syscalls
     test_selftest
@@ -298,7 +299,7 @@ ALL_CASES=(
 # is even slower: it runs the whole closure twice plus the QEMU idle that waits
 # out the closure's fixed budget, so it is the case "--fast" must never carry.
 # --fast skips both exactly like the other correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #
@@ -338,7 +339,7 @@ group_re() {
         lx)    echo '^test_lx_[a-z0-9_]+$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
+        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
         # Keep the whole Win32 personality in its own CI job, including the
         # compiler-built PE integration case and two-digit W32A-10 phase.
         w32)   echo '^test_(w32_[a-z0-9_]+|w32a[0-9]+_[a-z0-9_]+)$' ;;

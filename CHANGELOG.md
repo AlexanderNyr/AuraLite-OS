@@ -2,6 +2,32 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [WR-0 — The live-GUI lane and its oracles] 2026-09-29
+
+Opens the W32RUN ladder (`docs/plans/W32RUN_PLAN.md`): the successor to
+W32APP that turns the "human-run non-goals" of the app gates into automatable
+live-frame gates. The measurement that commissioned it: the pinned 7-Zip
+`7zFM.exe` runs for real and draws its own window, but the GUI is only visible
+under UEFI (BIOS Stage 2 sets no VBE mode — the frame is black by
+construction).
+
+- **The lane.** `tests/integration/lib/gui_lane.sh` boots AuraLite under OVMF
+  (GOP linear framebuffer) with serial + monitor UNIX sockets and a
+  `usb-tablet`; the ISO is attached as a hybrid MBR disk (`if=ide` +
+  `-boot order=c`, NOT `media=cdrom`). App binaries reach the guest on a
+  `/fat` delivery disk (`gl_make_fat_disk`) — never the tree.
+- **The oracles.** `tools/fb_oracle.py` asserts over a `screendump`:
+  `brightness` (not-black), `band-brighter` (taskbar/title chrome),
+  `find-color` (title bar / close box), `delta` (an action changed the frame).
+  `tools/gui_input.py` is the sole socket talker: serial send/wait/run
+  (filtering the `[bc]` buffer-cache spam) + monitor `sendkey`/`type`/
+  `screendump`/`mouse`.
+- **The gate.** `tests/integration/cases/test_gui_lane_smoke.sh` — **9/9**,
+  registered in `run_all.sh` (`gui` shard, `SLOW_CASES_RE`); the not-black
+  assertion `test_gui.sh` could only skip on the BIOS lane is now positive.
+  Receipt: `docs/gui_receipts.md` §WR-0.
+
+
 ## [W32A-18 — Integration, documentation and the honest matrix] 2026-09-29
 
 Closes the Win32-application ladder (W32APP_PLAN W32A-0 – W32A-18): the plan is
