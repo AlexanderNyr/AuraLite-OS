@@ -2510,21 +2510,24 @@ W32_INT wsprintfW(W32_LPWSTR buf, W32_LPCWSTR fmt, ...) {
  * import resolved to the loud TODO stub -- Notepad++ formats nearly every
  * status-bar and dialog string through wsprintfW, so that was a real gate).
  *
- * The body is a verbatim twin of the sysv shell -- identical tokenizer, box
- * kinds and w32_wsprintf_core call -- differing only in the W32ABI attribute
- * and the export name.  Keeping them character-for-character identical is
- * deliberate: the sysv twin is exercised under ASan/UBSan by the host suite
- * (test_w32_a2), and this one shares its logic exactly, so the only thing new
- * here is the calling convention the guest requires. */
+ * The body mirrors the sysv shell -- identical tokenizer, box kinds and
+ * w32_wsprintf_core call -- but with two convention-driven differences: the
+ * W32ABI (ms_abi) attribute + export name, AND the varargs walker.  An ms_abi
+ * variadic callee must read its arguments through the Microsoft x64 layout, so
+ * it uses __builtin_ms_va_list / __builtin_ms_va_start / __builtin_ms_va_arg /
+ * __builtin_ms_va_end -- NOT <stdarg.h>'s va_list, which is the SysV
+ * register-save-area walker and reads the wrong slots when the guest passes
+ * arguments per the MS ABI (that mismatch page-faulted on the first %s in the
+ * real QEMU boot; the host sysv twin never exercised it). */
 W32ABI W32_INT w32_user32_wsprintfW(W32_LPWSTR buf, W32_LPCWSTR fmt, ...) {
-    va_list ap;
+    __builtin_ms_va_list ap;
     struct w32_ws_arg args[64];
     int nargs = 0;
     W32_LPCWSTR p;
 
     if (!buf || !fmt)
         return 0;
-    va_start(ap, fmt);
+    __builtin_ms_va_start(ap, fmt);
     p = fmt;
     while (*p && nargs < 64) {
         struct ws_spec s;
@@ -2539,13 +2542,13 @@ W32ABI W32_INT w32_user32_wsprintfW(W32_LPWSTR buf, W32_LPCWSTR fmt, ...) {
             continue;
         if (s.star_w && nargs < 64) {
             args[nargs].kind = W32_WS_S64;
-            args[nargs].u = (uint64_t)(int64_t)va_arg(ap, int);
+            args[nargs].u = (uint64_t)(int64_t)__builtin_va_arg(ap, int);
             args[nargs].p = NULL;
             nargs++;
         }
         if (s.star_p && nargs < 64) {
             args[nargs].kind = W32_WS_S64;
-            args[nargs].u = (uint64_t)(int64_t)va_arg(ap, int);
+            args[nargs].u = (uint64_t)(int64_t)__builtin_va_arg(ap, int);
             args[nargs].p = NULL;
             nargs++;
         }
@@ -2557,42 +2560,42 @@ W32ABI W32_INT w32_user32_wsprintfW(W32_LPWSTR buf, W32_LPCWSTR fmt, ...) {
         switch (s.vkind) {
         case W32_WS_S64:
             if (s.i64)
-                args[nargs].u = (uint64_t)va_arg(ap, int64_t);
+                args[nargs].u = (uint64_t)__builtin_va_arg(ap, int64_t);
             else if (s.half)
                 args[nargs].u =
-                    (uint64_t)(int64_t)(int16_t)va_arg(ap, int);
+                    (uint64_t)(int64_t)(int16_t)__builtin_va_arg(ap, int);
             else
-                args[nargs].u = (uint64_t)(int64_t)va_arg(ap, int);
+                args[nargs].u = (uint64_t)(int64_t)__builtin_va_arg(ap, int);
             break;
         case W32_WS_U64:
             if (s.i64)
-                args[nargs].u = va_arg(ap, uint64_t);
+                args[nargs].u = __builtin_va_arg(ap, uint64_t);
             else if (s.half)
-                args[nargs].u = (uint64_t)(uint16_t)va_arg(ap, unsigned);
+                args[nargs].u = (uint64_t)(uint16_t)__builtin_va_arg(ap, unsigned);
             else
-                args[nargs].u = (uint64_t)va_arg(ap, unsigned);
+                args[nargs].u = (uint64_t)__builtin_va_arg(ap, unsigned);
             break;
         case W32_WS_WCHAR:
         case W32_WS_ACHAR:
-            args[nargs].u = (uint64_t)(unsigned)va_arg(ap, int);
+            args[nargs].u = (uint64_t)(unsigned)__builtin_va_arg(ap, int);
             break;
         case W32_WS_WSTR:
-            args[nargs].p = va_arg(ap, const W32_WCHAR *);
+            args[nargs].p = __builtin_va_arg(ap, const W32_WCHAR *);
             break;
         case W32_WS_ASTR:
-            args[nargs].p = va_arg(ap, const char *);
+            args[nargs].p = __builtin_va_arg(ap, const char *);
             break;
         case W32_WS_PTR:
-            args[nargs].u = (uint64_t)(uintptr_t)va_arg(ap, void *);
+            args[nargs].u = (uint64_t)(uintptr_t)__builtin_va_arg(ap, void *);
             break;
         case W32_WS_INTPTR:
-            args[nargs].p = va_arg(ap, int *);
+            args[nargs].p = __builtin_va_arg(ap, int *);
             break;
         default:
             break;
         }
         nargs++;
     }
-    va_end(ap);
+    __builtin_ms_va_end(ap);
     return w32_wsprintf_core(buf, fmt, args, nargs);
 }

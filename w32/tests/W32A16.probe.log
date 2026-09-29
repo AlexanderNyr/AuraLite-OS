@@ -90,38 +90,57 @@ gate therefore asserts THAT path — an IShellItem round-trip and a CreateFileW
 save/reopen — not a common-dialog the application never opens (asserting a
 dialog NPP never calls would be testing the fixture, not the app).
 
---- fixture twin boot receipt (real QEMU; refreshed for the W32A-16 slices) ---
+--- fixture twin boot receipt (REAL QEMU boot, verbatim) ---
 The CI-automatable twin w32a16_npp.exe imports the exact KERNEL32/USER32/GDI32/
 COMCTL32/SHELL32/SHLWAPI/OLE32/WININET/SENSAPI/WINTRUST surface BY NAME and
-walks Notepad++'s single-process paths.  This phase EXTENDED the twin to drive
-the nine newly-landed imports (DeferWindowPos batch, CreateIconIndirect/
-GetIconInfo, wsprintfW, GetComboBoxInfo, FreeLibraryWhenCallbackReturns,
-ReadDirectoryChangesW), so the bound-import count grows accordingly.  A real
-boot (via `run /tests/w32a16_npp.exe`, routed through /apps/w32run):
+walks Notepad++'s single-process paths, including the nine newly-landed imports
+(DeferWindowPos batch, CreateIconIndirect/GetIconInfo, wsprintfW,
+GetComboBoxInfo, FreeLibraryWhenCallbackReturns, ReadDirectoryChangesW).  Booted
+under QEMU (TCG) from build/auralite.iso via
+`tests/integration/run_all.sh w32a16` (6/6 assertions), verbatim transcript:
 
+    run /tests/w32a16_npp.exe
     [shell] /tests/w32a16_npp.exe imports Win32 DLLs; running via /apps/w32run
-    [elf]  loaded 3 segment(s), entry 0x40072780
-    w32run: /tests/w32a16_npp.exe mapped at 0x400000000000, 49 import(s) bound
+    running /apps/w32run in isolated address space...
+    [shell] child PID 8, waiting...
+    [elf]  loaded 3 segment(s), entry 0x40074a00
+    [proc] entering Ring 3 at 0x40074a00 RSP=0x7fffefff2ea0 (CR3=0x5135000)
+    w32run: /tests/w32a16_npp.exe mapped at 0x400000000000, 53 import(s) bound
     W32A16: Notepad++ app-gate fixture start
     w32: [wintrust] WinVerifyTrust: signature status unknown (TRUST_E_NOSIGNATURE); no trust decision is made or implied
-    w32: [kernel32] ReadDirectoryChangesW: no VFS change-journal (ERROR_NOT_SUPPORTED); caller should fall back to manual reload
     [tcp] [h=0] connecting to 10.0.2.2:53 (src port 40017)...
+    [tcp] SYN options: 8 bytes, hdr=28, mss=1460 sack-perm
     [tcp] [h=0] connection refused (RST)          ← SENSAPI reports offline, no lie
     W32A16-NPP-OK
-    [shell] '/tests/w32a16_npp.exe' (tid 8) exited (code=78)
+    [thread] '/apps/w32run' (tid 8) exited (code=78)
 
-The fixture binds its extended import set, prints W32A16-NPP-OK and exits 78
-with no TODO fall-through and no fault.  The new REAL slices are exercised in
-the same boot: the DeferWindowPos batch is deferred then flushed (GetClientRect
-before/after), the icon round-trip builds and splits an HICON, wsprintfW formats
-byte-exact, and the two fail-clean stubs return their documented errors.  The
-offline updater arm is still visible: WinVerifyTrust answers TRUST_E_NOSIGNATURE
-(never "signed OK") and the SENSAPI reachability probe reports offline (RST).
+The fixture binds 53 imports, prints W32A16-NPP-OK and exits 78 with no TODO
+fall-through and no fault.  The new REAL slices run in this same boot: the
+DeferWindowPos batch is deferred then flushed (GetClientRect before/after), the
+icon round-trip builds and splits an HICON, wsprintfW formats byte-exact, and
+the two fail-clean stubs return their documented errors.  The offline updater
+arm is visible: WinVerifyTrust answers TRUST_E_NOSIGNATURE (never "signed OK")
+and the SENSAPI reachability probe reports offline (RST).
 
-NOTE: the byte-exact boot log (including the exact bound-import count) is
-regenerated on the human/CI QEMU run against the pinned binary + the freshly
-built twin; the host gate tests/unit/test_w32_a16_layout_icon.c proves the two
-REAL slices deterministically under ASan/UBSan in CI without a framebuffer.
+--- a bug this REAL boot caught (and the fix) ---
+The FIRST real boot of this twin did NOT pass -- it page-faulted:
+
+    W32-SEH-UNHANDLED code=0xc0000005 pc=0x4002af8b   (inside w32run, not the guest)
+    [thread] '/apps/w32run' (tid 8) exited (code=139)
+
+The fault was in USER32!wsprintfW.  W32ABI is __attribute__((ms_abi)) on
+x86_64, so the guest calls the bound wsprintfW pointer with the Microsoft x64
+varargs convention -- but the ms_abi twin walked its arguments with <stdarg.h>'s
+va_list, which is the SysV register-save-area walker.  It read the varargs from
+the wrong slots and dereferenced a garbage %s pointer.  The host sysv twin
+(exercised by test_w32_a2/a9 under ASan/UBSan) never hit this because it is a
+plain sysv function called the sysv way -- ONLY a real in-guest boot exercises
+the ms_abi entry, so this was invisible to the host suite and to a merely
+"described" boot receipt.  Fix: the ms_abi twin now uses __builtin_ms_va_list /
+__builtin_ms_va_start / __builtin_va_arg / __builtin_ms_va_end
+(w32/src/kernel32_loc.c, w32_user32_wsprintfW).  After the fix the boot is the
+clean transcript above.  This is the lesson W32A-16 documents: an ms_abi
+variadic export cannot be validated by a sysv host twin alone.
 
 --- honest non-goals (human-run, framebuffer required) ---
 The full Notepad++ receipt is human-run and pasted back hash-verified: the
