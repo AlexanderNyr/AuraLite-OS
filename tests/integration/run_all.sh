@@ -345,7 +345,14 @@ group_re() {
         gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
         # Keep the whole Win32 personality in its own CI job, including the
         # compiler-built PE integration case and two-digit W32A-10 phase.
-        w32)   echo '^test_(w32_[a-z0-9_]+|w32a[0-9]+_[a-z0-9_]+)$' ;;
+        # W32RUN_PLAN.md's `wr<N>_` cases (WR-1 shell namespace, WR-2 7-Zip
+        # launch/live) belong to the SAME personality and so to the same
+        # shard: they are the real-application half of what w32a<N>_ tests
+        # with fixtures.  Missing this arm is what broke the partition when
+        # WR0/WR1 landed -- every shard aborted with exit 2, including the
+        # ones that have nothing to do with Win32, because check_groups()
+        # runs on EVERY invocation by design.
+        w32)   echo '^test_(w32_[a-z0-9_]+|w32a[0-9]+_[a-z0-9_]+|wr[0-9]+_[a-z0-9_]+)$' ;;
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
         # slowest (the SH8 closure, ~23 min in the guest plus the idle budget)
         # does not serialize behind the scripting cases.  selfhost-script = the

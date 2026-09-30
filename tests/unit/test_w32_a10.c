@@ -156,6 +156,11 @@ W32ABI W32_DWORD SetTextColor(W32_HDC h,W32_DWORD c){ (void)h;(void)c; return 0;
 #include "../../w32/src/w32_pe.c"
 #include "../../w32/src/kernel32_fs.c"
 #include "../../w32/src/shlwapi.c"
+/* WR-1 split the SHELL32 namespace (IShellFolder / IEnumIDList / PIDL)
+ * into shell32_ns.c, and shell32.c now calls into it (ns_special_pidl,
+ * ns_get_desktop_folder, ns_pidl_to_path).  The amalgamation has to
+ * carry it too, or the link fails. */
+#include "../../w32/src/shell32_ns.c"
 #include "../../w32/src/shell32.c"
 #include "../../w32/src/comdlg32.c"
 #include "../../w32/src/version.c"
@@ -278,7 +283,17 @@ int main(void){
         char b[512]; w2a(back,b,sizeof b); ok(b[0]=='/',"PIDL round-trip %s",b);
         free(pidl);
         ok(SHGetSpecialFolderLocation(NULL,0x00FFu,&pidl)==(W32_LONG)0x80004005u,"GetSpecialFolderLocation bad");
-        void *out=NULL; ok(SHGetDesktopFolder(&out)==(W32_LONG)0x80004001uL,"GetDesktopFolder E_NOTIMPL");
+        /* WR-1 implemented the SHELL32 namespace (shell32_ns.c), so
+         * SHGetDesktopFolder no longer answers E_NOTIMPL -- it hands back a
+         * live IShellFolder.  Released here, or LeakSanitizer fails the run
+         * on nx_folder_new's allocation.  The object graph itself is pinned
+         * by tests/unit/test_shell_ns.c; this is the SHELL32 entry point. */
+        void *out=NULL;
+        ok(SHGetDesktopFolder(&out)==0 && out,"GetDesktopFolder returns a live IShellFolder (WR-1)");
+        if(out){
+            const W32_IShellFolderVtbl *dvt=((W32_IShellFolder*)out)->vtbl;
+            ok(dvt->Release(out)==0,"desktop IShellFolder Release frees");
+        }
         ok(SHGetSpecialFolderPathW(NULL,path,W32_CSIDL_PERSONAL,0)==1,"GetSpecialFolderPathW");
     }
 

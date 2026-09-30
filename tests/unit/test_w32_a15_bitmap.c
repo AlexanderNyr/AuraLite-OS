@@ -130,6 +130,9 @@ int ag_window_get_size(int wid,uint32_t*w,uint32_t*h){
 }
 int ag_window_get_pos(int wid,int32_t*x,int32_t*y){(void)x;(void)y;return wid_ok(wid)?0:-1;}
 int ag_window_lower(int wid){return wid_ok(wid)?0:-1;}
+/* CW-1: CreateWindowExW embeds a WS_CHILD in its parent's surface, so
+ * every host harness that amalgamates user32_win.c must model it. */
+int ag_window_set_parent(int wid,int p){if(!wid_ok(wid))return -1;(void)p;return 0;}
 int ag_window_set_flags(int wid,uint32_t f){(void)f;return wid_ok(wid)?0:-1;}
 uint32_t ag_window_get_flags(int wid){(void)wid;return 0x01|0x02|0x04|0x08|0x10;}
 int ag_window_get_z(int wid){return wid_ok(wid)?1:-1;}

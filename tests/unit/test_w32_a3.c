@@ -66,6 +66,13 @@ int W32ABI w32_FreeLibrary(void *mod) {
 #include "../../w32/src/w32_crt.c"
 #include "../../w32/src/kernel32_thr.c"
 #include "../../w32/src/w32_seh.c"   /* W32A-4: dispatch frames (thr.c) */
+/* W32A-13: w32_kernel32_init() publishes the command line to msvcrt's
+ * _acmdln export, so kernel32.c references w32_msvcrt_init().  The
+ * amalgamation must carry its definition (and the argv splitter msvcrt.c
+ * uses) or the link fails.  Included AFTER kernel32_thr.c so msvcrt's
+ * _beginthreadex forwards onto the REAL CreateThread this test exercises. */
+#include "../../w32/src/w32_argv.c"
+#include "../../w32/src/msvcrt.c"
 
 #ifdef __SANITIZE_ADDRESS__
 /* W32A-3: the suite proved its one stack-use-after-return report a

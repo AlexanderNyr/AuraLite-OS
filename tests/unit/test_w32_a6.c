@@ -104,6 +104,9 @@ int ag_window_invalidate_rect(int wid,int32_t x,int32_t y,uint32_t w,uint32_t h)
 int ag_window_get_size(int wid,uint32_t *w,uint32_t *h){if(wid<1||wid>FAKE_WINS)return-1;if(w)*w=fw[wid-1].w;if(h)*h=fw[wid-1].h;return 0;}
 int ag_window_get_pos(int wid,int32_t *x,int32_t *y){if(wid<1||wid>FAKE_WINS)return-1;if(x)*x=fw[wid-1].x;if(y)*y=fw[wid-1].y;return 0;}
 int ag_window_lower(int wid){if(wid<1||wid>FAKE_WINS)return-1;fw[wid-1].z=-1;return 0;}
+/* CW-1: CreateWindowExW embeds a WS_CHILD in its parent's surface, so
+ * every host harness that amalgamates user32_win.c must model it. */
+int ag_window_set_parent(int wid,int p){if(wid<1||wid>FAKE_WINS)return -1;(void)p;return 0;}
 int ag_window_set_flags(int wid,uint32_t fl){if(wid<1||wid>FAKE_WINS)return-1;fw[wid-1].flags=fl;return 0;}
 uint32_t ag_window_get_flags(int wid){if(wid<1||wid>FAKE_WINS)return 0;return fw[wid-1].flags;}
 int ag_window_get_z(int wid){if(wid<1||wid>FAKE_WINS)return-1;return fw[wid-1].z;}

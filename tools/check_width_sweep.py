@@ -59,7 +59,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 394   # was 388 (W32A-5's 18, same file, same
+BASELINE_UINT64_CASTS = 397   # was 394; CW_COMPOSITOR_PLAN phase CW-1 added 3
+                              # in kernel/gui/gui_syscalls.c -- the GUI_OP_
+                              # SET_PARENT arm (two require_owner refusals
+                              # returning (uint64_t)-1 and the result of
+                              # gui_set_parent()).  Identical idiom, identical
+                              # file and identical justification to the W32A-7
+                              # move recorded below: these are syscall ABI
+                              # words, not addresses.  Pin moves, code stays.
+                              # was 388 (W32A-5's 18, same file, same
                               # idiom); W32APP_PLAN.md phase W32A-7 added 6
                               # in kernel/gui/gui_syscalls.c -- the two new
                               # GUI_OP_* arms (GET_PIXEL returning a content

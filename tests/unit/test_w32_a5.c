@@ -137,6 +137,7 @@ typedef struct {
     uint32_t flags;
     char title[128];
     int invalidated;
+    int parent;                 /* CW-1: ag_window_set_parent target, 0 = none */
     struct { uint32_t type; int32_t x, y; uint32_t key; uint8_t buttons, mods;
              uint16_t data; } evq[32];
     int evq_head, evq_tail;
@@ -178,7 +179,8 @@ int ag_window_create(int32_t x, int32_t y, uint32_t w, uint32_t h,
         fw[i].in_use = 1;
         fw[i].x = x; fw[i].y = y; fw[i].w = w; fw[i].h = h;
         fw[i].visible = 0; fw[i].z = i + 1; fw[i].flags = flags;
-        fw[i].invalidated = 0; fw[i].evq_head = fw[i].evq_tail = 0;
+        fw[i].invalidated = 0; fw[i].parent = 0;
+        fw[i].evq_head = fw[i].evq_tail = 0;
         memset(fw[i].title, 0, sizeof fw[i].title);
         snprintf(fw[i].title, sizeof fw[i].title, "%s", title ? title : "");
         return i + 1;                          /* 1-based wid; 0 would be none */
@@ -245,6 +247,19 @@ int ag_window_get_pos(int wid, int32_t *x, int32_t *y) {
     if (wid < 1 || wid > FAKE_WINS || !fw[wid-1].in_use) return -1;
     if (x) *x = fw[wid-1].x;
     if (y) *y = fw[wid-1].y;
+    return 0;
+}
+/* CW_COMPOSITOR_PLAN CW-1 gave the compositor real WS_CHILD embedding, and
+ * CreateWindowExW now calls ag_window_set_parent() for every child window.
+ * The fake compositor must model it or the amalgamation does not link (this
+ * is what broke `make test-unit` after the CW1 commit).  Records the link so
+ * a future child-clipping assertion has something to read; rejects a bad wid
+ * exactly like every other arm here. */
+int ag_window_set_parent(int wid, int parent_wid) {
+    if (wid < 1 || wid > FAKE_WINS || !fw[wid-1].in_use) return -1;
+    if (parent_wid > 0 &&
+        (parent_wid > FAKE_WINS || !fw[parent_wid-1].in_use)) return -1;
+    fw[wid-1].parent = parent_wid > 0 ? parent_wid : 0;
     return 0;
 }
 int ag_window_lower(int wid) {
@@ -530,10 +545,27 @@ int main(void) {
     ok(seen_n >= 2 && seen_msg[0] == W32_WM_NCCREATE && seen_msg[1] == W32_WM_CREATE,
        "WM_NCCREATE arrives before WM_CREATE");
     {
-        W32_HWND bad = CreateWindowExW(0, CLS, TITLE, W32_WS_CHILD, 0, 0, 10, 10,
-                                       0, 0, 0, 0);
-        ok(bad == 0 && GetLastError() == W32_ERROR_CALL_NOT_IMPLEMENTED,
-           "WS_CHILD is refused by name (there is no child compositing)");
+        /* CW_COMPOSITOR_PLAN CW-1 gave the compositor real child embedding,
+         * so WS_CHILD is no longer refused wholesale (it used to fail with
+         * ERROR_CALL_NOT_IMPLEMENTED "there is no child compositing" -- this
+         * assertion went stale the moment CW-1 landed and is what turned
+         * `make test-unit` red).  The contract now has two halves, and both
+         * are pinned here: a child with NO parent is still refused -- a
+         * parentless child has nothing to be clipped to -- and a child WITH a
+         * parent is created and handed to ag_window_set_parent(). */
+        W32_HWND orphan = CreateWindowExW(0, CLS, TITLE, W32_WS_CHILD,
+                                          0, 0, 10, 10, 0, 0, 0, 0);
+        ok(orphan == 0 && GetLastError() == W32_ERROR_INVALID_PARAMETER,
+           "a parentless WS_CHILD is refused by name");
+
+        W32_HWND kid = CreateWindowExW(0, CLS, TITLE, W32_WS_CHILD,
+                                       4, 5, 10, 10, h1, 0, 0, 0);
+        int kid_ag  = kid ? windows[w32_win_index_from_hwnd(kid)].ag_wid : -1;
+        int h1_ag   = windows[w32_win_index_from_hwnd(h1)].ag_wid;
+        ok(kid != 0 && GetParent(kid) == h1 &&
+           kid_ag >= 1 && fw[kid_ag - 1].parent == h1_ag,
+           "a parented WS_CHILD is created and embedded in its parent (CW-1)");
+        DestroyWindow(kid);
     }
     {
         /* WS_MINIMIZE has no compositor meaning here -- minimize is a

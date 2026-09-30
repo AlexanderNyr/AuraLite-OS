@@ -3886,7 +3886,8 @@ $(BUILD_DIR)/test_w32_abi: tests/unit/test_w32_abi.c \
 
 $(BUILD_DIR)/test_w32_kernel32: tests/unit/test_w32_kernel32.c \
                                 w32/src/kernel32.c w32/src/w32_handle.c \
-                                w32/src/w32_errno.c
+                                w32/src/w32_errno.c \
+                                w32/src/msvcrt.c w32/src/w32_argv.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -O2 $(W32_INC) -I . $< -o $@
 
@@ -3951,7 +3952,8 @@ $(BUILD_DIR)/test_w32_a3: tests/unit/test_w32_a3.c \
                           w32/src/w32_handle.c w32/src/kernel32.c \
                           w32/src/kernel32_fs.c w32/src/kernel32_ps.c \
                           w32/src/kernel32_loc.c w32/src/w32_crt.c \
-                          w32/src/kernel32_thr.c w32/src/w32_seh.c
+                          w32/src/kernel32_thr.c w32/src/w32_seh.c \
+                          w32/src/msvcrt.c w32/src/w32_argv.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
 	          -fsanitize=address,undefined $(W32_INC) -I . \
@@ -4046,7 +4048,8 @@ $(BUILD_DIR)/test_w32_a9: tests/unit/test_w32_a9.c \
 
 $(BUILD_DIR)/test_w32_a10: tests/unit/test_w32_a10.c \
                           tests/unit/test_w32_a10_pe.h \
-                          w32/src/shlwapi.c w32/src/shell32.c w32/src/comdlg32.c \
+                          w32/src/shlwapi.c w32/src/shell32.c \
+                          w32/src/shell32_ns.c w32/src/comdlg32.c \
                           w32/src/version.c w32/src/w32aux.c w32/src/w32_pe.c \
                           w32/src/w32_handle.c w32/src/w32_errno.c w32/src/w32_utf.c \
                           w32/src/kernel32_fs.c \

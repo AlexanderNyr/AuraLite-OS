@@ -134,6 +134,9 @@ int ag_window_get_size(int wid,uint32_t*w,uint32_t*h){
 }
 int ag_window_get_pos(int wid,int32_t*x,int32_t*y){(void)x;(void)y;return wid_ok(wid)?0:-1;}
 int ag_window_lower(int wid){return wid_ok(wid)?0:-1;}
+/* CW-1: CreateWindowExW embeds a WS_CHILD in its parent's surface, so
+ * every host harness that amalgamates user32_win.c must model it. */
+int ag_window_set_parent(int wid,int p){if(!wid_ok(wid))return -1;(void)p;return 0;}
 int ag_window_set_flags(int wid,uint32_t f){(void)f;return wid_ok(wid)?0:-1;}
 uint32_t ag_window_get_flags(int wid){(void)wid;return 0x01|0x02|0x04|0x08|0x10;}
 int ag_window_get_z(int wid){return wid_ok(wid)?1:-1;}
@@ -700,11 +703,27 @@ int main(void) {
         wc.lpszClassName = acls;
         ok(RegisterClassExW(&wc) != 0, "app class registers");
         SetLastError(0);
-        W32_HWND bad = CreateWindowExW(0, acls, 0, W32_WS_CHILD,
+        /* Until CW_COMPOSITOR_PLAN CW-1 a WS_CHILD of an APPLICATION class
+         * was refused with ERROR_CALL_NOT_IMPLEMENTED -- only comctl classes
+         * got the child treatment, because nothing could clip a child to its
+         * parent.  CW-1 made the compositor embed children for real
+         * (ag_window_set_parent), and user32_win.c now admits WS_CHILD "for
+         * every registered class -- common controls and application classes
+         * alike".  The assertion below went stale on that commit; it now
+         * pins the new contract, and the parentless case (still refused,
+         * ERROR_INVALID_PARAMETER) is the remaining refusal. */
+        W32_HWND kid = CreateWindowExW(0, acls, 0, W32_WS_CHILD,
                                        0, 0, 50, 50, parent, 0, 0, 0);
-        ok(bad == 0, "WS_CHILD on an application class is refused");
-        ok(GetLastError() == W32_ERROR_CALL_NOT_IMPLEMENTED,
-           "refusal names itself (err %u)", GetLastError());
+        ok(kid != 0, "WS_CHILD on an application class is admitted (CW-1)");
+        ok(kid != 0 && GetParent(kid) == parent,
+           "the app-class child links to its parent");
+        SetLastError(0);
+        W32_HWND orphan = CreateWindowExW(0, acls, 0, W32_WS_CHILD,
+                                          0, 0, 50, 50, 0, 0, 0, 0);
+        ok(orphan == 0 && GetLastError() == W32_ERROR_INVALID_PARAMETER,
+           "a parentless WS_CHILD is still refused by name (err %u)",
+           GetLastError());
+        if (kid) DestroyWindow(kid);
         W32_HWND lv = CreateWindowExW(0, (const uint16_t *)W32_WC_LISTVIEWW,
                                       0, W32_WS_CHILD | W32_WS_VISIBLE,
                                       0, 0, 200, 160, parent, 0, 0, 0);

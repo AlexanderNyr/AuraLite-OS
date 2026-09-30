@@ -56,7 +56,11 @@ static int is_sep(char c) {
  * the count this returns and the bytes the real pass writes cannot drift
  * apart -- the usual failure mode of a "compute the size, then fill it"
  * pair.  This mirrors the convention w32_utf.h already uses. */
-static void emit(char *buf, size_t cap, size_t *len, char c) {
+/* Renamed from the bare `emit` (CI fix): w32_utf.c has a file-local `emit`
+ * of its own, and the host unit tests amalgamate both translation units
+ * into one via #include, where two different static `emit`s are a hard
+ * compile error.  File-local helper, no ABI impact. */
+static void argv_emit(char *buf, size_t cap, size_t *len, char c) {
     if (buf && *len < cap) buf[*len] = c;
     (*len)++;
 }
@@ -64,7 +68,7 @@ static void emit(char *buf, size_t cap, size_t *len, char c) {
 /* Parse one ordinary (non-argv[0]) argument starting at *p.
  *
  * Advances *p past the argument and its trailing separator, writing the
- * unescaped bytes through emit().  Returns the number of bytes the argument
+ * unescaped bytes through argv_emit().  Returns the number of bytes the argument
  * occupies including its NUL terminator.
  *
  * The backslash rule is the subtle one.  Backslashes are counted but not
@@ -89,11 +93,11 @@ static size_t parse_arg(const char **p, char *buf, size_t cap, size_t *len) {
 
             if (*s == '"') {
                 /* Every PAIR of backslashes is one literal backslash. */
-                for (size_t i = 0; i < nslash / 2; i++) emit(buf, cap, len, '\\');
+                for (size_t i = 0; i < nslash / 2; i++) argv_emit(buf, cap, len, '\\');
                 if (nslash % 2) {
                     /* Odd: the last backslash escapes the quote, so the
                      * quote is data and quoting state does not change. */
-                    emit(buf, cap, len, '"');
+                    argv_emit(buf, cap, len, '"');
                     s++;
                 } else {
                     /* Even: the quote is a delimiter. */
@@ -102,7 +106,7 @@ static size_t parse_arg(const char **p, char *buf, size_t cap, size_t *len) {
                 }
             } else {
                 /* Not before a quote: all of them are literal. */
-                for (size_t i = 0; i < nslash; i++) emit(buf, cap, len, '\\');
+                for (size_t i = 0; i < nslash; i++) argv_emit(buf, cap, len, '\\');
             }
             continue;
         }
@@ -113,7 +117,7 @@ static size_t parse_arg(const char **p, char *buf, size_t cap, size_t *len) {
                  * is what lets a program receive a quote without needing a
                  * backslash, and it is why the check is s[1] rather than a
                  * simple toggle. */
-                emit(buf, cap, len, '"');
+                argv_emit(buf, cap, len, '"');
                 s += 2;
             } else {
                 in_quotes = !in_quotes;
@@ -122,11 +126,11 @@ static size_t parse_arg(const char **p, char *buf, size_t cap, size_t *len) {
             continue;
         }
 
-        emit(buf, cap, len, c);
+        argv_emit(buf, cap, len, c);
         s++;
     }
 
-    emit(buf, cap, len, '\0');
+    argv_emit(buf, cap, len, '\0');
 
     while (is_sep(*s)) s++;
     *p = s;
@@ -145,10 +149,10 @@ static void parse_argv0(const char **p, char *buf, size_t cap, size_t *len) {
         char c = *s;
         if (c == '"') { in_quotes = !in_quotes; s++; continue; }
         if (!in_quotes && is_sep(c)) break;
-        emit(buf, cap, len, c);
+        argv_emit(buf, cap, len, c);
         s++;
     }
-    emit(buf, cap, len, '\0');
+    argv_emit(buf, cap, len, '\0');
 
     while (is_sep(*s)) s++;
     *p = s;

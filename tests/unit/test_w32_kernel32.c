@@ -126,6 +126,14 @@ typedef long ssize_t;
 #define main w32_unused_main
 #include "../../w32/src/w32_errno.c"
 #include "../../w32/src/w32_handle.c"
+/* W32A-13 made w32_kernel32_init() publish the command line to msvcrt's
+ * _acmdln data export, so kernel32.c now calls w32_msvcrt_init().  This
+ * unity-build harness must carry the definition too, or the link fails with
+ * `undefined reference to w32_msvcrt_init'.  msvcrt.c pulls in the argv
+ * splitter, so w32_argv.c comes with it -- the same pair
+ * tests/unit/test_w32_a13_msvcrt.c compiles. */
+#include "../../w32/src/w32_argv.c"
+#include "../../w32/src/msvcrt.c"
 #include "../../w32/src/kernel32.c"
 #undef main
 
@@ -157,6 +165,20 @@ void w32_sem_close(void *s) { (void)s; }
 void w32_event_close(void *ev) { (void)ev; }
 void w32_mutex_close(void *m) { (void)m; }
 void w32_thread_close(void *t) { (void)t; }
+
+/* CreateThread lives in that same guest-only kernel32_thr.c.  msvcrt.c's
+ * _beginthreadex forwards onto it, so the amalgamation above needs the
+ * symbol; no test here spawns a thread (test_w32_a13_msvcrt.c owns the
+ * _beginthreadex/CreateThread forwarding contract and supplies a real
+ * double), so this one refuses loudly rather than pretending to succeed. */
+W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
+                               W32_THREAD_START start, void *param,
+                               W32_DWORD flags, W32_DWORD *tid_out) {
+    (void)security; (void)stack_size; (void)start; (void)param; (void)flags;
+    if (tid_out) *tid_out = 0;
+    SetLastError(W32_ERROR_INVALID_PARAMETER);
+    return 0;   /* NULL == CreateThread failed */
+}
 
 /* ---- handle table --------------------------------------------------------- */
 
