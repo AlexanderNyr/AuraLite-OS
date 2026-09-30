@@ -185,6 +185,14 @@ W32_LONG W32ABI SHGetSpecialFolderLocation(W32_HWND owner, W32_DWORD csidl,
     (void)owner;
     if (!pidl) return 0x80004003uL; /* E_POINTER */
     *pidl = NULL;
+    /* Virtual roots (My Computer / CSIDL_DRIVES) have no filesystem path; the
+     * shell namespace serves them as PIDLs. Try that first -- a real consumer
+     * (7-Zip FM) fetches the drives-root PIDL here and enumerates through it. */
+    {
+        void *vpidl = NULL;
+        W32_LONG vr = ns_special_pidl(csidl, &vpidl);
+        if (vr == 0 && vpidl) { *pidl = vpidl; return 0; }  /* S_OK */
+    }
     const char *host = sh_csidl_path(csidl);
     if (!host) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);

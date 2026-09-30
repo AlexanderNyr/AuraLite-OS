@@ -1085,6 +1085,7 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_comctl32.o \
                 $(USER_BUILD)/w32_advapi32.o \
                 $(USER_BUILD)/w32_shlwapi.o $(USER_BUILD)/w32_shell32.o \
+                $(USER_BUILD)/w32_shell32_ns.o \
                 $(USER_BUILD)/w32_comdlg32.o $(USER_BUILD)/w32_version.o \
                 $(USER_BUILD)/w32_w32aux.o \
                 $(USER_BUILD)/w32_ws2_32.o \
@@ -1141,6 +1142,10 @@ $(USER_BUILD)/w32_advapi32.o: w32/src/advapi32.c w32/include/w32/advapi32.h $(US
 $(USER_BUILD)/w32_shlwapi.o: w32/src/shlwapi.c w32/include/w32/shlwapi.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_shell32.o: w32/src/shell32.c w32/include/w32/shell32.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# WR-1 (W32RUN_PLAN.md): the shell namespace TU that backs SHGetDesktopFolder
+# and the SHGetFileInfoW PIDL branch (ns_get_desktop_folder / ns_pidl_to_path).
+$(USER_BUILD)/w32_shell32_ns.o: w32/src/shell32_ns.c w32/include/w32/shell32_priv.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 $(USER_BUILD)/w32_comdlg32.o: w32/src/comdlg32.c w32/include/w32/comdlg32.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@

@@ -79,6 +79,12 @@ enum {
      * between tasks: only bounded pathname bytes and a generation token. */
     GUI_OP_SEND_DROP,       /* a2=owned source wid, a3=absolute UTF-8 path */
     GUI_OP_TAKE_DROP,       /* a2=owned destination wid, a3=u16 token, a4=out[256] */
+
+    /* ---- CW: compositor child windows ----
+     * a2=owned child wid, a3=parent wid (>=0) or -1 to detach.  The child's
+     * x/y become parent-relative and the compositor clips/stacks it inside
+     * the parent. */
+    GUI_OP_SET_PARENT,
 };
 
 /* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.

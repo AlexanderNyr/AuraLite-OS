@@ -131,6 +131,8 @@ ALL_CASES=(
     test_w32a15_7zip_fixture
     test_w32a16_npp_fixture
     test_wr1_shell_namespace
+    test_wr2_7zip_launch
+    test_wr2_7zip_live
     test_ahci_large_read
     test_doom
     test_stack_guard
@@ -300,7 +302,7 @@ ALL_CASES=(
 # is even slower: it runs the whole closure twice plus the QEMU idle that waits
 # out the closure's fixed budget, so it is the case "--fast" must never carry.
 # --fast skips both exactly like the other correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #

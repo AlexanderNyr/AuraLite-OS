@@ -135,6 +135,9 @@ int  ag_window_hide(int wid);
 int  ag_window_destroy(int wid);
 int  ag_window_move(int wid, int32_t x, int32_t y);
 int  ag_window_resize(int wid, uint32_t w, uint32_t h);
+/* CW: embed this window inside parent_wid (parent-relative x/y, clipped &
+ * stacked with the parent); parent_wid < 0 detaches to top-level. */
+int  ag_window_set_parent(int wid, int parent_wid);
 int  ag_window_set_title(int wid, const char *title);
 int  ag_window_invalidate(int wid);
 int  ag_window_get_size(int wid, uint32_t *w, uint32_t *h);

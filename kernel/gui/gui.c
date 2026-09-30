@@ -118,6 +118,11 @@ typedef struct gui_win {
     uint32_t  restore_w, restore_h;
     uint32_t  flags;
     int       z;
+    /* CW-1: parent window index, or -1 for a top-level window.  A child
+     * stores its x/y RELATIVE to the parent's content origin (Win32 WS_CHILD
+     * semantics); the compositor resolves absolute coords via win_abs_x/y and
+     * clips the child to its parent's content rectangle. */
+    int       parent;
     gui_snap_t snap;
     char      title[GUI_TITLE_MAX];
     uint32_t *back;               /* content buffer */
@@ -295,13 +300,37 @@ static uint32_t content_h(const gui_win_t *w) {
     if (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) return w->h;
     return w->h - c_titlebar() - 2 * c_border();
 }
+/* CW-1: is this window a live child of a valid parent slot? */
+static int win_has_parent(const gui_win_t *w) {
+    return w->parent >= 0 && w->parent < GUI_MAX_WINDOWS &&
+           windows[w->parent].in_use && &windows[w->parent] != w;
+}
+
+/* forward decls: win_abs_* and content_* are mutually recursive up the
+ * parent chain (a child's absolute origin is its parent's content origin
+ * plus the child's parent-relative x/y). */
+static int32_t content_x(const gui_win_t *w);
+static int32_t content_y(const gui_win_t *w);
+
+/* Absolute (screen) outer top-left of a window, resolving the parent chain.
+ * Top-level windows store absolute coords (w->parent < 0 ⇒ raw); a child
+ * stores coords relative to its parent's content origin. */
+static int32_t win_abs_x(const gui_win_t *w) {
+    if (!win_has_parent(w)) return w->x;
+    return content_x(&windows[w->parent]) + w->x;
+}
+static int32_t win_abs_y(const gui_win_t *w) {
+    if (!win_has_parent(w)) return w->y;
+    return content_y(&windows[w->parent]) + w->y;
+}
+
 static int32_t content_x(const gui_win_t *w) {
-    if (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) return w->x;
-    return w->x + (int32_t)c_border();
+    if (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) return win_abs_x(w);
+    return win_abs_x(w) + (int32_t)c_border();
 }
 static int32_t content_y(const gui_win_t *w) {
-    if (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) return w->y;
-    return w->y + (int32_t)c_titlebar() + (int32_t)c_border();
+    if (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) return win_abs_y(w);
+    return win_abs_y(w) + (int32_t)c_titlebar() + (int32_t)c_border();
 }
 
 /* Mark a screen-space rectangle as dirty. */
@@ -323,7 +352,8 @@ void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h) {
 /* Mark the bounding rect of a window (including shadow) as dirty. */
 static void mark_window_dirty(const gui_win_t *w) {
     int off = active_theme.shadow_offset;
-    gui_mark_dirty(w->x - 1, w->y - 1, w->w + off + 2, w->h + off + 2);
+    /* CW-1: use the absolute origin so a child marks the right screen region. */
+    gui_mark_dirty(win_abs_x(w) - 1, win_abs_y(w) - 1, w->w + off + 2, w->h + off + 2);
 }
 
 /* ===================================================================
@@ -438,6 +468,40 @@ int gui_get_window_z(int wid) {
     return windows[wid].z;
 }
 
+/* CW-1: establish (or clear, with parent_wid < 0) a parent/child link.
+ * The child's stored x/y are henceforth interpreted as parent-relative
+ * (relative to the parent's content origin).  Ownership is enforced by the
+ * syscall layer; here we only reject cycles and cross-window nonsense. */
+int gui_set_parent(int wid, int parent_wid) {
+    if (!win_alive(wid)) return -1;
+    spinlock_acquire(&gui_lock);
+    if (parent_wid < 0) {
+        windows[wid].parent = -1;
+        mark_window_dirty(&windows[wid]);
+        full_dirty = 1;
+        spinlock_release(&gui_lock);
+        return 0;
+    }
+    if (parent_wid == wid || !win_alive(parent_wid)) {
+        spinlock_release(&gui_lock);
+        return -1;
+    }
+    /* Reject a cycle: parent_wid must not be a descendant of wid. */
+    for (int p = parent_wid, guard = 0;
+         p >= 0 && guard < GUI_MAX_WINDOWS; guard++) {
+        if (p == wid) { spinlock_release(&gui_lock); return -1; }
+        p = windows[p].in_use ? windows[p].parent : -1;
+    }
+    windows[wid].parent = parent_wid;
+    /* A child keeps its parent directly above it: give it the parent's z so
+     * the hierarchical compositor draws it right after the parent. */
+    windows[wid].z = windows[parent_wid].z;
+    mark_window_dirty(&windows[wid]);
+    full_dirty = 1;
+    spinlock_release(&gui_lock);
+    return 0;
+}
+
 /* The topmost visible window.  Used for GetForegroundWindow's honesty note:
  * the personality reports the focused window, and this is how a caller can
  * see the compositor's own answer without guessing. */
@@ -540,6 +604,7 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     win->w = w; win->h = h;
     win->flags = flags;
     win->snap = GUI_SNAP_NONE;
+    win->parent = -1;               /* CW-1: top-level until reparented */
     win->owner_pid = owner ? (int)owner->id : 0;
     win->in_use = 1;
     spinlock_release(&gui_evt_lock);
@@ -579,6 +644,33 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     return id;
 }
 
+/* CW-1: free one window slot and clear any WM state that referenced it.
+ * Caller holds gui_lock. */
+static void gui_free_slot_locked(int wid) {
+    gui_win_t *w = &windows[wid];
+    mark_window_dirty(w);
+    if (w->back) kfree(w->back);
+    if (w->front) { kfree(w->front); w->front = NULL; }
+    spinlock_acquire(&gui_evt_lock);
+    memset(w, 0, sizeof(*w));
+    spinlock_release(&gui_evt_lock);
+    w->parent = -1;                         /* memset left it 0 (a valid slot) */
+    if (focused == wid) focused = -1;
+    if (captured == wid) captured = -1;     /* W32A-5 */
+    if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
+    if (last_hover_wid == wid) last_hover_wid = -1;
+}
+
+/* CW-1: destroy a window and every descendant (Win32 destroys children with
+ * their parent).  Caller holds gui_lock. */
+static void gui_destroy_subtree_locked(int wid) {
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (windows[i].in_use && windows[i].parent == wid)
+            gui_destroy_subtree_locked(i);
+    }
+    gui_free_slot_locked(wid);
+}
+
 int gui_destroy_window(int wid, uint64_t owner_pid) {
     spinlock_acquire(&gui_lock);
     /* The syscall's earlier require_owner is only a snapshot: another
@@ -588,17 +680,7 @@ int gui_destroy_window(int wid, uint64_t owner_pid) {
         spinlock_release(&gui_lock);
         return -1;
     }
-    gui_win_t *w = &windows[wid];
-    mark_window_dirty(w);
-    if (w->back) kfree(w->back);
-    if (w->front) { kfree(w->front); w->front = NULL; }
-    spinlock_acquire(&gui_evt_lock);
-    memset(w, 0, sizeof(*w));
-    spinlock_release(&gui_evt_lock);
-    if (focused == wid) focused = -1;
-    if (captured == wid) captured = -1;    /* W32A-5 */
-    if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
-    if (last_hover_wid == wid) last_hover_wid = -1;
+    gui_destroy_subtree_locked(wid);
     recompute_focus();
     full_dirty = 1;
     spinlock_release(&gui_lock);
@@ -704,7 +786,17 @@ int gui_move_window(int wid, int32_t x, int32_t y) {
 
 int gui_resize_window(int wid, uint32_t w, uint32_t h) {
     if (!win_alive(wid)) return -1;
-    if (w < 60 || h < 40) return -1;
+    /* The 60x40 floor keeps a user-draggable, decorated top-level window from
+     * collapsing under the mouse.  Borderless child controls (a toolbar or
+     * rebar band) legitimately auto-size to a single ~24px row, so they must
+     * not be held to the top-level floor -- otherwise the control stays at its
+     * oversized creation default and the app lays panes out beneath a giant
+     * phantom toolbar. */
+    int borderless = (windows[wid].flags &
+                      (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) != 0;
+    uint32_t min_w = borderless ? 1u : 60u;
+    uint32_t min_h = borderless ? 1u : 40u;
+    if (w < min_w || h < min_h) return -1;
     spinlock_acquire(&gui_lock);
     gui_win_t *win = &windows[wid];
     /* Compute new content size BEFORE modifying the window. */
@@ -1879,6 +1971,73 @@ static void draw_notifications(void) {
     } \
 } while(0)
 
+/* ---- CW-1: hierarchical child compositing ----
+ *
+ * A child window is drawn only as part of its parent's subtree, always above
+ * the parent, and clipped to the intersection of every ancestor's content
+ * rectangle (and, on the partial path, the dirty union — passed in as the
+ * base clip rect).  Children carry no decoration or shadow (WS_CHILD ⇒
+ * NO_DECOR|BORDERLESS), so only their content is blitted. */
+static void blit_children(int pidx,
+                          int32_t cl, int32_t ct, int32_t cr, int32_t cb) {
+    if (cr <= cl || cb <= ct) return;      /* parent clip is empty */
+
+    int kids[GUI_MAX_WINDOWS], nk = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        gui_win_t *c = &windows[i];
+        if (c->in_use && c->visible && !c->minimized && c->parent == pidx)
+            kids[nk++] = i;
+    }
+    if (nk == 0) return;
+    SORT_ARR(kids, nk);
+
+    for (int i = 0; i < nk; i++) {
+        int ci = kids[i];
+        gui_win_t *c = &windows[ci];
+        int32_t ax = win_abs_x(c), ay = win_abs_y(c);
+        /* This child's on-screen clip: its own rect ∩ the parent clip. */
+        int32_t nl = ax > cl ? ax : cl;
+        int32_t nt = ay > ct ? ay : ct;
+        int32_t cx1 = ax + (int32_t)c->w, cy1 = ay + (int32_t)c->h;
+        int32_t nr = cx1 < cr ? cx1 : cr;
+        int32_t nb = cy1 < cb ? cy1 : cb;
+        if (nr <= nl || nb <= nt) continue; /* fully clipped away */
+
+        gfx_clip_set(nl, nt, (uint32_t)(nr - nl), (uint32_t)(nb - nt));
+        blit_window_content(c);
+
+        /* Grandchildren clip to this child's content rect ∩ the current clip. */
+        int32_t gl = content_x(c), gt = content_y(c);
+        int32_t gr = gl + (int32_t)content_w(c);
+        int32_t gb = gt + (int32_t)content_h(c);
+        if (gl < nl) gl = nl;
+        if (gt < nt) gt = nt;
+        if (gr > nr) gr = nr;
+        if (gb > nb) gb = nb;
+        blit_children(ci, gl, gt, gr, gb);
+    }
+}
+
+/* Draw a top-level window's decoration + content (under the currently-armed
+ * base clip), then its whole child subtree clipped to its content rect ∩ the
+ * base clip.  base_* is the base clip rect (full screen, or the dirty union). */
+static void blit_window_tree(int idx,
+                             int32_t base_l, int32_t base_t,
+                             int32_t base_r, int32_t base_b) {
+    gui_win_t *w = &windows[idx];
+    blit_window_decor(w);
+    blit_window_content(w);
+
+    int32_t cl = content_x(w), ct = content_y(w);
+    int32_t cr = cl + (int32_t)content_w(w);
+    int32_t cb = ct + (int32_t)content_h(w);
+    if (cl < base_l) cl = base_l;
+    if (ct < base_t) ct = base_t;
+    if (cr > base_r) cr = base_r;
+    if (cb > base_b) cb = base_b;
+    blit_children(idx, cl, ct, cr, cb);
+}
+
 /*
  * Compute the bounding-box union of all dirty rects.
  * Writes (ox,oy,ow,oh) — the minimal rect covering every dirty entry.
@@ -1935,7 +2094,10 @@ static void compositor_render_dirty(void) {
     int normal[GUI_MAX_WINDOWS], nn = 0;
     int atop[GUI_MAX_WINDOWS], na = 0;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (windows[i].in_use && windows[i].visible && !windows[i].minimized) {
+        /* CW-1: only TOP-LEVEL windows enter the z-order; children are drawn
+         * recursively as part of their parent's subtree. */
+        if (windows[i].in_use && windows[i].visible && !windows[i].minimized &&
+            windows[i].parent < 0) {
             if (windows[i].flags & GUI_WIN_ALWAYS_TOP) atop[na++] = i;
             else normal[nn++] = i;
         }
@@ -1959,9 +2121,14 @@ static void compositor_render_dirty(void) {
             wx0 >= ux + (int32_t)uw || wy0 >= uy + (int32_t)uh) {
             continue;
         }
-        blit_window_decor(&windows[order[i]]);
-        blit_window_content(&windows[order[i]]);
+        /* Re-arm the dirty-union clip: a previous window's subtree left a
+         * narrower child clip armed, which must not leak into this window. */
+        gfx_clip_set(ux, uy, uw, uh);
+        blit_window_tree(order[i], ux, uy,
+                         ux + (int32_t)uw, uy + (int32_t)uh);
     }
+    /* Restore the union clip for the taskbar / notifications that follow. */
+    gfx_clip_set(ux, uy, uw, uh);
 
     draw_snap_preview();
     draw_taskbar();
@@ -1998,7 +2165,9 @@ static void compositor_render(void) {
     int atop[GUI_MAX_WINDOWS], na = 0;
 
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (windows[i].in_use && windows[i].visible && !windows[i].minimized) {
+        /* CW-1: top-level only; children draw via their parent's subtree. */
+        if (windows[i].in_use && windows[i].visible && !windows[i].minimized &&
+            windows[i].parent < 0) {
             if (windows[i].flags & GUI_WIN_ALWAYS_TOP) atop[na++] = i;
             else normal[nn++] = i;
         }
@@ -2012,9 +2181,15 @@ static void compositor_render(void) {
     for (int i = 0; i < nn; i++) order[n++] = normal[i];
     for (int i = 0; i < na; i++) order[n++] = atop[i];
 
-    for (int i = 0; i < n; i++) {
-        blit_window_decor(&windows[order[i]]);
-        blit_window_content(&windows[order[i]]);
+    {
+        int32_t fw = (int32_t)gfx_get_width(), fh = (int32_t)gfx_get_height();
+        for (int i = 0; i < n; i++) {
+            /* Restore the full-screen clip: a previous window's subtree left a
+             * narrower child clip armed. */
+            gfx_clip_clear();
+            blit_window_tree(order[i], 0, 0, fw, fh);
+        }
+        gfx_clip_clear();
     }
 
     /* Snap preview overlay. */
@@ -2043,12 +2218,33 @@ static void compositor_render(void) {
  * Hit-testing
  * =================================================================== */
 
+/* CW-1: descend from a top-level window into the deepest visible child that
+ * contains (mx,my), so clicks route to the pane / listview under the cursor.
+ * Returns pidx itself if no child is hit. */
+static int hit_child(int pidx, int32_t mx, int32_t my) {
+    int best = -1, bestz = -1;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        gui_win_t *c = &windows[i];
+        if (!c->in_use || !c->visible || c->minimized || c->parent != pidx)
+            continue;
+        int32_t ax = win_abs_x(c), ay = win_abs_y(c);
+        if (mx >= ax && mx < ax + (int32_t)c->w &&
+            my >= ay && my < ay + (int32_t)c->h) {
+            if (c->z >= bestz) { bestz = c->z; best = i; }
+        }
+    }
+    if (best < 0) return pidx;
+    return hit_child(best, mx, my);
+}
+
 static int hit_window(int32_t mx, int32_t my) {
     int best = -1, bestz = -1;
-    /* Check always-on-top windows first. */
+    /* Check always-on-top windows first.  CW-1: only TOP-LEVEL windows are
+     * hit-tested here; a hit then descends into that window's child subtree. */
     for (int pass = 0; pass < 2; pass++) {
         for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
             if (!windows[i].in_use || !windows[i].visible || windows[i].minimized) continue;
+            if (windows[i].parent >= 0) continue;   /* children handled below */
             if (pass == 0 && !(windows[i].flags & GUI_WIN_ALWAYS_TOP)) continue;
             if (pass == 1 && (windows[i].flags & GUI_WIN_ALWAYS_TOP)) continue;
             gui_win_t *w = &windows[i];
@@ -2057,9 +2253,9 @@ static int hit_window(int32_t mx, int32_t my) {
                 if (w->z > bestz) { bestz = w->z; best = i; }
             }
         }
-        if (best >= 0 && pass == 0) return best; /* always-on-top hit */
+        if (best >= 0 && pass == 0) return hit_child(best, mx, my); /* always-on-top hit */
     }
-    return best;
+    return best >= 0 ? hit_child(best, mx, my) : -1;
 }
 
 /* Hit part: 0=client, 1=titlebar, 2=close, 3=max/restore, 4=minimize,
@@ -2436,7 +2632,13 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
     /* ---- Left button pressed ---- */
     if (ev->pressed & MOUSE_BTN_LEFT) {
-        gui_focus_window(wid);
+        /* CW-1: clicking a child raises (and activates) its top-level ancestor
+         * — the whole window comes to front — while the mouse event itself is
+         * still delivered to the child (wid) below, so its pane/listview reacts. */
+        int top = wid;
+        while (top >= 0 && win_alive(top) && windows[top].parent >= 0)
+            top = windows[top].parent;
+        gui_focus_window(top >= 0 ? top : wid);
         switch (part) {
             case 2: /* Close */
                 request_window_close(wid);

@@ -99,6 +99,29 @@ static uint16_t *nx_pidl_clone(const uint16_t *p) {
     return c;
 }
 
+/* CSIDL constants for the virtual roots (documented values; the mapping is
+ * ours). CSIDL_DRIVES ("My Computer") is a namespace root with no filesystem
+ * path -- SHGetSpecialFolderLocation must hand back a PIDL for it, not E_FAIL,
+ * or a real consumer (7-Zip FM enumerates drives from here) aborts at startup. */
+#define NS_CSIDL_DRIVES        0x0011u
+#define NS_CSIDL_NETWORK       0x0012u
+#define NS_CSIDL_FLAG_MASK     0x7FFFu   /* strip CSIDL_FLAG_CREATE (0x8000) */
+
+W32_LONG ns_special_pidl(W32_DWORD csidl, void **out) {
+    if (!out) return NS_E_POINTER;
+    *out = NULL;
+    uint16_t kind;
+    switch ((uint32_t)csidl & NS_CSIDL_FLAG_MASK) {
+    case NS_CSIDL_DRIVES:  kind = W32_NS_PIDL_COMPUTER; break; /* My Computer */
+    case NS_CSIDL_NETWORK: kind = W32_NS_PIDL_NETWORK;  break; /* Network root */
+    default:               return NS_S_FALSE;  /* not a virtual root we model */
+    }
+    uint16_t *p = nx_pidl_new(kind, NULL);
+    if (!p) return NS_E_OUTOFMEMORY;
+    *out = p;
+    return NS_S_OK;
+}
+
 int ns_pidl_to_path(const void *pidl, uint16_t *buf, size_t cap) {
     if (!pidl || !buf || cap == 0) return -1;
     const uint16_t *p = (const uint16_t *)pidl;
@@ -106,7 +129,8 @@ int ns_pidl_to_path(const void *pidl, uint16_t *buf, size_t cap) {
     if (cb < 8 || (cb & 1)) return -1;
     uint16_t kind = p[1];
     uint16_t units = p[2];
-    if (kind == W32_NS_PIDL_COMPUTER || units == 0) { buf[0] = 0; return 0; }
+    if (kind == W32_NS_PIDL_COMPUTER || kind == W32_NS_PIDL_NETWORK ||
+        units == 0) { buf[0] = 0; return 0; }
     if ((size_t)units + 1 > cap) units = (uint16_t)(cap - 1);
     nx_wcpy(buf, p + 3, units);
     buf[units] = 0;
@@ -223,7 +247,7 @@ static const W32_IEnumIDListVtbl g_enum_vtbl = {
 };
 
 /* ---- the IShellFolder object ------------------------------------------- */
-enum { NS_DESKTOP = 0, NS_COMPUTER = 1, NS_FS = 2 };
+enum { NS_DESKTOP = 0, NS_COMPUTER = 1, NS_FS = 2, NS_NETWORK = 3 };
 
 typedef struct {
     const W32_IShellFolderVtbl *vtbl;
@@ -282,9 +306,15 @@ static W32_LONG W32ABI fld_enum(void *self, W32_HWND hwnd, W32_DWORD flags, void
 
     if (f->kind == NS_DESKTOP) {
         nx_push(&items, &n, &cap, nx_pidl_new(W32_NS_PIDL_COMPUTER, NULL));
+        /* Network is reachable via SHGetSpecialFolderLocation(CSIDL_NETWORK)
+         * + BindToObject (the surface 7-Zip FM measures); it is deliberately
+         * not enumerated under the Desktop -- that node is not measured, and
+         * D-WR1 keeps the namespace to exactly the surface a consumer drives. */
     } else if (f->kind == NS_COMPUTER) {
         uint16_t drive[] = { 'C', ':', '\\', 0 };
         nx_push(&items, &n, &cap, nx_pidl_new(W32_NS_PIDL_FS, drive));
+    } else if (f->kind == NS_NETWORK) {
+        /* No machines on a single-user offline box: a real, empty enumerator. */
     } else { /* NS_FS: read the directory */
         int want_folders = (flags & W32_SHCONTF_FOLDERS) || flags == 0;
         int want_files   = (flags & W32_SHCONTF_NONFOLDERS) || flags == 0;
@@ -344,6 +374,8 @@ static W32_LONG W32ABI fld_bind(void *self, const void *pidl, void *pbc,
     ns_folder *child = NULL;
     if (kind == W32_NS_PIDL_COMPUTER) {
         child = nx_folder_new(NS_COMPUTER, NULL);
+    } else if (kind == W32_NS_PIDL_NETWORK) {
+        child = nx_folder_new(NS_NETWORK, NULL);
     } else if (kind == W32_NS_PIDL_FS) {
         uint16_t path[320];
         if (ns_pidl_to_path(pidl, path, 320) <= 0) return NS_E_INVALIDARG;
@@ -400,6 +432,10 @@ static W32_LONG W32ABI fld_getattrs(void *self, W32_UINT cidl,
         if (kind == W32_NS_PIDL_COMPUTER) {
             a = W32_SFGAO_FOLDER | W32_SFGAO_HASSUBFOLDER |
                 W32_SFGAO_FILESYSANCESTOR | W32_SFGAO_BROWSABLE;
+        } else if (kind == W32_NS_PIDL_NETWORK) {
+            /* A browsable virtual folder with no filesystem underneath it and
+             * no children on this offline box (HASSUBFOLDER is not set). */
+            a = W32_SFGAO_FOLDER | W32_SFGAO_BROWSABLE;
         } else {
             uint16_t path[320];
             ns_pidl_to_path(p, path, 320);
@@ -436,6 +472,8 @@ static W32_LONG W32ABI fld_getname(void *self, const void *pidl,
 
     if (p[1] == W32_NS_PIDL_COMPUTER) {
         nx_a2w("Computer", out, 320);
+    } else if (p[1] == W32_NS_PIDL_NETWORK) {
+        nx_a2w("Network", out, 320);
     } else {
         uint16_t path[320];
         int r = ns_pidl_to_path(pidl, path, 320);

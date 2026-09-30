@@ -143,6 +143,83 @@ void t_progress_zero(void){
     CHECK_EQ(fill, 0);
 }
 
+/* ---- CW-1: compositor child embedding & clipping geometry ----
+ * Mirrors kernel/gui/gui.c: a child stores parent-RELATIVE coords; its
+ * absolute origin is the parent's content origin plus the child's x/y, and it
+ * is drawn clipped to the intersection of its own rect with the parent's
+ * content rectangle. */
+typedef struct { int32_t x, y; int32_t w, h; } rect_t;
+
+/* Parent content origin (decorated top-level): x+border, y+titlebar+border. */
+static int32_t parent_content_x(int32_t px) { return px + BORDER_W; }
+static int32_t parent_content_y(int32_t py) { return py + TITLE_BAR_H + BORDER_W; }
+
+/* Child absolute origin from parent-relative coords. */
+static int32_t child_abs_x(int32_t px, int32_t rel_x) { return parent_content_x(px) + rel_x; }
+static int32_t child_abs_y(int32_t py, int32_t rel_y) { return parent_content_y(py) + rel_y; }
+
+/* Intersect two rects; empty (w<=0||h<=0) means fully clipped. */
+static rect_t rect_isect(rect_t a, rect_t b) {
+    int32_t l = a.x > b.x ? a.x : b.x;
+    int32_t t = a.y > b.y ? a.y : b.y;
+    int32_t r = (a.x + a.w) < (b.x + b.w) ? (a.x + a.w) : (b.x + b.w);
+    int32_t d = (a.y + a.h) < (b.y + b.h) ? (a.y + a.h) : (b.y + b.h);
+    rect_t out = { l, t, (r > l) ? r - l : 0, (d > t) ? d - t : 0 };
+    return out;
+}
+
+static void t_child_abs_origin(void) {
+    /* parent at (100,50); child at parent-relative (10,4). */
+    CHECK_EQ(child_abs_x(100, 10), 100 + BORDER_W + 10);
+    CHECK_EQ(child_abs_y(50, 4),   50 + TITLE_BAR_H + BORDER_W + 4);
+}
+static void t_child_moves_with_parent(void) {
+    /* Same parent-relative coords, parent shifted by +40,+30: child abs shifts
+     * by exactly the same delta (free propagation from relative storage). */
+    int32_t x0 = child_abs_x(100, 10), y0 = child_abs_y(50, 4);
+    int32_t x1 = child_abs_x(140, 10), y1 = child_abs_y(80, 4);
+    CHECK_EQ(x1 - x0, 40);
+    CHECK_EQ(y1 - y0, 30);
+}
+static void t_child_clip_inside(void) {
+    /* A child fully inside the parent content clips to its own rect. */
+    rect_t pc = { parent_content_x(100), parent_content_y(50),
+                  content_w(300), content_h(200) };
+    rect_t ch = { child_abs_x(100, 5), child_abs_y(50, 5), 80, 40 };
+    rect_t cl = rect_isect(ch, pc);
+    CHECK_EQ(cl.x, ch.x); CHECK_EQ(cl.y, ch.y);
+    CHECK_EQ(cl.w, 80);   CHECK_EQ(cl.h, 40);
+}
+static void t_child_clip_overflow(void) {
+    /* A child wider than the parent content is clipped to the content edge. */
+    rect_t pc = { parent_content_x(100), parent_content_y(50),
+                  content_w(300), content_h(200) };
+    rect_t ch = { child_abs_x(100, 0), child_abs_y(50, 0), 1000, 1000 };
+    rect_t cl = rect_isect(ch, pc);
+    CHECK_EQ(cl.x, pc.x); CHECK_EQ(cl.y, pc.y);
+    CHECK_EQ(cl.w, (int32_t)content_w(300));
+    CHECK_EQ(cl.h, (int32_t)content_h(200));
+}
+static void t_child_clip_offscreen(void) {
+    /* A child positioned entirely past the parent content is fully clipped. */
+    rect_t pc = { parent_content_x(100), parent_content_y(50),
+                  content_w(300), content_h(200) };
+    rect_t ch = { child_abs_x(100, 10000), child_abs_y(50, 10000), 50, 50 };
+    rect_t cl = rect_isect(ch, pc);
+    CHECK(cl.w == 0 || cl.h == 0);
+}
+static void t_grandchild_nested_clip(void) {
+    /* Grandchild clip = its rect ∩ child content ∩ parent content: never wider
+     * than the innermost ancestor. */
+    rect_t pc = { parent_content_x(100), parent_content_y(50), 100, 80 };
+    rect_t ch = { pc.x + 10, pc.y + 10, 40, 30 };           /* child abs rect */
+    rect_t child_clip = rect_isect(ch, pc);
+    rect_t gc = { ch.x + 5, ch.y + 5, 1000, 1000 };         /* huge grandchild */
+    rect_t g_clip = rect_isect(gc, child_clip);
+    CHECK(g_clip.w <= child_clip.w && g_clip.h <= child_clip.h);
+    CHECK(g_clip.x >= child_clip.x && g_clip.y >= child_clip.y);
+}
+
 int main(void){
     printf("=== Window Manager Tests ===\n\n");
     printf("--- content area ---\n");
@@ -171,6 +248,11 @@ int main(void){
     printf("--- widgets ---\n");
     RUN(t_button_center);RUN(t_progress_fill);
     RUN(t_progress_full);RUN(t_progress_zero);
+
+    printf("--- CW-1: child embedding & clipping ---\n");
+    RUN(t_child_abs_origin);RUN(t_child_moves_with_parent);
+    RUN(t_child_clip_inside);RUN(t_child_clip_overflow);
+    RUN(t_child_clip_offscreen);RUN(t_grandchild_nested_clip);
 
     printf("\n=== Results: %d/%d passed, %d failed ===\n",passed,tn,failed);
     return failed?1:0;

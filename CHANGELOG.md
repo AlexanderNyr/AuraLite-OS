@@ -2,6 +2,80 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CW-1 — Compositor child-window embedding & clipping] 2026-09-30
+
+The kernel compositor now has real parent/child windows, so an app's `WS_CHILD`
+panes composite **inside** their parent, clipped to its client area — the
+feature WR-2 named as its blocker. 7-Zip FM's toolbar, file panes and
+`SysHeader32`/`SysListView32` now render embedded in the 7-Zip window instead of
+scattering as separate top-level surfaces over a black interior.
+
+- **`gui_win_t.parent`** (window index, `-1` = top-level). A child stores its
+  x/y *relative to the parent's content origin*; `win_abs_x/win_abs_y` resolve
+  absolute screen coords up the chain and `content_x/y/w/h` build on them, so
+  every existing caller (blit, invalidate, event-local coords) is child-correct
+  with no change at the call site. Because a child never stores an absolute
+  coord, **moving the parent moves the whole subtree for free**.
+- **Hierarchical compositing** — both render paths (full and dirty) iterate only
+  top-level windows in z-order, then recurse into each subtree, arming the gfx
+  clip to the intersection of every ancestor's content rectangle (∩ the dirty
+  union on the partial path). A child can no longer paint outside its parent.
+- **Hit-testing** descends into the deepest child under the cursor, so clicks
+  route to the pane/listview; clicking a child raises its top-level ancestor.
+- **Lifecycle** — destroy recurses to descendants; hide/minimize propagate for
+  free (a child only draws inside a visible parent subtree). Children stay out
+  of the taskbar (already skipped as `NO_DECOR`).
+- **Plumbing** — `GUI_OP_SET_PARENT` → `gui_set_parent()`, `ag_window_set_parent`
+  in libauragui; `user32` links a `WS_CHILD` to its parent and keeps its coords
+  parent-relative (drops the old outer-origin nudge).
+- Gates: live gate **14/14** — new pixel assertion proves the 7-Zip client
+  interior is a light embedded panel (≈99% near-white) where the pre-CW-1
+  compositor left it black; `test_wm` unit **35/35** (+6 clip-geometry cases);
+  GUI-lane smoke 9/9 (top-level windows unaffected); host `test_shell_ns` 45/0;
+  provenance 96; registry 212; full multi-arch `make iso` builds.
+- Still named (D-WR4): the *file-row text* for `/fat` and the navigate/extract/
+  options interactions need listview virtual-item (`LVN_GETDISPINFO`) rendering
+  plus folder navigation — a personality/comctl32 concern, now unblocked by the
+  compositor but not yet done.
+
+## [WR-2 — App run I: 7-Zip File Manager, live on the framebuffer] 2026-09-30
+
+The pinned 7-Zip File Manager (`7zFM.exe` + `7z.dll`, 24.09) runs live on the
+OVMF framebuffer: its real main window opens (no §0 `E_FAIL` / `0x80004005`
+message box), it binds all 292 imports, builds its address bar, and stays
+alive. Verified end to end under QEMU/OVMF (TCG) by
+`tests/integration/cases/test_wr2_7zip_live.sh` — **13/13** assertions.
+
+- **Five personality fixes** (found by instrumentation since fully removed):
+  `SHGetSpecialFolderLocation` serves the virtual roots (`CSIDL_DRIVES`,
+  `CSIDL_NETWORK`) as namespace PIDLs via new `ns_special_pidl` (+ a real,
+  empty Network node); `CreateWindowExW` accepts `WS_CHILD` for every class and
+  delivers a real `CREATESTRUCTW*` to `WM_NCCREATE`/`WM_CREATE`; style
+  validation exempts a common control's class-defined low word; and
+  `LVM_INSERTITEMW` no longer dereferences `LPSTR_TEXTCALLBACK`.
+- **Two new common controls**, real (not stubs): `ReBarWindow32` and
+  `ComboBoxEx32` — 7-Zip FM's address-bar band host and path combo. The rebar
+  tracks its bands and reports a one-row `RB_GETBARHEIGHT`; the comboboxex
+  mirrors its item text + selection and answers as its own combo/edit. Both
+  register through `InitCommonControlsEx` and end the `CLASS_DOES_NOT_EXIST`
+  the launch checkpoint tolerated.
+- **Makefile**: the `w32_shell32_ns.o` link-wiring WR-1 omitted (so `w32run.elf`
+  links; folds into WR-1 on rebase).
+- **CI fixture + gate**: `tools/wr2_make_fixture.py` builds a byte-known ZIP
+  from in-tree sources (`tests/fixtures/wr2/`, no foreign bytes); the live gate
+  and the launch smoke (`test_wr2_7zip_launch.sh`) run on the WR-0 lane.
+- **Named, not faked (D-WR4).** The plan's *pixel-driven* steps — the panel
+  showing the `/fat` listing, a navigate delta, extract driven through the
+  panel, and the options property-sheet round-trip — are blocked on the
+  **compositor clipping `WS_CHILD` into its parent**, which it does not yet do:
+  7-Zip's panes composite as separate top-level surfaces, so the file panel is
+  not drawn inside the window. That is a compositor feature, not a 7-Zip gap;
+  the interaction half of WR-2 is named in `docs/w32app_receipts.md #WR-2` and
+  deferred to a compositor phase rather than asserted falsely.
+- Gates: live gate 13/13; host `test_shell_ns` 45/0; provenance PASS (96);
+  test-registry 212; `check_w32app_claims` PASS; full multi-arch `make iso`
+  builds (kernel + rust + w32, `w32run.elf` links).
+
 ## [WR-1 — The SHELL32 namespace is real (§7 closed)] 2026-09-29
 
 Closes the long-standing SHELL32 "plan section 7": the shell namespace object,

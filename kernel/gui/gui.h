@@ -273,6 +273,11 @@ uint32_t gui_get_window_flags(int wid);
 int  gui_lower_window(int wid);                 /* to the bottom of the stack */
 int  gui_set_window_flags(int wid, uint32_t flags);
 int  gui_get_window_z(int wid);                 /* z value, or -1 if gone */
+
+/* CW-1: reparent a window (parent_wid < 0 detaches to top-level).  A child's
+ * x/y become parent-relative; the compositor clips it to the parent's content
+ * rectangle and stacks it with the parent. Returns 0, or -1 on a bad/cyclic link. */
+int  gui_set_parent(int wid, int parent_wid);
 int  gui_top_window(void);                      /* topmost window, or -1 */
 
 /* Mouse capture: while set, every mouse event is routed to wid's client

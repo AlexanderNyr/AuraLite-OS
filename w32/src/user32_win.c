@@ -28,10 +28,12 @@
  *
  * REFUSED BY NAME, NOT SILENTLY
  *   Styles with no compositor flag are recorded and reported:
- *   CreateWindowExW refuses W32_WS_CHILD (AuraLite composites top-level
- *   windows only; GetParent/IsChild still work on the logical tree) and
- *   WS_EX_LAYERED windows accept only the colour-key form.  GetShellWindow
- *   has no shell window to return and says so.  Anything taken as real is
+ *   WS_EX_LAYERED windows accept only the colour-key form, and GetShellWindow
+ *   has no shell window to return and says so.  W32_WS_CHILD is accepted
+ *   (WR-2 — real apps build their panes as WS_CHILD) but composited as its
+ *   own top-level surface: a child's x/y are translated to parent-relative,
+ *   GetParent/IsChild still work on the logical tree, and the compositor does
+ *   not re-clip children into a moved parent.  Anything taken as real is
  *   listed in the phase's Done note with the fixture that asserts it.
  *
  * Names, message numbers and structure layouts are the interface being
@@ -135,6 +137,7 @@ int ag_window_minimize(int);
 int ag_window_maximize(int);
 int ag_window_restore(int);
 int ag_window_move(int, int32_t, int32_t);
+int ag_window_set_parent(int, int);
 int ag_window_resize(int, uint32_t, uint32_t);
 int ag_window_set_title(int, const char *);
 int ag_window_invalidate(int);
@@ -416,6 +419,17 @@ static void ui_refresh_geom(struct ui_window *w) {
     w->h = ch + (decorated ? th + 2 * bw : 0);
 }
 
+/* Win32 WM_SIZE carries the CLIENT-area size (LOWORD=width, HIWORD=height),
+ * not the outer window rect.  The compositor reports the client (content)
+ * size directly, so read that.  Apps such as 7-Zip FM lay their child panes
+ * out from this value; feeding the outer size shifts the layout down by the
+ * non-client inset and pushes the file panel off the bottom of the window. */
+static W32_LPARAM ui_client_sizeparam(struct ui_window *w) {
+    uint32_t cw = 0, ch = 0;
+    if (w->ag_wid >= 0) ag_window_get_size(w->ag_wid, &cw, &ch);
+    return (W32_LPARAM)(((int32_t)(ch & 0xFFFF) << 16) | (int32_t)(cw & 0xFFFF));
+}
+
 int w32_win_cls_ag_wid(W32_HWND hwnd) {
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) return -1;
@@ -465,9 +479,12 @@ static W32_WORD ui_register_class(const W32_WNDCLASSEXW *c) {
 }
 
 /* W32A-8: comctl32's classes register through here so the class table
- * carries the marker that admits WS_CHILD.  The public RegisterClass*
- * never sets it: an application class stays a top-level window class,
- * and CreateWindowExW keeps refusing WS_CHILD for it by name. */
+ * carries the "comctl" marker.  Since WR-2 widened WS_CHILD to every class,
+ * the marker no longer gates child creation; what it still gates is style
+ * validation -- for a common control the low word of dwStyle is class-defined
+ * (LVS_*, TVS_*, TBSTYLE_* ...) and belongs to the control's own WndProc, so
+ * CreateWindowExW checks only the high (WS_*) word, while an application class
+ * (RegisterClass* never sets the marker) keeps the full style check. */
 W32_WORD w32_win_register_comctl_class(const W32_WNDCLASSEXW *c) {
     W32_WORD atom = ui_register_class(c);
     if (!atom) return 0;
@@ -590,47 +607,41 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
                                 int32_t x, int32_t y, int32_t w, int32_t h,
                                 W32_HWND parent, W32_HMENU menu,
                                 W32_HINSTANCE inst, void *param) {
-    (void)inst; (void)param;
     struct ui_class *k = ui_find_class_w(clsname);
     if (!k) {
         w32_set_last_error(W32_ERROR_CLASS_DOES_NOT_EXIST);
         return 0;
     }
-    /* Refused by name for application classes: a child window is not
-     * composited inside its parent here.  The logical parent/child tree
-     * still works (GetParent, IsChild, EnumChildWindows,
-     * SendDlgItemMessage).  W32A-8 widened exactly one case: classes
-     * registered through w32_win_register_comctl_class (the common
-     * controls) accept WS_CHILD, because every real caller creates
-     * them that way.  A control still composites as its own top-level
-     * window -- there is no child embedding in the compositor -- but
-     * its x/y are read as parent-relative and translated, so a control
-     * lands inside its parent on screen.  Moving the parent does not
-     * re-clip children; that limitation is the compositor's, recorded
-     * here so the contract stays honest. */
-    if ((style & W32_WS_CHILD) && !k->comctl) {
-        w32_set_last_error(W32_ERROR_CALL_NOT_IMPLEMENTED);
-        return 0;
-    }
+    /* WS_CHILD windows are accepted for every registered class -- common
+     * controls (W32A-8) and application classes alike.  CW-1: the compositor
+     * now embeds a child inside its parent (ag_window_set_parent below), so
+     * the child's x/y stay parent-relative (Win32 WS_CHILD semantics) and the
+     * compositor clips it to, and stacks/moves it with, the parent.  The
+     * logical parent/child tree still works (GetParent, IsChild,
+     * EnumChildWindows, SendDlgItemMessage).  Real apps (7-Zip FM) build their
+     * panes as WS_CHILD windows of their own registered classes. */
     if (style & W32_WS_CHILD) {
         int pi = w32_win_index_from_hwnd(parent);
         if (pi < 0) {
             w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
             return 0;
         }
-        ui_lock();
-        x += windows[pi].x;
-        y += windows[pi].y;
-        ui_unlock();
     }
-    if ((style & ~UI_STYLE_KNOWN) || (exstyle & ~UI_EXSTYLE_KNOWN)) {
+    /* The low 16 bits of dwStyle are class-defined (LVS_*, TVS_*, TBSTYLE_*,
+     * ES_*, BS_* ...), interpreted by the control's own WndProc -- user32 must
+     * not validate them as WS_* styles. Only the high word carries the standard
+     * WS_ bits. For a common-control class we therefore check the high word
+     * only; standard windows keep the full check (their low word is DS_ or
+     * zero, already inside UI_STYLE_KNOWN). */
+    W32_DWORD style_std = k->comctl ? (style & 0xFFFF0000u) : style;
+    if ((style_std & ~UI_STYLE_KNOWN) || (exstyle & ~UI_EXSTYLE_KNOWN)) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
     if (x == W32_CW_USEDEFAULT) x = 80;
     if (y == W32_CW_USEDEFAULT) y = 60;
-    if (w == W32_CW_USEDEFAULT || w <= 0) w = 320;
-    if (h == W32_CW_USEDEFAULT || h <= 0) h = 200;
+    if (w == W32_CW_USEDEFAULT || w <= 0) w = 900;
+    if (h == W32_CW_USEDEFAULT || h <= 0) h = 620;
     if (w > 4096 || h > 4096) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
@@ -662,6 +673,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
 
     int pidx = w32_win_index_from_hwnd(parent);
     ui_lock();
+    int parent_ag = (pidx >= 0) ? windows[pidx].ag_wid : -1;
     struct ui_window *win = &windows[slot];
     win->in_use = 1;
     win->ag_wid = ag_wid;
@@ -686,17 +698,41 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     win->layered_key = 0; win->layered_alpha = 255; win->layered_flags = 0;
     ui_unlock();
 
+    /* CW-1: embed a WS_CHILD in its parent's compositor surface, so it is
+     * clipped to and stacked/moved with the parent. */
+    if ((style & W32_WS_CHILD) && parent_ag >= 0) {
+        ag_window_set_parent(ag_wid, parent_ag);
+    }
+
     W32_HWND hwnd = idx_to_hwnd(slot);
 
     /* Win32 sends WM_NCCREATE then WM_CREATE before CreateWindowEx returns,
      * and a program that allocates its state in WM_CREATE depends on it.
      * Both go through SendMessageW so the subclass chain and the return
      * value behave exactly as they will later. */
-    if (SendMessageW(hwnd, W32_WM_NCCREATE, 0, (W32_LPARAM)(intptr_t)param) == 0) {
+    /* Win32 delivers a CREATESTRUCTW* as lParam (not the bare param): real
+     * C++ frameworks (7-Zip's CWindow2, MFC/ATL) read cs->lpCreateParams in
+     * WM_NCCREATE to bind their object to the HWND, then dispatch every later
+     * message through that pointer. Passing the bare param made them read a
+     * garbage "this" and call through a corrupt vtable (0xC0000005). */
+    W32_CREATESTRUCTW cs;
+    cs.lpCreateParams = param;
+    cs.hInstance      = inst;
+    cs.hMenu          = menu;
+    cs.hwndParent     = parent;
+    cs.cy             = h;
+    cs.cx             = w;
+    cs.y              = y;
+    cs.x              = x;
+    cs.style          = (int32_t)style;
+    cs.lpszName       = title;
+    cs.lpszClass      = clsname;
+    cs.dwExStyle      = exstyle;
+    if (SendMessageW(hwnd, W32_WM_NCCREATE, 0, (W32_LPARAM)(intptr_t)&cs) == 0) {
         DestroyWindow(hwnd);
         return 0;
     }
-    if (SendMessageW(hwnd, W32_WM_CREATE, 0, (W32_LPARAM)(intptr_t)param) < 0) {
+    if (SendMessageW(hwnd, W32_WM_CREATE, 0, (W32_LPARAM)(intptr_t)&cs) < 0) {
         DestroyWindow(hwnd);
         return 0;
     }
@@ -704,8 +740,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     if (win->visible) {
         ag_window_show(ag_wid);
         ui_refresh_geom(win);
-        PostMessageW(hwnd, W32_WM_SIZE, 0,
-                     (W32_LPARAM)((int32_t)win->h << 16) | (int32_t)win->w);
+        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(win));
         InvalidateRect(hwnd, 0, W32_TRUE);
     }
     return hwnd;
@@ -1098,8 +1133,7 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
         break;
     case UI_EVT_RESIZE:
         ui_refresh_geom(w);
-        ui_post_to(hwnd, W32_WM_SIZE, 0,
-                   (W32_LPARAM)((int32_t)w->h << 16) | (int32_t)w->w, e->x, e->y);
+        ui_post_to(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w), e->x, e->y);
         break;
     case UI_EVT_CLOSE_REQ:
         ui_post_to(hwnd, W32_WM_CLOSE, 0, 0, e->x, e->y);
@@ -2074,8 +2108,7 @@ W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
         w->maximized = 0;
         w->visible = 1;
         ui_refresh_geom(w);
-        PostMessageW(hwnd, W32_WM_SIZE, 0,
-                     (W32_LPARAM)((int32_t)w->h << 16) | (int32_t)w->w);
+        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
         if (cmd != W32_SW_SHOWNOACTIVATE) ag_window_focus(w->ag_wid);
         InvalidateRect(hwnd, 0, W32_TRUE);
         break;
@@ -2137,8 +2170,7 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
         w->x = x; w->y = y;
     }
     if (!(flags & W32_SWP_NOSIZE)) {
-        if (cx > 0 && cy > 0) {
-            ag_window_resize(w->ag_wid, (uint32_t)cx, (uint32_t)cy);
+        if (cx > 0 && cy > 0) {            ag_window_resize(w->ag_wid, (uint32_t)cx, (uint32_t)cy);
             ui_refresh_geom(w);
         }
     }
@@ -2148,8 +2180,7 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
     /* The compositor moved content: tell the window, then repaint.  Win32
      * sends WM_WINDOWPOSCHANGED/WM_SIZE through the same path. */
     PostMessageW(hwnd, W32_WM_WINDOWPOSCHANGED, 0, 0);
-    PostMessageW(hwnd, W32_WM_SIZE, 0,
-                 (W32_LPARAM)((int32_t)w->h << 16) | (int32_t)w->w);
+    PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
     if (!(flags & W32_SWP_NOREDRAW)) InvalidateRect(hwnd, 0, W32_TRUE);
     return W32_TRUE;
 }

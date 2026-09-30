@@ -34,6 +34,8 @@ enum {
     /* W32A-7 */ GUI_OP_GET_PIXEL, GUI_OP_FONT_INFO,
     /* W32A-11: must match kernel/gui/gui_syscalls.h exactly. */
     GUI_OP_SEND_DROP, GUI_OP_TAKE_DROP,
+    /* CW: compositor child windows. */
+    GUI_OP_SET_PARENT,
 };
 
 #define SYS_GUI_CALL_NUM    200
@@ -59,6 +61,11 @@ int ag_window_hide(int wid)           { return (int)gui_call(GUI_OP_HIDE, wid, 0
 int ag_window_destroy(int wid)        { return (int)gui_call(GUI_OP_DESTROY, wid, 0, 0, 0); }
 int ag_window_move(int wid, int32_t x, int32_t y) {
     return (int)gui_call(GUI_OP_MOVE, wid, pack2(x, y), 0, 0);
+}
+
+int ag_window_set_parent(int wid, int parent_wid) {
+    return (int)gui_call(GUI_OP_SET_PARENT, (uint64_t)(uint32_t)wid,
+                         (uint64_t)(int64_t)parent_wid, 0, 0);
 }
 int ag_window_resize(int wid, uint32_t w, uint32_t h) {
     return (int)gui_call(GUI_OP_RESIZE, wid, pack2((int32_t)w, (int32_t)h), 0, 0);

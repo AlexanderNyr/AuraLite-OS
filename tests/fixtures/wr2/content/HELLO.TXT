@@ -1,0 +1,4 @@
+AuraLite WR-2 byte-exact extract fixture.
+WR2-EXTRACT-SENTINEL-7A1C9E44D0B23F17
+If 7-Zip can extract this line through the VFS, the extract path is byte-exact.
+The quick brown fox jumps over the lazy dog. 0123456789.

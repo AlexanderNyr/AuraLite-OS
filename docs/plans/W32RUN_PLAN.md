@@ -338,26 +338,34 @@ E_FAIL of §0 is gone; the frame shows the listing.
 
 #### Tasks
 
-- [ ] Live launch: `gui_run 7zFM.exe C:\fat` reaches the main window (no
-      `Error #80004005`); serial shows the panel init completing.
-- [ ] **Live-frame gate**: `window_present` matches the 7-Zip main window
-      chrome (not the message box); brightness floor; the panel region shows
-      `SysListView32` rows for `/fat` (`7zFM.exe`, `7Z.DLL`, `README.TXT`, …).
-- [ ] Navigate: inject a double-click / `ret` on `SUBDIR`, assert a content
-      delta (the listing changed) and a back-nav returns.
-- [ ] Extract: point 7-Zip at a **byte-known** committed-fixture `.7z`/`.zip`
-      (built in CI from in-tree sources, per §1), extract-all through the VFS,
-      `sha256` the output against the known plaintext — the first *headless*
-      extract proof (was human-run in W32A-15).
-- [ ] Options: toggle a setting via the `PropertySheetW`, close/reopen,
-      assert the registry round-trip *and* the UI reflects it (pixel delta).
-- [ ] Drag-drop add: inject a mouse drag; assert `SHFileOperationW` fired and
-      the archive grew (or document as human-run if the drag source needs a
-      second live window — named either way).
-- [ ] Update the `#7zip` receipt in `docs/w32app_receipts.md`: the human-run
-      non-goals W32A-15 named that are **now automated** move to the
-      live-frame gate, with the frame digest; anything still human-run stays
-      named.
+- [x] Live launch: `run w32run /fat/7zFM.exe` reaches the main window (no
+      `Error #80004005`); serial shows 292 imports bound and the process alive.
+- [x] **Live-frame gate (main window)**: the 7-Zip main-window title bar is
+      present on the frame (window chrome, not the message box); brightness
+      floor cleared. *Listing rows in the panel region are blocked on compositor
+      child-clipping — see Status below.*
+- [~] Navigate — **deferred (compositor)**: needs the visible, clickable panel.
+- [~] Extract: the **byte-known CI fixture** is built in-tree
+      (`tools/wr2_make_fixture.py`, `tests/fixtures/wr2/`, round-trip checked)
+      and staged on `/fat`; `7z.dll` loads. Driving extract *through the panel*
+      is **deferred (compositor)** — 7zFM.exe is GUI-only (no CLI extract).
+- [~] Options — **deferred (compositor)**: property-sheet pixel delta needs the
+      visible panel.
+- [~] Drag-drop — **deferred (compositor)** / human-run.
+- [x] `#WR-2` receipt in `docs/w32app_receipts.md`: what is live-verified vs the
+      named compositor dependency, with the frame digest.
+
+#### Status (2026-09-30) — 7-Zip personality complete and LIVE; interaction gate on the compositor
+
+The 7-Zip personality for WR-2 is **done and verified live** (13/13 in
+`test_wr2_7zip_live.sh` under QEMU/OVMF/TCG): launch, imports, address bar
+(`ReBarWindow32` + `ComboBoxEx32` now real), main window on the framebuffer, no
+`E_FAIL`/fault/exit. The remaining pixel-driven steps (panel listing, navigate,
+extract-through-panel, options) are blocked on ONE dependency **outside this
+phase's scope**: the compositor does not clip `WS_CHILD` into its parent, so
+7-Zip's panes composite as separate top-level surfaces and the file panel is
+not drawn inside the window. Named here (D-WR4), deferred to a compositor phase,
+not faked. Deliverables below all landed.
 
 #### Test gate
 

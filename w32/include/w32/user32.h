@@ -38,6 +38,25 @@ typedef void *W32_HHOOK;
 typedef uint64_t W32_WPARAM;
 typedef int64_t  W32_LPARAM;
 typedef int64_t  W32_LRESULT;
+
+/* CREATESTRUCTW — the documented x64 layout delivered as lParam with
+ * WM_NCCREATE / WM_CREATE.  A real Win32 program (7-Zip's CWindow2
+ * framework, MFC, ATL) reads lpCreateParams here to bind its C++ object
+ * to the HWND, so the struct — not the bare param — is what we must pass. */
+typedef struct W32_CREATESTRUCTW {
+    void         *lpCreateParams;   /* +0  */
+    W32_HINSTANCE hInstance;        /* +8  */
+    W32_HMENU     hMenu;            /* +16 */
+    W32_HWND      hwndParent;       /* +24 */
+    int32_t       cy;               /* +32 */
+    int32_t       cx;               /* +36 */
+    int32_t       y;                /* +40 */
+    int32_t       x;                /* +44 */
+    int32_t       style;            /* +48 (LONG) */
+    const uint16_t *lpszName;       /* +56 */
+    const uint16_t *lpszClass;      /* +64 */
+    W32_DWORD     dwExStyle;        /* +72 */
+} W32_CREATESTRUCTW;
 typedef uint32_t W32_UINT;
 typedef int32_t  W32_INT;
 

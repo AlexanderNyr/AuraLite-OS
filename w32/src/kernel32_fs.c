@@ -614,6 +614,10 @@ struct fs_find {
     uint64_t stream_size;   /* stream shape: the file's size */
     int stream_done;
     char *change_path;      /* change shape: the watched path, for honesty */
+    char *name8;            /* scan: original (UTF-8) pattern tail, for a
+                             * direct stat when the parent scan yields nothing */
+    int wild;               /* scan: pattern holds a '*' or '?' */
+    int direct_tried;       /* scan: the wildcard-free direct stat was tried */
 };
 
 static void fs_find_free(void *p) {
@@ -626,6 +630,7 @@ static void fs_find_free(void *p) {
     free(f->dirpath);
     free(f->pattern);
     free(f->change_path);
+    free(f->name8);
     free(f);
 }
 
@@ -793,8 +798,25 @@ static int fs_scan_next(struct fs_find *f, W32_WIN32_FIND_DATAW *outW,
         int rc;
 
         de = readdir(f->dir);
-        if (!de)
+        if (!de) {
+            /* The parent scan is spent.  A wildcard-free query names one
+             * exact entry -- FindFirstFile("C:\\dir") on Windows returns
+             * that entry's own record by statting it.  Some entries never
+             * surface in the parent's readdir (a directory mounted over a
+             * point that the parent listing does not itself enumerate), so
+             * fall back to a direct stat of dirpath/name before giving up.
+             * fs_fill stats the exact path: it succeeds only if it truly
+             * exists, so a genuinely missing name still reports not-found. */
+            if (!f->wild && !f->direct_tried && f->name8) {
+                int drc;
+                f->direct_tried = 1;
+                drc = outW ? fs_fill_w(f->dirpath, f->name8, outW)
+                           : fs_fill_a(f->dirpath, f->name8, outA);
+                if (drc == 0)
+                    return 0;
+            }
             return 1;
+        }
         /* "." and ".." are enumerated, as on Windows. */
         nl = strlen(de->d_name);
         if (nl >= 260)
@@ -929,6 +951,9 @@ static struct fs_find *fs_find_open_scan(const char *pattern_utf8) {
     f->pattern[need] = 0;
     for (i = 0; i < need; i++)
         f->pattern[i] = w32_fold_char(f->pattern[i]);
+    /* Keep the raw pattern tail so a wildcard-free miss can stat it directly. */
+    f->name8 = strdup(pat);
+    f->wild = (strchr(pat, '*') != NULL || strchr(pat, '?') != NULL);
     return f;
 }
 

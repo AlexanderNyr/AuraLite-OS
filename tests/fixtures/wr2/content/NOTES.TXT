@@ -1,0 +1,3 @@
+WR-2 fixture note file.
+This archive is built in CI from these in-tree sources (no foreign bytes).
+Extraction must reproduce these bytes exactly.

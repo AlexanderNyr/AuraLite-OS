@@ -61,6 +61,7 @@ typedef struct {
  *   { u16 cb, u16 kind, u16 path_units, path[units], u16 0, u16 0 }
  * A filesystem item carries its full Win32 path; My Computer carries none. */
 #define W32_NS_PIDL_COMPUTER  0xF001u
+#define W32_NS_PIDL_NETWORK   0xF002u   /* Network root: real, but empty offline */
 #define W32_NS_PIDL_FS        0xF003u
 
 /* ---- IEnumIDList -------------------------------------------------------- */
@@ -123,6 +124,13 @@ W32_LONG ns_get_desktop_folder(void **out);
  * NUL-terminated into buf). Returns the length in code units, 0 for a virtual
  * PIDL (My Computer — no filesystem path), or -1 on a malformed PIDL. */
 int ns_pidl_to_path(const void *pidl, uint16_t *buf, size_t cap);
+
+/* SHGetSpecialFolderLocation body for the *virtual* roots the namespace models
+ * (My Computer / CSIDL_DRIVES — no filesystem path). On S_OK, *out is a freshly
+ * allocated namespace PIDL byte-compatible with SHGetPathFromIDListW/BindToObject.
+ * Returns S_FALSE (1) for a CSIDL this namespace does not model as a virtual
+ * root, so the caller falls back to its filesystem CSIDL mapping. */
+W32_LONG ns_special_pidl(W32_DWORD csidl, void **out);
 
 #ifdef __cplusplus
 }

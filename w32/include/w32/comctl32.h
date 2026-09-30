@@ -145,6 +145,8 @@ extern const uint16_t W32_WCN_TABCONTROL[];
 extern const uint16_t W32_WCN_TOOLTIP[];
 extern const uint16_t W32_WCN_PROGRESS[];
 extern const uint16_t W32_WCN_HEADER[];
+extern const uint16_t W32_WCN_REBAR[];      /* WR-2: ReBarWindow32   */
+extern const uint16_t W32_WCN_COMBOEX[];    /* WR-2: ComboBoxEx32    */
 #define W32_WC_TOOLBARW     W32_WCN_TOOLBAR
 #define W32_WC_STATUSBARW   W32_WCN_STATUSBAR
 #define W32_WC_LISTVIEWW    W32_WCN_LISTVIEW
@@ -153,6 +155,48 @@ extern const uint16_t W32_WCN_HEADER[];
 #define W32_WC_TOOLTIPW     W32_WCN_TOOLTIP
 #define W32_WC_PROGRESSW    W32_WCN_PROGRESS
 #define W32_WC_HEADERW      W32_WCN_HEADER
+#define W32_WC_REBARW       W32_WCN_REBAR
+#define W32_WC_COMBOEXW     W32_WCN_COMBOEX
+
+/* ---- WR-2: ReBar (address-bar band host) messages -------------------- */
+#define W32_RB_INSERTBANDA   (W32_WM_USER + 1)
+#define W32_RB_DELETEBAND    (W32_WM_USER + 2)
+#define W32_RB_SETBARINFO    (W32_WM_USER + 4)
+#define W32_RB_SETBANDINFOA  (W32_WM_USER + 6)
+#define W32_RB_INSERTBANDW   (W32_WM_USER + 10)
+#define W32_RB_SETBANDINFOW  (W32_WM_USER + 11)
+#define W32_RB_GETBANDCOUNT  (W32_WM_USER + 12)
+#define W32_RB_GETBARHEIGHT  (W32_WM_USER + 27)
+
+/* ---- WR-2: ComboBoxEx (address-bar path combo) messages -------------- */
+#define W32_CBEM_INSERTITEMA   (W32_WM_USER + 1)
+#define W32_CBEM_SETITEMA      (W32_WM_USER + 5)
+#define W32_CBEM_GETCOMBOCONTROL (W32_WM_USER + 6)
+#define W32_CBEM_GETEDITCONTROL  (W32_WM_USER + 7)
+#define W32_CBEM_GETITEMW      (W32_WM_USER + 13)
+#define W32_CBEM_INSERTITEMW   (W32_WM_USER + 11)
+#define W32_CBEM_SETITEMW      (W32_WM_USER + 12)
+#define W32_CBEIF_TEXT         0x00000001u
+
+/* The COMBOBOX base messages the combo forwards (documented WM_ values). */
+#define W32_CB_ADDSTRING     0x0143u
+#define W32_CB_RESETCONTENT  0x014Bu
+#define W32_CB_GETCOUNT      0x0146u
+#define W32_CB_GETCURSEL     0x0147u
+#define W32_CB_SETCURSEL     0x014Eu
+
+/* COMBOBOXEXITEMW (x64): the pointer forces padding after mask/iItem. */
+typedef struct {
+    uint32_t     mask;          /* W32_CBEIF_*                    */
+    int64_t      iItem;
+    const uint16_t *pszText;    /* in: text (may be callback)     */
+    int32_t      cchTextMax;
+    int32_t      iImage;
+    int32_t      iSelectedImage;
+    int32_t      iOverlay;
+    int32_t      iIndent;
+    int64_t      lParam;
+} W32_COMBOBOXEXITEMW;
 
 /* ---- toolbar ---------------------------------------------------------- */
 
@@ -204,6 +248,7 @@ typedef struct {
 #define W32_TB_GETBUTTONSIZE     (W32_WM_USER + 58)
 #define W32_TB_SETBUTTONSIZE     (W32_WM_USER + 31)
 #define W32_TB_SETBITMAPSIZE     (W32_WM_USER + 32)
+#define W32_TB_AUTOSIZE          (W32_WM_USER + 33)
 #define W32_TB_ADDBUTTONSW       (W32_WM_USER + 68)
 #define W32_TB_INSERTBUTTONW     (W32_WM_USER + 67)
 
@@ -255,7 +300,11 @@ W32ABI W32_HWND CreateStatusWindowW(int32_t style, const uint16_t *text,
 #define W32_LVM_GETITEMTEXTA     (W32_LVM_FIRST + 45)
 #define W32_LVM_GETITEMTEXTW     (W32_LVM_FIRST + 115)
 #define W32_LVM_GETITEMSTATE     (W32_LVM_FIRST + 44)
-#define W32_LVM_SETITEMSTATE     (W32_LVM_FIRST + 47)
+/* Real Win32 values: SETITEMSTATE is +43 (0x102B); +47 (0x102F) is
+ * SETITEMCOUNT.  (An earlier revision transposed these, so a real
+ * LVM_SETITEMCOUNT was misread as SETITEMSTATE — 7-Zip FM sends both.) */
+#define W32_LVM_SETITEMSTATE     (W32_LVM_FIRST + 43)
+#define W32_LVM_SETITEMCOUNT     (W32_LVM_FIRST + 47)
 #define W32_LVM_GETNEXTITEM      (W32_LVM_FIRST + 12)
 #define W32_LVM_GETSELECTEDCOUNT (W32_LVM_FIRST + 50)
 #define W32_LVM_GETSELECTIONMARK (W32_LVM_FIRST + 66)
@@ -347,6 +396,18 @@ typedef struct {
 #define W32_LVN_ITEMCHANGED  (W32_LVN_FIRST - 1u)
 #define W32_LVN_INSERTITEM   (W32_LVN_FIRST - 2u)
 #define W32_LVN_DELETEITEM   (W32_LVN_FIRST - 3u)
+/* Callback text: the control asks the parent for an item's text on demand.
+ * 7-Zip FM inserts LPSTR_TEXTCALLBACK items and answers these on paint. */
+#define W32_LVN_GETDISPINFOA (W32_LVN_FIRST - 50u)   /* 0xFFFFFF4A */
+#define W32_LVN_GETDISPINFOW (W32_LVN_FIRST - 77u)   /* 0xFFFFFF4F */
+
+/* NMLVDISPINFOW: the notify payload for LVN_GETDISPINFOW.  The parent fills
+ * item.pszText (either copying into the provided buffer or pointing at its
+ * own) for the requested (iItem, iSubItem). */
+typedef struct {
+    W32_NMHDR   hdr;
+    W32_LVITEMW item;
+} W32_NMLVDISPINFOW;
 
 /* ---- treeview ------------------------------------------------------------ */
 

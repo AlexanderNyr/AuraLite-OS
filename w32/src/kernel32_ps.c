@@ -95,6 +95,34 @@ void w32_ps_init(int argc, char **argv, char **envp) {
         ps_birth_ft = ((uint64_t)(ts.tv_sec + 11644473600LL)) * 10000000ULL +
             (uint64_t)(ts.tv_nsec / 100);
     }
+    /* A Windows command line carries native (backslash) paths; the POSIX
+     * launcher, however, hands us forward-slash arguments (a folder to open
+     * passed as "C:/dir").  A Win32 app that parses the raw command line and
+     * splits paths on backslashes -- e.g. 7-Zip FM opening a start folder --
+     * cannot make sense of the forward-slash form and silently falls back to
+     * the drive root.  Normalise the slashes in any drive-qualified argument
+     * ("X:/...") so the reconstructed command line matches what a real shell
+     * would deliver.  Non-drive arguments (the "/fat/app.exe" image path) are
+     * left untouched: the loader already resolved argv[0], and it is skipped
+     * by the child's command-line splitter. */
+    {
+        static char *ps_norm[64];
+        for (i = 0; i < argc && i < 64; i++) {
+            char *a = argv && argv[i] ? argv[i] : (char *)"";
+            ps_norm[i] = a;
+            if (((a[0] >= 'A' && a[0] <= 'Z') || (a[0] >= 'a' && a[0] <= 'z')) &&
+                a[1] == ':' && (a[2] == '/' || a[2] == '\\')) {
+                char *dup = strdup(a);
+                if (dup) {
+                    for (char *p = dup; *p; p++)
+                        if (*p == '/') *p = '\\';
+                    ps_norm[i] = dup;
+                }
+            }
+        }
+        argv = ps_norm;
+        if (argc > 64) argc = 64;
+    }
     /* Re-quote argv into one command line.  An argument needs quotes when
      * it is empty or holds space, tab or a quote; quotes and trailing
      * backslashes escape the CommandLineToArgvW way so the child that

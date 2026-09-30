@@ -414,6 +414,8 @@ static int ctl_surf_dispatch(ctl_surface_t *s, int type, int32_t x, int32_t y) {
 #define CTL_KIND_PROGRESS 7
 #define CTL_KIND_HEADER   8
 #define CTL_KIND_PSPAGE   9     /* internal: PropertySheet page host */
+#define CTL_KIND_REBAR    10    /* WR-2: 7-Zip FM's address-bar band host */
+#define CTL_KIND_COMBOEX  11    /* WR-2: 7-Zip FM's address-bar path combo */
 
 static W32_LRESULT ctl_generic_proc(W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
 
@@ -432,6 +434,7 @@ static const uint16_t ps_page_cls[] = { 'A','u','r','a','P','S','P','a','g','e',
 #define TV_MAX_ITEMS    64
 #define TT_MAX_TOOLS    8
 #define HD_MAX_ITEMS    16
+#define RB_CBEX_MAX     32      /* WR-2: comboboxex path-history entries */
 #define CTL_MAX_WINDOWS 40
 
 typedef struct {
@@ -518,6 +521,22 @@ typedef struct {
             int sheet;                    /* sheet table index   */
             int page;                     /* page index in sheet */
         } pg;
+        struct {                          /* WR-2 rebar: a band host.
+                                            7-Zip FM puts its address bar in
+                                            one band; we track the count and
+                                            report a real bar height so the
+                                            parent lays the panel out below. */
+            int     n_bands;
+            int32_t bar_h;                /* accumulated, RB_GETBARHEIGHT */
+        } rb;
+        struct {                          /* WR-2 comboboxex: the path combo.
+                                            The item text mirror + selection;
+                                            it is its own combo/edit control
+                                            (CBEM_GETCOMBOCONTROL returns self). */
+            char text[RB_CBEX_MAX][96];
+            int  n_items;
+            int  cur_sel;                 /* -1 = none */
+        } cbex;
     } u;
 } ctl_state_t;
 
@@ -539,6 +558,7 @@ static ctl_state_t *ctl_alloc(W32_HWND hwnd, int kind) {
             ctls[i].hwnd = hwnd;
             ctls[i].kind = kind;
             if (kind == CTL_KIND_TAB) ctls[i].u.tc.active = -1;
+            if (kind == CTL_KIND_COMBOEX) ctls[i].u.cbex.cur_sel = -1;
             /* Widget-backed controls get their surface at install time:
              * the ag window exists (CreateWindowExW made it before the
              * first message) and the geometry is final. */
@@ -592,6 +612,8 @@ CTL_CLASS_PROC(TOOLTIP)
 CTL_CLASS_PROC(PROGRESS)
 CTL_CLASS_PROC(HEADER)
 CTL_CLASS_PROC(PSPAGE)
+CTL_CLASS_PROC(REBAR)
+CTL_CLASS_PROC(COMBOEX)
 
 /* The documented class names, as UTF-16 (see the header note: L""
  * literals are 4-byte wchar here and would truncate). */
@@ -603,6 +625,8 @@ const uint16_t W32_WCN_TABCONTROL[] = {'S','y','s','T','a','b','C','o','n','t','
 const uint16_t W32_WCN_TOOLTIP[]   = {'t','o','o','l','t','i','p','s','_','c','l','a','s','s','3','2',0};
 const uint16_t W32_WCN_PROGRESS[]  = {'m','s','c','t','l','s','_','p','r','o','g','r','e','s','s','3','2',0};
 const uint16_t W32_WCN_HEADER[]    = {'S','y','s','H','e','a','d','e','r','3','2',0};
+const uint16_t W32_WCN_REBAR[]     = {'R','e','B','a','r','W','i','n','d','o','w','3','2',0};
+const uint16_t W32_WCN_COMBOEX[]   = {'C','o','m','b','o','B','o','x','E','x','3','2',0};
 
 static const struct {
     const uint16_t *name;
@@ -617,6 +641,8 @@ static const struct {
     { W32_WC_TOOLTIPW,    ctl_proc_TOOLTIP,  0 },  /* no ICC bit */
     { W32_WC_PROGRESSW,   ctl_proc_PROGRESS, W32_ICC_PROGRESS_CLASS },
     { W32_WC_HEADERW,     ctl_proc_HEADER,   W32_ICC_LISTVIEW_CLASSES },
+    { W32_WC_REBARW,      ctl_proc_REBAR,    W32_ICC_COOL_CLASSES },
+    { W32_WC_COMBOEXW,    ctl_proc_COMBOEX,  W32_ICC_USEREX_CLASSES },
 };
 
 
@@ -634,6 +660,8 @@ static W32_LRESULT ctl_tooltip_proc(ctl_state_t *, W32_HWND, W32_UINT, W32_WPARA
 static W32_LRESULT ctl_progress_proc(ctl_state_t *, W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
 static W32_LRESULT ctl_header_proc(ctl_state_t *, W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
 static W32_LRESULT ctl_pspage_proc(ctl_state_t *, W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
+static W32_LRESULT ctl_rebar_proc(ctl_state_t *, W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
+static W32_LRESULT ctl_comboex_proc(ctl_state_t *, W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
 
 static W32_LRESULT ctl_generic_proc(W32_HWND hwnd, W32_UINT msg,
                                     W32_WPARAM wp, W32_LPARAM lp) {
@@ -650,6 +678,8 @@ static W32_LRESULT ctl_generic_proc(W32_HWND hwnd, W32_UINT msg,
     case CTL_KIND_PROGRESS: return ctl_progress_proc(c, hwnd, msg, wp, lp);
     case CTL_KIND_HEADER:   return ctl_header_proc(c, hwnd, msg, wp, lp);
     case CTL_KIND_PSPAGE:   return ctl_pspage_proc(c, hwnd, msg, wp, lp);
+    case CTL_KIND_REBAR:    return ctl_rebar_proc(c, hwnd, msg, wp, lp);
+    case CTL_KIND_COMBOEX:  return ctl_comboex_proc(c, hwnd, msg, wp, lp);
     default:                return DefWindowProcW(hwnd, msg, wp, lp);
     }
 }
@@ -716,11 +746,30 @@ static void ctl_toolbar_paint(ctl_state_t *c, W32_HWND hwnd) {
     EndPaint(hwnd, &ps);
 }
 
+/* A horizontal toolbar's natural height is one button row plus a small frame.
+ * Apps (7-Zip FM) create the toolbar with CW_USEDEFAULT, add buttons and then
+ * TB_AUTOSIZE (or just read GetWindowRect) expecting the control to collapse to
+ * that height; the app places the next pane at the toolbar's bottom edge.  If we
+ * leave the toolbar at its oversized default, the pane is pushed off-screen. */
+static void tb_autosize(ctl_state_t *c, W32_HWND hwnd) {
+    int bh = c->u.tb.btn_h > 0 ? c->u.tb.btn_h : 22;
+    int nat_h = bh + 4;
+    W32_RECT r; memset(&r, 0, sizeof r);
+    GetClientRect(hwnd, &r);
+    int32_t cur_w = r.right - r.left;
+    if (cur_w > 0)
+        SetWindowPos(hwnd, 0, 0, 0, cur_w, nat_h,
+                     W32_SWP_NOMOVE | W32_SWP_NOZORDER | W32_SWP_NOACTIVATE);
+}
+
 static W32_LRESULT ctl_toolbar_proc(ctl_state_t *c, W32_HWND hwnd,
                                     W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
         ctl_toolbar_paint(c, hwnd);
+        return 0;
+    case W32_TB_AUTOSIZE:
+        tb_autosize(c, hwnd);
         return 0;
     case W32_TB_BUTTONSTRUCTSIZE:
         return 0;                       /* documented: no return value */
@@ -751,6 +800,7 @@ static W32_LRESULT ctl_toolbar_proc(ctl_state_t *c, W32_HWND hwnd,
                             sizeof c->u.tb.text[0], s);
             c->u.tb.n_btn++;
         }
+        tb_autosize(c, hwnd);   /* collapse to the natural one-row height */
         return first;
     }
     case W32_TB_GETBUTTON: {
@@ -1065,10 +1115,73 @@ static void lv_fill_item_out(ctl_state_t *c, W32_LVITEMW *it) {
         it->lParam = c->u.lv.lparam[it->iItem];
 }
 
+/* Callback (LPSTR_TEXTCALLBACK) items carry no stored text: the control must
+ * ask the parent for each item's column-0 text via LVN_GETDISPINFOW when it
+ * needs to draw.  7-Zip FM's file panel inserts its rows exactly this way, so
+ * without this the panel showed blank rows.  Fetched lazily at paint time, as
+ * real comctl32 does, then folded into the row array. */
+/* The listview surface (an ag_listbox) has its geometry captured once at
+ * install time via GetClientRect.  Apps such as 7-Zip FM create the control
+ * with a zero/placeholder size and only give it real dimensions later via a
+ * WM_SIZE we do not (yet) route to the control.  A zero-height listbox draws
+ * no rows (render_listbox bails on the first row-fits check), so re-read the
+ * client rect on every paint and keep the backing widget in sync. */
+static void lv_sync_surf_geometry(ctl_state_t *c, W32_HWND hwnd) {
+#ifndef AURALITE_W32_HOST_TEST
+    ag_widget_t *w = c->surf.widget;
+    if (!w) return;
+    W32_RECT r;
+    memset(&r, 0, sizeof r);
+    GetClientRect(hwnd, &r);
+    uint32_t cw = (uint32_t)(r.right - r.left);
+    uint32_t ch = (uint32_t)(r.bottom - r.top);
+    if (cw && ch && (w->w != cw || w->h != ch)) {
+        { static int g=0; if(g<6){ printf("w32: [lvgeom] w=%u->%u h=%u->%u\n", (unsigned)w->w, (unsigned)cw, (unsigned)w->h, (unsigned)ch); g++; } }
+        w->w = cw;
+        w->h = ch;
+    }
+#else
+    (void)c; (void)hwnd;
+#endif
+}
+
+static void lv_fetch_callback_text(ctl_state_t *c, W32_HWND hwnd) {
+    if (!GetParent(hwnd)) return;
+    int changed = 0;
+    for (int i = 0; i < c->u.lv.n_items; i++) {
+        if (c->u.lv.text[i][0]) continue;          /* already have a label */
+        uint16_t buf[64];
+        buf[0] = 0;
+        W32_NMLVDISPINFOW di;
+        memset(&di, 0, sizeof di);
+        di.item.mask       = W32_LVIF_TEXT;
+        di.item.iItem      = i;
+        di.item.iSubItem   = 0;                     /* column 0 = the name */
+        di.item.pszText    = buf;                   /* control-provided buffer */
+        di.item.cchTextMax = (int32_t)(sizeof buf / sizeof buf[0]);
+        di.item.lParam     = c->u.lv.lparam[i];
+        notify_parent(hwnd, W32_LVN_GETDISPINFOW, &di.hdr);
+        /* The parent either copied into buf or repointed pszText at its own
+         * string; read whatever it left, guarding the sentinel/NULL. */
+        const uint16_t *src = di.item.pszText;
+        if (src && src != (const uint16_t *)(intptr_t)-1 && src[0]) {
+            char utf8[48];
+            w32_utf16z_to_utf8(src, utf8, (int32_t)sizeof utf8);
+            if (utf8[0]) {
+                ctl_strlcpy(c->u.lv.text[i], sizeof c->u.lv.text[0], utf8);
+                changed = 1;
+            }
+        }
+    }
+    if (changed) lv_rebuild(c);
+}
+
 static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
                                      W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
+        lv_sync_surf_geometry(c, hwnd);    /* track late WM_SIZE from the app */
+        lv_fetch_callback_text(c, hwnd);   /* pull LPSTR_TEXTCALLBACK labels */
         ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
         return 0;
     case W32_LVM_INSERTITEMA:
@@ -1080,11 +1193,18 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
             return -1;
         }
         char label[48];
-        if (msg == W32_LVM_INSERTITEMW && it->pszText) {
-            w32_utf16z_to_utf8(it->pszText, label, (int32_t)sizeof label);
-        } else if (it->pszText) {
-            ctl_strlcpy(label, sizeof label, (const char *)it->pszText);
-        } else label[0] = 0;
+        label[0] = 0;
+        /* pszText is meaningful only when LVIF_TEXT is set, and even then it may
+         * be LPSTR_TEXTCALLBACK ((LPWSTR)-1): a virtual item whose text the
+         * control asks for later via LVN_GETDISPINFO. Neither may be
+         * dereferenced -- 7-Zip FM inserts callback items exactly this way. */
+        if ((it->mask & W32_LVIF_TEXT) && it->pszText &&
+            it->pszText != (uint16_t *)(intptr_t)-1) {
+            if (msg == W32_LVM_INSERTITEMW)
+                w32_utf16z_to_utf8(it->pszText, label, (int32_t)sizeof label);
+            else
+                ctl_strlcpy(label, sizeof label, (const char *)it->pszText);
+        }
         int at = (it->iItem < 0 || it->iItem > c->u.lv.n_items)
                  ? c->u.lv.n_items : it->iItem;
         lv_splice(c, at, 0, label,
@@ -1109,6 +1229,11 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
         return 1;
     case W32_LVM_GETITEMCOUNT:
         return c->u.lv.n_items;
+    case W32_LVM_SETITEMCOUNT:
+        /* Pre-allocation hint for a report/virtual listview.  Our rows are
+         * inserted for real (7-Zip FM sends this then LVM_INSERTITEMW ×N), so
+         * this is a no-op that just answers TRUE. */
+        return 1;
     case W32_LVM_GETITEMA:
     case W32_LVM_GETITEMW: {
         W32_LVITEMW *it = (W32_LVITEMW *)(uintptr_t)lp;
@@ -3310,6 +3435,122 @@ W32ABI W32_INT_PTR PropertySheetW(W32_PROPSHEETHEADERW *header) {
 
 static int ctl_classes_done;
 
+/* ===================================================================== *
+ * WR-2: ReBarWindow32 and ComboBoxEx32 — 7-Zip FM's address bar
+ * ===================================================================== */
+/* 7-Zip FM builds its address bar as a ReBar hosting one ComboBoxEx band.
+ * These are minimal-but-honest: the rebar tracks its bands and reports a real
+ * one-row height (so the parent lays the file panel out beneath it); the
+ * comboboxex mirrors its item text and selection and answers as its own combo/
+ * edit control.  Neither is widget-backed (no ctl_surface_t) — they carry no
+ * pixels of their own beyond the window background — which is honest given the
+ * compositor does not clip children into a parent yet (WR-2 launch note). */
+static W32_LRESULT ctl_rebar_proc(ctl_state_t *c, W32_HWND hwnd,
+                                  W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
+    switch (msg) {
+    case W32_RB_INSERTBANDW:
+    case W32_RB_INSERTBANDA:
+        c->u.rb.n_bands++;
+        if (c->u.rb.bar_h < 24) c->u.rb.bar_h = 24;   /* one-row band */
+        /* A real ReBar collapses its own window to the height its bands need
+         * and raises RBN_HEIGHTCHANGE.  7-Zip FM never sizes the rebar's
+         * height itself (it passes cy==0 and then reads GetWindowRect to place
+         * the file panel just beneath the band).  If we leave the rebar at its
+         * CW_USEDEFAULT height the panel is pushed off the bottom of the frame,
+         * so shrink to the band height now, preserving the current width. */
+        {
+            W32_RECT rc; memset(&rc, 0, sizeof rc);
+            GetClientRect(hwnd, &rc);
+            int32_t cur_w = rc.right - rc.left;
+            if (cur_w > 0)
+                SetWindowPos(hwnd, 0, 0, 0, cur_w, c->u.rb.bar_h,
+                             W32_SWP_NOMOVE | W32_SWP_NOZORDER |
+                             W32_SWP_NOACTIVATE);
+        }
+        return 1;                                     /* TRUE */
+    case W32_RB_DELETEBAND:
+        if (c->u.rb.n_bands > 0) c->u.rb.n_bands--;
+        if (c->u.rb.n_bands == 0) c->u.rb.bar_h = 0;
+        return 1;
+    case W32_RB_SETBANDINFOW:
+    case W32_RB_SETBANDINFOA:
+    case W32_RB_SETBARINFO:
+        return 1;
+    case W32_RB_GETBANDCOUNT:
+        return c->u.rb.n_bands;
+    case W32_RB_GETBARHEIGHT:
+        return c->u.rb.bar_h ? c->u.rb.bar_h : 24;
+    default:
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+}
+
+static W32_LRESULT ctl_comboex_proc(ctl_state_t *c, W32_HWND hwnd,
+                                    W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
+    switch (msg) {
+    case W32_CBEM_INSERTITEMW: {
+        const W32_COMBOBOXEXITEMW *it =
+            (const W32_COMBOBOXEXITEMW *)(uintptr_t)lp;
+        int idx = c->u.cbex.n_items;
+        if (c->u.cbex.n_items < RB_CBEX_MAX) {
+            char *slot = c->u.cbex.text[c->u.cbex.n_items];
+            slot[0] = 0;
+            /* Text is meaningful only with CBEIF_TEXT, and may be the
+             * LPSTR_TEXTCALLBACK sentinel ((LPWSTR)-1) — neither NULL nor the
+             * sentinel may be dereferenced (same rule as the listview fix). */
+            if (it && (it->mask & W32_CBEIF_TEXT) && it->pszText &&
+                it->pszText != (const uint16_t *)(intptr_t)-1) {
+                w32_utf16z_to_utf8(it->pszText, slot,
+                                   (int32_t)sizeof c->u.cbex.text[0]);
+            }
+            c->u.cbex.n_items++;
+        }
+        return idx;
+    }
+    case W32_CBEM_INSERTITEMA:
+        /* ANSI variant: append without decoding (7-Zip drives the W form). */
+        if (c->u.cbex.n_items < RB_CBEX_MAX) {
+            c->u.cbex.text[c->u.cbex.n_items][0] = 0;
+            return c->u.cbex.n_items++;
+        }
+        return c->u.cbex.n_items;
+    case W32_CBEM_SETITEMW:
+    case W32_CBEM_SETITEMA:
+        return 1;
+    case W32_CBEM_GETCOMBOCONTROL:
+    case W32_CBEM_GETEDITCONTROL:
+        /* No separate child: the ComboBoxEx is its own combo/edit here. */
+        return (W32_LRESULT)(intptr_t)hwnd;
+    case W32_CB_ADDSTRING: {
+        int idx = c->u.cbex.n_items;
+        if (c->u.cbex.n_items < RB_CBEX_MAX) {
+            char *slot = c->u.cbex.text[c->u.cbex.n_items];
+            slot[0] = 0;
+            const uint16_t *s = (const uint16_t *)(uintptr_t)lp;
+            if (s) w32_utf16z_to_utf8(s, slot,
+                                      (int32_t)sizeof c->u.cbex.text[0]);
+            c->u.cbex.n_items++;
+        }
+        return idx;
+    }
+    case W32_CB_RESETCONTENT:
+        c->u.cbex.n_items = 0;
+        c->u.cbex.cur_sel = -1;
+        return 0;
+    case W32_CB_GETCOUNT:
+        return c->u.cbex.n_items;
+    case W32_CB_GETCURSEL:
+        return c->u.cbex.cur_sel;
+    case W32_CB_SETCURSEL: {
+        int sel = (int)(int32_t)(uint32_t)wp;
+        c->u.cbex.cur_sel = (sel >= 0 && sel < c->u.cbex.n_items) ? sel : -1;
+        return c->u.cbex.cur_sel;
+    }
+    default:
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+}
+
 void w32_comctl_register_classes(void) {
     if (ctl_classes_done) return;
     ctl_classes_done = 1;
@@ -3353,6 +3594,7 @@ int w32_comctl_is_class(const uint16_t *clsname) {
         W32_WC_LISTVIEWW,   W32_WC_TREEVIEWW,
         W32_WC_TABCONTROLW, W32_WC_TOOLTIPW,
         W32_WC_PROGRESSW,   W32_WC_HEADERW,
+        W32_WC_REBARW,      W32_WC_COMBOEXW,
         ps_page_cls, ps_frame_cls, ps_btn_cls, ps_item_cls, drag_cls,
     };
     for (size_t i = 0; i < W32_ARRAY_COUNT(all); i++) {

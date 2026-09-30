@@ -358,6 +358,15 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_invalidate_rect((int)a2, lo32(a3), hi32(a3),
                                              lo32(a4), hi32(a4));
+    case GUI_OP_SET_PARENT: {
+        /* CW: the caller must own the child; the parent, when given (>=0),
+         * must be owned too, so one process cannot embed itself into another's
+         * window. -1 detaches to top-level. */
+        int32_t parent = (int32_t)a3;
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        if (parent >= 0 && !require_owner(parent)) return (uint64_t)-1;
+        return (uint64_t)gui_set_parent((int)a2, parent);
+    }
     case GUI_OP_GET_PIXEL: {
         /* W32A-7: one content pixel back.  Out-of-range coordinates are
          * an error, not pixel 0 -- the caller distinguishes them. */
