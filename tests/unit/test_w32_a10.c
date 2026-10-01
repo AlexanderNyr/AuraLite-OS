@@ -181,7 +181,14 @@ static void write_text_to(const char *winpath,const char *txt){
     char *host=w32_fs_xlate_dup(a); ok(host!=NULL,"xlate text %s",winpath);
     if(!host) return;
     int fd=open(host,O_WRONLY|O_CREAT|O_TRUNC,0644); ok(fd>=0,"open text %s",host);
-    if(fd>=0){ write(fd,txt,strlen(txt)); close(fd); }
+    /* Checked, not cast to void: if the fixture text never reached the file
+     * every assertion downstream would be testing an EMPTY file and would
+     * "pass" without proving anything.  (glibc marks write() __wur under the
+     * distro default _FORTIFY_SOURCE, so ignoring it is -Werror on CI's gcc
+     * even though a plain Debian host stays quiet.) */
+    if(fd>=0){ size_t n=strlen(txt);
+               ok(write(fd,txt,n)==(ssize_t)n,"write text %s",host);
+               close(fd); }
     free(host);
 }
 static void rm_win(const char *winpath){
@@ -424,7 +431,13 @@ int main(void){
         // ELF
         {
             char a[512]; w32_utf16z_to_utf8(W("C:\\tmp\\a10_elf"),a,sizeof a);
-            char *host=w32_fs_xlate_dup(a); int fd=open(host,O_WRONLY|O_CREAT|O_TRUNC,0755); unsigned char hdr[4]={0x7F,'E','L','F'}; write(fd,hdr,4); close(fd); free(host);
+            char *host=w32_fs_xlate_dup(a); int fd=open(host,O_WRONLY|O_CREAT|O_TRUNC,0755);
+            unsigned char hdr[4]={0x7F,'E','L','F'};
+            /* The ELF magic must actually land: ShellExecuteW's "is this
+             * executable?" sniff below reads these four bytes, and against a
+             * zero-length file it would take the wrong branch silently. */
+            ok(fd>=0 && write(fd,hdr,4)==4,"planted ELF magic");
+            close(fd); free(host);
             ok((uintptr_t)ShellExecuteW(NULL,NULL,W("C:\\tmp\\a10_elf"),NULL,NULL,1)>32,"exec ELF success");
             rm_win("C:\\tmp\\a10_elf");
         }

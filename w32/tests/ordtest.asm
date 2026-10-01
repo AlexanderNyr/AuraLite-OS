@@ -68,6 +68,12 @@ start:
     xor edx, edx
     xor r8d, r8d
     xor r9d, r9d
+    ; arg5 (phico) is caller-allocated stack space: initialise it.  Our
+    ; implementation happens to reject cx<=0 before touching it, but real
+    ; comctl32 stores *phico = NULL on failure, and an uninitialised slot is
+    ; exactly what made w32a10_furniture page-fault on CI while passing
+    ; locally -- the stack held zero here and garbage there.
+    mov qword [rsp+0x20], 0
     call LoadIconWithScaleDown
     cmp eax, 80070057h
     jne fail

@@ -34,6 +34,17 @@ m12_len equ $ - m12
 section .text
 global winstart
 winstart:
+    ; 0x28 = 32-byte shadow space + one slot for WriteFile's 5th argument.
+    ; That slot ([rsp+0x20], lpOverlapped) is CALLER-allocated argument space
+    ; and was never initialised, so every call passed whatever stack garbage
+    ; happened to be there.  WriteFile's tail does
+    ;     if (ov) { ov->Internal = 0; ov->InternalHigh = n; }
+    ; which is a store through that value -- harmless on a host whose stack
+    ; happens to hold zero (this fixture passed locally for exactly that
+    ; reason) and a page fault on one that does not.  On GitHub's runner it
+    ; faulted after the first marker, every run: "Page Fault ... from USER
+    ; mode" at WriteFile+0x148, `movq $0x0,(%r15)`.  A callee may also reuse
+    ; the slot, so it is set before EVERY call, not once.
     sub rsp, 0x28
     mov ecx, STD_OUTPUT_HANDLE
     call GetStdHandle
@@ -42,61 +53,73 @@ winstart:
     lea rdx, [m1]
     mov r8d, m1_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m2]
     mov r8d, m2_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m3]
     mov r8d, m3_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m4]
     mov r8d, m4_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m5]
     mov r8d, m5_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m6]
     mov r8d, m6_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m7]
     mov r8d, m7_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m8]
     mov r8d, m8_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m9]
     mov r8d, m9_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m10]
     mov r8d, m10_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m11]
     mov r8d, m11_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov rcx, [g_stdout]
     lea rdx, [m12]
     mov r8d, m12_len
     lea r9, [written]
+    mov qword [rsp+0x20], 0   ; arg5 lpOverlapped = NULL
     call WriteFile
     mov ecx, 78
     call ExitProcess
