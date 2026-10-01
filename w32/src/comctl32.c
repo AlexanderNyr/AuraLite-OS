@@ -1175,6 +1175,42 @@ static void lv_fetch_callback_text(ctl_state_t *c, W32_HWND hwnd) {
     if (changed) lv_rebuild(c);
 }
 
+/* Single-selection: @row takes SELECTED|FOCUSED, everything else drops it,
+ * the surface follows and the parent is told exactly once.  Shared by the
+ * mouse and the keyboard so both report the same state transition. */
+static void lv_select_only(ctl_state_t *c, W32_HWND hwnd, int row) {
+    if (row < 0 || row >= c->u.lv.n_items) return;
+    uint32_t old = c->u.lv.state[row];
+    for (int i = 0; i < c->u.lv.n_items; i++)
+        c->u.lv.state[i] &= ~(uint32_t)(W32_LVIS_SELECTED | W32_LVIS_FOCUSED);
+    c->u.lv.state[row] |= W32_LVIS_SELECTED | W32_LVIS_FOCUSED;
+    c->u.lv.sel_mark = row;
+    ctl_surf_set_sel(&c->surf, row);
+    W32_NMLISTVIEW nm;
+    memset(&nm, 0, sizeof nm);
+    nm.iItem = row; nm.iSubItem = 0;
+    nm.uOldState = old;
+    nm.uNewState = c->u.lv.state[row];
+    nm.uChanged = W32_LVIF_STATE;
+    nm.lParam = c->u.lv.lparam[row];
+    notify_parent(hwnd, W32_LVN_ITEMCHANGED, &nm.hdr);
+}
+
+/* Fill the NMITEMACTIVATE that NM_DBLCLK / NM_RETURN / LVN_ITEMACTIVATE
+ * carry.  Re-filled before each send: notify_parent() overwrites the hdr and
+ * the parent is free to scribble on the rest. */
+static void lv_fill_activate(ctl_state_t *c, W32_NMITEMACTIVATE *ia,
+                             int row, int32_t x, int32_t y) {
+    memset(ia, 0, sizeof *ia);
+    ia->iItem = row;
+    ia->iSubItem = 0;
+    ia->uNewState = (row >= 0 && row < c->u.lv.n_items) ? c->u.lv.state[row] : 0;
+    ia->uChanged = W32_LVIF_STATE;
+    ia->ptAction.x = x;
+    ia->ptAction.y = y;
+    ia->lParam = (row >= 0 && row < c->u.lv.n_items) ? c->u.lv.lparam[row] : 0;
+}
+
 static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
                                      W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
@@ -1321,9 +1357,16 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
     case W32_LVM_GETNEXTITEM: {
         int start = (int)(int32_t)(uint32_t)wp;
         uint32_t flags = (uint32_t)lp;
+        /* LVNI_FOCUSED was silently ignored: asked for the focused item the
+         * control answered with the first item after @start regardless of
+         * state.  "Which row is the user on?" is normally asked with
+         * LVNI_FOCUSED (LVNI_SELECTED only finds a selection), so a shell
+         * driving the panel by keyboard got row 0 for every query. */
         for (int i = start + 1; i < c->u.lv.n_items; i++) {
             if ((flags & W32_LVNI_SELECTED) &&
                 !(c->u.lv.state[i] & W32_LVIS_SELECTED)) continue;
+            if ((flags & W32_LVNI_FOCUSED) &&
+                !(c->u.lv.state[i] & W32_LVIS_FOCUSED)) continue;
             return i;
         }
         return -1;
@@ -1406,32 +1449,72 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
     case W32_WM_LBUTTONDOWN: {
         int row = lp_y(lp) / COMCTL_ROW_H;
         if (row < 0 || row >= c->u.lv.n_items) return 0;
-        int prev = -1;
-        for (int i = 0; i < c->u.lv.n_items; i++)
-            if (c->u.lv.state[i] & W32_LVIS_SELECTED) prev = i;
         ctl_surf_dispatch(&c->surf, CTL_EVT_DOWN, lp_x(lp), lp_y(lp));
-        /* single-selection semantics: the clicked row takes the mark */
-        for (int i = 0; i < c->u.lv.n_items; i++)
-            c->u.lv.state[i] &= ~(uint32_t)W32_LVIS_SELECTED;
-        c->u.lv.state[row] |= W32_LVIS_SELECTED | W32_LVIS_FOCUSED;
-        c->u.lv.sel_mark = row;
-        ctl_surf_set_sel(&c->surf, row);
+        lv_select_only(c, hwnd, row);
         W32_NMLISTVIEW nm;
         memset(&nm, 0, sizeof nm);
         nm.iItem = row; nm.iSubItem = 0;
         nm.uNewState = c->u.lv.state[row];
-        nm.uOldState = prev >= 0 ? (uint32_t)W32_LVIS_SELECTED : 0;
         nm.uChanged = W32_LVIF_STATE;
         nm.lParam = c->u.lv.lparam[row];
-        notify_parent(hwnd, W32_LVN_ITEMCHANGED, &nm.hdr);
         notify_parent(hwnd, W32_NM_CLICK, &nm.hdr);
         return 0;
     }
     case W32_WM_LBUTTONDBLCLK: {
         int row = lp_y(lp) / COMCTL_ROW_H;
         if (row < 0 || row >= c->u.lv.n_items) return 0;
-        W32_NMHDR nm;
-        notify_parent(hwnd, W32_NM_DBLCLK, &nm);
+        /* A double-click OPENS the row.  Two things were wrong here: the row
+         * was never selected (so a parent answering "which item?" with
+         * LVM_GETNEXTITEM(LVNI_FOCUSED) got -1), and NM_DBLCLK was sent with
+         * an uninitialised bare NMHDR instead of the documented
+         * NMITEMACTIVATE -- a parent reading .iItem got stack garbage.
+         * Both matter to a file manager: that notification IS the navigate
+         * request.  Real comctl32 also follows NM_DBLCLK with
+         * LVN_ITEMACTIVATE, which is what most shells actually listen to. */
+        lv_select_only(c, hwnd, row);
+        W32_NMITEMACTIVATE ia;
+        lv_fill_activate(c, &ia, row, lp_x(lp), lp_y(lp));
+        notify_parent(hwnd, W32_NM_DBLCLK, &ia.hdr);
+        lv_fill_activate(c, &ia, row, lp_x(lp), lp_y(lp));
+        notify_parent(hwnd, W32_LVN_ITEMACTIVATE, &ia.hdr);
+        return 0;
+    }
+    case W32_WM_KEYDOWN: {
+        /* The listview had no keyboard at all: Enter and the arrows did
+         * nothing, so a focused panel could only be driven by the mouse and
+         * LVN_KEYDOWN/NM_RETURN were never sent.  Keyboard navigation is part
+         * of the control's documented contract and is how a file manager is
+         * driven without a pointer. */
+        uint32_t vk = (uint32_t)wp;
+        W32_NMLVKEYDOWN kd;
+        memset(&kd, 0, sizeof kd);
+        kd.wVKey = (uint16_t)vk;
+        notify_parent(hwnd, W32_LVN_KEYDOWN, &kd.hdr);
+        if (c->u.lv.n_items <= 0) return 0;
+        int cur = c->u.lv.sel_mark;
+        int to = cur;
+        switch (vk) {
+        case W32_VK_DOWN:  to = (cur < 0) ? 0 : cur + 1; break;
+        case W32_VK_UP:    to = (cur < 0) ? 0 : cur - 1; break;
+        case W32_VK_HOME:  to = 0; break;
+        case W32_VK_END:   to = c->u.lv.n_items - 1; break;
+        case W32_VK_RETURN: {
+            if (cur < 0 || cur >= c->u.lv.n_items) return 0;
+            W32_NMITEMACTIVATE ia;
+            lv_fill_activate(c, &ia, cur, 0, 0);
+            notify_parent(hwnd, W32_NM_RETURN, &ia.hdr);
+            lv_fill_activate(c, &ia, cur, 0, 0);
+            notify_parent(hwnd, W32_LVN_ITEMACTIVATE, &ia.hdr);
+            return 0;
+        }
+        default: return 0;
+        }
+        if (to < 0) to = 0;
+        if (to >= c->u.lv.n_items) to = c->u.lv.n_items - 1;
+        if (to != cur) {
+            lv_select_only(c, hwnd, to);
+            InvalidateRect(hwnd, 0, 0);
+        }
         return 0;
     }
     default:

@@ -509,6 +509,9 @@ int w32_module_file_bytes(void *h, const uint8_t **d, size_t *sz) {
 #define REC_NM 32
 static uint32_t rec_codes[REC_NM];
 static int rec_n;
+static int32_t rec_act_item;
+static int64_t rec_act_lparam;
+static uint32_t rec_act_vkey;
 static uint64_t rec_cmd_w;
 static W32_HWND rec_cmd_from;
 static int rec_cmd_seen;
@@ -518,6 +521,18 @@ static W32_LRESULT W32ABI a8_parent_proc(W32_HWND h, W32_UINT m,
     if (m == W32_WM_NOTIFY) {
         W32_NMHDR *nm = (W32_NMHDR *)(uintptr_t)l;
         if (nm && rec_n < REC_NM) rec_codes[rec_n++] = nm->code;
+        /* Read the payload the way a real parent does, so a garbage or
+         * wrongly-shaped notification is caught rather than merely counted. */
+        if (nm && (nm->code == W32_NM_DBLCLK || nm->code == W32_NM_RETURN ||
+                   nm->code == W32_LVN_ITEMACTIVATE)) {
+            W32_NMITEMACTIVATE *ia = (W32_NMITEMACTIVATE *)(uintptr_t)l;
+            rec_act_item = ia->iItem;
+            rec_act_lparam = ia->lParam;
+        }
+        if (nm && nm->code == W32_LVN_KEYDOWN) {
+            W32_NMLVKEYDOWN *kd = (W32_NMLVKEYDOWN *)(uintptr_t)l;
+            rec_act_vkey = kd->wVKey;
+        }
         return 0;
     }
     if (m == W32_WM_COMMAND) {
@@ -532,7 +547,9 @@ static int rec_index(uint32_t code) {
     for (int i = 0; i < rec_n; i++) if (rec_codes[i] == code) return i;
     return -1;
 }
-static void rec_reset(void) { rec_n = 0; rec_cmd_seen = 0; }
+static void rec_reset(void) { rec_n = 0; rec_cmd_seen = 0;
+                              rec_act_item = -999; rec_act_lparam = 0;
+                              rec_act_vkey = 0; }
 
 static void drain(void) {
     W32_MSG m;
@@ -839,6 +856,44 @@ int main(void) {
         ok(SendMessageW(lv, W32_LVM_GETNEXTITEM, (W32_WPARAM)-1,
                         W32_LVNI_SELECTED) == 1, "the selected one is item 1");
         ok(hw_find(3)->sel == 1, "the widget selection tracks state");
+
+        /* ---- the ACTIVATION contract (WR-2 navigate) -------------------
+         * A file manager opens a row on double-click or Enter and asks the
+         * notification "which row?".  Before this, NM_DBLCLK carried a bare,
+         * uninitialised NMHDR (so .iItem was stack garbage), the row was
+         * never selected, LVN_ITEMACTIVATE was never sent at all, and the
+         * control ignored the keyboard entirely.  Pin all four. */
+        rec_reset();
+        SendMessageW(lv, W32_WM_LBUTTONDBLCLK, 0,
+                     (W32_LPARAM)((2 * COMCTL_ROW_H) << 16 | 5));
+        ok(rec_index(W32_NM_DBLCLK) >= 0, "double-click sends NM_DBLCLK");
+        ok(rec_index(W32_LVN_ITEMACTIVATE) >= 0,
+           "double-click sends LVN_ITEMACTIVATE");
+        ok(rec_index(W32_NM_DBLCLK) < rec_index(W32_LVN_ITEMACTIVATE),
+           "NM_DBLCLK precedes LVN_ITEMACTIVATE (documented order)");
+        ok(rec_act_item == 2, "the activation names the clicked row");
+        ok(rec_act_lparam == 0x333, "the activation carries the row's lParam");
+        ok(SendMessageW(lv, W32_LVM_GETNEXTITEM, (W32_WPARAM)-1,
+                        W32_LVNI_FOCUSED) == 2,
+           "the double-clicked row is focused (LVM_GETNEXTITEM answers it)");
+
+        /* keyboard: arrows move the selection, Enter opens it */
+        rec_reset();
+        SendMessageW(lv, W32_WM_KEYDOWN, W32_VK_UP, 0);
+        ok(rec_index(W32_LVN_KEYDOWN) >= 0, "a key reaches LVN_KEYDOWN");
+        ok(rec_act_vkey == W32_VK_UP, "LVN_KEYDOWN reports the key");
+        ok(SendMessageW(lv, W32_LVM_GETNEXTITEM, (W32_WPARAM)-1,
+                        W32_LVNI_SELECTED) == 1, "VK_UP moved to row 1");
+        rec_reset();
+        SendMessageW(lv, W32_WM_KEYDOWN, W32_VK_HOME, 0);
+        ok(SendMessageW(lv, W32_LVM_GETNEXTITEM, (W32_WPARAM)-1,
+                        W32_LVNI_SELECTED) == 0, "VK_HOME moved to row 0");
+        rec_reset();
+        SendMessageW(lv, W32_WM_KEYDOWN, W32_VK_RETURN, 0);
+        ok(rec_index(W32_NM_RETURN) >= 0, "Enter sends NM_RETURN");
+        ok(rec_index(W32_LVN_ITEMACTIVATE) >= 0,
+           "Enter sends LVN_ITEMACTIVATE too");
+        ok(rec_act_item == 0, "Enter activates the focused row");
 
         W32_LVCOLUMNW c;
         memset(&c, 0, sizeof c);

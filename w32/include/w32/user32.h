@@ -343,6 +343,16 @@ void w32_user32_init(void);
 #define W32_VK_SPACE     0x20
 #define W32_VK_TAB       0x09
 #define W32_VK_BACK      0x08
+/* Navigation keys (documented virtual-key codes).  Needed by the listview's
+ * keyboard contract: arrows move the selection, Enter opens the row. */
+#define W32_VK_PRIOR     0x21
+#define W32_VK_NEXT      0x22
+#define W32_VK_END       0x23
+#define W32_VK_HOME      0x24
+#define W32_VK_LEFT      0x25
+#define W32_VK_UP        0x26
+#define W32_VK_RIGHT     0x27
+#define W32_VK_DOWN      0x28
 
 /* ---- System metrics (the ledger's set) -------------------------------- */
 #define W32_SM_CXSCREEN        0

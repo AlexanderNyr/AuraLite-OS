@@ -352,6 +352,40 @@ typedef struct {
     int64_t      lParam;
 } W32_NMLISTVIEW;
 
+/* NMITEMACTIVATE — what a listview sends with NM_DBLCLK / NM_RETURN /
+ * LVN_ITEMACTIVATE.  NM_DBLCLK used to be sent with a BARE NMHDR, so a parent
+ * that read hdr+iItem (every file manager does: it is how "which row did the
+ * user open?" is answered) got stack garbage for the row index.  Documented
+ * layout: NMHDR, then the NMLISTVIEW body, then ptAction and uKeyFlags. */
+typedef struct {
+    W32_NMHDR    hdr;
+    int32_t      iItem;
+    int32_t      iSubItem;
+    uint32_t     uNewState;
+    uint32_t     uOldState;
+    uint32_t     uChanged;
+    W32_POINT    ptAction;
+    int64_t      lParam;
+    uint32_t     uKeyFlags;    /* LVKF_* modifier state */
+} W32_NMITEMACTIVATE;
+
+/* NMLVKEYDOWN — LVN_KEYDOWN's payload.  Win32 declares it inside
+ * pshpack1.h/poppack.h, so wVKey and flags are byte-packed with no padding
+ * between hdr and wVKey; an unpacked struct would hand the app a wVKey read
+ * from the wrong offset. */
+#pragma pack(push, 1)
+typedef struct {
+    W32_NMHDR    hdr;
+    uint16_t     wVKey;
+    uint32_t     flags;
+} W32_NMLVKEYDOWN;
+#pragma pack(pop)
+
+/* LVN_ITEMACTIVATE: the row was opened (double-click or Enter).  LVN_KEYDOWN:
+ * a key reached the control.  Documented offsets from LVN_FIRST. */
+#define W32_LVN_ITEMACTIVATE (W32_LVN_FIRST - 14u)
+#define W32_LVN_KEYDOWN      (W32_LVN_FIRST - 55u)
+
 typedef struct {
     W32_POINT    pt;
     uint32_t     flags;        /* out: W32_LVHT_*               */
@@ -369,6 +403,7 @@ typedef struct {
 #define W32_LVIS_CUT            0x0004u
 #define W32_LVIS_DROPHILITED    0x0008u
 
+#define W32_LVNI_FOCUSED        0x0001u
 #define W32_LVNI_SELECTED       0x0002u
 
 #define W32_LVCF_FMT    0x0001u
