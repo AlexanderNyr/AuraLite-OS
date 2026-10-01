@@ -170,7 +170,16 @@ extern ImageList_EndDrag
 %define LVM_DELETEITEM    0x1008
 %define LVM_GETITEMCOUNT  0x1004
 %define LVM_GETITEMW      0x104B        ; LVM_FIRST+75
-%define LVM_SETITEMSTATE  0x102F        ; LVM_FIRST+47
+%define LVM_SETITEMSTATE  0x102B        ; LVM_FIRST+43, the documented
+                                        ; value.  This fixture used to say
+                                        ; 0x102F (LVM_FIRST+47) and agreed
+                                        ; with a header that had the two
+                                        ; transposed; WR-2 corrected the
+                                        ; header (+47 is SETITEMCOUNT, which
+                                        ; 7-Zip FM really sends) and the
+                                        ; fixture was left behind, so its
+                                        ; 'select item 1' became a no-op
+                                        ; SETITEMCOUNT and LISTVIEW failed.
 %define LVM_GETSELECTEDCOUNT 0x1032     ; LVM_FIRST+50
 %define LVM_GETNEXTITEM   0x100C
 %define LVM_INSERTCOLUMNA 0x101B        ; LVM_FIRST+27

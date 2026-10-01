@@ -439,7 +439,11 @@ int main(void) {
         uint8_t b;
         lseek(fd, 2, SEEK_SET);
         b = 'X';
-        write(fd, &b, 1);
+        /* The corruption must actually land, or the assertions below would
+         * "pass" against an intact hive and prove nothing.  Checked rather
+         * than cast to void -- and glibc marks write/read/truncate
+         * warn_unused_result, so ignoring them is -Werror on CI's gcc. */
+        ok(write(fd, &b, 1) == 1, "torn: magic byte overwritten");
         close(fd);
     }
     w32_advapi_reset_for_host_test();
@@ -455,8 +459,10 @@ int main(void) {
     LONG_OK(RegCloseKey(k));
     {
         struct stat st;
-        stat(scratch_hive, &st);
-        truncate(scratch_hive, st.st_size - 3);   /* bite the payload's tail */
+        ok(stat(scratch_hive, &st) == 0, "torn2: hive stat");
+        /* bite the payload's tail */
+        ok(truncate(scratch_hive, st.st_size - 3) == 0,
+           "torn2: payload truncated");
     }
     w32_advapi_reset_for_host_test();
     ok(RegOpenKeyExA(W32_HKEY_CURRENT_USER, "Keep", 0, 0, &k) ==
@@ -473,10 +479,10 @@ int main(void) {
         fstat(fd, &st);
         lseek(fd, st.st_size - 1, SEEK_SET);
         uint8_t b = 0;
-        read(fd, &b, 1);
+        ok(read(fd, &b, 1) == 1, "torn3: last byte read back");
         b ^= 0xFF;
         lseek(fd, st.st_size - 1, SEEK_SET);
-        write(fd, &b, 1);
+        ok(write(fd, &b, 1) == 1, "torn3: last byte flipped");
         close(fd);
     }
     w32_advapi_reset_for_host_test();

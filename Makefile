@@ -4391,6 +4391,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@echo "[unit] running tools/check_parity_claims.py"
 	@python3 tools/check_parity_claims.py || exit 1
 	@python3 tools/check_parity_claims.py --selftest || exit 1
+	@echo "[unit] running tools/check_w32_gates.py"
+	@python3 tools/check_w32_gates.py || exit 1
+	@python3 tools/check_w32_gates.py --selftest || exit 1
 	@echo "[unit] running tools/check_residue_claims.py"
 	@python3 tools/check_residue_claims.py || exit 1
 	@python3 tools/check_residue_claims.py --selftest || exit 1

@@ -1136,7 +1136,6 @@ static void lv_sync_surf_geometry(ctl_state_t *c, W32_HWND hwnd) {
     uint32_t cw = (uint32_t)(r.right - r.left);
     uint32_t ch = (uint32_t)(r.bottom - r.top);
     if (cw && ch && (w->w != cw || w->h != ch)) {
-        { static int g=0; if(g<6){ printf("w32: [lvgeom] w=%u->%u h=%u->%u\n", (unsigned)w->w, (unsigned)cw, (unsigned)w->h, (unsigned)ch); g++; } }
         w->w = cw;
         w->h = ch;
     }

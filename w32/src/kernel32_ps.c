@@ -78,6 +78,50 @@ static W32_WCHAR *ps_cmdline_w;
 static uint64_t ps_birth_ft;
 static W32_DWORD ps_encode_cookie;
 
+static void ps_dos_path(const char *host, char *dos, size_t cap);
+static const char *ps_temp_dir(void);
+
+/* A Win32 process is never handed an EMPTY environment: Windows guarantees a
+ * documented minimum (SystemRoot/windir, TEMP/TMP, PATH, OS, COMPUTERNAME,
+ * USERPROFILE), and apps read those without checking.  The POSIX side launches
+ * guest PEs with no environment at all, so GetEnvironmentStringsW() returned a
+ * block whose first character was NUL -- the W32A-2 "proc-blk-nonempty" gate,
+ * and a trap for any real application that expects %TEMP% to exist.
+ *
+ * Seeded, never overridden: a variable the launcher really did pass wins, so
+ * this cannot mask the environment a caller set up on purpose. */
+static void ps_env_seed(void) {
+    static const struct { const char *name, *value; } defaults[] = {
+        { "SystemRoot",       "C:\\Windows"            },
+        { "windir",           "C:\\Windows"            },
+        { "SystemDrive",      "C:"                     },
+        { "ComSpec",          "C:\\Windows\\cmd.exe"   },
+        { "PATHEXT",          ".COM;.EXE;.BAT;.CMD"    },
+        { "OS",               "Windows_NT"             },
+        { "PROCESSOR_ARCHITECTURE", "AMD64"            },
+        { "COMPUTERNAME",     "AURALITE"               },
+        { "USERNAME",         "auralite"               },
+        { "USERPROFILE",      "C:\\Users\\auralite"    },
+        { "HOMEDRIVE",        "C:"                     },
+        { "HOMEPATH",         "\\Users\\auralite"      },
+        { "APPDATA",          "C:\\Users\\auralite\\AppData\\Roaming" },
+        { "LOCALAPPDATA",     "C:\\Users\\auralite\\AppData\\Local"   },
+        { "PATH",             "C:\\Windows;C:\\Windows\\System32"      },
+    };
+    size_t i;
+    for (i = 0; i < sizeof defaults / sizeof defaults[0]; i++) {
+        if (!getenv(defaults[i].name))
+            setenv(defaults[i].name, defaults[i].value, 0);
+    }
+    /* TEMP/TMP follow the POSIX temp directory so the two views agree. */
+    if (!getenv("TEMP") || !getenv("TMP")) {
+        char dos[4100];
+        ps_dos_path(ps_temp_dir(), dos, sizeof dos);
+        if (!getenv("TEMP")) setenv("TEMP", dos, 0);
+        if (!getenv("TMP"))  setenv("TMP",  dos, 0);
+    }
+}
+
 void w32_ps_init(int argc, char **argv, char **envp) {
     struct timespec ts;
     size_t total = 0;
@@ -85,6 +129,7 @@ void w32_ps_init(int argc, char **argv, char **envp) {
     int i;
 
     (void)envp;                 /* environ is consulted live, not snapped */
+    ps_env_seed();
     ps_argc_saved = argc;
     ps_argv_saved = argv;
     if (!getcwd(ps_startup_cwd, sizeof(ps_startup_cwd))) {
@@ -1940,14 +1985,36 @@ W32ABI W32_BOOL SetCurrentDirectoryW(W32_LPCWSTR path) {
     return ok;
 }
 
+/* The POSIX temp directory.
+ *
+ * TEMP/TMP are the WIN32 view and therefore hold a DOS path ("C:\\tmp") --
+ * both because ps_env_seed() publishes one and because an application may
+ * SetEnvironmentVariable("TEMP", "C:\\foo") at any time.  Every caller here
+ * wants the host form, and one of them (ps_dos_path, via GetTempPath*) turns
+ * it straight back into a DOS path: feeding "C:\\tmp" through that produced
+ * "C:\\C:\\tmp", and every W32A-2 FIND check that builds a scratch directory
+ * under it failed.  Unwrap a drive-qualified value back to POSIX. */
 static const char *ps_temp_dir(void) {
+    static char host[4100];
     const char *t = getenv("TMPDIR");
-    if (!t)
+    if (!t || !t[0])
         t = getenv("TEMP");
-    if (!t)
+    if (!t || !t[0])
         t = getenv("TMP");
     if (!t || !t[0])
-        t = "/tmp";
+        return "/tmp";
+
+    if (((t[0] >= 'A' && t[0] <= 'Z') || (t[0] >= 'a' && t[0] <= 'z')) &&
+        t[1] == ':' && (t[2] == '\\' || t[2] == '/')) {
+        size_t i = 0;
+        const char *p = t + 2;          /* keep the leading separator */
+        while (p[i] && i + 1 < sizeof host) {
+            host[i] = (p[i] == '\\') ? '/' : p[i];
+            i++;
+        }
+        host[i] = '\0';
+        return host[0] ? host : "/tmp";
+    }
     return t;
 }
 

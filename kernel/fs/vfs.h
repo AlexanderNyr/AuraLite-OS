@@ -203,7 +203,14 @@ struct ofd {
     int          refcount;      /* # of FD slots referencing this OFD; free at 0 */
     struct wait_queue read_wq;  /* wait queue for select/poll read readiness */
     struct wait_queue write_wq; /* wait queue for select/poll write readiness */
+    /* The absolute path this description was opened with, so readlink() on
+     * /proc/self/fd/<N> can answer like Linux's.  Empty for descriptions with
+     * no name (pipe ends, socket ends): readlink then reports EINVAL, which is
+     * also what a caller must handle for an anonymous fd. */
+    char path[VFS_PATH_MAX];
 };
+
+const char *vfs_fd_path(int fd);
 
 struct wait_queue *vfs_get_read_wq(struct ofd *o);
 struct wait_queue *vfs_get_write_wq(struct ofd *o);

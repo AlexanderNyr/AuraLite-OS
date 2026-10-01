@@ -1,0 +1,42 @@
+# The Win32 gates that must PASS **non-vacuously** in CI, and the shard that
+# owns each one.  Format: "<shard> <case>", one per line.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Several W32 cases return 0 after printing "SKIP:" when their optional
+# mingw-w64 payloads or pinned binaries are absent, so a green runner does
+# NOT by itself prove the personality was exercised.  CI therefore asserts
+# that each case below both recorded a PASS *and* did not skip.
+#
+# That list used to be inlined in .github/workflows/integration.yml.  When
+# the single `w32` shard was split three ways (2026-09-30) the list had to be
+# split with it, and an inlined-and-split list has a failure mode the single
+# one did not: a gate dropped from one shard's arm is invisible, because every
+# shard still passes its own (now shorter) list.  Keeping the mapping in ONE
+# file makes the total checkable -- `make test-unit` runs
+# tools/check_w32_gates.py, which pins the count at 16 and cross-checks every
+# line against run_all.sh's ALL_CASES and its shard partition.
+#
+# Cases deliberately NOT listed: the ones that are allowed to skip on a
+# checkout without pinned third-party binaries (test_wr2_7zip_launch,
+# test_wr2_7zip_live) and the phase subsets that the owning phase gate
+# already covers (the w32a11_* family, w32a12..a16, wr1).
+
+w32-core test_w32_pe_loader
+w32-core test_w32_kernel32
+w32-core test_w32_crt
+w32-core test_w32_loadlibrary
+w32-core test_w32_integration
+w32-core test_w32_a1_loader
+w32-core test_w32_a2_kernel32
+w32-core test_w32_a3
+w32-core test_w32_a4_unwind
+w32-core test_w32a9_registry
+
+w32-gui test_w32_user32
+w32-gui test_w32a5_user32win
+w32-gui test_w32a6_user32dlg
+w32-gui test_w32a7_gdi
+w32-gui test_w32a8_comctl32
+
+w32-apps test_w32a10_furniture

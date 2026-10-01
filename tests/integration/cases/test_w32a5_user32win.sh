@@ -2,7 +2,7 @@
 # test_w32a5_user32win.sh — W32APP_PLAN.md phase W32A-5 gate.
 #
 # The phase's claim, in guest: the USER32 window/message core is real.  One
-# NASM PE (w32a5_win.asm, 62 imports through w32run) walks it end to end and
+# NASM PE (w32a5_win.asm, 63 imports through w32run) walks it end to end and
 # prints one marker per section; the marker appears only after every check in
 # that section passed, and a failure prints A5-<SECTION>-FAIL and exits 79.
 #
@@ -102,8 +102,11 @@ il_send "exit"
 IL_SELFTEST=fast il_run_qemu "$LOG1" 180 "${DISK_ARGS[@]}"
 
 # --- the image loaded and its imports were bound --------------------------------
-il_assert_grep "$LOG1" "w32run: .*w32a5_win\.exe mapped at 0x[0-9a-f]+, 62 import\(s\) bound" \
-    "all 62 KERNEL32/USER32/GDI32 imports resolved"
+# 63 since the CW-1 fix: the CREATE section now also drives GetParent to
+# prove a WS_CHILD is really linked to its parent (it was 62 while the
+# fixture still expected WS_CHILD to be refused outright).
+il_assert_grep "$LOG1" "w32run: .*w32a5_win\.exe mapped at 0x[0-9a-f]+, 63 import\(s\) bound" \
+    "all 63 KERNEL32/USER32/GDI32 imports resolved"
 
 # --- one marker per section -----------------------------------------------------
 for m in CLS CREATE GEOM SUBCLASS TEXT PAINT SCROLL ZORDER METRIC MONITOR INPUT THREAD; do

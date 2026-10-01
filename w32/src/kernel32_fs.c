@@ -2865,7 +2865,12 @@ W32_HANDLE w32_fs_create(const char *path, W32_DWORD access, W32_DWORD share,
     default:                    /* OPEN_EXISTING */
         break;
     }
-    if (disposition == 2u || disposition == 4u) {
+    /* CREATE_ALWAYS, OPEN_ALWAYS and TRUNCATE_EXISTING all report
+     * ERROR_ALREADY_EXISTS on a file that was already there -- for
+     * TRUNCATE_EXISTING that is every successful call, since the
+     * disposition requires the file to exist.  Only the first two were
+     * probed, so the W32A-2 "map-truncate-code" gate saw ERROR_SUCCESS. */
+    if (disposition == 2u || disposition == 4u || disposition == 5u) {
         struct stat probe;
         existed = (lstat(host, &probe) == 0);
     }
@@ -2928,7 +2933,7 @@ W32_HANDLE w32_fs_create(const char *path, W32_DWORD access, W32_DWORD share,
         return fs_fail_h(W32_ERROR_TOO_MANY_OPEN_FILES);
     }
     fs_share_add(FS_ST_INO(st), access, share, fd);
-    if ((disposition == 2u || disposition == 4u) && existed)
+    if ((disposition == 2u || disposition == 4u || disposition == 5u) && existed)
         w32_set_last_error(W32_ERROR_ALREADY_EXISTS);
     else
         w32_set_last_error(W32_ERROR_SUCCESS);

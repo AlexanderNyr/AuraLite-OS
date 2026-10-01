@@ -25,10 +25,19 @@ DISK_C0="$BUILD/ahci-matrix-c0.img"
 DISK_C1="$BUILD/ahci-matrix-c1.img"
 DISK_D="$BUILD/ahci-matrix-d.img"
 rm -f "$DISK_A" "$DISK_C0" "$DISK_C1" "$DISK_D"
-il_make_disk "$DISK_A"  16 "AHCIMATA"
-il_make_disk "$DISK_C0" 16 "AHCIMC00"
-il_make_disk "$DISK_C1"  8 "AHCIMC01"
-il_make_disk "$DISK_D"  16 "AHCIMQ35"
+# The magic in sector 0 is not decoration: ahci.c only runs its DMA
+# WRITE verification on a disk it is allowed to scribble on, and the marker
+# it looks for is exactly "AURALHCI" + the 0x55AA signature il_make_disk
+# already writes (drivers/ahci/ahci.c, "no scratch marker").  These lanes
+# used per-lane magics ("AHCIMATA" ...), which no code reads, so lane A's
+# disk looked like an unknown table-less disk: the driver skipped the write
+# verify, never printed "PASS: SATA read/write DMA", and lane A's assertion
+# below could not pass on any run.  Every other disk-bearing suite
+# (btrfs/ext4/exfat/...) already uses the marker; these now match.
+il_make_disk "$DISK_A"  16 "AURALHCI"
+il_make_disk "$DISK_C0" 16 "AURALHCI"
+il_make_disk "$DISK_C1"  8 "AURALHCI"
+il_make_disk "$DISK_D"  16 "AURALHCI"
 
 # ----------------------------------------------------------------------------
 # Lane A — baseline: single controller, disk at port 0.

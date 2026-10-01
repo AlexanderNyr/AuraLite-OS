@@ -234,9 +234,16 @@ static void ofd_release_backing(struct vnode *vn) {
 }
 
 /* Allocate a new OFD referring to @vn with refcount 1. */
-static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock) {
+static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock,
+                             const char *path) {
     struct ofd *o = slab_alloc(ofd_cache);
     if (!o) return NULL;
+    o->path[0] = '\0';
+    if (path && path[0]) {
+        size_t i = 0;
+        while (path[i] && i + 1 < sizeof o->path) { o->path[i] = path[i]; i++; }
+        o->path[i] = '\0';
+    }
     o->vn          = vn;
     o->pos         = append ? vn->size : 0;
     o->access_mode = acc;
@@ -864,11 +871,19 @@ int vfs_open(const char *path, int flags, int mode) {
     if (slot < 0) return -EMFILE;             /* per-process FD table is full */
 
     struct ofd *o = ofd_alloc(vn, acc, (flags & O_APPEND) ? 1 : 0,
-                              (flags & O_NONBLOCK) ? 1 : 0);
+                              (flags & O_NONBLOCK) ? 1 : 0, path);
     if (!o) return -ENOMEM;
     fd_table[slot] = o;
     current_cloexec()[slot] = (flags & O_CLOEXEC) ? 1 : 0;
     return slot;
+}
+
+/* The path an fd was opened with ("" when the description has no name, e.g.
+ * a pipe end).  Used by readlink("/proc/self/fd/<N>"). */
+const char *vfs_fd_path(int fd) {
+    struct ofd **t = current_fd_table();
+    if (!t || fd < 0 || fd >= VFS_MAX_FDS || !t[fd]) return NULL;
+    return t[fd]->path;
 }
 
 /* Resolve a fd to its OFD, or NULL if the fd is not open. */
@@ -1105,10 +1120,17 @@ int vfs_pipe2(int out_fds[2], int flags) {
         memset(wvn, 0, sizeof(*wvn));
         strncpy(rvn->name, "pipe-r", VFS_PATH_MAX - 1);
         strncpy(wvn->name, "pipe-w", VFS_PATH_MAX - 1);
-        rvn->type = VFS_TYPE_CHARDEV; rvn->ops = &pipe_read_ops;  rvn->fs_data = p;
-        wvn->type = VFS_TYPE_CHARDEV; wvn->ops = &pipe_write_ops; wvn->fs_data = p;
-        ro = ofd_alloc(rvn, O_RDONLY, 0, nb);
-        wo = ofd_alloc(wvn, O_WRONLY, 0, nb);
+        /* A pipe end is a FIFO, not a character device: POSIX requires
+         * S_ISFIFO(fstat(fd).st_mode) for both ends of pipe(), and the Win32
+         * personality's GetFileType() maps exactly that to FILE_TYPE_PIPE
+         * (it was reporting FILE_TYPE_CHAR -- the W32A-2 "pipe-type" gate).
+         * Nothing keys off the old CHARDEV spelling: vnode_is_pipe_like()
+         * already accepts VFS_TYPE_FIFO, and the select/poll readiness
+         * helpers dispatch on ->ops, not on ->type. */
+        rvn->type = VFS_TYPE_FIFO; rvn->ops = &pipe_read_ops;  rvn->fs_data = p;
+        wvn->type = VFS_TYPE_FIFO; wvn->ops = &pipe_write_ops; wvn->fs_data = p;
+        ro = ofd_alloc(rvn, O_RDONLY, 0, nb, NULL);
+        wo = ofd_alloc(wvn, O_WRONLY, 0, nb, NULL);
     }
     if (!rvn || !wvn || !ro || !wo) {
         if (ro) slab_free(ofd_cache, ro);
@@ -1334,6 +1356,15 @@ int64_t vfs_read_at_phys(struct ofd *o, uint64_t offset, uint64_t phys, uint64_t
 }
 
 int vfs_mkdir(const char *path, uint32_t mode) {
+    /* An existing name is EEXIST, as POSIX says and as vfs_mkfifo()/
+     * vfs_symlink()/vfs_link() in this file already spell it.  Without this
+     * the request went down to the backing fs, and for a MOUNT POINT ("/tmp"
+     * on the tmpfs mounted there) find_mount() handed the fs an empty
+     * relative path, which it rejected as -EINVAL.  The Win32 personality
+     * then reported ERROR_INVALID_PARAMETER where CreateDirectoryW must
+     * report ERROR_ALREADY_EXISTS -- the W32A-2 "tmp-exists" gate. */
+    if (resolve_path(path) || vfs_symlink_vnode(path)) return -EEXIST;
+
     struct vnode *pvn = resolve_parent_vnode(path);
     int err = vfs_check_perm(pvn, 2 /* W_OK */, sched_current());
     if (err != 0) return err;

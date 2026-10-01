@@ -965,6 +965,16 @@ struct spawn_payload {
 };
 
 /* Thread function for a spawned process. */
+/* Exit statuses for a spawn that never ran a single instruction.  They used
+ * to be thread_exit(), i.e. status 0 -- so a program that was missing, was a
+ * directory, or could not get its image buffer reported SUCCESS to the
+ * waiting shell.  That is how tools/selfhost/sh8_closure.sh came to print
+ * "loop 2 PASS" after every program in the loop had failed to start: the
+ * script checks `run` results, and every result said 0.  POSIX shell
+ * conventions: 127 = not found, 126 = found but could not be executed. */
+#define SPAWN_EXIT_NOT_FOUND   127
+#define SPAWN_EXIT_NOEXEC      126
+
 static void spawn_thread(void *arg) {
     struct spawn_payload *pl = (struct spawn_payload *)arg;
     char *path = pl->path;
@@ -988,7 +998,7 @@ static void spawn_thread(void *arg) {
         memset(path, 0, strlen(path) + 1);
         kfree(path);
         if (ea) { exec_args_free(ea); kfree(ea); }
-        thread_exit();
+        thread_exit_with_code(SPAWN_EXIT_NOT_FOUND);
     }
 
     struct vnode *vn = vfs_get_vnode(fd);
@@ -1006,7 +1016,7 @@ static void spawn_thread(void *arg) {
             memset(path, 0, strlen(path) + 1);
             kfree(path);
             if (ea) { exec_args_free(ea); kfree(ea); }
-            thread_exit();
+            thread_exit_with_code(SPAWN_EXIT_NOEXEC);
         }
     }
 
@@ -1026,25 +1036,56 @@ static void spawn_thread(void *arg) {
      * plus headroom for -g debug info. */
     #define SPAWN_MAX_IMAGE (16 * 1024 * 1024)
 
-    uint8_t *buf = kmalloc(SPAWN_MAX_IMAGE);
+    /* Allocate what the FILE needs, not the ceiling.
+     *
+     * This used to kmalloc(SPAWN_MAX_IMAGE) for every exec -- a 16 MiB
+     * CONTIGUOUS kernel-heap block to load a 40 KiB program.  The kernel heap
+     * region is 64 MiB, so after a long-running session has committed and
+     * fragmented it, no 16 MiB run remains even though tens of MiB are free:
+     * SH8's second assembly loop died with "used 10312 KiB, free 42947 KiB"
+     * right next to "cannot allocate 16384 KiB".  Every program in that loop
+     * (tcc2, mkinitrd, mkiso, sha256sum) failed to start for want of a buffer
+     * 400x bigger than any of them.
+     *
+     * The limit itself is unchanged and still enforced below; only the
+     * REQUEST now tracks the executable.  +1 byte so the "did anything
+     * remain?" probe after the read loop still has somewhere to land. */
+    uint64_t img_cap = SPAWN_MAX_IMAGE;
+    if (vn && vn->size > 0) {
+        if (vn->size > (uint64_t)SPAWN_MAX_IMAGE) {
+            kprintf("[spawn] '%s' is larger than the %d KB executable limit\n",
+                    path, SPAWN_MAX_IMAGE / 1024);
+            vfs_close(fd);
+            memset(path, 0, strlen(path) + 1);
+            kfree(path);
+            if (ea) { exec_args_free(ea); kfree(ea); }
+            thread_exit_with_code(SPAWN_EXIT_NOEXEC);
+        }
+        img_cap = vn->size + 1;
+    }
+
+    uint8_t *buf = kmalloc(img_cap);
     if (!buf) {
         /* SELFHOST SH1: this used to be a SILENT thread_exit() -- the
          * second `run <prog>` of a session died with no diagnostic and
          * "1 frames" at reap.  Diagnose, don't vanish. */
-        kprintf("[proc] spawn: '%s' OOM: cannot allocate %d KiB image "
-                "buffer (kheap exhausted?)\n",
-                path, SPAWN_MAX_IMAGE / 1024);
+        /* Say how big the request was AND how much is free: "exhausted?"
+         * was a guess, and a wrong one -- the heap had 42 MiB free and
+         * simply no contiguous run that large (see kheap_dump below). */
+        kprintf("[proc] spawn: '%s' OOM: cannot allocate %llu KiB image "
+                "buffer (no contiguous run that large?)\n",
+                path, (unsigned long long)(img_cap / 1024));
         kheap_dump();
         vfs_close(fd);
         memset(path, 0, strlen(path) + 1);
         kfree(path);
         if (ea) { exec_args_free(ea); kfree(ea); }
-        thread_exit();
+        thread_exit_with_code(SPAWN_EXIT_NOEXEC);
     }
     int64_t total = 0;
     int64_t n;
-    while (total < SPAWN_MAX_IMAGE &&
-           (n = vfs_read(fd, buf + total, SPAWN_MAX_IMAGE - total)) > 0) {
+    while ((uint64_t)total < img_cap &&
+           (n = vfs_read(fd, buf + total, img_cap - (uint64_t)total)) > 0) {
         total += n;
     }
 
@@ -1052,7 +1093,7 @@ static void spawn_thread(void *arg) {
      * fit, and loading what was read would produce a mystifying failure
      * somewhere inside the ELF parser. */
     uint8_t probe;
-    int truncated = (total >= SPAWN_MAX_IMAGE) &&
+    int truncated = ((uint64_t)total >= img_cap) &&
                     (vfs_read(fd, &probe, 1) > 0);
     vfs_close(fd);
 
@@ -1063,7 +1104,7 @@ static void spawn_thread(void *arg) {
         memset(path, 0, strlen(path) + 1);
         kfree(path);
         if (ea) { exec_args_free(ea); kfree(ea); }
-        thread_exit();
+        thread_exit_with_code(SPAWN_EXIT_NOEXEC);
     }
     /* `path` becomes AT_EXECFN: load_and_jump_args copies it onto the new
      * process's initial stack and frees it.  (ea is also consumed there.)

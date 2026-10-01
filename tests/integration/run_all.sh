@@ -317,7 +317,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 # refuses to run rather than silently dropping out of CI — the
 # AUDIT_A0 disease (27 cases on disk that CI never ran) does not get a
 # second chapter.
-GROUP_NAMES="core posix fs usb net gui w32 selfhost-script selfhost-closure selfhost-img fsfull ota lx"
+GROUP_NAMES="core posix fs usb net gui w32-core w32-gui w32-apps selfhost-script selfhost-closure selfhost-img fsfull ota lx"
 group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
@@ -343,16 +343,39 @@ group_re() {
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
         gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
-        # Keep the whole Win32 personality in its own CI job, including the
-        # compiler-built PE integration case and two-digit W32A-10 phase.
-        # W32RUN_PLAN.md's `wr<N>_` cases (WR-1 shell namespace, WR-2 7-Zip
-        # launch/live) belong to the SAME personality and so to the same
-        # shard: they are the real-application half of what w32a<N>_ tests
-        # with fixtures.  Missing this arm is what broke the partition when
-        # WR0/WR1 landed -- every shard aborted with exit 2, including the
-        # ones that have nothing to do with Win32, because check_groups()
-        # runs on EVERY invocation by design.
-        w32)   echo '^test_(w32_[a-z0-9_]+|w32a[0-9]+_[a-z0-9_]+|wr[0-9]+_[a-z0-9_]+)$' ;;
+        # ---- the Win32 personality: THREE shards (2026-09-30) ----
+        #
+        # It used to be one `w32` group and it had become the critical path
+        # of the whole workflow: 86 min of wall clock against 46 for the
+        # next-slowest shard (selfhost-closure), i.e. the Win32 job alone
+        # decided when CI finished.  The personality is also the fastest
+        # growing part of the tree (W32-0..8, then W32A-1..18, now WR-1..2),
+        # so a single shard was going to keep getting worse.
+        #
+        # The split is thematic AND balanced against the measured per-case
+        # QEMU times from run 99481047736 (the numbers in comments are that
+        # run's seconds, so a future rebalance has something to read):
+        #
+        #   w32-core ~30 min  the loader, the ABI, KERNEL32/ADVAPI32, the CRT
+        #                     and the unwinder -- the platform under the GUI
+        #   w32-gui  ~29 min  USER32 windows/dialogs, GDI32, COMCTL32, themes
+        #   w32-apps ~23 min  shell furniture, OLE/drag-drop, WinSock and the
+        #                     real-application ledgers (PuTTY/7-Zip/Notepad++)
+        #
+        # Each case still matches EXACTLY ONE group -- check_groups() below
+        # enforces that on every invocation, which is what caught the WR0/WR1
+        # cases when they matched none.  The lists are explicit rather than
+        # pattern-based on purpose: a new Win32 case must be placed by a
+        # human into the shard whose budget it spends, and until it is, CI
+        # refuses to run instead of silently dropping it.
+        w32-core) echo '^test_(w32_pe_loader|w32_kernel32|w32_crt|w32_loadlibrary|w32_integration|w32_a1_loader|w32_a2_kernel32|w32_a3|w32_a4_unwind|w32a9_registry|w32a13_msvcrt)$' ;;
+        # 71+70+120+90+100+150+200+150+234+540+90 = 1815 s
+        w32-gui)  echo '^test_(w32_user32|w32a5_user32win|w32a6_user32dlg|w32a7_gdi|w32a8_comctl32|w32a11_theme)$' ;;
+        # 102+497+412+380+240+80 = 1711 s
+        w32-apps) echo '^test_(w32a10_furniture|w32a11_core_subset|w32a11_dragdrop|w32a11_tokens|w32a11_ole|w32a12_winsock|w32a14_putty_fixture|w32a15_7zip_fixture|w32a16_npp_fixture|wr1_shell_namespace|wr2_7zip_launch|wr2_7zip_live)$' ;;
+        # 180+180+135+105+301+90+90+90+90+90+0+0 = 1351 s (wr2 skips without
+        # the pinned binaries; with WR2_7ZIP_DIR staged this is the shard
+        # that grows, which is why it starts as the lightest of the three)
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
         # slowest (the SH8 closure, ~23 min in the guest plus the idle budget)
         # does not serialize behind the scripting cases.  selfhost-script = the

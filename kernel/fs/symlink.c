@@ -110,6 +110,36 @@ int vfs_symlink(const char *target, const char *linkpath) {
 int vfs_readlink(const char *path, char *buf, size_t bufsiz) {
     if (!path || !buf) return -EFAULT;
     if (bufsiz == 0) return -EINVAL;
+
+    /* /proc/self/fd/<N> answers with the path the descriptor was opened
+     * with, as on Linux.  procfs resolves that name to the fd's own vnode
+     * (so open/read/stat work through it), but that made it a regular file,
+     * and readlink() on a regular file is EINVAL -- which is exactly what
+     * GetFinalPathNameByHandleW got, and why the W32A-2 "path-final" gate
+     * failed.  The name is kept per open file description (struct ofd), so
+     * dup()ed and inherited descriptors answer identically. */
+    {
+        const char *tail = NULL;
+        if (strncmp(path, "/proc/self/fd/", 14) == 0) tail = path + 14;
+        if (tail && *tail) {
+            int fd = 0;
+            const char *q = tail;
+            for (; *q; q++) {
+                if (*q < '0' || *q > '9') { fd = -1; break; }
+                fd = fd * 10 + (*q - '0');
+                if (fd >= VFS_MAX_FDS) { fd = -1; break; }
+            }
+            if (fd >= 0) {
+                const char *fp = vfs_fd_path(fd);
+                if (!fp || !fp[0]) return -EINVAL;   /* anonymous (pipe end) */
+                size_t len = strlen(fp);
+                if (len > bufsiz) len = bufsiz;
+                memcpy(buf, fp, len);
+                return (int)len;
+            }
+        }
+    }
+
     int idx = find_symlink(path);
     if (idx < 0) return -EINVAL;
     size_t len = strlen(symlinks[idx].target);

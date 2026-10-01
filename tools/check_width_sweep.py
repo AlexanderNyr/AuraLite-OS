@@ -59,7 +59,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 397   # was 394; CW_COMPOSITOR_PLAN phase CW-1 added 3
+BASELINE_UINT64_CASTS = 401   # was 397; the SH8 spawn-buffer fix added 4 in
+                              # kernel/proc/process.c.  process_spawn() used
+                              # to kmalloc a fixed 16 MiB and compare against
+                              # the SPAWN_MAX_IMAGE macro; it now sizes the
+                              # buffer from the executable (img_cap, uint64_t)
+                              # and the read loop compares a signed int64_t
+                              # byte count against it.  These are BYTE COUNTS
+                              # and a size_t-class bound, not addresses --
+                              # paddr_t/uintptr_t would both be wrong here.
+                              # Pin moves, code stays.
+                              # was 394; CW_COMPOSITOR_PLAN phase CW-1 added 3
                               # in kernel/gui/gui_syscalls.c -- the GUI_OP_
                               # SET_PARENT arm (two require_owner refusals
                               # returning (uint64_t)-1 and the result of

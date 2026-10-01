@@ -22,6 +22,18 @@ static uint8_t cmos_read(uint8_t reg) {
     return inb(CMOS_DATA);
 }
 
+/* Put the index register back to a benign selector with NMI ENABLED.
+ *
+ * cmos_read() sets bit 7 of port 0x70, which is the NMI-disable bit, and
+ * leaves it set.  Nothing in this kernel used to touch the CMOS at boot, so
+ * NMI had never been switched off; doing it just before pit_init() unmasks
+ * IRQ0 wedged the timer (the 1-second self-test spun forever waiting for a
+ * tick that never arrived).  Leave the chip the way we found it. */
+static void cmos_restore_nmi(void) {
+    outb(CMOS_CMD, 0x00);
+    (void)inb(CMOS_DATA);   /* complete the index/data cycle */
+}
+
 static int cmos_updating(void) {
     return cmos_read(0x0A) & 0x80;
 }
@@ -47,6 +59,8 @@ static uint64_t cmos_read_epoch(void) {
     int mo = bcd2bin(cmos_read(0x08));
     int y  = bcd2bin(cmos_read(0x09)) + 2000;
 
+    cmos_restore_nmi();
+
     if (s < 0 || s > 59 || m < 0 || m > 59 || h < 0 || h > 23 ||
         d < 1 || d > 31 || mo < 1 || mo > 12 || y < 1970 || y > 2099) {
         return 0;
@@ -69,11 +83,27 @@ static uint64_t cmos_read_epoch(void) {
 }
 
 void time_init_cmos(void) {
-    /* Keep boot robust under virtual RTC implementations that can stall on
-     * CMOS port reads.  Realtime starts at 0 and advances from PIT ticks; a
-     * future RTC driver can replace this with asynchronous/probed CMOS reads. */
-    kernel_boot_epoch_sec = 0;
-    kprintf("[time] CMOS RTC epoch unavailable; using monotonic epoch 0\n");
+    /* cmos_read_epoch() is the "future RTC driver" this function used to
+     * promise: it already bounds its update-in-progress wait (1000 relaxes,
+     * then a best-effort snapshot) and already validates every field,
+     * returning 0 when the RTC answers nonsense.  The stall this function
+     * guarded against therefore cannot happen, and the guard was costing the
+     * whole system its wall clock -- the epoch stayed 0, so every consumer
+     * reported 1970.  That is what failed the W32A-2 TIME fixture:
+     * "time-year" and "time-local-year" require 2020 <= year < 2100, and
+     * "time-dos-back" could not round-trip because the DOS date epoch is
+     * 1980, so a 1970 FILETIME has no DOS representation to come back from.
+     *
+     * Epoch 0 survives as the fallback for exactly the case it was written
+     * for: an RTC that answers with nonsense.  Realtime still ADVANCES from
+     * PIT ticks either way; this only establishes where it starts. */
+    kernel_boot_epoch_sec = cmos_read_epoch();
+    if (kernel_boot_epoch_sec == 0) {
+        kprintf("[time] CMOS RTC epoch unavailable; using monotonic epoch 0\n");
+    } else {
+        kprintf("[time] CMOS RTC epoch %llu (UTC)\n",
+                (unsigned long long)kernel_boot_epoch_sec);
+    }
 }
 
 /* ---- clock helpers ---- */

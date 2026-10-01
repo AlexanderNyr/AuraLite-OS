@@ -35,6 +35,7 @@ extern CallWindowProcW
 extern GetClassNameW
 extern IsWindow
 extern DestroyWindow
+extern GetParent
 extern GetWindowRect
 extern GetClientRect
 extern ClientToScreen
@@ -268,6 +269,7 @@ section .bss
 written:     resq 1
 stdout_h:    resq 1
 hwnd:        resq 1
+hwnd_kid:    resq 1
 work_hwnd:   resq 1
 work_tid:    resq 1
 work_proc_tid: resq 1
@@ -595,7 +597,13 @@ start:
     call IsWindow
     test eax, eax
     jz   .f_create
-    ; WS_CHILD: refused by name, because there is no child compositing
+    ; WS_CHILD, CW_COMPOSITOR_PLAN CW-1: the compositor embeds children for
+    ; real now, so a child is no longer refused wholesale.  What is still
+    ; refused is a PARENTLESS child (hWndParent = 0 below): it has nothing to
+    ; be clipped to, and user32_win.c names that ERROR_INVALID_PARAMETER.
+    ; Before CW-1 this arm expected ERROR_CALL_NOT_IMPLEMENTED ("there is no
+    ; child compositing") -- that expectation went stale with the compositor
+    ; change and is what made this fixture exit 79 at A5-CREATE.
     xor  ecx, ecx
     lea  rdx, [cls_w]
     lea  r8,  [title_w]
@@ -612,8 +620,36 @@ start:
     test rax, rax
     jnz  .f_create
     call GetLastError
-    cmp  eax, ERR_CALL_NOT_IMPLEMENTED
+    cmp  eax, ERR_INVALID_PARAMETER
     jne  .f_create
+    ; ...and a child WITH a parent is admitted and linked (the other half of
+    ; the CW-1 contract; destroyed again so the later sections still see one
+    ; top-level window).
+    xor  ecx, ecx
+    lea  rdx, [cls_w]
+    lea  r8,  [title_w]
+    mov  r9d, WS_CHILD
+    mov  dword [rsp+20h], 4
+    mov  dword [rsp+28h], 5
+    mov  dword [rsp+30h], 40
+    mov  dword [rsp+38h], 30
+    mov  rax, [hwnd]
+    mov  qword [rsp+40h], rax
+    mov  qword [rsp+48h], 0
+    mov  qword [rsp+50h], 0
+    mov  qword [rsp+58h], 0
+    call CreateWindowExW
+    test rax, rax
+    jz   .f_create
+    mov  [hwnd_kid], rax
+    mov  rcx, [hwnd_kid]
+    call GetParent
+    cmp  rax, [hwnd]
+    jne  .f_create
+    mov  rcx, [hwnd_kid]
+    call DestroyWindow
+    test eax, eax
+    jz   .f_create
     ; a style bit with no compositor meaning is refused, not ignored
     xor  ecx, ecx
     lea  rdx, [cls_w]
