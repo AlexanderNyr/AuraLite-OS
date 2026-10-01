@@ -50,20 +50,31 @@
 #define MAP_ANONYMOUS 0x20
 #endif
 
+/* Every diagnostic this loader prints goes to STDERR, never stdout.
+ *
+ * stdout belongs to the PROGRAM w32run is about to run.  These lines used to
+ * go to stdout, which is invisible on a console (both streams land on the
+ * same serial port) but corrupts any child whose stdout was redirected: the
+ * ~75-byte "w32run: <path> mapped at ..., N import(s) bound" banner was
+ * prepended to the child's own output.  That is the W32A-2 "proc-child-output"
+ * gate -- the fixture redirects a child's stdout to a file, the child wrote
+ * its marker correctly (17 bytes, at offset 75), and the parent's 63-byte
+ * read saw nothing but the loader's banner.  A real application redirected
+ * with CreateProcess + STARTF_USESTDHANDLES had the same corruption. */
 static void die(const char *what) {
-    printf("w32run: %s\n", what);
+    fprintf(stderr, "w32run: %s\n", what);
     exit(1);
 }
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        printf("usage: w32run <program.exe> [args...]\n");
+        fprintf(stderr, "usage: w32run <program.exe> [args...]\n");
         return 2;
     }
     const char *path = argv[1];
 
     int fd = open(path, O_RDONLY, 0);
-    if (fd < 0) { printf("w32run: cannot open %s\n", path); return 1; }
+    if (fd < 0) { fprintf(stderr, "w32run: cannot open %s\n", path); return 1; }
 
     /* Official pinned apps exceed 512 KiB. Never parse a silently
      * truncated PE when the bounded guest image buffer is exhausted. */
@@ -86,11 +97,11 @@ int main(int argc, char **argv) {
 
     pe_image_t img;
     int rc = pe_parse(buf, (size_t)total, &img);
-    if (rc != PE_OK) { printf("w32run: %s\n", pe_strerror(rc)); return 1; }
+    if (rc != PE_OK) { fprintf(stderr, "w32run: %s\n", pe_strerror(rc)); return 1; }
 
     rc = pe_check_loadable(&img);
     if (rc != PE_OK) {
-        printf("w32run: refused: %s (subsystem=%u)\n",
+        fprintf(stderr, "w32run: refused: %s (subsystem=%u)\n",
                pe_strerror(rc), img.subsystem);
         return 1;
     }
@@ -102,11 +113,11 @@ int main(int argc, char **argv) {
     {
         w32_manifest_t mf;
         if (w32_manifest_check(buf, (size_t)total, &mf) != 0) {
-            printf("w32run: refused: malformed application manifest\n");
+            fprintf(stderr, "w32run: refused: malformed application manifest\n");
             return 1;
         }
         if (mf.exec_level == W32_MANIFEST_ADMIN) {
-            printf("w32run: refused: manifest requests requireAdministrator "
+            fprintf(stderr, "w32run: refused: manifest requests requireAdministrator "
                    "(elevation is not supported)\n");
             return 1;
         }
@@ -121,7 +132,7 @@ int main(int argc, char **argv) {
          * The integration gate asserts the two renderings differ. */
         w32_comctl_set_version(mf.comctl_major);
         if (mf.has_manifest)
-            printf("w32run: manifest: comctl v%d, exec=%s%s\n",
+            fprintf(stderr, "w32run: manifest: comctl v%d, exec=%s%s\n",
                    mf.comctl_major,
                    mf.exec_level == W32_MANIFEST_HIGHEST ?
                        "highestAvailable" : "asInvoker",
@@ -195,9 +206,9 @@ int main(int argc, char **argv) {
                           (unsigned long long)(unsigned long)base, &mdll, &mname);
     if (rc != 0) {
         if (mdll && mname)
-            printf("w32run: unresolved import %s!%s\n", mdll, mname);
+            fprintf(stderr, "w32run: unresolved import %s!%s\n", mdll, mname);
         else
-            printf("w32run: import binding failed (%d)\n", rc);
+            fprintf(stderr, "w32run: import binding failed (%d)\n", rc);
         return 1;
     }
 
@@ -205,7 +216,7 @@ int main(int argc, char **argv) {
      * itself as argv[0], which is what GetCommandLineA should report. */
     w32_kernel32_init(argc - 1, argv + 1);
 
-    printf("w32run: %s mapped at %p, %lu import(s) bound\n",
+    fprintf(stderr, "w32run: %s mapped at %p, %lu import(s) bound\n",
            path, (void *)base, (unsigned long)nimp);
 
     /* --- W32-6: the startup sequence a real CRT expects -----------------
@@ -217,7 +228,7 @@ int main(int argc, char **argv) {
      * __except, not die -- which only works if the handlers are already in
      * place here. */
     if (w32_seh_init() != 0)
-        printf("w32run: warning: SEH handlers not installed; "
+        fprintf(stderr, "w32run: warning: SEH handlers not installed; "
                "__try will not catch faults\n");
 
     size_t image_span = (size_t)img.size_of_image;
@@ -228,10 +239,10 @@ int main(int argc, char **argv) {
         /* A malformed TLS directory is refused rather than followed: the
          * callback array is data out of the file, and calling through it
          * unchecked is how a bad file becomes arbitrary execution. */
-        printf("w32run: refusing malformed TLS directory (%d)\n", ntls);
+        fprintf(stderr, "w32run: refusing malformed TLS directory (%d)\n", ntls);
         return 1;
     }
-    if (ntls > 0) printf("w32run: ran %d TLS callback(s)\n", ntls);
+    if (ntls > 0) fprintf(stderr, "w32run: ran %d TLS callback(s)\n", ntls);
     /* W32A-3: instantiate the main thread's TLS blocks and run the exe's
      * PROCESS_ATTACH callbacks (registration above only validated).  Still
      * before the static initialisers, the documented order. */
@@ -254,10 +265,10 @@ int main(int argc, char **argv) {
                                             sec.virtual_address +
                                                 sec.virtual_size);
         if (nini < 0) {
-            printf("w32run: refusing malformed .CRT table (%d)\n", nini);
+            fprintf(stderr, "w32run: refusing malformed .CRT table (%d)\n", nini);
             return 1;
         }
-        if (nini > 0) printf("w32run: ran %d static initialiser(s)\n", nini);
+        if (nini > 0) fprintf(stderr, "w32run: ran %d static initialiser(s)\n", nini);
         break;
     }
 
@@ -268,6 +279,6 @@ int main(int argc, char **argv) {
 
     /* A console PE is expected to call ExitProcess; reaching here means it
      * returned instead, which is legal for a bare entry point. */
-    printf("w32run: entry point returned\n");
+    fprintf(stderr, "w32run: entry point returned\n");
     return 0;
 }

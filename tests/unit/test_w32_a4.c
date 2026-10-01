@@ -892,6 +892,10 @@ static void test_unwind_with_cleanup(void) {
     f->live.rsp = (uint64_t)(uintptr_t)&st[30];
     f->live_valid = 1;
     f->state = W32_SEH_ST_ACTIVE;
+    /* The MSVC shape: our own __C_specific_handler sets this flag before it
+     * asks for a transfer to an __except FUNCLET, and a funclet is entered
+     * with RSP = the establisher frame. */
+    f->target_msvc_funclet = 1;
     if (setjmp(f->jb) == 0) {
         /* Unwind to mid's establisher (= &st[33]) with a target ip. */
         RtlUnwindEx((void *)(uintptr_t)&st[33],
@@ -902,6 +906,71 @@ static void test_unwind_with_cleanup(void) {
         CHECK_EQ(f->resume_valid, 1);
         CHECK_EQ(f->resume.rip, base + 0x700);
         CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[33]); /* mid establisher */
+        /* and the flag is spent, so it cannot leak into the next unwind */
+        CHECK_EQ(f->target_msvc_funclet, 0);
+    }
+    w32_seh_test_set_frame(NULL);
+    w32_seh_frame_free(f);
+    free(st);
+    free(b);
+}
+
+/* The OTHER half of the same contract: a target that did NOT come from our
+ * __C_specific_handler.
+ *
+ * libgcc's _GCC_specific_handler also calls RtlUnwindEx with a target_ip --
+ * the GCC landing pad -- during its cleanup phase.  A GCC landing pad is NOT
+ * an MSVC funclet: it is emitted INSIDE the parent function and expects that
+ * frame's own RSP, exactly as the walk left it when it stopped at the target.
+ * Resuming it with the establisher instead put it 8 bytes out of ABI
+ * alignment, and the first MS-ABI callee (WriteFile, whose prologue spills
+ * xmm6 with `movaps`) #GP'd -- w32a4_cxx.exe died with status 139 before
+ * printing one destructor line.  Pinned here so the distinction cannot be
+ * flattened again by a change that only looks at the MSVC case. */
+static void test_unwind_foreign_landing_pad(void) {
+    uint8_t *b = make_image();
+    uint64_t base = (uint64_t)(uintptr_t)b;
+    uint64_t *st = mkstack(128);
+    struct w32_seh_dispatch *f;
+    w32_exception_record_t rec;
+    const uint8_t codes[] = { 0x01, 0x50 }; /* push rbp */
+    uint64_t inner = CODE_RVA, mid = CODE_RVA + 0x20, out = CODE_RVA + 0x40;
+
+    write_unwind(b, 0, 0, 2, 1, 0, 0, codes);
+    set_pdata_size(b, 3);
+    add_func(b, 0, (uint32_t)inner, (uint32_t)inner + 0x20, XDATA_RVA);
+    add_func(b, 1, (uint32_t)mid, (uint32_t)mid + 0x20, XDATA_RVA);
+    add_func(b, 2, (uint32_t)out, (uint32_t)out + 0x20, XDATA_RVA);
+    w32_seh_test_reset();
+    w32_seh_test_add_image(base, IMG_SIZE);
+
+    st[30] = 0xcccc;                /* inner rbp */
+    st[31] = base + mid + 4;        /* inner ret */
+    st[32] = 0xbbbb;                /* mid rbp */
+    st[33] = base + out + 4;        /* mid ret */
+    st[34] = 0xaaaa;                /* out rbp */
+    st[35] = base + 0xe00;          /* out ret (in-image leaf pc) */
+
+    f = (struct w32_seh_dispatch *)w32_seh_frame_new();
+    w32_seh_test_set_frame(f);
+    memset(&rec, 0, sizeof(rec));
+    rec.code = 0xE0000001u;
+    memset(&f->live, 0, sizeof(f->live));
+    f->live.rip = base + inner + 4;
+    f->live.rsp = (uint64_t)(uintptr_t)&st[30];
+    f->live_valid = 1;
+    f->state = W32_SEH_ST_ACTIVE;
+    /* NO target_msvc_funclet: this is a foreign personality's target. */
+    if (setjmp(f->jb) == 0) {
+        RtlUnwindEx((void *)(uintptr_t)&st[33],
+                    (void *)(uintptr_t)(base + 0x700),
+                    &rec, NULL, NULL, NULL);
+        CHECK(0);   /* NOTREACHED */
+    } else {
+        CHECK_EQ(f->resume_valid, 1);
+        CHECK_EQ(f->resume.rip, base + 0x700);
+        /* the target frame's OWN rsp, not its establisher */
+        CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[32]);
     }
     w32_seh_test_set_frame(NULL);
     w32_seh_frame_free(f);
@@ -957,6 +1026,7 @@ int main(void) {
     RUN(test_c_specific_cleanup_order);
     RUN(test_dispatch_exec);
     RUN(test_unwind_with_cleanup);
+    RUN(test_unwind_foreign_landing_pad);
     RUN(test_raise_bottom);
     RUN(test_xcpt_filter);
 

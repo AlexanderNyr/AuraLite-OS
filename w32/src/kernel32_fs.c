@@ -3393,7 +3393,13 @@ W32ABI void *MapViewOfFile(W32_HANDLE map, W32_DWORD access, W32_DWORD offHigh,
         return NULL;
     }
     wantWrite = (access & (W32_FILE_MAP_WRITE | 0x8u | 0x10u)) != 0;
-    wantCopy = (access & W32_FILE_MAP_COPY) != 0;
+    /* FILE_MAP_COPY is bit 0, and so is SECTION_QUERY -- which means
+     * FILE_MAP_ALL_ACCESS carries that bit too without asking for
+     * copy-on-write.  Reading the bit on its own would map ALL_ACCESS
+     * MAP_PRIVATE, so writes through the view would be invisible to every
+     * other view of the same section.  Copy-on-write is what the caller
+     * asked for only when it asked for NO write access as well. */
+    wantCopy = (access & W32_FILE_MAP_COPY) != 0 && !wantWrite;
     wantExec = (access & W32_FILE_MAP_EXECUTE) != 0;
     /* View-vs-mapping compatibility, enforced rather than assumed. */
     switch (m->protect & 0xFFu) {

@@ -98,6 +98,13 @@ struct w32_seh_dispatch {
 #endif
     w32_context_t resume;       /* filled by RtlUnwind / ContinueExecution */
     int resume_valid;
+    /* Set only by OUR __C_specific_handler, immediately before it asks for a
+     * transfer to an MSVC __except funclet.  It selects the funclet-entry RSP
+     * convention in seh_unwind_to(); a FOREIGN personality's target (libgcc's
+     * _GCC_specific_handler reaching a GCC landing pad) must not get it.
+     * Cleared the moment it is consumed, so it can never leak into the next
+     * unwind on the same frame. */
+    int target_msvc_funclet;
     /* RtlUnwind's cursor.  Set to the FAULT context at entry; the first
      * pass never touches it.  RtlUnwind starts the second pass here --
      * from the fault, not from the personality's frame -- so cleanups
@@ -1398,8 +1405,22 @@ static void seh_unwind_to(struct w32_seh_dispatch *f, uint64_t target_frame,
          * libgcc paths are untouched by construction: their cleanup sweeps
          * run with target_ip == 0 (RtlUnwindEx returns to _Unwind_Resume),
          * and the sweep-to-bottom has no target at all. */
-        if (target_ip != 0)
+        /* ...but ONLY for an MSVC funclet, which is the single shape that
+         * convention describes.  GCC's SEH landing pads are emitted INSIDE
+         * the parent function, not as funclets: they expect the frame's
+         * own mid-function RSP -- exactly what the walk above left in
+         * f->live when it stopped at the target frame.  The claim in the
+         * note above that "the libgcc paths are untouched, their cleanup
+         * sweeps run with target_ip == 0" is not true of the CLEANUP
+         * PHASE: _GCC_specific_handler calls RtlUnwindEx with the landing
+         * pad as target_ip, so it took the funclet path and resumed 8
+         * bytes out of alignment.  The first thing a C++ destructor did
+         * was call WriteFile, whose MS-ABI prologue spills xmm6 with
+         * `movaps` -- #GP, and w32a4_cxx.exe died with status 139 before
+         * printing a single W32A4-CXX-DTOR line. */
+        if (target_ip != 0 && f->target_msvc_funclet)
             f->resume.rsp = target_frame;
+        f->target_msvc_funclet = 0;
         if (ret_value)
             f->resume.rax = ret_value;
         f->resume_valid = 1;
@@ -1578,6 +1599,11 @@ int32_t W32ABI __C_specific_handler(w32_exception_record_t *record,
                                                              establisher_frame);
             if (v == 1 /* EXCEPTION_EXECUTE_HANDLER */) {
                 dispatch->scope_index = i;
+                {   /* This target IS an MSVC funclet: ask for the
+                     * funclet-entry RSP convention (see the field's note). */
+                    struct w32_seh_dispatch *df = seh_current_frame();
+                    if (df) df->target_msvc_funclet = 1;
+                }
                 RtlUnwind((void *)(uintptr_t)establisher_frame,
                           (void *)(uintptr_t)(image_base + s->jump_target),
                           record, NULL);

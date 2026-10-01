@@ -219,7 +219,15 @@ typedef int32_t  W32_HRESULT;
 #define W32_SEC_RESERVE            0x04000000u
 #define W32_FILE_MAP_READ          0x0004u
 #define W32_FILE_MAP_WRITE         0x0002u
-#define W32_FILE_MAP_ALL_ACCESS    0x001fu
+/* SECTION_ALL_ACCESS: STANDARD_RIGHTS_REQUIRED (0xF0000) | SECTION_QUERY |
+ * SECTION_MAP_WRITE | SECTION_MAP_READ | SECTION_MAP_EXECUTE |
+ * SECTION_EXTEND_SIZE (0x1F).  It was 0x001f here -- the low half only --
+ * so MapViewOfFile()'s "unknown access bits" guard saw the 0xF0000
+ * standard-rights half that every real caller passes (the mingw header
+ * defines the full value) and refused with ERROR_INVALID_PARAMETER.
+ * That is the W32A-2 "map-anon-view" gate: the fixture asks for
+ * FILE_MAP_ALL_ACCESS and never got a view. */
+#define W32_FILE_MAP_ALL_ACCESS    0x000f001fu
 #define W32_FILE_MAP_COPY          0x0001u
 #define W32_FILE_MAP_EXECUTE       0x0020u
 
