@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # tools/gui_input.py — WR-0 (W32RUN_PLAN.md) the live console + input harness.
 #
-# The live-GUI lane runs QEMU with two UNIX sockets: a serial socket (the
-# AuraLite shell) and a monitor socket (HMP — screendump, keyboard, mouse).
+# The live-GUI lane runs QEMU with three UNIX sockets: a serial socket (the
+# AuraLite shell), a monitor socket (HMP — screendump, keyboard) and a QMP
+# socket (the absolute pointer; see the note above cmd_click for why HMP
+# cannot drive a usb-tablet).
 # This tool is the only thing that talks to them, so the lane script stays
 # declarative.  It replaces the throwaway /tmp helpers used during WR-0
 # bring-up and folds their two lessons in:
@@ -24,12 +26,15 @@
 #   key           --monitor M K...         `sendkey` each K (e.g. ret tab a)
 #   type          --monitor M "text"       type ASCII as sendkey chords
 #   shot          --monitor M /abs/out.ppm screendump to an absolute path
-#   click         --monitor M X Y          absolute click (needs usb-tablet;
-#                                          the lane adds one) — best effort
+#   move          --qmp Q X Y              absolute pointer move
+#   click         --qmp Q X Y              absolute move + click
+#   dblclick      --qmp Q X Y              two clicks inside the guest's
+#                                          double-click window
 #
 # Only the standard library is used.
 
 import argparse
+import json
 import re
 import socket
 import sys
@@ -228,19 +233,130 @@ def cmd_shot(a):
     return 0
 
 
+# ---------------------------------------------------------------------------
+# QMP: the pointer path.
+#
+# HMP's mouse_move/mouse_button were the obvious choice and they are WRONG for
+# this lane.  Modern QEMU implements mouse_move with qemu_input_queue_rel() --
+# RELATIVE motion -- while `-device usb-tablet` is an ABSOLUTE pointer.  The
+# monitor accepts the command, answers with a clean prompt, and nothing moves.
+# Measured on the WR-2 lane: `info mice` listed "* Mouse #3: QEMU HID Tablet
+# (absolute)" as current, the commands were accepted without error, and the
+# guest's HID driver logged 0 reports across 600 polls (6 s).  The same guest,
+# same EHCI interrupt path, receives reports fine from a usb-kbd driven by
+# `sendkey` (test_usb_hid_input is 9/9), so the gap was never in the OS.
+#
+# input-send-event with `abs` axes is the supported way to drive an absolute
+# pointer, and it exists only on QMP -- hence the lane's second socket.
+# Absolute axis values are in QEMU's 0..32767 normalised range.
+ABS_MAX = 32767
+
+
+def _qmp_connect(path):
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(10.0)
+    s.connect(path)
+    _qmp_read(s)                      # the greeting
+    _qmp_cmd(s, {"execute": "qmp_capabilities"})
+    return s
+
+
+def _qmp_read(sock, secs=1.0):
+    sock.settimeout(secs)
+    buf = b""
+    try:
+        while True:
+            d = sock.recv(65536)
+            if not d:
+                break
+            buf += d
+            if b"\n" in d:
+                break
+    except Exception:
+        pass
+    return buf.decode("utf-8", "replace")
+
+
+def _qmp_cmd(sock, obj):
+    sock.sendall((json.dumps(obj) + "\n").encode("utf-8"))
+    return _qmp_read(sock)
+
+
+def _abs_events(x, y, width, height):
+    return [
+        {"type": "abs",
+         "data": {"axis": "x", "value": int(x * ABS_MAX / max(1, width))}},
+        {"type": "abs",
+         "data": {"axis": "y", "value": int(y * ABS_MAX / max(1, height))}},
+    ]
+
+
+def _send_events(sock, events, device=None):
+    """Address the pointer by qdev id.
+
+    Without `device`, input-send-event goes to the default console's input
+    routing.  Under `-display none` that is not where the usb-tablet is, so
+    QEMU answers {"return": {}} and nothing reaches the guest -- which is
+    exactly the silent no-op this lane spent a day chasing.  The lane gives
+    the tablet `id=gltablet` so the events can be addressed to it."""
+    args = {"events": events}
+    if device:
+        args["device"] = device
+    return _qmp_cmd(sock, {"execute": "input-send-event", "arguments": args})
+
+
 def cmd_click(a):
-    # Absolute positioning needs an absolute pointer (usb-tablet); the lane
-    # adds `-device usb-tablet`.  QEMU's HMP `mouse_move` for a tablet takes
-    # absolute coordinates in the 0..32767 range, scaled to the screen.
-    s = _connect(a.monitor)
-    ax = int(a.x * 32767 / max(1, a.width))
-    ay = int(a.y * 32767 / max(1, a.height))
-    _mon_send(s, "mouse_move %d %d" % (ax, ay))
-    _mon_send(s, "mouse_button 1")
-    time.sleep(0.1)
-    _mon_send(s, "mouse_button 0")
+    """Move the absolute pointer to (x, y) and click there.
+
+    The move is sent as its own event batch before the button: a tablet
+    reports position and buttons together, and a guest that tracks motion
+    (the compositor moves its cursor on every report) must see the pointer
+    arrive before it is told the button went down.
+    """
+    s = _qmp_connect(a.qmp)
+    _send_events(s, _abs_events(a.x, a.y, a.width, a.height), a.device)
+    time.sleep(0.05)
+    _send_events(s, _abs_events(a.x, a.y, a.width, a.height) +
+                    [{"type": "btn", "data": {"down": True, "button": "left"}}],
+                 a.device)
+    time.sleep(0.05)
+    _send_events(s, [{"type": "btn", "data": {"down": False, "button": "left"}}],
+                 a.device)
     s.close()
     print("click %d,%d" % (a.x, a.y))
+    return 0
+
+
+def cmd_dblclick(a):
+    """Two clicks inside the guest's double-click window.
+
+    gui.c uses MOUSE_DBLCLICK_TICKS (40 ticks ~= 400 ms at 99 Hz) and a 5 px
+    slop, so the two presses must be close in both time and place; a naive
+    `click; sleep 1; click` is two single clicks and was the first wrong
+    reading this lane produced.
+    """
+    s = _qmp_connect(a.qmp)
+    move = _abs_events(a.x, a.y, a.width, a.height)
+    _send_events(s, move, a.device)
+    time.sleep(0.05)
+    for _ in range(2):
+        _send_events(s, move +
+                     [{"type": "btn", "data": {"down": True, "button": "left"}}],
+                     a.device)
+        time.sleep(0.04)
+        _send_events(s, [{"type": "btn",
+                          "data": {"down": False, "button": "left"}}], a.device)
+        time.sleep(0.06)
+    s.close()
+    print("dblclick %d,%d" % (a.x, a.y))
+    return 0
+
+
+def cmd_move(a):
+    s = _qmp_connect(a.qmp)
+    _send_events(s, _abs_events(a.x, a.y, a.width, a.height), a.device)
+    s.close()
+    print("move %d,%d" % (a.x, a.y))
     return 0
 
 
@@ -298,13 +414,17 @@ def main(argv=None):
     sh.add_argument("path")
     sh.set_defaults(fn=cmd_shot)
 
-    cl = sub.add_parser("click")
-    cl.add_argument("--monitor", required=True)
-    cl.add_argument("x", type=int)
-    cl.add_argument("y", type=int)
-    cl.add_argument("--width", type=int, default=1280)
-    cl.add_argument("--height", type=int, default=800)
-    cl.set_defaults(fn=cmd_click)
+    for name, fn in (("click", cmd_click), ("dblclick", cmd_dblclick),
+                     ("move", cmd_move)):
+        c = sub.add_parser(name)
+        c.add_argument("--qmp", required=True)
+        c.add_argument("--monitor", default=None)   # accepted, unused
+        c.add_argument("x", type=int)
+        c.add_argument("y", type=int)
+        c.add_argument("--width", type=int, default=1280)
+        c.add_argument("--height", type=int, default=800)
+        c.add_argument("--device", default="gltablet")
+        c.set_defaults(fn=fn)
 
     a = p.parse_args(argv)
     return a.fn(a)

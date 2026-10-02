@@ -29,7 +29,7 @@
 #   gl_wait <regex> [timeout]          — wait for regex on serial
 #   gl_shot <name>                     — screendump -> $GL_SHOTDIR/<name>.ppm
 #                                        + .png; sets GL_LAST_PPM / GL_LAST_PNG
-#   gl_key <k...> / gl_type "text" / gl_click X Y   — GUI input via the monitor
+#   gl_key/gl_type via HMP; gl_move/gl_click/gl_dblclick via QMP (abs pointer)
 #   gl_stop                            — kill the VM (idempotent; on trap)
 #
 # GL_LOG accumulates the serial transcript for il_assert_grep.
@@ -79,7 +79,14 @@ gl_boot() {
 
     GL_SER="$IL_LOGDIR/gui_lane_ser.$$.sock"
     GL_MON="$IL_LOGDIR/gui_lane_mon.$$.sock"
-    rm -f "$GL_SER" "$GL_MON"
+    # QMP alongside HMP.  HMP's mouse_move/mouse_button queue RELATIVE motion
+    # (qemu_input_queue_rel); usb-tablet is an ABSOLUTE device, so those
+    # commands are accepted silently and move nothing -- measured: the guest
+    # logged 0 HID reports over 600 polls while `info mice` showed the tablet
+    # as the current mouse.  input-send-event with abs axes is the supported
+    # path for an absolute pointer and it is QMP-only.
+    GL_QMP="$IL_LOGDIR/gui_lane_qmp.$$.sock"
+    rm -f "$GL_SER" "$GL_MON" "$GL_QMP"
     GL_VARS="$IL_LOGDIR/gui_lane_vars.$$.fd"
     cp "$GL_OVMF_VARS" "$GL_VARS"
 
@@ -99,18 +106,19 @@ gl_boot() {
         -m 512M -smp "${IL_SMP:-2}" -cpu "${IL_CPU:-qemu64}" \
         -no-reboot -no-shutdown -boot order=c \
         -netdev user,id=net0 -device e1000,netdev=net0 \
-        -device usb-ehci,id=ehci -device usb-tablet,bus=ehci.0 \
+        -device usb-ehci,id=ehci -device usb-tablet,bus=ehci.0,id=gltablet \
         -fw_cfg "name=opt/auralite.selftest,string=$selftest" \
         -vga std -display none \
         -serial "unix:$GL_SER,server,nowait" \
         -monitor "unix:$GL_MON,server,nowait" \
+        -qmp "unix:$GL_QMP,server,nowait" \
         >/dev/null 2>&1 &
     GL_QEMU_PID=$!
 
     # Wait for the sockets QEMU creates, then for the boot to reach the shell.
     local i
     for i in $(seq 1 50); do
-        [ -S "$GL_SER" ] && [ -S "$GL_MON" ] && break
+        [ -S "$GL_SER" ] && [ -S "$GL_MON" ] && [ -S "$GL_QMP" ] && break
         kill -0 "$GL_QEMU_PID" 2>/dev/null || { echo "  [gui-lane] QEMU died on launch"; return 1; }
         sleep 0.2
     done
@@ -158,7 +166,10 @@ PY
 
 gl_key()  { python3 "$GL_CONSOLE" key  --monitor "$GL_MON" "$@" >/dev/null; }
 gl_type() { python3 "$GL_CONSOLE" type --monitor "$GL_MON" "$1" >/dev/null; }
-gl_click(){ python3 "$GL_CONSOLE" click --monitor "$GL_MON" "$1" "$2" >/dev/null; }
+# The pointer goes over QMP (absolute axes); HMP cannot move a usb-tablet.
+gl_click()   { python3 "$GL_CONSOLE" click    --qmp "$GL_QMP" "$1" "$2" >/dev/null; }
+gl_dblclick(){ python3 "$GL_CONSOLE" dblclick --qmp "$GL_QMP" "$1" "$2" >/dev/null; }
+gl_move()    { python3 "$GL_CONSOLE" move     --qmp "$GL_QMP" "$1" "$2" >/dev/null; }
 
 # gl_oracle <fb_oracle args...> — thin passthrough so cases read declaratively.
 gl_oracle() { python3 "$GL_ORACLE" "$@"; }
@@ -167,6 +178,6 @@ gl_stop() {
     [ -n "${GL_QEMU_PID:-}" ] || return 0
     kill "$GL_QEMU_PID" 2>/dev/null || true
     wait "$GL_QEMU_PID" 2>/dev/null || true
-    rm -f "$GL_SER" "$GL_MON" "$GL_VARS" 2>/dev/null || true
+    rm -f "$GL_SER" "$GL_MON" "$GL_QMP" "$GL_VARS" 2>/dev/null || true
     GL_QEMU_PID=""
 }
