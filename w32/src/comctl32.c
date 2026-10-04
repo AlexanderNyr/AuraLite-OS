@@ -766,7 +766,14 @@ static W32_LRESULT ctl_toolbar_proc(ctl_state_t *c, W32_HWND hwnd,
                                     W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
-        ctl_toolbar_paint(c, hwnd);
+        /* Win32 paint bracket: BeginPaint erases first, EndPaint validates
+         * (see the listview WM_PAINT arm for the observed failure mode). */
+        {
+            W32_PAINTSTRUCT vps;
+            BeginPaint(hwnd, &vps);
+            ctl_toolbar_paint(c, hwnd);
+            EndPaint(hwnd, &vps);
+        }
         return 0;
     case W32_TB_AUTOSIZE:
         tb_autosize(c, hwnd);
@@ -970,7 +977,14 @@ static W32_LRESULT ctl_status_proc(ctl_state_t *c, W32_HWND hwnd,
                                    W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
-        ctl_status_paint(c, hwnd);
+        /* Win32 paint bracket: BeginPaint erases first, EndPaint validates
+         * (see the listview WM_PAINT arm for the observed failure mode). */
+        {
+            W32_PAINTSTRUCT vps;
+            BeginPaint(hwnd, &vps);
+            ctl_status_paint(c, hwnd);
+            EndPaint(hwnd, &vps);
+        }
         return 0;
     case W32_SB_SETPARTS: {
         int n = (int)(int32_t)(uint32_t)wp;
@@ -1214,11 +1228,23 @@ static void lv_fill_activate(ctl_state_t *c, W32_NMITEMACTIVATE *ia,
 static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
                                      W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
-    case W32_WM_PAINT:
+    case W32_WM_PAINT: {
+        /* Win32 paint bracket, in the documented order: BeginPaint erases
+         * the class background (it fills the ag surface), THEN the control
+         * draws its rows, and EndPaint validates the update region.  Both
+         * halves matter: without EndPaint's validation InvalidateRect's
+         * one-WM_PAINT-per-accumulation short-circuit stops queueing
+         * paints, and drawing before BeginPaint lets its background fill
+         * erase the rows again (observed: 7-Zip FM's panel inserting rows
+         * that then vanished from the framebuffer). */
+        W32_PAINTSTRUCT ps;
+        BeginPaint(hwnd, &ps);
         lv_sync_surf_geometry(c, hwnd);    /* track late WM_SIZE from the app */
         lv_fetch_callback_text(c, hwnd);   /* pull LPSTR_TEXTCALLBACK labels */
         ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+        EndPaint(hwnd, &ps);
         return 0;
+    }
     case W32_LVM_INSERTITEMA:
     case W32_LVM_INSERTITEMW: {
         W32_LVITEMW *it = (W32_LVITEMW *)(uintptr_t)lp;
@@ -1249,18 +1275,25 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
         memset(&nm, 0, sizeof nm);
         nm.iItem = at; nm.lParam = c->u.lv.lparam[at];
         notify_parent(hwnd, W32_LVN_INSERTITEM, &nm.hdr);
+        /* Real comctl32 invalidates the item's area on insert (a row
+         * appeared); mirror that so a panel filled after a folder change
+         * repaints even when the app itself only relies on the control's
+         * own invalidation (7-Zip FM's archive panel does exactly this). */
+        InvalidateRect(hwnd, 0, 0);
         return at;
     }
     case W32_LVM_DELETEITEM: {
         int i = (int)(int32_t)(uint32_t)wp;
         if (i < 0 || i >= c->u.lv.n_items) return 0;
         lv_splice(c, i, 1, 0, 0, 0);
+        InvalidateRect(hwnd, 0, 0);   /* row vanished: repaint (comctl32 rule) */
         return 1;
     }
     case W32_LVM_DELETEALLITEMS:
         c->u.lv.n_items = 0;
         c->u.lv.sel_mark = -1;
         ctl_surf_clear(&c->surf);
+        InvalidateRect(hwnd, 0, 0);   /* full clear: repaint (comctl32 rule) */
         return 1;
     case W32_LVM_GETITEMCOUNT:
         return c->u.lv.n_items;
@@ -1587,7 +1620,14 @@ static W32_LRESULT ctl_treeview_proc(ctl_state_t *c, W32_HWND hwnd,
                                      W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
-        ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+        /* Win32 paint bracket: BeginPaint erases first, EndPaint validates
+         * (see the listview WM_PAINT arm for the observed failure mode). */
+        {
+            W32_PAINTSTRUCT vps;
+            BeginPaint(hwnd, &vps);
+            ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+            EndPaint(hwnd, &vps);
+        }
         return 0;
     case W32_TVM_INSERTITEMA:
     case W32_TVM_INSERTITEMW: {
@@ -1895,7 +1935,14 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
                                 W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
-        ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+        /* Win32 paint bracket: BeginPaint erases first, EndPaint validates
+         * (see the listview WM_PAINT arm for the observed failure mode). */
+        {
+            W32_PAINTSTRUCT vps;
+            BeginPaint(hwnd, &vps);
+            ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+            EndPaint(hwnd, &vps);
+        }
         return 0;
     case W32_TCM_INSERTITEMA:
     case W32_TCM_INSERTITEMW: {
@@ -2231,7 +2278,14 @@ static W32_LRESULT ctl_progress_proc(ctl_state_t *c, W32_HWND hwnd,
     /* The widget holds [0, span]; Win32's [min, max] maps by offset. */
     switch (msg) {
     case W32_WM_PAINT:
-        ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+        /* Win32 paint bracket: BeginPaint erases first, EndPaint validates
+         * (see the listview WM_PAINT arm for the observed failure mode). */
+        {
+            W32_PAINTSTRUCT vps;
+            BeginPaint(hwnd, &vps);
+            ctl_surf_render(&c->surf, w32_win_cls_ag_wid(hwnd));
+            EndPaint(hwnd, &vps);
+        }
         return 0;
     case W32_PBM_SETRANGE:
         c->u.pb.min = (int16_t)(uint16_t)(uint32_t)lp;
@@ -2318,7 +2372,14 @@ static W32_LRESULT ctl_header_proc(ctl_state_t *c, W32_HWND hwnd,
                                    W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     switch (msg) {
     case W32_WM_PAINT:
-        ctl_header_paint(c, hwnd);
+        /* Win32 paint bracket: BeginPaint erases first, EndPaint validates
+         * (see the listview WM_PAINT arm for the observed failure mode). */
+        {
+            W32_PAINTSTRUCT vps;
+            BeginPaint(hwnd, &vps);
+            ctl_header_paint(c, hwnd);
+            EndPaint(hwnd, &vps);
+        }
         return 0;
     case W32_HDM_INSERTITEMA:
     case W32_HDM_INSERTITEMW: {
@@ -3686,3 +3747,70 @@ int w32_comctl_is_class(const uint16_t *clsname) {
     }
     return 0;
 }
+
+/* ---- w32_ctl_dump_items: the /tmp/w32dump diagnostic's control half -------
+ *
+ * Called from user32_win.c's w32_dbg_dump_windows() for every live window;
+ * prints the items a common control holds (listview rows, treeview nodes,
+ * comboboxex entries, toolbar buttons, status parts) to serial.  The item
+ * arrays are the personality's own mirrors, so this is ground truth for
+ * "what does the panel show" -- the question every WR-lane pixel assertion
+ * ends up needing answered.  Compiled out for the host unit tests.
+ */
+#ifndef AURALITE_W32_HOST_TEST
+void w32_ctl_dump_items(W32_HWND hwnd) {
+    ctl_state_t *c = ctl_of(hwnd);
+    if (!c) return;
+    switch (c->kind) {
+    case CTL_KIND_LISTVIEW:
+        printf("[w32dump]   listview: %d item(s), %d column(s), sel=%d\n",
+               c->u.lv.n_items, c->u.lv.n_cols, c->u.lv.sel_mark);
+        for (int i = 0; i < c->u.lv.n_items; i++)
+            printf("[w32dump]   lv[%d]=\"%s\" state=0x%x lparam=0x%llx\n",
+                   i, c->u.lv.text[i], (unsigned)c->u.lv.state[i],
+                   (unsigned long long)c->u.lv.lparam[i]);
+        break;
+    case CTL_KIND_TREEVIEW:
+        printf("[w32dump]   treeview: %d node(s), caret=%d\n",
+               c->u.tv.n_items, c->u.tv.caret);
+        for (int i = 0; i < c->u.tv.n_items; i++)
+            printf("[w32dump]   tv[%d]=\"%s\" parent=%d lparam=0x%llx\n",
+                   i, c->u.tv.text[i], c->u.tv.parent[i],
+                   (unsigned long long)c->u.tv.lparam[i]);
+        break;
+    case CTL_KIND_COMBOEX:
+        printf("[w32dump]   comboboxex: %d item(s), sel=%d\n",
+               c->u.cbex.n_items, c->u.cbex.cur_sel);
+        for (int i = 0; i < c->u.cbex.n_items; i++)
+            printf("[w32dump]   cbex[%d]=\"%s\"\n", i, c->u.cbex.text[i]);
+        break;
+    case CTL_KIND_TOOLBAR:
+        printf("[w32dump]   toolbar: %d button(s)\n", c->u.tb.n_btn);
+        for (int i = 0; i < c->u.tb.n_btn; i++)
+            printf("[w32dump]   tb[%d] cmd=%d state=0x%x text=\"%s\"\n",
+                   i, (int)c->u.tb.btn[i].cmd, (unsigned)c->u.tb.btn[i].state,
+                   c->u.tb.text[i]);
+        break;
+    case CTL_KIND_STATUS:
+        printf("[w32dump]   statusbar: %d part(s) simple=%d\n",
+               c->u.sb.n_parts, c->u.sb.simple);
+        for (int i = 0; i < c->u.sb.n_parts; i++)
+            printf("[w32dump]   sb[%d] edge=%d text=\"%s\"\n",
+                   i, (int)c->u.sb.edge[i], c->u.sb.text[i]);
+        break;
+    case CTL_KIND_HEADER:
+        printf("[w32dump]   header: %d item(s)\n", c->u.hd.n_items);
+        for (int i = 0; i < c->u.hd.n_items; i++)
+            printf("[w32dump]   hd[%d]=\"%s\" cx=%d\n",
+                   i, c->u.hd.text[i], (int)c->u.hd.cx[i]);
+        break;
+    case CTL_KIND_REBAR:
+        printf("[w32dump]   rebar: %d band(s), bar_h=%d\n",
+               c->u.rb.n_bands, (int)c->u.rb.bar_h);
+        break;
+    default:
+        break;
+    }
+    fflush(stdout);
+}
+#endif

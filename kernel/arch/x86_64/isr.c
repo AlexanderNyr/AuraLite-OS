@@ -13,6 +13,7 @@
 #include "kernel/proc/signal.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/mm/vma.h"
+#include "kernel/mm/vma.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
 #include "kernel/lib/bsod.h"
@@ -214,11 +215,95 @@ void isr_handler(struct registers *r) {
         }
 
         kprintf("\n[EXCEPTION] %s (vector %llu, error code 0x%016llx) "
-                "from %s mode (cpu%u)\n",
+                "from %s mode (cpu%u) RIP=0x%016llx CR2=0x%016llx "
+                "RAX=0x%016llx RCX=0x%016llx RBX=0x%016llx RDX=0x%016llx R8=0x%016llx "
+                "RSP=0x%016llx RBP=0x%016llx RSI=0x%016llx RDI=0x%016llx\n",
                 msg, (unsigned long long)r->int_no,
                 (unsigned long long)r->err_code,
                 from_user ? "USER" : "KERNEL",
-                diag_cpu_id());
+                diag_cpu_id(),
+                (unsigned long long)r->rip,
+                (unsigned long long)(r->int_no == 14 ? read_cr2() : 0),
+                (unsigned long long)r->rax, (unsigned long long)r->rcx,
+                (unsigned long long)r->rbx, (unsigned long long)r->rdx,
+                (unsigned long long)r->r8,
+                (unsigned long long)r->rsp, (unsigned long long)r->rbp,
+                (unsigned long long)r->rsi, (unsigned long long)r->rdi);
+        /* WR-2 vtable-crash lane: if the fault is a user #GP/#PF with a
+         * plausible user-space RCX/RAX, dump the quadwords behind both so
+         * the serial log shows WHAT the poisoned object contains (a wide
+         * path string was found this way).  Best effort: no paging checks,
+         * the words are read only when the pointer is canonical-user. */
+        if (from_user && (r->int_no == 13 || r->int_no == 14)) {
+            static const uint64_t lo = 0x10000ull, hi = 0x0000800000000000ull;
+            uint64_t regs[2];
+            regs[0] = r->rcx;
+            regs[1] = r->rax;
+            for (int k = 0; k < 2; k++) {
+                uint64_t p = regs[k];
+                if (p < lo || p >= hi)
+                    continue;
+                kprintf("[EXCEPTION] mem[%c%cx]=%016llx %016llx %016llx %016llx\n",
+                        k == 0 ? 'R' : 'R', k == 0 ? 'C' : 'A',
+                        (unsigned long long)*(uint64_t *)(p + 0),
+                        (unsigned long long)*(uint64_t *)(p + 8),
+                        (unsigned long long)*(uint64_t *)(p + 16),
+                        (unsigned long long)*(uint64_t *)(p + 24));
+                /* WR-2: the second row names the rest of the poisoned
+                 * object (past the wide-path overlay), which told the
+                 * vtable-crash investigation which C++ member layout the
+                 * dead block used to carry. */
+                if (p + 0x58 < hi)
+                    kprintf("[EXCEPTION] mem+20=%016llx %016llx %016llx %016llx %016llx %016llx\n",
+                            (unsigned long long)*(uint64_t *)(p + 0x20),
+                            (unsigned long long)*(uint64_t *)(p + 0x28),
+                            (unsigned long long)*(uint64_t *)(p + 0x30),
+                            (unsigned long long)*(uint64_t *)(p + 0x38),
+                            (unsigned long long)*(uint64_t *)(p + 0x40),
+                            (unsigned long long)*(uint64_t *)(p + 0x48));
+                /* WR-2: the 0x594f4 helper's frame keeps the QI'd
+                 * IGetFolderArcProps at rsp+0x108; its vtable word names
+                 * which module built the poisoned object.  Frame layout
+                 * pinned by objdump of the shipped 7zFM.exe. */
+                {
+                    uint64_t slot = r->rsp + 0x108;
+                    if (slot >= lo && slot + 8 < hi) {
+                        uint64_t iface = *(uint64_t *)slot;
+                        kprintf("[EXCEPTION] iface=%016llx\n",
+                                (unsigned long long)iface);
+                        if (iface >= lo && iface + 8 < hi)
+                            kprintf("[EXCEPTION] iface.vt=%016llx\n",
+                                    (unsigned long long)*(uint64_t *)iface);
+                        /* WR-2: CAgentFolder::GetFolderArcProps reads its
+                         * member at iface+0x88 and hands out member+8; if
+                         * that word is stale, the chase ends here. */
+                        if (iface >= lo && iface + 0x98 < hi)
+                            kprintf("[EXCEPTION] iface+70=%016llx %016llx %016llx %016llx %016llx\n",
+                                    (unsigned long long)*(uint64_t *)(iface + 0x70),
+                                    (unsigned long long)*(uint64_t *)(iface + 0x78),
+                                    (unsigned long long)*(uint64_t *)(iface + 0x80),
+                                    (unsigned long long)*(uint64_t *)(iface + 0x88),
+                                    (unsigned long long)*(uint64_t *)(iface + 0x90));
+                    }
+                }
+            }
+        }
+        /* WR-2 click-hang: dump the faulting thread's VMA list so an
+         * unresolved user #PF names which region (and which gap) CR2
+         * landed in.  Bounded to the first 48 VMAs. */
+        if (from_user && r->int_no == 14) {
+            tcb_t *ft = sched_current();
+            if (ft) {
+                int vn = 0;
+                for (vma_t *v = ft->vma_list; v && vn < 48; v = v->next, vn++)
+                    kprintf("[vma] %016llx-%016llx %c%c%c\n",
+                            (unsigned long long)v->va_start,
+                            (unsigned long long)v->va_end,
+                            (v->flags & VMA_READ)  ? 'r' : '-',
+                            (v->flags & VMA_WRITE) ? 'w' : '-',
+                            (v->flags & VMA_EXEC)  ? 'x' : '-');
+            }
+        }
 
         /* For user-mode faults, map the exception to a POSIX signal.  If the
          * thread has a handler installed (and the signal is not blocked), build

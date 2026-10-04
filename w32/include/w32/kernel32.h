@@ -1026,6 +1026,13 @@ W32ABI W32_BOOL  IsCharAlphaW(W32_WCHAR c);
 W32ABI W32_BOOL  IsCharAlphaNumericW(W32_WCHAR c);
 W32ABI W32_BOOL  IsCharUpperW(W32_WCHAR c);
 W32ABI W32_BOOL  IsCharLowerW(W32_WCHAR c);
+W32ABI W32_LPCSTR CharNextA(W32_LPCSTR p);
+W32ABI W32_LPWSTR CharNextW(W32_LPWSTR p);
+W32ABI W32_LPCSTR CharNextExA(W32_UINT codepage, W32_LPCSTR p, W32_DWORD flags);
+W32ABI W32_LPCSTR CharPrevA(W32_LPCSTR start, W32_LPCSTR cur);
+W32ABI W32_LPWSTR CharPrevW(W32_LPWSTR start, W32_LPWSTR cur);
+W32ABI W32_LPCSTR CharPrevExA(W32_UINT codepage, W32_LPCSTR start,
+                              W32_LPCSTR cur, W32_DWORD flags);
 /* wsprintfW argument boxes.  The C shell (below) boxes varargs; the guest
  * bind layer boxes trapped slots; w32_wsprintf_core formats from boxes.
  * u carries integers/chars/pointers, p carries strings and %n targets. */

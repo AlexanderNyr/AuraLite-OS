@@ -1215,6 +1215,7 @@ int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) 
     if (!win_alive(wid)) return -1;
     const struct psf_font *f = psf_get_font();
     if (!f) return -1;
+
     int32_t cx = x;
     for (; *s; s++) {
         if (*s == '\n') { cx = x; y += (int32_t)f->height; continue; }
@@ -1498,6 +1499,7 @@ static void blit_window_content(const gui_win_t *win) {
     /* Draw the last complete frame when the window is double-buffered,
      * otherwise the live buffer exactly as before. */
     const uint32_t *pixels = win->front ? win->front : win->back;
+
 
     int32_t cx = content_x(win);
     int32_t cy = content_y(win);
@@ -2712,6 +2714,10 @@ static void route_mouse_event(const mouse_event_t *ev) {
                 uint32_t now = (uint32_t)timer_get_ticks();
                 int dbl = gui_is_double_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
                 gui_record_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
+                kprintf("gui_dbg_click now=%u wid=%d part=%d dbl=%d "
+                       "(last tick=%u wid=%d part=%d)\n",
+                       now, wid, part, dbl, last_click_tick, last_click_wid,
+                       last_click_part);
                 gui_event_t e = {0};
                 e.type    = dbl ? GUI_EVT_MOUSE_DBLCLICK : GUI_EVT_MOUSE_DOWN;
                 e.x       = mx - content_x(w);

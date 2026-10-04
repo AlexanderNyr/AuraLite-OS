@@ -1366,6 +1366,7 @@ W32ABI W32_LPWSTR CharLowerW(W32_LPWSTR s) {
     W32_WCHAR *p;
     if (v < 0x10000u)
         return (W32_LPWSTR)(uintptr_t)w32_fold_char((W32_WCHAR)v);
+
     if (!s)
         return s;
     for (p = s; *p != 0; p++)
@@ -1387,6 +1388,62 @@ W32ABI W32_BOOL IsCharUpperW(W32_WCHAR c) {
 
 W32ABI W32_BOOL IsCharLowerW(W32_WCHAR c) {
     return (loc_c1(c) & W32_C1_LOWER) != 0;
+}
+
+/* ---- CharNext / CharPrev: string cursors, SBCS semantics ------------------
+ *
+ * W32A-5 follow-up (WR-2): 7-Zip's archive-name scanning walks a path
+ * backwards with CharPrevExA; the previous FAILLOUD stub returned 0 and the
+ * FM's worker thread died on the resulting NULL cursor (observed as the
+ * d628 fault inside 7z.dll).  The ACP here is single-byte for every name a
+ * program can carry (the guest's ANSI side is UTF-8, whose lead bytes never
+ * appear as the START of a path character in these callers), so the SBCS
+ * step -- byte forward, byte back, clamped at start -- is both correct for
+ * the observed use and total: no DBCS lead table exists to consult.  The
+ * W side steps one UTF-16 unit, pairing a surrogate when one is present.
+ */
+
+W32ABI W32_LPCSTR CharNextA(W32_LPCSTR p) {
+    if (!p || !*p)
+        return p;
+    return p + 1;
+}
+
+W32ABI W32_LPWSTR CharNextW(W32_LPWSTR p) {
+    if (!p || !*p)
+        return p;
+    if (p[0] >= 0xD800 && p[0] < 0xDC00 && p[1] >= 0xDC00 && p[1] < 0xE000)
+        return p + 2;               /* keep a surrogate pair together */
+    return p + 1;
+}
+
+W32ABI W32_LPCSTR CharNextExA(W32_UINT codepage, W32_LPCSTR p, W32_DWORD flags) {
+    (void)codepage;                 /* every loadable ACP is single-byte */
+    (void)flags;
+    return CharNextA(p);
+}
+
+W32ABI W32_LPCSTR CharPrevA(W32_LPCSTR start, W32_LPCSTR cur) {
+    if (!start || !cur)
+        return start;
+    if (cur <= start)
+        return start;               /* clamped: never before the start */
+    return cur - 1;
+}
+
+W32ABI W32_LPWSTR CharPrevW(W32_LPWSTR start, W32_LPWSTR cur) {
+    if (!start || !cur)
+        return start;
+    if (cur <= start + 1)
+        return start;
+    return cur - 1;
+}
+
+W32ABI W32_LPCSTR CharPrevExA(W32_UINT codepage, W32_LPCSTR start,
+                              W32_LPCSTR cur, W32_DWORD flags) {
+    (void)codepage;
+    (void)flags;
+    return CharPrevA(start, cur);
 }
 
 /* ---- IsTextUnicode: the heuristic soup, ladled honestly -------------------------------------------------

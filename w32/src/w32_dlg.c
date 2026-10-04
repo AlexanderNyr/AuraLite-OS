@@ -752,6 +752,22 @@ W32ABI W32_BOOL KillTimer(W32_HWND w, uintptr_t id) {
     }
     return 0;
 }
+/* WR-2 click-hang diagnosis: expose the timer table through the
+ * /tmp/w32dump serial dump (weak, host tests keep the stub). */
+void w32_dlg_dump_timers(void);
+void w32_dlg_dump_timers(void) {
+    extern int printf(const char *, ...);
+    printf("[timers] now=%llu used:", (unsigned long long)now_ms());
+    for (int i = 0; i < W32_TIMER_MAX; i++) {
+        if (timers[i].used)
+            printf(" [%d] w=%p id=%p ms=%u next=%p cb=%p", i,
+                   (void *)(uintptr_t)timers[i].w,
+                   (void *)(uintptr_t)timers[i].id, timers[i].ms,
+                   (void *)(uintptr_t)timers[i].next, timers[i].cb);
+    }
+    printf("\n");
+}
+
 void w32_dlg_fire_timers(void) {
     uint64_t n = now_ms();
     for (int i = 0; i < W32_TIMER_MAX; i++) {

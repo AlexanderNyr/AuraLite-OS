@@ -6,7 +6,10 @@
 #include "kernel/lib/errno.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
-#include "kernel/version.h"  /* AURALITE_VERSION for /proc/version (OTA O2; arch-free: the parity lanes compile this file as rv64/a64/i386) */
+#include "kernel/version.h"
+#ifdef __x86_64__
+#include "kernel/boot_info.h"   /* boot_get_hhdm_offset (stack scan) */
+#endif  /* AURALITE_VERSION for /proc/version (OTA O2; arch-free: the parity lanes compile this file as rv64/a64/i386) */
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/proc/thread.h"
@@ -77,6 +80,15 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
         vn->mode = 0644;
         vn->size = 512;
         vn->inode_id = 3;
+        return vn;
+    }
+    if (strcmp(path, "threads") == 0) {
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "threads", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0644;
+        vn->size = 4096;
+        vn->inode_id = 0x70;
         return vn;
     }
     if (strcmp(path, "version") == 0) {
@@ -297,7 +309,7 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
 }
 
 static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
-    char text[1024];
+    char text[2048];
     memset(text, 0, sizeof(text));
     int len = 0;
 
@@ -335,6 +347,100 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
          * receipt and the shell banner. */
         len = ksnprintf(text, sizeof(text),
                         "AuraLite OS v%s (x86_64) #1 SMP\n", AURALITE_VERSION);
+    } else if (vn->inode_id == 0x70) {
+        /* Thread states + resume RIP + a user-stack scan for return
+         * addresses into the target image, so a wedged app names the
+         * guest call chain it is stuck in (the WR-2 click-hang). */
+        extern int thread_get_all(struct tcb *out[], int max);
+        static const uint64_t IMG_LO = 0x400000000000ull;
+        static const uint64_t IMG_HI = 0x400000200000ull;   /* +2 MiB span */
+        uint64_t hhdm_off = boot_get_hhdm_offset();
+        struct tcb *list[128];
+        int n = thread_get_all(list, 128);
+        len = ksnprintf(text, sizeof(text), "  TID  STATE     U-RIP           NAME\n");
+        for (int i = 0; i < n && len < (int)sizeof(text) - 500; i++) {
+            struct tcb *t = list[i];
+            const char *st = t->state == THREAD_READY  ? "READY"  :
+                             t->state == THREAD_RUNNING ? "RUNNING" :
+                             t->state == THREAD_BLOCKED ? "BLOCKED" :
+                             t->state == THREAD_STOPPED ? "STOPPED" :
+                             t->state == THREAD_DEAD    ? "DEAD"    : "?";
+            len += ksnprintf(text + len, sizeof(text) - len,
+                             "  %llu  %-8s  %016llx  %s  q=%d parked=%d rsp=%llx urbx=%llx urbp=%llx ur12=%llx ur13=%llx ur14=%llx ur15=%llx\n",
+                             (unsigned long long)t->id, st,
+                             (unsigned long long)t->saved_user_rip, t->name,
+                             (int)t->on_queue, (int)t->switch_parked,
+                             (unsigned long long)t->saved_user_rsp,
+                             (unsigned long long)t->saved_user_rbx,
+                             (unsigned long long)t->saved_user_rbp,
+                             (unsigned long long)t->saved_user_r12,
+                             (unsigned long long)t->saved_user_r13,
+                             (unsigned long long)t->saved_user_r14,
+                             (unsigned long long)t->saved_user_r15);
+            /* User-stack backtrace: walk t's page tables from its pml4,
+             * read 2 KB below saved_user_rsp, print image-range hits
+             * (return addresses).  Best-effort: unmapped pages just stop
+             * the scan for that thread. */
+#ifdef __x86_64__
+            if (t->saved_user_rip && t->pml4_phys) {
+                len += ksnprintf(text + len, sizeof(text) - len,
+                                 "    stack:");
+                uint64_t deep[32];   /* ring: keeps the DEEPEST 32 */
+                int ndeep = 0;
+                uint64_t sp = t->saved_user_rsp & ~7ull;
+                for (int k = 0; k < 8192; k++, sp += 8) {
+                    /* page-table walk (PML4->PDPT->PD->PT) */
+                    uint64_t pml4 = t->pml4_phys;
+                    uint64_t *tab;
+                    uint64_t entry;
+                    #define PTE_ADDR(e) ((e) & 0x000FFFFFFFFFF000ull)
+                    tab = (uint64_t *)(uintptr_t)(hhdm_off + pml4);
+                    entry = tab[(sp >> 39) & 0x1FF];
+                    if (!(entry & 1)) break;
+                    tab = (uint64_t *)(uintptr_t)(hhdm_off + PTE_ADDR(entry));
+                    entry = tab[(sp >> 30) & 0x1FF];
+                    if (!(entry & 1)) break;
+                    if (entry & 0x80) {   /* 1 GiB page */
+                        len += ksnprintf(text + len, sizeof(text) - len, " (1G-page)");
+                        break;
+                    }
+                    tab = (uint64_t *)(uintptr_t)(hhdm_off + PTE_ADDR(entry));
+                    entry = tab[(sp >> 21) & 0x1FF];
+                    if (!(entry & 1)) break;
+                    if (entry & 0x80) {   /* 2 MiB page */
+                        len += ksnprintf(text + len, sizeof(text) - len, " (2M-page)");
+                        break;
+                    }
+                    tab = (uint64_t *)(uintptr_t)(hhdm_off + PTE_ADDR(entry));
+                    entry = tab[(sp >> 12) & 0x1FF];
+                    if (!(entry & 1)) break;
+                    uint64_t v = *(uint64_t *)(uintptr_t)
+                                 (hhdm_off + PTE_ADDR(entry) + (sp & 0xFFFull));
+                    if (v >= IMG_LO && v < IMG_HI)
+                        deep[ndeep++ % 32] = v;
+                }
+                {
+                    int from = ndeep > 32 ? ndeep - 32 : 0;
+                    for (int q = from; q < ndeep && len < (int)sizeof(text) - 24; q++)
+                        len += ksnprintf(text + len, sizeof(text) - len,
+                                         " %llx", (unsigned long long)deep[q % 32]);
+                }
+                len += ksnprintf(text + len, sizeof(text) - len, "\n");
+                /* Saved kernel-stack words around t->rsp: the iret frame
+                 * of a parked user thread (RIP,CS,RFLAGS,RSP,SS)
+                 * pinpoints the exact user instruction it sits at. */
+                if (t->rsp && t->pml4_phys && t->state != THREAD_RUNNING
+                    && len < (int)sizeof(text) - 320) {
+                    const uint64_t *ks = (const uint64_t *)t->rsp;
+                    len += ksnprintf(text + len, sizeof(text) - len, "    kstk:");
+                    for (int k = -8; k < 16; k++)
+                        len += ksnprintf(text + len, sizeof(text) - len,
+                                         " %llx", (unsigned long long)ks[k]);
+                    len += ksnprintf(text + len, sizeof(text) - len, "\n");
+                }
+            }
+#endif
+        }
     } else if (vn->inode_id == 5) {
         /* Linux-style jiffie counters: user/nice/system/idle, in PIT ticks.
          * AuraLite doesn't distinguish user/nice/system time yet, so all

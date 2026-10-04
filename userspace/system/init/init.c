@@ -1501,6 +1501,18 @@ static int sh_run_command(int argc)
         }
     } else if (strcmp(cmd, "ps") == 0) {
         cmd_ps();
+    } else if (strcmp(cmd, "threads") == 0) {
+        {
+            int fd = open("/proc/threads", O_RDONLY);
+            if (fd >= 0) {
+                char buf[2048];
+                int64_t n;
+                while ((n = read(fd, buf, sizeof(buf))) > 0) {
+                    for (int64_t i = 0; i < n; i++) putchar(buf[i]);
+                }
+                close(fd);
+            } else printf("threads: cannot open /proc/threads\n");
+        }
     } else if (strcmp(cmd, "mkdir") == 0) {
         cmd_mkdir(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "rmdir") == 0) {

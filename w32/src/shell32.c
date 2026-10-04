@@ -44,8 +44,9 @@ extern W32_HICON w32_gdi_icon_decode(const uint8_t *bytes, size_t len);
 
 static int sh_noted;
 static void sh_note(const char *what) {
-    if (sh_noted) return;
-    sh_noted = 1;
+    /* WR-2 diagnosis: print every note (the once-only gate hid which file
+     * the FM tried to open); the volume is one line per user action. */
+    (void)sh_noted;
     printf("w32: [shell32] %s\n", what);
 }
 
@@ -958,6 +959,11 @@ static W32_HINSTANCE sh_execute(W32_LPCWSTR verb, W32_LPCWSTR file,
     if (sh_w2a(file, a, sizeof a) <= 0) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return (W32_HINSTANCE)(uintptr_t)W32_SE_ERR_FNF;
+    }
+    {
+        char dbg[600];
+        snprintf(dbg, sizeof dbg, "ShellExecute: file=\"%s\"", a);
+        sh_note(dbg);
     }
     char *host = w32_fs_xlate_dup(a);
     if (!host) {

@@ -282,6 +282,52 @@ void w32_module_set_exe_dir(const char *exe_path) {
 
 /* Open a dependency: the exe's directory first for a bare name, then the
  * name as given (relative names resolve against the working directory). */
+/* Case-insensitive open: FAT keeps the on-disk spelling ("7Z.DLL") while
+ * apps ask for the canonical one ("7z.dll").  Try the exact path first;
+ * on failure scan the parent directory for a case-insensitive name match
+ * and retry with the real spelling.  Returns NULL when nothing matches. */
+#include <dirent.h>
+static uint8_t *read_whole_file_ci(const char *path, size_t *out_size) {
+    uint8_t *f = read_whole_file(path, out_size);
+    if (f) return f;
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    char dirbuf[512];
+    if (slash) {
+        size_t dn = (size_t)(slash - path);
+        if (dn == 0) { dirbuf[0] = '/'; dirbuf[1] = 0; }
+        else { if (dn >= sizeof dirbuf) return NULL; memcpy(dirbuf, path, dn); dirbuf[dn] = 0; }
+    } else {
+        dirbuf[0] = '.'; dirbuf[1] = 0;
+    }
+    if (!base[0]) return NULL;
+    DIR *d = opendir(dirbuf);
+    if (!d) return NULL;
+    struct dirent *e;
+    char cand[512 + 256];
+    while ((e = readdir(d)) != NULL) {
+        const char *a = e->d_name, *b = base;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            if (ca != cb) break;
+            a++; b++;
+        }
+        if (*a == 0 && *b == 0) {
+            int n = snprintf(cand, sizeof cand, "%s/%s",
+                             dirbuf[0] == '/' && dirbuf[1] == 0 ? "" : dirbuf,
+                             e->d_name);
+            if (n > 0 && (size_t)n < sizeof cand) {
+                closedir(d);
+                return read_whole_file(cand, out_size);
+            }
+        }
+    }
+    closedir(d);
+    return NULL;
+}
+
 static uint8_t *open_module_file(const char *name, size_t *out_size) {
     int bare = 1;
     const char *pp;
@@ -297,11 +343,25 @@ static uint8_t *open_module_file(const char *name, size_t *out_size) {
         while (name[k] && d + 1 < sizeof path) { path[d++] = name[k++]; }
         path[d] = 0;
         {
-            uint8_t *f = read_whole_file(path, out_size);
+            uint8_t *f = read_whole_file_ci(path, out_size);
             if (f) return f;
         }
     }
-    return read_whole_file(name, out_size);
+    {
+        /* App-visible Windows paths ("C:\fat\7z.dll", any spelling with a
+         * drive letter or backslashes) resolve through the same C: = /
+         * translation the file API uses.  WR-2: 7-Zip FM builds the codecs
+         * path from its own module directory, so LoadLibrary sees a C:\...
+         * string; without this the lookup cannot hit /fat/7z.dll. */
+        extern char *w32_fs_xlate_dup(const char *);
+        char *xp = w32_fs_xlate_dup(name);
+        if (xp) {
+            uint8_t *f = read_whole_file_ci(xp, out_size);
+            free(xp);
+            if (f) return f;
+        }
+    }
+    return read_whole_file_ci(name, out_size);
 }
 
 /* Map, relocate and bind one DLL.  Returns 0 on success. */
@@ -537,10 +597,13 @@ static W32_HMODULE load_one(const char *name) {
 
     file = open_module_file(name, &file_size);
     if (!file) {
+        printf("[w32dll] open failed for \"%s\" (MOD_NOT_FOUND)\n", name);
         memset(&modules[slot], 0, sizeof modules[slot]);
         w32_set_last_error(W32_ERROR_MOD_NOT_FOUND);
         return NULL;
     }
+    printf("[w32dll] loaded file for \"%s\" (%llu bytes)\n", name,
+           (unsigned long long)file_size);
 
     /* Push before mapping: everything map_dll binds -- including nested
      * loads -- sees this name in progress. */
@@ -560,6 +623,8 @@ static W32_HMODULE load_one(const char *name) {
         return NULL;
     }
     load_depth--;
+    printf("[w32dll] mapped \"%s\" at %p span=%llu\n", name,
+           (void *)base, (unsigned long long)span);
 
     /* used was claimed before mapping; the load is now real. */
     modules[slot].loading   = 0;
@@ -856,6 +921,19 @@ void *w32_module_exe_handle(void) {
     w32_module_init();
     if (exe_slot >= 0 && modules[exe_slot].used)
         return slot_to_handle(exe_slot);
+    return 0;
+}
+
+/* W32A-11: the main EXE's mapping base.  A WinMain-style program carries
+ * its hInstance (the image base) around and later calls
+ * GetModuleFileName{A,W}(hInstance, ...) -- 7-Zip's MyGetModuleFileName is
+ * the observed caller: without this recognition the call failed, the FM
+ * fell back to ".\" as its codecs folder, and every archive open degraded
+ * to ShellExecute. */
+void *w32_module_exe_base(void) {
+    w32_module_init();
+    if (exe_slot >= 0 && modules[exe_slot].used)
+        return modules[exe_slot].base;
     return 0;
 }
 

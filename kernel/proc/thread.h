@@ -38,6 +38,17 @@ enum thread_state {
 
 struct tty;   /* kernel/tty/tty.h — controlling terminal */
 
+/* W32A-14: thread-group shared program break (see tcb::sh_brk).  A whole
+ * thread group reads and advances ONE cell so a worker's sbrk() is visible
+ * to its peers and survives the worker's exit.  `lock` serialises brk
+ * syscalls from different threads of the group on SMP (the lab boots -smp 2);
+ * it is only ever taken by the two brk syscall arms, never nested. */
+struct sh_brk {
+    uint64_t   brk;             /* authoritative break for the whole group */
+    int        refs;            /* number of live threads sharing this cell */
+    spinlock_t lock;
+};
+
 typedef struct tcb {
     uint64_t  rsp;               /* offset 0: saved stack pointer            */
     void     *kernel_stack;      /* base of the usable stack                 */
@@ -68,7 +79,26 @@ typedef struct tcb {
     uint8_t cloexec[VFS_MAX_FDS];      /* per-fd close-on-exec flags (FD_CLOEXEC == 1) */
     
     /* Program break (brk) / heap tracking. */
-    uint64_t  brk;               /* Current user heap end */
+    uint64_t  brk;               /* Current user heap end.  For a task that
+                                  * never cloned a thread this IS the break.
+                                  * For a thread group the shared cell below
+                                  * is authoritative and this field is a
+                                  * private snapshot nobody reads. */
+    struct sh_brk *sh_brk;       /* W32A-14: thread-group shared program
+                                  * break.  The old do_clone() copied
+                                  * parent->brk into the child, giving every
+                                  * thread a PRIVATE high-water mark: sbrk()
+                                  * performed by a worker never propagated
+                                  * back, and after the worker exited the
+                                  * main thread's stale brk re-issued its
+                                  * memory (observed: 7zFM's 320-byte
+                                  * CAgentFolder block 0x41e0f020, allocated
+                                  * by the archive-open thread, handed to
+                                  * the main thread again as a 46-byte
+                                  * UString path buffer -> GP#0 in
+                                  * GetArcProp).  Created lazily on the
+                                  * first clone(CLONE_VM), refcounted, freed
+                                  * when the last group member is reaped. */
     uint64_t  mmap_next;         /* Next anonymous mmap hint address */
     struct vma  *vma_list;       /* sorted list of virtual memory areas */
     spinlock_t  vma_lock;        /* protects vma_list */
@@ -376,5 +406,17 @@ void thread_deregister_tcb(tcb_t *tcb);
 tcb_t *thread_get_by_pid(uint64_t pid);
 /* Get all registered TCBs. Returns count. */
 int thread_get_all(tcb_t *out_list[], int max);
+
+/* Accessors (W32A-14): route every kernel touch of a task's break through
+ * the shared cell when one exists.  Single-threaded tasks (the common case,
+ * and every task until its first clone) keep using the in-TCB field
+ * directly. */
+static inline uint64_t task_brk_get(const tcb_t *t) {
+    return t->sh_brk ? t->sh_brk->brk : t->brk;
+}
+static inline void task_brk_set(tcb_t *t, uint64_t v) {
+    if (t->sh_brk) t->sh_brk->brk = v;
+    t->brk = v;   /* keep the snapshot coherent for fork() copying it */
+}
 
 #endif /* AURALITE_PROC_THREAD_H */

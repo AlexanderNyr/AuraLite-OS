@@ -93,6 +93,7 @@ void w32_module_register_exe(uint8_t *base, size_t span,
  * GetModuleHandle(NULL) resolves here first so both halves agree on
  * which module "the main executable" is. */
 void *w32_module_exe_handle(void);
+void *w32_module_exe_base(void);
 
 /* W32A-4: which module owns @pc?  0 with the outs filled, else -1.
  * Built-ins

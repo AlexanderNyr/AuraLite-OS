@@ -1333,24 +1333,36 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * shrinking below the page floor fails like Linux. */
         tcb_t *bcur = sched_current();
         if (!bcur) return (uint64_t)-ENOMEM;
-        if (a1 == 0) return bcur->brk;              /* query */
-        if (a1 < (bcur->brk & ~4095ULL)) return bcur->brk;  /* real shrink */
-        if (a1 >= USER_BRK_MAX) return bcur->brk;
-        uint64_t old_end = (bcur->brk + 4095ULL) & ~4095ULL;
+        /* W32A-14: same shared-cell rule as the native SYS_BRK arm above. */
+        uint64_t bk = 0;
+        if (bcur->sh_brk)
+            bk = spinlock_acquire_irqsave(&bcur->sh_brk->lock);
+        uint64_t ret;
+        if (a1 == 0) { ret = task_brk_get(bcur); goto brk_out; }   /* query */
+        if (a1 < (task_brk_get(bcur) & ~4095ULL)) {
+            ret = task_brk_get(bcur);                          /* real shrink */
+            goto brk_out;
+        }
+        if (a1 >= USER_BRK_MAX) { ret = task_brk_get(bcur); goto brk_out; }
+        uint64_t old_end = (task_brk_get(bcur) + 4095ULL) & ~4095ULL;
         uint64_t new_end = (a1 + 4095ULL) & ~4095ULL;
         uint64_t hhdm = boot_get_hhdm_offset();
         for (uint64_t v = old_end; v < new_end; v += 4096ULL) {
             if (paging_get_phys(v) == 0) {
                 uint64_t phys = pmm_alloc_frame();
-                if (!phys) return bcur->brk;
+                if (!phys) { ret = task_brk_get(bcur); goto brk_out; }
                 memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
                 paging_map(v, phys,
                            PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
                            PAGE_FLAG_USER | PAGE_FLAG_NO_EXEC);
             }
         }
-        bcur->brk = a1;
-        return bcur->brk;                           /* == a1, verbatim */
+        task_brk_set(bcur, a1);
+        ret = a1;                                   /* == a1, verbatim */
+    brk_out:
+        if (bcur->sh_brk)
+            spinlock_release_irqrestore(&bcur->sh_brk->lock, bk);
+        return ret;
     }
     case LX_ARM_EXIT_GROUP:
         /* Linux exit_group terminates every thread in the group.  The L1
@@ -2421,32 +2433,47 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-ENOMEM;
 
+        /* W32A-14: a thread group shares ONE break (tcb::sh_brk); take the
+         * group lock for the whole read-map-advance sequence so two threads
+         * sbrk()ing concurrently on SMP (-smp 2 lab) cannot both observe the
+         * same old break and double-issue the same page.  A single-threaded
+         * task has no cell and no peers — no lock needed. */
+        uint64_t bk = 0;
+        if (cur->sh_brk)
+            bk = spinlock_acquire_irqsave(&cur->sh_brk->lock);
+
+        uint64_t ret;
         if (a1 == 0) {
-            return cur->brk; /* Query current break */
+            ret = task_brk_get(cur); /* Query current break */
+            goto out;
         }
 
         uint64_t req_brk = a1;
-        if (req_brk < cur->brk) {
+        if (req_brk < task_brk_get(cur)) {
             /* Shrinking is intentionally unsupported for now. */
-            return cur->brk;
+            ret = task_brk_get(cur);
+            goto out;
         }
         if (req_brk >= USER_BRK_MAX) {
-            return cur->brk;
+            ret = task_brk_get(cur);
+            goto out;
         }
 
         uint64_t new_brk = (req_brk + 4095ULL) & ~4095ULL;
-        if (new_brk < cur->brk || new_brk >= USER_BRK_MAX) {
-            return cur->brk;
+        if (new_brk < task_brk_get(cur) || new_brk >= USER_BRK_MAX) {
+            ret = task_brk_get(cur);
+            goto out;
         }
 
-        uint64_t pages_to_alloc = (new_brk - cur->brk) / 4096ULL;
+        uint64_t pages_to_alloc = (new_brk - task_brk_get(cur)) / 4096ULL;
         uint64_t hhdm = boot_get_hhdm_offset();
         for (uint64_t i = 0; i < pages_to_alloc; i++) {
-            uint64_t virt = cur->brk + i * 4096ULL;
+            uint64_t virt = task_brk_get(cur) + i * 4096ULL;
             if (paging_get_phys(virt) == 0) {
                 uint64_t phys = pmm_alloc_frame();
                 if (!phys) {
-                    return cur->brk;
+                    ret = task_brk_get(cur);
+                    goto out;
                 }
                 memset((void *)(uintptr_t)(hhdm + phys), 0, 4096);
                 paging_map(virt, phys,
@@ -2455,8 +2482,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
             }
         }
 
-        cur->brk = new_brk;
-        return cur->brk;
+        task_brk_set(cur, new_brk);
+        ret = new_brk;
+    out:
+        if (cur->sh_brk)
+            spinlock_release_irqrestore(&cur->sh_brk->lock, bk);
+        return ret;
     }
 
     /* ---- P8: Clocks, Timers & sleep ---- */

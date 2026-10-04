@@ -634,7 +634,7 @@ void thread_reap_zombies(void) {
         tcb_t *z = reap;
         reap = z->next;
         uint64_t reaped_frames = 0;
-        if (z->pml4_phys) {
+        if (z->pml4_phys && !z->is_pthread) {
             /* Full user-half reaping.  A zombie is not running anywhere, but
              * with SMP the CPU doing the reaping may itself be executing on
              * the zombie's CR3 from kernel context (e.g. the thread exited on
@@ -675,6 +675,15 @@ void thread_reap_zombies(void) {
                 (unsigned long long)reaped_frames);
         thread_deregister_tcb(z);
         thread_free_kernel_stack(z);
+        /* W32A-14: drop this thread's reference to the group's shared break
+         * cell; the last member out frees it.  Runs under zombie_lock on the
+         * enqueue side and the reaper is the only freer, so refs-- needs no
+         * extra atomic. */
+        if (z->sh_brk) {
+            if (--z->sh_brk->refs == 0)
+                kfree(z->sh_brk);
+            z->sh_brk = NULL;
+        }
         memset(z, 0, sizeof(*z));
         slab_free(tcb_cache, z);
         zombies_reaped++;

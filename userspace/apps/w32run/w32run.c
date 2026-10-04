@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <dirent.h>
 
 #include "w32/w32_pe.h"
 #include "w32/w32_bind.h"
@@ -218,6 +219,56 @@ int main(int argc, char **argv) {
 
     fprintf(stderr, "w32run: %s mapped at %p, %lu import(s) bound\n",
            path, (void *)base, (unsigned long)nimp);
+
+    /* WR-2 (W32A-11): preload a "7z.dll" that sits beside the executable.
+     * 7-Zip 24.09 loads its codecs lazily "at first use", which lands the
+     * LoadLibrary on a worker thread; mapping it HERE, before any image code
+     * runs, means the lazy call later resolves through ps_resolve_dll to the
+     * same on-disk spelling and find_by_name SHARES this mapping instead of
+     * racing its own.  Best effort and silent when absent: the exe's
+     * directory is scanned case-insensitively (the guest FAT stores
+     * "7Z.DLL"), and the on-disk spelling is what gets loaded -- the same
+     * string a later LoadLibrary("C:\fat\7z.dll") resolves to. */
+    {
+        const char *slash = strrchr(path, '/');
+        if (slash && slash != path) {
+            char dir[1024];
+            size_t dl = (size_t)(slash - path);
+            if (dl < sizeof dir) {
+                DIR *d;
+                struct dirent *e;
+                memcpy(dir, path, dl);
+                dir[dl] = '\0';
+                d = opendir(dir);
+                if (d) {
+                    while ((e = readdir(d)) != NULL) {
+                        const char *a = e->d_name, *b = "7z.dll";
+                        while (*a && *b) {
+                            char ca = *a, cb = *b;
+                            if (ca >= 'A' && ca <= 'Z') ca += 32;
+                            if (cb >= 'A' && cb <= 'Z') cb += 32;
+                            if (ca != cb) break;
+                            a++; b++;
+                        }
+                        if (*a == '\0' && *b == '\0') {
+                            char full[1100];
+                            if ((size_t)snprintf(full, sizeof full, "%s/%s",
+                                                 dir, e->d_name)
+                                < sizeof full) {
+                                fprintf(stderr,
+                                        "w32run: preloading codecs %s\n",
+                                        full);
+                                w32_LoadLibraryA(full);
+                            }
+                            break;
+                        }
+                    }
+                    closedir(d);
+                }
+            }
+        }
+    }
+
 
     /* --- W32-6: the startup sequence a real CRT expects -----------------
      *

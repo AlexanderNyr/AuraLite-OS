@@ -30,6 +30,8 @@
 #   gl_shot <name>                     — screendump -> $GL_SHOTDIR/<name>.ppm
 #                                        + .png; sets GL_LAST_PPM / GL_LAST_PNG
 #   gl_key/gl_type via HMP; gl_move/gl_click/gl_dblclick via QMP (abs pointer)
+#     -- gui_input.py auto-falls back to the HMP PS/2 relative path on
+#        QEMU >= 9, where QMP input-send-event aborts the emulator
 #   gl_stop                            — kill the VM (idempotent; on trap)
 #
 # GL_LOG accumulates the serial transcript for il_assert_grep.
@@ -167,9 +169,9 @@ PY
 gl_key()  { python3 "$GL_CONSOLE" key  --monitor "$GL_MON" "$@" >/dev/null; }
 gl_type() { python3 "$GL_CONSOLE" type --monitor "$GL_MON" "$1" >/dev/null; }
 # The pointer goes over QMP (absolute axes); HMP cannot move a usb-tablet.
-gl_click()   { python3 "$GL_CONSOLE" click    --qmp "$GL_QMP" "$1" "$2" >/dev/null; }
-gl_dblclick(){ python3 "$GL_CONSOLE" dblclick --qmp "$GL_QMP" "$1" "$2" >/dev/null; }
-gl_move()    { python3 "$GL_CONSOLE" move     --qmp "$GL_QMP" "$1" "$2" >/dev/null; }
+gl_click()   { python3 "$GL_CONSOLE" click    --qmp "$GL_QMP" --monitor "$GL_MON" "$1" "$2" >/dev/null; }
+gl_dblclick(){ python3 "$GL_CONSOLE" dblclick --qmp "$GL_QMP" --monitor "$GL_MON" "$1" "$2" >/dev/null; }
+gl_move()    { python3 "$GL_CONSOLE" move     --qmp "$GL_QMP" --monitor "$GL_MON" "$1" "$2" >/dev/null; }
 
 # gl_oracle <fb_oracle args...> — thin passthrough so cases read declaratively.
 gl_oracle() { python3 "$GL_ORACLE" "$@"; }

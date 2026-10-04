@@ -313,6 +313,12 @@ static const w32_export_t exports[] = {
     { U32, "IsCharAlphaNumericW",       (void *)IsCharAlphaNumericW},
     { U32, "IsCharUpperW",              (void *)IsCharUpperW},
     { U32, "IsCharLowerW",              (void *)IsCharLowerW},
+    { U32, "CharNextA",                 (void *)CharNextA},
+    { U32, "CharNextW",                 (void *)CharNextW},
+    { U32, "CharNextExA",               (void *)CharNextExA},
+    { U32, "CharPrevA",                 (void *)CharPrevA},
+    { U32, "CharPrevW",                 (void *)CharPrevW},
+    { U32, "CharPrevExA",               (void *)CharPrevExA},
 
     { U32, "FrameRect",        (void *)FrameRect        },
 

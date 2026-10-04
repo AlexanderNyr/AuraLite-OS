@@ -120,6 +120,26 @@ int w32_handle_to_fd(W32_HANDLE h) {
     return table[i].fd;   /* -1 for payload kinds: fd callers refuse them */
 }
 
+
+/* ---- w32_dbg: the handle table ------------------------------------------------
+ * The WR-2 click-hang diagnosis: 7-Zip FM spins on WaitForSingleObject(0x104)
+ * (= slot 4) which answers WAIT_FAILED, so the spin never sees the event
+ * fire.  This prints the live table so the dump shows what slot 4 was
+ * allocated as and whether it is still open. */
+#include <stdio.h>
+void w32_dbg_handles_print(void) __attribute__((weak));
+void w32_dbg_handles_print(void) {
+    printf("[w32dump] handle table:\n");
+    for (int i = 0; i < W32_HANDLE_MAX; i++) {
+        if (!table[i].in_use) continue;
+        printf("[w32dump]   h=0x%llx kind=%d fd=%d\n",
+               (unsigned long long)(uintptr_t)HANDLE_BIAS + (unsigned long long)i,
+               table[i].kind, table[i].fd);
+    }
+    printf("[w32dump]   slot 3 in_use=%d kind=%d, slot 4 in_use=%d kind=%d\n",
+           table[3].in_use, table[3].kind, table[4].in_use, table[4].kind);
+    fflush(stdout);
+}
 int w32_handle_kind(W32_HANDLE h) {
     int i = handle_to_index(h);
     if (i < 0) return -1;

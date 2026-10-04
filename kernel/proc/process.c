@@ -334,14 +334,19 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
     uint64_t main_bias = (main_eh->e_type == ET_DYN) ? 0x555555554000ULL : 0;
 
     uint64_t main_entry = 0, jump_entry = 0;
+    /* W32A-14: write the new image's break through the accessor so a
+     * thread-group's shared cell advances with it (exec keeps the calling
+     * thread's group identity in this kernel). */
+    uint64_t new_brk = 0;
     if (pe_image_probe(elf_data, elf_size)) {
         /* WIN32_PLAN.md W32-3: a PE32+ image goes to the w32 loader instead.
          * Selection is by the file's own magic, not by filename.  A PE has
          * no PT_INTERP, so @interp_data is always NULL on this path. */
-        jump_entry = pe_load(elf_data, elf_size, &cur->brk, NULL);
+        jump_entry = pe_load(elf_data, elf_size, &new_brk, NULL);
+        task_brk_set(cur, new_brk);
     } else {
         main_entry = elf_load_at(elf_data, elf_size, main_bias,
-                                 &cur->brk, &ei.phdr, &ei.phnum);
+                                 &new_brk, &ei.phdr, &ei.phnum);
         jump_entry = main_entry;
 
         if (interp_data && interp_size) {
@@ -357,6 +362,7 @@ load_and_jump_args(const void *elf_data, uint64_t elf_size, struct exec_args *ea
                                      NULL, NULL, NULL);
             ei.base = interp_bias;
         }
+        task_brk_set(cur, new_brk);
     }
     ei.entry = main_entry ? main_entry : jump_entry;
     if (jump_entry == 0) {
@@ -558,7 +564,11 @@ int64_t do_fork(void) {
          * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags. */
         vfs_fork_inherit(child->fd_table, parent->fd_table,
                          child->cloexec, parent->cloexec);
-        child->brk = parent->brk;
+        /* W32A-14: fork() creates a SEPARATE address space — the child gets
+         * the break VALUE (via the shared cell if the parent is a grouped
+         * thread) but never the shared object itself. */
+        child->brk = task_brk_get(parent);
+        child->sh_brk = NULL;
         child->persona = parent->persona;   /* LX_COMPAT L1: the number
                                              * map is process identity */
         child->mmap_next = parent->mmap_next;

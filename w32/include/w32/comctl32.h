@@ -349,6 +349,12 @@ typedef struct {
     uint32_t     uNewState;
     uint32_t     uOldState;
     uint32_t     uChanged;     /* W32_LVIF_* of what changed    */
+    W32_POINT    ptAction;     /* MSVC layout: sits between uChanged
+                                * and lParam; omitting it shifted lParam
+                                * to +40 where every MSVC app reads +48
+                                * (the WR-2 click fault: 7-Zip FM read a
+                                * stack neighbour as the record index and
+                                * wrote _selectedStatusVector[garbage]). */
     int64_t      lParam;
 } W32_NMLISTVIEW;
 

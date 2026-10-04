@@ -1508,6 +1508,16 @@ static void ps_dos_path(const char *host, char *dos, size_t cap) {
     dos[o] = '\0';
 }
 
+/* W32A-11: the loader-registered EXE image base, 0 for exe-less hosts.
+ * Weak-linked like w32_module_exe_handle: the A-3 host harness amalgamates
+ * this file without w32_module.o. */
+static W32_HANDLE ps_exe_base(void) {
+    extern __attribute__((weak)) void *w32_module_exe_base(void);
+    if (w32_module_exe_base)
+        return (W32_HANDLE)w32_module_exe_base();
+    return 0;
+}
+
 W32ABI W32_DWORD GetModuleFileNameA(W32_HANDLE mod, W32_LPSTR buf,
                                     W32_DWORD cch) {
     const char *host;
@@ -1520,7 +1530,9 @@ W32ABI W32_DWORD GetModuleFileNameA(W32_HANDLE mod, W32_LPSTR buf,
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
-    if (!mod) {
+    if (!mod || mod == ps_exe_base()) {
+        /* W32A-11: NULL or the image base (the hInstance a WinMain program
+         * carries) both ask for the main executable. */
         host = ps_mods[0].path;
     } else {
         slot = ps_mod_slot(mod);
@@ -1554,7 +1566,9 @@ W32ABI W32_DWORD GetModuleFileNameW(W32_HANDLE mod, W32_LPWSTR buf,
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
-    if (!mod) {
+    if (!mod || mod == ps_exe_base()) {
+        /* W32A-11: NULL or the image base (the hInstance a WinMain program
+         * carries) both ask for the main executable. */
         host = ps_mods[0].path;
     } else {
         slot = ps_mod_slot(mod);
@@ -2661,6 +2675,58 @@ W32ABI W32_BOOL GlobalMemoryStatusEx(W32_MEMORYSTATUSEX *out) {
  * flag combination is refused per-flag.
  */
 
+/* W32A-11: case-insensitive stat for the FAT guest, where the on-disk
+ * spelling may differ (observed: "7Z.DLL" on disk, the program asking for
+ * "7z.dll").  Exact first (the common, fast, correct-on-POSIX case), then
+ * an opendir/readdir walk of the parent comparing folded names; on a match
+ * the on-disk spelling is returned in *real (caller frees) so the loader
+ * opens the file that exists. */
+static int ps_stat_ci(const char *path, struct stat *st, char **real) {
+    if (stat(path, st) == 0 && S_ISREG(st->st_mode)) {
+        if (real) *real = NULL;
+        return 1;
+    }
+    const char *slash = strrchr(path, '/');
+    const char *base = slash ? slash + 1 : path;
+    size_t dirlen = slash ? (size_t)(slash - path) : 0;
+    char dirbuf[4096];
+    if (dirlen == 0 || dirlen >= sizeof dirbuf)
+        return 0;                     /* no parent to walk (or too long) */
+    memcpy(dirbuf, path, dirlen);
+    dirbuf[dirlen] = '\0';
+    DIR *d = opendir(dirbuf);
+    if (!d)
+        return 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *a = e->d_name, *b = base;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            if (ca != cb) break;
+            a++; b++;
+        }
+        if (*a == '\0' && *b == '\0') {
+            char full[4096];
+            if ((size_t)snprintf(full, sizeof full, "%s/%s", dirbuf,
+                                 e->d_name) < sizeof full &&
+                stat(full, st) == 0 && S_ISREG(st->st_mode)) {
+                closedir(d);
+                if (real) {
+                    *real = strdup(full);
+                    return *real ? 1 : 0;
+                }
+                return 1;
+            }
+            closedir(d);
+            return 0;
+        }
+    }
+    closedir(d);
+    return 0;
+}
+
 static char *ps_resolve_dll(const char *name, int altered, const char *callerDir) {
     struct stat st;
     size_t n;
@@ -2692,11 +2758,21 @@ static char *ps_resolve_dll(const char *name, int altered, const char *callerDir
         memmove(cand, cand + 2, n - 1);
         n -= 2;
     }
-    if (stat(cand, &st) == 0 && S_ISREG(st.st_mode))
-        return cand;
+    {
+        char *real = NULL;
+        if (ps_stat_ci(cand, &st, &real)) {
+            if (real) { free(cand); return real; }
+            return cand;
+        }
+    }
     memcpy(cand + n, ".dll", 5);
-    if (stat(cand, &st) == 0 && S_ISREG(st.st_mode))
-        return cand;
+    {
+        char *real = NULL;
+        if (ps_stat_ci(cand, &st, &real)) {
+            if (real) { free(cand); return real; }
+            return cand;
+        }
+    }
     free(cand);
     if (strchr(name, '/') || strchr(name, '\\'))
         return NULL;
@@ -2778,6 +2854,7 @@ static void *ps_load_record(const char *hostpath) {
 
 static void *ps_load_common(const char *n8, W32_DWORD flags, int ex) {
     char *resolved = NULL;
+    printf("[w32dll] LoadLibrary request: \"%s\"\n", n8 ? n8 : "(null)");
     void *cookie;
     char callerDir[4096];
 
@@ -2816,6 +2893,22 @@ static void *ps_load_common(const char *n8, W32_DWORD flags, int ex) {
         w32_set_last_error(W32_ERROR_FILE_NOT_FOUND);
         return NULL;
     }
+    /* W32A-11: a real DLL must be MAPPED (sections, relocations, imports,
+     * DllMain), not merely recorded.  Route through the loader, which also
+     * answers builtins and already-loaded modules (share + refcount).  The
+     * observed case: 7-Zip FM's LoadGlobalCodecs -> LoadLibrary("C:\fat\7z.dll")
+     * -- without the mapping there are no formats and every archive open
+     * degrades to ShellExecute.  Guest-only (the A-3 host harness amalgamates
+     * this file without w32_module.o). */
+#ifndef AURALITE_W32_HOST_TEST
+    {
+        W32_HMODULE h = w32_LoadLibraryA(resolved);
+        free(resolved);
+        if (!h)
+            return NULL;   /* loader already set the error */
+        return h;
+    }
+#endif
     cookie = ps_load_record(resolved);
     free(resolved);
     return cookie;

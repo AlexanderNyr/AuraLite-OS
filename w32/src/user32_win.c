@@ -47,6 +47,17 @@
 #include "w32/user32_priv.h"
 #include "w32/gdi32.h"
 
+/* w32_dbg_dump (the /tmp/w32dump trigger) is the only stdio user in this
+ * translation unit: a serial diagnostic that answers "what does the live
+ * window tree look like right now", which every WR-lane debugging session
+ * ends up needing.  Compiled out for the host unit tests, which link their
+ * own window tables. */
+#ifndef AURALITE_W32_HOST_TEST
+#include <stdio.h>
+#include <unistd.h>
+#include <fcntl.h>
+#endif
+
 /* Mirrors of libauragui's two structs this file reads (they are the kernel's
  * gui_theme_t / gui_event_t layouts; the ABI check below pins the values in
  * the real build).  Keeping our own copy is what lets the host suite compile
@@ -404,19 +415,25 @@ uint32_t w32_win_client_h(int i) {
 /* Re-read the geometry the compositor actually has.  Every geometry answer
  * comes from here rather than from cached fields, which is what keeps a
  * user's title-bar drag visible to GetWindowRect. */
+static void ui_decor(const struct ui_window *w, uint32_t *bw, uint32_t *th);
+
 static void ui_refresh_geom(struct ui_window *w) {
     if (w->ag_wid < 0) return;
     ag_window_get_pos(w->ag_wid, &w->x, &w->y);
     uint32_t cw = 0, ch = 0;
     ag_window_get_size(w->ag_wid, &cw, &ch);
     /* The compositor reports the client (content) size; the outer rect adds
-     * the decoration the theme asks for. */
-    ui_theme_t t;
+     * the decoration the theme asks for.  ui_decor is the ONE authority for
+     * what decoration a window has -- including "none for WS_CHILD", which
+     * this used to get wrong by adding the theme border to children.  That
+     * made every GetWindowRect->MoveWindow layout pass grow a child by
+     * 2*border_w, and 7-Zip FM's panel relayout then ping-ponged forever
+     * (listview shrinking 4px per cycle, status bar growing) until the
+     * process crashed -- the WR-2 live lane's click-hang. */
     uint32_t bw = 0, th = 0;
-    if (ag_theme_get(&t) == 0) { bw = t.border_w; th = t.titlebar_h; }
-    int decorated = !(w->style & W32_WS_POPUP);
-    w->w = cw + (decorated ? 2 * bw : 0);
-    w->h = ch + (decorated ? th + 2 * bw : 0);
+    ui_decor(w, &bw, &th);
+    w->w = cw + 2 * bw;
+    w->h = ch + th + 2 * bw;
 }
 
 /* Win32 WM_SIZE carries the CLIENT-area size (LOWORD=width, HIWORD=height),
@@ -1169,6 +1186,177 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
     }
 }
 
+/* ---- w32_dbg_msglog: the message ring the /tmp/w32dump prints --------------
+ *
+ * Every message that reaches a window procedure goes through ui_call_top
+ * (dispatched, sent, cross-thread), so recording there answers "what was
+ * the app processing when it hung/crashed" -- the question the WR-2 live
+ * lane needed answered after a single panel click opened an Operation
+ * dialog and the process later died with 0xC0000005.  Fixed-size ring,
+ * no allocation, cheap stores on the hot path; the dump prints it in
+ * sequence order.  Compiled out for the host unit tests.
+ */
+#ifndef AURALITE_W32_HOST_TEST
+#define W32_DBG_MSGS 256
+static struct {
+    W32_HWND   hwnd;
+    W32_UINT   msg;
+    W32_WPARAM wp;
+    W32_LPARAM lp;
+    W32_LPARAM aux;       /* WM_NOTIFY: the NMHDR code, read at delivery */
+    int64_t    lv_item;   /* LVN_ITEMCHANGED: iItem                       */
+    uint32_t   lv_newst;  /*               : uNewState                    */
+    int64_t    lv_lp;     /*               : lParam                       */
+} w32_dbg_msgs[W32_DBG_MSGS];
+static unsigned w32_dbg_msg_seq;
+
+/* The /tmp/w32trace flag, refreshed by the watchdog every 500 ms; read by
+ * the blocking-call sites (thr_wait_n, Sleep) so a wedged handler prints
+ * the call it is stuck in. */
+int w32_trace_on = 0;
+
+static void w32_dbg_log(W32_HWND hwnd, W32_UINT msg,
+                        W32_WPARAM wp, W32_LPARAM lp) {
+    unsigned p = w32_dbg_msg_seq++ % W32_DBG_MSGS;
+    w32_dbg_msgs[p].hwnd = hwnd;
+    w32_dbg_msgs[p].msg  = msg;
+    w32_dbg_msgs[p].wp   = wp;
+    w32_dbg_msgs[p].lp   = lp;
+    w32_dbg_msgs[p].aux  = 0;
+    if (msg == W32_WM_NOTIFY) {
+        const W32_NMHDR *h = (const W32_NMHDR *)(uintptr_t)lp;
+        if ((uintptr_t)h > 0x1000)          /* stack struct, still valid */
+            w32_dbg_msgs[p].aux = (W32_LPARAM)(int64_t)(int32_t)h->code;
+        /* LVN_ITEMCHANGED (-100..-102): capture iItem + lParam + states so
+         * the WR-2 click chain can be audited from the dump alone. */
+        {
+            int32_t code = (int32_t)(uintptr_t)w32_dbg_msgs[p].aux;
+            if (code >= -102 && code <= -100 && (uintptr_t)h > 0x1000) {
+                /* NMLISTVIEW (MSVC x64): iItem@20 uNewState@28 lParam@48. */
+                const uint8_t *b = (const uint8_t *)h;
+                w32_dbg_msgs[p].lv_item  = (int64_t)(int32_t)
+                    *(const uint32_t *)(const void *)(b + 20);
+                w32_dbg_msgs[p].lv_newst =
+                    *(const uint32_t *)(const void *)(b + 28);
+                w32_dbg_msgs[p].lv_lp    = (int64_t)
+                    *(const int64_t *)(const void *)(b + 48);
+            }
+        }
+    }
+}
+#else
+static void w32_dbg_log(W32_HWND hwnd, W32_UINT msg,
+                        W32_WPARAM wp, W32_LPARAM lp) { (void)hwnd; (void)msg; (void)wp; (void)lp; }
+#endif
+
+/* ---- w32_dbg_dump: the /tmp/w32dump serial diagnostic --------------------
+ *
+ * The WR live-GUI lanes drive real applications by pixels, so the recurring
+ * debugging question is "what does the personality's window tree look like
+ * right now" -- which classes exist, which window is where, and what items
+ * a listview holds.  This answers it from INSIDE the running process, on
+ * demand, without a debugger: create /tmp/w32dump from the guest shell
+ * (`touch /tmp/w32dump`); the next pump tick dumps the tree to serial and
+ * consumes the file.  comctl32.c prints its per-control items through
+ * w32_ctl_dump_items().  Compiled out for the host unit tests.
+ */
+#ifndef AURALITE_W32_HOST_TEST
+extern void w32_ctl_dump_items(W32_HWND hwnd);      /* w32/src/comctl32.c */
+
+void w32_dbg_dump_windows(void) {
+    int n = 0;
+    for (int i = 0; i < UI_MAX_WINDOWS; i++) if (windows[i].in_use) n++;
+    printf("[w32dump] window tree: %d window(s), pid %u\n", n,
+           (unsigned)GetCurrentProcessId());
+    for (int i = 0; i < UI_MAX_WINDOWS; i++) {
+        struct ui_window *w = &windows[i];
+        if (!w->in_use) continue;
+        const char *cls = (w->cls >= 0 && w->cls < UI_MAX_CLASSES &&
+                           classes[w->cls].in_use)
+                          ? classes[w->cls].name_a : "";
+        printf("[w32dump] #%d hwnd=0x%llx cls=\"%s\" text=\"%s\" "
+               "style=0x%x rect=%d,%d %ux%u parent=%d%s\n",
+               i, (unsigned long long)idx_to_hwnd(i), cls, w->title_a,
+               (unsigned)w->style, w->x, w->y, w->w, w->h,
+               w->parent, w->visible ? "" : " HIDDEN");
+        w32_ctl_dump_items(idx_to_hwnd(i));
+    }
+    /* The message ring: the last W32_DBG_MSGS messages that reached a
+     * window procedure, in delivery order. */
+    unsigned total = w32_dbg_msg_seq;
+    unsigned from  = total > W32_DBG_MSGS ? total - W32_DBG_MSGS : 0;
+    {
+        extern void w32_dlg_dump_timers(void) __attribute__((weak));
+        if (w32_dlg_dump_timers) w32_dlg_dump_timers();
+    }
+    printf("[w32dump] message ring: %u delivered, last %u follow\n",
+           total, total - from);
+    for (unsigned k = from; k < total; k++) {
+        const typeof(w32_dbg_msgs[0]) *m = &w32_dbg_msgs[k % W32_DBG_MSGS];
+        printf("[w32dump] msg[%u] hwnd=0x%llx msg=0x%x wp=0x%llx lp=0x%llx aux=0x%llx iItem=%lld newState=0x%x lParam=%lld\n",
+               k, (unsigned long long)m->hwnd, (unsigned)m->msg,
+               (unsigned long long)m->wp, (unsigned long long)m->lp,
+               (unsigned long long)m->aux,
+               (long long)m->lv_item, (unsigned)m->lv_newst,
+               (long long)m->lv_lp);
+    }
+    fflush(stdout);
+    /* Every message queue's depth: a queue wedged at capacity while its
+     * owner polls "is there anything" elsewhere is the signature of a
+     * loop that stopped consuming (the WR-2 click-hang question). */
+    for (int i = 0; i < UI_MAX_QUEUES; i++) {
+        if (!queues[i].in_use) continue;
+        int cnt = (queues[i].tail - queues[i].head + UI_QUEUE_LEN)
+                  % UI_QUEUE_LEN;
+        printf("[w32dump] queue tid=%u depth=%d%s\n", queues[i].tid, cnt,
+               cnt >= UI_QUEUE_LEN - 2 ? " (FULL)" : "");
+    }
+    /* The wait ring lives in the thread core (kernel32_thr.c); weak so
+     * host unit tests that link user32_win.o alone still build. */
+    {
+        extern void w32_dbg_wait_print(void) __attribute__((weak));
+        extern void w32_dbg_handles_print(void) __attribute__((weak));
+        if (w32_dbg_wait_print) w32_dbg_wait_print();
+        if (w32_dbg_handles_print) w32_dbg_handles_print();
+    }
+}
+
+/* The watchdog: a thread of the personality's own, started lazily on the
+ * first pump tick, that checks the /tmp/w32dump trigger every 500 ms
+ * INDEPENDENTLY of the message loop.  The pump-tick poll this replaces
+ * went silent exactly when it was needed: an app wedged inside a message
+ * handler (7-Zip FM blocked in the click notify) still draws, still
+ * crashes, but never pumps -- so the trigger file was never consumed and
+ * the dump could not be taken.  The watchdog also serves the SEH unhandled
+ * path, which dumps synchronously before the process dies. */
+static W32_DWORD W32ABI w32_dbg_watchdog(void *unused) {
+    (void)unused;
+    for (;;) {
+        Sleep(500);
+        {
+            int tfd = open("/tmp/w32trace", O_RDONLY);
+            w32_trace_on = (tfd >= 0);
+            if (tfd >= 0) close(tfd);
+        }
+        int fd = open("/tmp/w32dump", O_RDONLY);
+        if (fd < 0) continue;
+        close(fd);
+        w32_dbg_dump_windows();
+        unlink("/tmp/w32dump");
+    }
+    return 0;                         /* unreachable */
+}
+
+void w32_dbg_poll(void) {
+    static int started;
+    if (started) return;
+    started = 1;
+    CreateThread(0, 0, w32_dbg_watchdog, 0, 0, 0);
+}
+#else
+void w32_dbg_poll(void) { }
+#endif
+
 /* Drain the compositor for every live window.  Called from the message
  * loop, so a program that never pumps never sees input -- same as Win32. */
 static void ui_pump(void) {
@@ -1186,14 +1374,17 @@ static void ui_pump(void) {
      * not linked (host unit tests that don't pull w32_dlg.o). */
     extern __attribute__((weak)) void w32_dlg_fire_timers(void);
     if (w32_dlg_fire_timers) w32_dlg_fire_timers();
+    w32_dbg_poll();
 }
 
 /* ---- dispatch ------------------------------------------------------------ */
+
 
 static W32_LRESULT ui_call_top(W32_HWND hwnd, W32_UINT msg,
                                W32_WPARAM wp, W32_LPARAM lp) {
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) return 0;
+    w32_dbg_log(hwnd, msg, wp, lp);
     int top = windows[i].proc_top;
     if (top < 0 || !windows[i].proc[top]) return DefWindowProcW(hwnd, msg, wp, lp);
     return windows[i].proc[top](hwnd, msg, wp, lp);
@@ -1282,6 +1473,9 @@ W32ABI void w32_user32_set_socket_pump(void (W32ABI *fn)(void)) {
 
 W32ABI W32_BOOL PostMessageW(W32_HWND hwnd, W32_UINT msg,
                              W32_WPARAM wp, W32_LPARAM lp) {
+    printf("[w32msg] PostMessageW hwnd=%p msg=0x%x wp=%llx tid=%u\n",
+           (void *)(uintptr_t)hwnd, (unsigned)msg,
+           (unsigned long long)wp, (unsigned)GetCurrentThreadId());
     if (w32_win_index_from_hwnd(hwnd) < 0) {
         w32_set_last_error(W32_ERROR_INVALID_HANDLE);
         return W32_FALSE;
@@ -1575,19 +1769,37 @@ W32ABI W32_DWORD MsgWaitForMultipleObjects(W32_DWORD count,
                                            W32_BOOL wait_all,
                                            W32_DWORD ms, W32_DWORD mask) {
     (void)mask;
-    /* The honest version: wait on the handles (or sleep) and then report
-     * whether this thread's queue has anything.  A real implementation
-     * would put the message object into the wait set; that needs a kernel
-     * object the personality does not have yet, and the plan records it as
-     * residue rather than pretending. */
-    W32_DWORD r;
-    if (count == 0) { Sleep(ms); r = 0xFFFFFFFFu; }   /* WAIT_TIMEOUT */
-    else r = WaitForMultipleObjects(count, (W32_HANDLE *)(uintptr_t)handles,
-                                                       wait_all, ms);
-    struct ui_queue *q = ui_queue_for(GetCurrentThreadId(), 0);
-    int n = q ? (q->tail - q->head + UI_QUEUE_LEN) % UI_QUEUE_LEN : 0;
-    if (n) return count;                               /* WAIT_OBJECT_0 + count */
-    return r;
+    /* The honest version: pump the compositor and the cross-thread sends
+     * while waiting, so a message CAN arrive during the wait -- that is
+     * the entire point of the QS_ALLINPUT half of this call.  The previous
+     * "wait, then look at the queue" shape answered the queue question
+     * without ever delivering events into it: a thread polling
+     * MsgWait(1, &hThread, FALSE, 0, QS_ALLINPUT) in a loop (7-Zip FM's
+     * Operation progress does exactly this) spun forever against an
+     * eternally empty queue -- the WR-2 live lane's click-hang.  The wait
+     * itself stays a zero-timeout poll per slice: the handles are checked
+     * through the same WaitForMultipleObjects the caller could have used,
+     * and the sleep between slices is what keeps the loop from eating a
+     * core. */
+    struct ui_queue *q = ui_queue_for(GetCurrentThreadId(), 1);
+    uint64_t start = GetTickCount64();
+    for (;;) {
+        if (w32_ui_socket_pump) w32_ui_socket_pump();
+        if (q) ui_service_sends(q);
+        ui_pump();
+        if (q) ui_service_sends(q);
+        int n = q ? (q->tail - q->head + UI_QUEUE_LEN) % UI_QUEUE_LEN : 0;
+        if (n) return count;               /* WAIT_OBJECT_0 + count: message */
+        if (count) {
+            W32_DWORD r = WaitForMultipleObjects(
+                count, (W32_HANDLE *)(uintptr_t)handles, wait_all, 0);
+            if (r != W32_WAIT_TIMEOUT) return r;   /* signaled or failed */
+        }
+        uint64_t now = GetTickCount64();
+        if (ms != W32_INFINITE && now - start >= ms)
+            return W32_WAIT_TIMEOUT;
+        Sleep(ms == W32_INFINITE ? 10 : 5);
+    }
 }
 
 /* ---- window text --------------------------------------------------------- */
@@ -1786,8 +1998,16 @@ static void ui_decor(const struct ui_window *w, uint32_t *bw, uint32_t *th) {
      * gets the theme's border, and a title bar only if it asks for one:
      * note that Win32 defines WS_CAPTION as WS_BORDER|WS_DLGFRAME, so a
      * test for "has a border" must not be read as "has no caption" --
-     * getting that order wrong makes every captioned window undecorated. */
-    if (w->style & W32_WS_POPUP) return;
+     * getting that order wrong makes every captioned window undecorated.
+     *
+     * WS_CHILD windows are composited with NO_DECOR|BORDERLESS too (see
+     * CreateWindowExW), and on Win32 a child never carries decorations:
+     * its window rect IS its layout rect.  Charging children the theme
+     * border here made each GetWindowRect report 2*border_w wider/taller
+     * than MoveWindow had just set, so panel relayouts (7-Zip FM reads a
+     * control's height back before repositioning it) grew by 4px per pass
+     * and never converged. */
+    if (w->style & (W32_WS_POPUP | W32_WS_CHILD)) return;
     *bw = t.border_w;
     if (w->style & (W32_WS_CAPTION | W32_WS_SYSMENU | W32_WS_THICKFRAME |
                     W32_WS_MINIMIZEBOX | W32_WS_MAXIMIZEBOX))

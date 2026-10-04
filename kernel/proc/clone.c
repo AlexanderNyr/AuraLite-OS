@@ -157,10 +157,46 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
     child->is_session_leader = 0;
     for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];
     child->sig_mask = parent->sig_mask;
-    child->brk = parent->brk;
+    /* W32A-14: the program break is a THREAD-GROUP property, not a
+     * per-thread snapshot.  The old `child->brk = parent->brk` copy gave
+     * the child a private high-water mark: any sbrk() the child performed
+     * never propagated back, and after the child exited, the parent's
+     * stale brk made its next sbrk(0) hand out memory the child had
+     * already allocated — observed live as 7zFM's CAgentFolder 320-byte
+     * block at 0x41e0f020 (allocated by the archive-open thread) being
+     * re-issued to the main thread as a 46-byte UString buffer, the second
+     * vtable call then faulting GP#0 in GetArcProp.  Lazily create one
+     * shared, refcounted cell per group; every member's brk syscall then
+     * reads and advances the same value.  We run with interrupts off
+     * (FIX_R3 section above), so the create/refs++ pair is atomic. */
+    if (!parent->sh_brk) {
+        parent->sh_brk = kmalloc(sizeof(struct sh_brk));
+        if (!parent->sh_brk) {
+            if (rflags & 0x200ULL) __asm__ volatile("sti" ::: "memory");
+            return -ENOMEM;
+        }
+        parent->sh_brk->brk  = parent->brk;
+        parent->sh_brk->refs = 1;
+        spinlock_init(&parent->sh_brk->lock);
+    }
+    child->sh_brk = parent->sh_brk;
+    child->sh_brk->refs++;
+    child->brk = parent->sh_brk->brk;   /* private snapshot, kept coherent */
     child->persona = parent->persona;   /* LX_COMPAT L1: threads inherit
                                          * the process's number map */
     child->mmap_next = parent->mmap_next;
+    /* W32A-11: CLONE_VM means one address space, so the child must see the
+     * parent's VMAs.  The thread stacks are lazy mmap regions; without this
+     * the first demand-zero fault below the clone seed page (any call deeper
+     * than ~4 KB — observed: 7zFM's worker thread dying in GetModuleFileNameW
+     * at stack_base+0x18f4, error 0x6, no VMA found) kills the thread.  The
+     * list is SHARED, not copied: inserts made by the parent before the
+     * clone are visible to the child (the stack case).  Inserts the child
+     * itself makes land in its own field and do not propagate back — the
+     * known, documented residue; personality threads only ever need the
+     * parent's regions.  The reap path guards against a shared-list free
+     * (see thread.c is_pthread check). */
+    child->vma_list = parent->vma_list;
     for (int i = 0; i < VFS_PATH_MAX && parent->cwd[i]; i++) child->cwd[i] = parent->cwd[i];
 
     /* CLONE_SETTLS: record the thread's TLS base.  It becomes FS.base at
