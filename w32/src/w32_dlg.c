@@ -170,6 +170,66 @@ static const uint16_t *dlg_parse_header(const W32_DLGTEMPLATE *tmpl) {
     return p;
 }
 
+/* WR-2: walk the cdit DLGITEMTEMPLATE records after the header and create
+ * each control as a child of the dialog frame.  A DLGITEMTEMPLATE is
+ * style/exStyle (DWORDs), x/y/cx/cy (dialog-unit WORDs), id, then
+ * class/title as ordinals (0xFFFF + atom/id) or strings, then a WORD
+ * creation-data length.  Dialog units map at 2 px/unit here, the same
+ * factor the frame itself uses (cx*8/4, cy*16/8). */
+static void dlg_create_items(W32_HWND hw, const W32_DLGTEMPLATE *tmpl,
+                             W32_HINSTANCE inst) {
+    extern const uint16_t w32_cls_Button_w[],  w32_cls_Edit_w[],
+                          w32_cls_Static_w[],  w32_cls_ListBox_w[],
+                          w32_cls_ScrollBar_w[], w32_cls_ComboBox_w[];
+    const uint16_t *p = dlg_parse_header(tmpl);
+    if (!p) return;
+    for (unsigned k = 0; k < tmpl->cdit && k < 256; k++) {
+        const uint8_t *bp = (const uint8_t *)p;
+        uint32_t style   = *(const uint32_t *)bp; bp += 4;
+        uint32_t exStyle = *(const uint32_t *)bp; bp += 4;
+        int32_t  x = *(const int16_t *)bp; bp += 2;
+        int32_t  y = *(const int16_t *)bp; bp += 2;
+        int32_t  cx = *(const int16_t *)bp; bp += 2;
+        int32_t  cy = *(const int16_t *)bp; bp += 2;
+        uint16_t id = *(const uint16_t *)bp; bp += 2;
+        const uint16_t *cls   = (const uint16_t *)bp;
+        const uint16_t *title = dlg_skip_z_or_id(cls);
+        if (!title) return;
+        const uint16_t *after_title = dlg_skip_z_or_id(title);
+        if (!after_title) return;
+        /* Creation data follows the title IMMEDIATELY (no padding); only
+         * the next DLGITEMTEMPLATE is DWORD-aligned.  Padding here used to
+         * make cdlen read 140 for 7-Zip's IDD_COPY "..." button, skipping
+         * past the OK button into a stranger item. */
+        const uint8_t *cdp = (const uint8_t *)after_title;
+        uint16_t cdlen = *(const uint16_t *)cdp; (void)cdlen;
+        const uint8_t *next = cdp + 2 + cdlen;
+        next = (const uint8_t *)(((uintptr_t)next + 3) & ~(uintptr_t)3);
+
+        const uint16_t *clsname = 0;
+        const uint16_t *wndtitle = (title[0] == 0xFFFF) ? 0 : title;
+        if (cls[0] == 0xFFFF) {
+            switch (cls[1]) {
+            case 0x0080: clsname = w32_cls_Button_w;   break;
+            case 0x0081: clsname = w32_cls_Edit_w;     break;
+            case 0x0082: clsname = w32_cls_Static_w;   break;
+            case 0x0083: clsname = w32_cls_ListBox_w;  break;
+            case 0x0084: clsname = w32_cls_ScrollBar_w;break;
+            case 0x0085: clsname = w32_cls_ComboBox_w; break;
+            default: clsname = 0; break;
+            }
+        } else clsname = cls;
+        if (clsname) {
+            CreateWindowExW(exStyle, clsname, wndtitle,
+                            style | W32_WS_CHILD | W32_WS_VISIBLE,
+                            x * 2, y * 2, cx * 2, cy * 2, hw,
+                            (W32_HMENU)(uintptr_t)id, inst, 0);
+        }
+        p = (const uint16_t *)next;
+        if ((uintptr_t)p <= (uintptr_t)cdp) break;     /* corrupt: stop */
+    }
+}
+
 W32ABI W32_INT_PTR DialogBoxIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMPLATE *tmpl,
                                            W32_HWND owner, void *proc, W32_LPARAM init) {
     if (!tmpl || !proc) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return -1; }
@@ -185,9 +245,14 @@ W32ABI W32_INT_PTR DialogBoxIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMP
     uint32_t ws = W32_WS_POPUP | W32_WS_CAPTION | W32_WS_SYSMENU |
                   W32_WS_VISIBLE | W32_WS_DLGFRAME;
     if (tmpl->style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
+    {
+        extern W32_WORD w32_user_register_dialog_class(void);
+        w32_user_register_dialog_class();
+    }
     W32_HWND hw = CreateWindowExW(tmpl->exStyle & 0x00040000u, dlg_cls_w, (const uint16_t*)0,
                                   ws, tmpl->x, tmpl->y, w, h, owner, 0, inst, 0);
     if (!hw) return -1;
+    dlg_create_items(hw, tmpl, inst);
 
     w32_dlg_t *d = dlg_alloc();
     if (!d) { DestroyWindow(hw); return -1; }
@@ -254,9 +319,14 @@ W32ABI W32_HWND CreateDialogIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMP
     uint32_t ws = W32_WS_POPUP | W32_WS_CAPTION | W32_WS_SYSMENU | W32_WS_DLGFRAME;
     if (tmpl->style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
     if (tmpl->style & W32_WS_VISIBLE) ws |= W32_WS_VISIBLE;
+    {
+        extern W32_WORD w32_user_register_dialog_class(void);
+        w32_user_register_dialog_class();
+    }
     W32_HWND hw = CreateWindowExW(tmpl->exStyle & 0x00040000u, dlg_cls_w, (const uint16_t*)0,
                                   ws, tmpl->x, tmpl->y, w, h, owner, 0, inst, 0);
     if (!hw) return 0;
+    dlg_create_items(hw, tmpl, inst);
 
     w32_dlg_t *d = dlg_alloc();
     if (!d) { DestroyWindow(hw); return 0; }

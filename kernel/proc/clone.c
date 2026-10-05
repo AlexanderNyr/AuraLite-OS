@@ -140,9 +140,12 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
     child->tgid       = parent->tgid ? parent->tgid : parent->id;
     child->is_pthread = 1;
 
-    /* CLONE_FILES: share the parent's FD table (pointer copy + refcount). */
-    vfs_fork_inherit(child->fd_table, parent->fd_table,
-                     child->cloexec, parent->cloexec);
+    /* CLONE_FILES: threads SHARE one fd table (pointer + refcount), as in
+     * Linux — a fork-style snapshot here once gave each thread a private
+     * copy, so a file opened by one thread was EBADF in another (WR-2:
+     * 7-Zip's panel thread opened the archive, its extract worker could
+     * not read it). */
+    child->fdtab = fdtab_ref(parent->fdtab);
 
     /* Inherit credentials, pgid/sid, controlling tty, cwd, signal dispositions. */
     child->uid = parent->uid; child->euid = parent->euid; child->suid = parent->suid;

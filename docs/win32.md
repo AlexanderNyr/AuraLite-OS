@@ -44,7 +44,7 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*929 functions across 21 modules (894 REAL, 35 FAIL-CLEAN). This table is generated from
+*935 functions across 21 modules (900 REAL, 35 FAIL-CLEAN). This table is generated from
 `w32/src/w32_bind.c` and the D9 classes in `w32/app_ledger/*.imports` by
 `tools/gen_w32_api_table.py`; edit the export table or the ledgers, not this list.*
 
@@ -300,12 +300,14 @@ way `make sdk-check` does for the native SDK.
 - `PathIsNetworkPathW` · `PathIsRelativeW` · `PathMatchSpecW`
 - `PathRemoveExtensionW` · `PathRemoveFileSpecW` · `PathStripPathW`
 
-**USER32.dll** (293) — 292 REAL, 1 FAIL-CLEAN
+**USER32.dll** (299) — 298 REAL, 1 FAIL-CLEAN
 
 - `AdjustWindowRectEx` · `AppendMenuA` · `AppendMenuW`
 - `BeginDeferWindowPos` · `BeginPaint` · `BringWindowToTop`
 - `CallNextHookEx` · `CallWindowProcW` · `ChangeClipboardChain`
-- `CharLowerW` · `CharUpperW` · `CheckDlgButton`
+- `CharLowerW` · `CharNextA` · `CharNextExA`
+- `CharNextW` · `CharPrevA` · `CharPrevExA`
+- `CharPrevW` · `CharUpperW` · `CheckDlgButton`
 - `CheckMenuItem` · `CheckMenuRadioItem` · `CheckRadioButton`
 - `ChildWindowFromPointEx` · `ClientToScreen` · `CloseClipboard`
 - `CopyAcceleratorTableW` · `CountClipboardFormats` · `CreateAcceleratorTableW`

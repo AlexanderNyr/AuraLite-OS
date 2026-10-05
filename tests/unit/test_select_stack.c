@@ -8,6 +8,7 @@
 #include "../../kernel/time.h"
 
 static tcb_t fake_cur;
+static struct fdtab fake_fdtab;
 static int copy_from_user_calls;
 static int copy_to_user_calls;
 static int kernel_block_calls;   /* Q16: do_select blocks via kernel_block_current() */
@@ -80,7 +81,7 @@ static void test_blocking_path_heap_allocates_per_nfds(void) {
     vnode.size = 0;
     ofd.vn = &vnode;
     ofd.access_mode = O_RDONLY;
-    fake_cur.fd_table[0] = &ofd;
+    fake_cur.fdtab = &fake_fdtab; fake_fdtab.slots[0] = &ofd;
 
     fd_set rfds;
     struct kernel_timeval tv = {1, 0};
@@ -107,7 +108,7 @@ static void test_pipe_ready_returns_immediately(void) {
     vnode.size = 0;              /* pipe-like: vn->size is always 0 */
     ofd.vn = &vnode;
     ofd.access_mode = O_RDONLY;
-    fake_cur.fd_table[0] = &ofd;
+    fake_cur.fdtab = &fake_fdtab; fake_fdtab.slots[0] = &ofd;
 
     force_readable = 1;
     fd_set rfds;
@@ -138,7 +139,7 @@ static void test_eintr_gate_requires_actionable_signal(void) {
     memset(&ofd, 0, sizeof(ofd));
     ofd.vn = &vnode;
     ofd.access_mode = O_RDONLY;
-    fake_cur.fd_table[0] = &ofd;
+    fake_cur.fdtab = &fake_fdtab; fake_fdtab.slots[0] = &ofd;
     FD_ZERO(&rfds);
     FD_SET(0, &rfds);
 

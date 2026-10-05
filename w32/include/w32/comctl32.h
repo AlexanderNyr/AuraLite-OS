@@ -183,6 +183,7 @@ extern const uint16_t W32_WCN_COMBOEX[];    /* WR-2: ComboBoxEx32    */
 #define W32_CB_RESETCONTENT  0x014Bu
 #define W32_CB_GETCOUNT      0x0146u
 #define W32_CB_GETCURSEL     0x0147u
+#define W32_CB_GETLBTEXT     0x0148u
 #define W32_CB_SETCURSEL     0x014Eu
 
 /* COMBOBOXEXITEMW (x64): the pointer forces padding after mask/iItem. */

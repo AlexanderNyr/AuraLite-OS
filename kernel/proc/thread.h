@@ -49,6 +49,8 @@ struct sh_brk {
     spinlock_t lock;
 };
 
+struct fdtab;
+
 typedef struct tcb {
     uint64_t  rsp;               /* offset 0: saved stack pointer            */
     void     *kernel_stack;      /* base of the usable stack                 */
@@ -75,8 +77,8 @@ typedef struct tcb {
      * path so they are eligible for immediate reaping.
      */
     volatile int waited;
-    struct ofd *fd_table[VFS_MAX_FDS]; /* per-process FD table: pointers to shared OFDs */
-    uint8_t cloexec[VFS_MAX_FDS];      /* per-fd close-on-exec flags (FD_CLOEXEC == 1) */
+    struct fdtab *fdtab;               /* shared FD table (CLONE_FILES groups
+                                          share one; see struct fdtab in vfs.h) */
     
     /* Program break (brk) / heap tracking. */
     uint64_t  brk;               /* Current user heap end.  For a task that
@@ -130,6 +132,17 @@ typedef struct tcb {
      * overwrite the GLOBAL syscall_saved_* without losing OUR return
      * destination.  syscall_get_saved_return() reads these back at sysret. */
     uint64_t  saved_user_rip;
+    /* WR-2 spin diagnosis: last interrupt-time sample of this thread's user
+     * RIP, taken on every IRQ entry while the thread is on the CPU.  For a
+     * CPU-bound user loop this is the only in-kernel view of where it is. */
+    uint64_t  sampled_rip;
+    /* WR-2 diagnosis: the syscall entry point records the RIP/RSP that made
+     * the call plus the number and first four argument words, so /proc/PID/
+     * status can name the very last syscall a wedged thread made. */
+    uint64_t  last_syscall_rip;
+    uint64_t  last_syscall_rsp;
+    uint64_t  last_syscall;
+    uint64_t  last_syscall_args[4];
     uint64_t  saved_user_rflags;
     uint64_t  saved_user_rsp;
     /* Live user callee-saved (SysV-preserved) registers captured at the SYSCALL

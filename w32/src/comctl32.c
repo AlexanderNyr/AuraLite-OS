@@ -3405,7 +3405,7 @@ static const uint16_t *ps_after_header(const W32_DLGTEMPLATE *t) {
 static W32_HWND ps_expand_page(W32_HWND page, W32_HINSTANCE inst,
                                const W32_DLGTEMPLATE *t) {
     const uint16_t *p = ps_after_header(t);
-    for (uint32_t i = 0; i < t->items && p; i++) {
+    for (uint32_t i = 0; i < t->cdit && p; i++) {
         while (((uintptr_t)p) & 3) p++;  /* each item is DWORD-aligned */
         /* DLGITEMTEMPLATE: style, exStyle, x, y, cx, cy, id (all 16-bit
          * words except the leading pair of 32-bit words).  cdit bounds
@@ -3748,69 +3748,3 @@ int w32_comctl_is_class(const uint16_t *clsname) {
     return 0;
 }
 
-/* ---- w32_ctl_dump_items: the /tmp/w32dump diagnostic's control half -------
- *
- * Called from user32_win.c's w32_dbg_dump_windows() for every live window;
- * prints the items a common control holds (listview rows, treeview nodes,
- * comboboxex entries, toolbar buttons, status parts) to serial.  The item
- * arrays are the personality's own mirrors, so this is ground truth for
- * "what does the panel show" -- the question every WR-lane pixel assertion
- * ends up needing answered.  Compiled out for the host unit tests.
- */
-#ifndef AURALITE_W32_HOST_TEST
-void w32_ctl_dump_items(W32_HWND hwnd) {
-    ctl_state_t *c = ctl_of(hwnd);
-    if (!c) return;
-    switch (c->kind) {
-    case CTL_KIND_LISTVIEW:
-        printf("[w32dump]   listview: %d item(s), %d column(s), sel=%d\n",
-               c->u.lv.n_items, c->u.lv.n_cols, c->u.lv.sel_mark);
-        for (int i = 0; i < c->u.lv.n_items; i++)
-            printf("[w32dump]   lv[%d]=\"%s\" state=0x%x lparam=0x%llx\n",
-                   i, c->u.lv.text[i], (unsigned)c->u.lv.state[i],
-                   (unsigned long long)c->u.lv.lparam[i]);
-        break;
-    case CTL_KIND_TREEVIEW:
-        printf("[w32dump]   treeview: %d node(s), caret=%d\n",
-               c->u.tv.n_items, c->u.tv.caret);
-        for (int i = 0; i < c->u.tv.n_items; i++)
-            printf("[w32dump]   tv[%d]=\"%s\" parent=%d lparam=0x%llx\n",
-                   i, c->u.tv.text[i], c->u.tv.parent[i],
-                   (unsigned long long)c->u.tv.lparam[i]);
-        break;
-    case CTL_KIND_COMBOEX:
-        printf("[w32dump]   comboboxex: %d item(s), sel=%d\n",
-               c->u.cbex.n_items, c->u.cbex.cur_sel);
-        for (int i = 0; i < c->u.cbex.n_items; i++)
-            printf("[w32dump]   cbex[%d]=\"%s\"\n", i, c->u.cbex.text[i]);
-        break;
-    case CTL_KIND_TOOLBAR:
-        printf("[w32dump]   toolbar: %d button(s)\n", c->u.tb.n_btn);
-        for (int i = 0; i < c->u.tb.n_btn; i++)
-            printf("[w32dump]   tb[%d] cmd=%d state=0x%x text=\"%s\"\n",
-                   i, (int)c->u.tb.btn[i].cmd, (unsigned)c->u.tb.btn[i].state,
-                   c->u.tb.text[i]);
-        break;
-    case CTL_KIND_STATUS:
-        printf("[w32dump]   statusbar: %d part(s) simple=%d\n",
-               c->u.sb.n_parts, c->u.sb.simple);
-        for (int i = 0; i < c->u.sb.n_parts; i++)
-            printf("[w32dump]   sb[%d] edge=%d text=\"%s\"\n",
-                   i, (int)c->u.sb.edge[i], c->u.sb.text[i]);
-        break;
-    case CTL_KIND_HEADER:
-        printf("[w32dump]   header: %d item(s)\n", c->u.hd.n_items);
-        for (int i = 0; i < c->u.hd.n_items; i++)
-            printf("[w32dump]   hd[%d]=\"%s\" cx=%d\n",
-                   i, c->u.hd.text[i], (int)c->u.hd.cx[i]);
-        break;
-    case CTL_KIND_REBAR:
-        printf("[w32dump]   rebar: %d band(s), bar_h=%d\n",
-               c->u.rb.n_bands, (int)c->u.rb.bar_h);
-        break;
-    default:
-        break;
-    }
-    fflush(stdout);
-}
-#endif

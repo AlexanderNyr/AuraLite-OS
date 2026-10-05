@@ -733,10 +733,10 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
 
     struct ofd *file_ofd = NULL;
     if (!anonymous) {
-        if (fd >= VFS_MAX_FDS || cur->fd_table[fd] == NULL) {
+        if (fd >= VFS_MAX_FDS || cur->fdtab->slots[fd] == NULL) {
             return (uint64_t)-EBADF;
         }
-        file_ofd = cur->fd_table[fd];
+        file_ofd = cur->fdtab->slots[fd];
     }
 
     /* Create the VMA descriptor. No physical allocation here (lazy fault). */
@@ -1022,6 +1022,16 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         cur->saved_user_rip    = syscall_saved_rcx;
         cur->saved_user_rflags = syscall_saved_r11;
         cur->saved_user_rsp    = syscall_saved_rsp;
+        /* WR-2 diagnosis: name the syscall that is in flight so /proc can
+         * report the last call of a wedged thread (ring 3 RIP == where the
+         * SYSCALL instruction sits in the caller's image). */
+        cur->last_syscall_rip = syscall_saved_rcx;
+        cur->last_syscall_rsp = syscall_saved_rsp;
+        cur->last_syscall     = num;
+        cur->last_syscall_args[0] = a1;
+        cur->last_syscall_args[1] = a2;
+        cur->last_syscall_args[2] = a3;
+        cur->last_syscall_args[3] = a4;
         cur->saved_user_rbx    = syscall_saved_rbx;
         cur->saved_user_rbp    = syscall_saved_rbp;
         cur->saved_user_r12    = syscall_saved_r12;
@@ -1263,9 +1273,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * filesystem push its own metadata if it can. */
         tcb_t *fc = sched_current();
         if (!fc) return (uint64_t)-EBADF;
-        if (a1 >= VFS_MAX_FDS || fc->fd_table[a1] == NULL)
+        if (a1 >= VFS_MAX_FDS || fc->fdtab->slots[a1] == NULL)
             return (uint64_t)-EBADF;
-        struct ofd *fo = fc->fd_table[a1];
+        struct ofd *fo = fc->fdtab->slots[a1];
         page_cache_flush(fo);
         /* F2 (FSFULL_PLAN.md): after the page cache, give the
          * filesystem a chance to flush its own cache (the five
@@ -1512,9 +1522,9 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         int fd = (int)a1;
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-EBADF;
-        if (fd < 0 || fd >= VFS_MAX_FDS || !cur->fd_table[fd])
+        if (fd < 0 || fd >= VFS_MAX_FDS || !cur->fdtab->slots[fd])
             return (uint64_t)-EBADF;
-        struct ofd *o = cur->fd_table[fd];
+        struct ofd *o = cur->fdtab->slots[fd];
         struct vnode *vn = o->vn;
         if (!vn || vn->type != VFS_TYPE_DIR) return (uint64_t)-ENOTDIR;
         if (!vn->ops || !vn->ops->readdir) return (uint64_t)-ENOTDIR;
@@ -2960,7 +2970,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (r >= 0 && (flags & 0x80000)) {
             tcb_t *cur = sched_current();
             if (cur && r < 64)
-                cur->cloexec[r] = 1;
+                cur->fdtab->cloexec[r] = 1;
         }
         return (uint64_t)vfs_errno(r, EBADF);
     }

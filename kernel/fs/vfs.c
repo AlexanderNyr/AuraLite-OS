@@ -136,9 +136,9 @@ static const struct vfs_ops pipe_write_ops = { .write = pipe_write_op };
 /* R2: the mount table lives in vfsmount.c now (one copy, every
  * architecture links it); this file DELEGATES. */
 /* Fallback table for early boot or unusual calls before sched_init().  Normal
- * threads/processes use tcb_t::fd_table, so fd numbers are process-local. */
-static struct ofd *fallback_fd_table[VFS_MAX_FDS];
-static uint8_t     fallback_cloexec[VFS_MAX_FDS];
+ * threads/processes use tcb_t::fdtab, so fd numbers are process-local
+ * (and shared across a CLONE_FILES thread group). */
+static struct fdtab fallback_fdtab;    /* kernel threads without a table */
 
 #define VFS_MAX_NAMED_FIFOS 16
 #define VFS_SYMLINK_MAX_FOLLOW 8
@@ -197,15 +197,15 @@ void vfs_stamp_changed(struct vnode *vn) {
 
 static struct ofd **current_fd_table(void) {
     tcb_t *cur = sched_current();
-    if (cur) return cur->fd_table;
-    return fallback_fd_table;
+    if (cur && cur->fdtab) return cur->fdtab->slots;
+    return fallback_fdtab.slots;
 }
 
 /* Returns the cloexec[] array that pairs with current_fd_table(). */
 static uint8_t *current_cloexec(void) {
     tcb_t *cur = sched_current();
-    if (cur) return cur->cloexec;
-    return fallback_cloexec;
+    if (cur && cur->fdtab) return cur->fdtab->cloexec;
+    return fallback_fdtab.cloexec;
 }
 
 /* ---- OFD lifecycle ---------------------------------------------------- */
@@ -336,8 +336,8 @@ static int alloc_fd_slot_ptr(struct ofd **t, int start) {
 }
 
 void vfs_init(void) {
-    memset(fallback_fd_table, 0, sizeof(fallback_fd_table));
-    memset(fallback_cloexec, 0, sizeof(fallback_cloexec));
+    memset(&fallback_fdtab, 0, sizeof(fallback_fdtab));
+    fallback_fdtab.refs = 1;   /* never unref'd: the boot context's table */
     memset(named_fifos, 0, sizeof(named_fifos));
 }
 
@@ -1272,7 +1272,7 @@ void vfs_close_on_exec(void) {
     tcb_t *cur = sched_current();
     if (!cur) return;
     for (int fd = 3; fd < VFS_MAX_FDS; fd++) {
-        if (cur->cloexec[fd] && cur->fd_table[fd] != NULL) {
+        if (current_cloexec()[fd] && current_fd_table()[fd] != NULL) {
             vfs_close(fd);
         }
     }
@@ -1307,7 +1307,7 @@ void vfs_ensure_std_fds(void) {
     tcb_t *cur = sched_current();
     if (!cur) return;
     for (int fd = 0; fd <= 2; fd++) {
-        if (cur->fd_table[fd] != NULL) continue;
+        if (current_fd_table()[fd] != NULL) continue;
         int opened = vfs_open("/dev/null", O_RDWR, 0);
         if (opened < 0) break;   /* devfs not mounted yet: nothing we can do */
         if (opened != fd) {
@@ -1328,13 +1328,45 @@ void vfs_ensure_std_fds(void) {
  * inherited OFD's refcount is incremented.  FD_CLOEXEC flags are copied.  Must
  * be called while building the child, before it becomes schedulable.
  */
-void vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
-                      const uint8_t *src_cloexec) {
+void vfs_fork_inherit(struct fdtab *dst, const struct fdtab *src) {
+    if (!dst) return;
+    if (!src) return;             /* an empty table stays empty */
     for (int i = 0; i < VFS_MAX_FDS; i++) {
-        dst[i] = src[i];
-        dst_cloexec[i] = src_cloexec[i];
-        if (src[i]) vfs_ofd_get(src[i]);
+        dst->slots[i] = src->slots[i];
+        dst->cloexec[i] = src->cloexec[i];
+        if (src->slots[i]) vfs_ofd_get(src->slots[i]);
     }
+}
+
+/* ---- shared fd tables (CLONE_FILES) ----------------------------------- */
+
+struct fdtab *fdtab_alloc(void) {
+    struct fdtab *t = kmalloc(sizeof(*t));
+    if (t) {
+        memset(t, 0, sizeof(*t));
+        t->refs = 1;
+    }
+    return t;
+}
+
+struct fdtab *fdtab_ref(struct fdtab *t) {
+    if (!t) return NULL;
+    __atomic_add_fetch(&t->refs, 1, __ATOMIC_RELAXED);
+    return t;
+}
+
+void fdtab_unref(struct fdtab *t) {
+    if (!t) return;
+    if (__atomic_sub_fetch(&t->refs, 1, __ATOMIC_ACQ_REL) != 0) return;
+    /* Last sharer is gone: close every fd, then free the table. */
+    for (int fd = 0; fd < VFS_MAX_FDS; fd++) {
+        struct ofd *o = t->slots[fd];
+        if (o) {
+            t->slots[fd] = NULL;
+            ofd_put(o);
+        }
+    }
+    kfree(t);
 }
 
 /*

@@ -741,7 +741,7 @@ static void cd_ofn_template(W32_BYTE *tbuf, size_t cap, int save) {
     W32_DLGTEMPLATE *t = (W32_DLGTEMPLATE *)(void *)tbuf;
     t->style = W32_DS_MODALFRAME | W32_DS_SETFONT;
     t->exStyle = 0;
-    t->items = 0;
+    t->cdit = 0;
     t->x = 40; t->y = 40; t->cx = 212; t->cy = 175;
     uint16_t *p = (uint16_t *)(void *)(tbuf + sizeof *t);
     *p++ = 0;                        /* menu */
@@ -1087,7 +1087,7 @@ static int cd_choose_color(W32_CHOOSECOLORW *cc) {
     memset(tbuf, 0, sizeof tbuf);
     W32_DLGTEMPLATE *t = (W32_DLGTEMPLATE *)(void *)tbuf;
     t->style = W32_DS_MODALFRAME;
-    t->items = 0;
+    t->cdit = 0;
     t->x = 60; t->y = 60; t->cx = 212; t->cy = 110;
     {
         uint16_t *p = (uint16_t *)(void *)(tbuf + sizeof *t);
@@ -1242,7 +1242,7 @@ static int cd_choose_font(W32_CHOOSEFONTW *cf) {
     memset(tbuf, 0, sizeof tbuf);
     W32_DLGTEMPLATE *t = (W32_DLGTEMPLATE *)(void *)tbuf;
     t->style = W32_DS_MODALFRAME;
-    t->items = 0;
+    t->cdit = 0;
     t->x = 60; t->y = 60; t->cx = 212; t->cy = 130;
     {
         uint16_t *p = (uint16_t *)(void *)(tbuf + sizeof *t);
@@ -1408,7 +1408,7 @@ void *W32ABI SHBrowseForFolderW(W32_BROWSEINFOW *bi) {
     memset(tbuf, 0, sizeof tbuf);
     W32_DLGTEMPLATE *t = (W32_DLGTEMPLATE *)(void *)tbuf;
     t->style = W32_DS_MODALFRAME;
-    t->items = 0;
+    t->cdit = 0;
     t->x = 50; t->y = 50; t->cx = 212; t->cy = 130;
     {
         uint16_t *p = (uint16_t *)(void *)(tbuf + sizeof *t);

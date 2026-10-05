@@ -254,7 +254,7 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
         return n;
     }
     if (vn->inode_id == 0x7FFFFFF1ull) { /* /proc/self/fd — the open FDs */
-        struct ofd **ft = sched_current() ? sched_current()->fd_table : NULL;
+        struct ofd **ft = sched_current() ? sched_current()->fdtab->slots : NULL;
         for (int i = 0; i < VFS_MAX_FDS && n < max; i++) {
             if (ft && ft[i]) {
                 memset(&out[n], 0, sizeof(out[n]));
@@ -530,6 +530,19 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                             t->name, st, (unsigned long long)t->id,
                             (unsigned long long)(t->parent ? t->parent->id : 0),
                             (unsigned long long)t->pml4_phys);
+            /* WR-2 spin diagnosis: the in-flight syscall (captured at the
+             * SYSCALL gate) plus the sampled user RIP (caught by the timer
+             * tick, isr.c) make a wedged thread readable from /proc. */
+            len += ksnprintf(text + len, sizeof(text) - (size_t)len,
+                             "LastSyscall:\t%llu args 0x%llx 0x%llx 0x%llx 0x%llx\n",
+                             (unsigned long long)t->last_syscall,
+                             (unsigned long long)t->last_syscall_args[0],
+                             (unsigned long long)t->last_syscall_args[1],
+                             (unsigned long long)t->last_syscall_args[2],
+                             (unsigned long long)t->last_syscall_args[3]);
+            len += ksnprintf(text + len, sizeof(text) - (size_t)len,
+                             "SampledRIP:\t0x%llx\n",
+                             (unsigned long long)t->sampled_rip);
         } else if (file_type == 12) {
             len = ksnprintf(text, sizeof(text), "%s\n", t->name);
         } else if (file_type == 13) {

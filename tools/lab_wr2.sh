@@ -3,6 +3,7 @@
 # Использование:
 #   lab_wr2.sh boot     — собрать /fat-диск (с SUBDIR) и загрузить QEMU, дождаться shell
 #   lab_wr2.sh launch   — запустить 7zFM.exe C:/fat
+#   lab_wr2.sh verify   — гейт WR-2(б): полный цикл extract + md5-сверка с хостом
 # Остальное — напрямую через tools/gui_input.py.
 set -u
 ROOT=/home/user/AuraLite-OS
@@ -73,5 +74,51 @@ launch)
 stop)
     [ -f $LAB/qemu.pid ] && kill $(cat $LAB/qemu.pid) 2>/dev/null
     echo "[lab] остановлено"
+    ;;
+verify)
+    # WR-2(b) gate: byte-exact extract from inside the archive through
+    # IDD_COPY.  Full clean cycle: boot -> launch 7zFM -> open the archive
+    # (double-click) -> select HELLO.TXT -> Extract (toolbar btn[1]) ->
+    # OK in the Copy dialog -> read /fat/HELLO.TXT over serial and compare
+    # every byte against the host's unpack of build/wr2/wr2_fixture.zip.
+    # No green without the md5 matching the host reference.
+    set -e
+    EXPECT_MD5=$(python3 - <<'PY'
+import zipfile, hashlib
+z = zipfile.ZipFile("/home/user/AuraLite-OS/build/wr2/wr2_fixture.zip")
+print(hashlib.md5(z.read("HELLO.TXT")).hexdigest())
+PY
+)
+    bash "$0" stop >/dev/null 2>&1 || true
+    bash "$0" boot >/dev/null
+    sleep 3
+    bash "$0" launch >/dev/null
+    sleep 27
+    $GI dblclick --monitor $MON --qmp $QMP 500 175 >/dev/null
+    sleep 7
+    $GI click  --monitor $MON --qmp $QMP 500 146 >/dev/null
+    sleep 2
+    $GI click  --monitor $MON --qmp $QMP 132 95  >/dev/null
+    sleep 5
+    $GI click  --monitor $MON --qmp $QMP 448 288 >/dev/null
+    sleep 12
+    LS=$($GI serial-run --serial $SER --cmd "ls /fat" --wait "auralite#" --timeout 15 2>/dev/null)
+    echo "$LS" | grep -a "HELLO.TXT" | grep -aq "217 bytes" \
+        || { echo "GATE FAIL: /fat/HELLO.TXT (217 bytes) отсутствует"; exit 1; }
+    CAT=$($GI serial-run --serial $SER --cmd "cat /fat/HELLO.TXT" \
+              --wait "auralite#" --timeout 15 2>/dev/null)
+    GOT_MD5=$(python3 - "$CAT" <<'PY'
+import sys, hashlib
+t = sys.argv[1].split("cat /fat/HELLO.TXT", 1)[1]
+t = t.rsplit("auralite#", 1)[0].lstrip(chr(10)).replace(chr(13), "")
+print(hashlib.md5(t.encode()).hexdigest())
+PY
+)
+    if [ "$GOT_MD5" = "$EXPECT_MD5" ]; then
+        echo "GATE PASS: WR-2(b) byte-exact extract (md5 $GOT_MD5)"
+    else
+        echo "GATE FAIL: md5 guest=$GOT_MD5 host=$EXPECT_MD5"
+        exit 1
+    fi
     ;;
 esac

@@ -236,13 +236,6 @@ W32ABI W32_BOOL ReadFile(W32_HANDLE h, void *buf, W32_DWORD len,
     }
 
     ssize_t n = read(fd, buf, (size_t)len);
-    if ((uintptr_t)h == 0x109)   /* WR-2 diagnosis: the fixture zip read */
-        printf("[w32fs] ReadFile h=0x109 len=%u got=%d first=%x %x %x %x\n",
-               (unsigned)len, (int)n,
-               n > 0 ? ((unsigned char *)buf)[0] : 0,
-               n > 1 ? ((unsigned char *)buf)[1] : 0,
-               n > 2 ? ((unsigned char *)buf)[2] : 0,
-               n > 3 ? ((unsigned char *)buf)[3] : 0);
     if (n < 0) {
         W32_DWORD code = w32_error_from_c(n);
         w32_set_last_error(code);
@@ -449,7 +442,6 @@ W32ABI W32_HANDLE GetProcessHeap(void) { return PROCESS_HEAP_TOKEN; }
 /* WR-2 heap lane: set from CreateFileW once the fixture zip opens, so the
  * alloc/free storm of the archive-open path is visible on the serial log
  * with addresses (the poisoned-object chase needed exactly this). */
-int w32_dbg_heap_lane;
 
 W32ABI void *HeapAlloc(W32_HANDLE heap, W32_DWORD flags, unsigned long long size) {
     if (heap != PROCESS_HEAP_TOKEN) {
@@ -464,12 +456,6 @@ W32ABI void *HeapAlloc(W32_HANDLE heap, W32_DWORD flags, unsigned long long size
     }
     if (flags & 0x8u) memset(p, 0, (size_t)size);   /* HEAP_ZERO_MEMORY */
     k32_heap_record(p, size);
-    if (w32_dbg_heap_lane) {
-        uintptr_t a = (uintptr_t)p;
-        if (a >= 0x41e00000u && a < 0x41f00000u)
-            printf("[w32heap] A size=%llu -> %p\n",
-                   (unsigned long long)size, p);
-    }
     return p;
 }
 
@@ -478,11 +464,6 @@ W32ABI W32_BOOL HeapFree(W32_HANDLE heap, W32_DWORD flags, void *mem) {
     if (heap != PROCESS_HEAP_TOKEN) {
         w32_set_last_error(W32_ERROR_INVALID_HANDLE);
         return W32_FALSE;
-    }
-    if (w32_dbg_heap_lane && mem) {
-        uintptr_t a = (uintptr_t)mem;
-        if (a >= 0x41e00000u && a < 0x41f00000u)
-            printf("[w32heap] F %p\n", mem);
     }
     if (mem) { k32_heap_drop(mem); free(mem); }  /* NULL is a legal no-op */
     return W32_TRUE;

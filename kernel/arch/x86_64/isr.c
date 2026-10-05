@@ -355,6 +355,13 @@ void isr_handler(struct registers *r) {
         kernel_halt();
     } else if (r->int_no < 48) {
         /* Hardware IRQ (PIC-remapped vectors 32-47). */
+        /* WR-2 spin diagnosis: sample the interrupted user RIP so a
+         * CPU-bound user loop is visible from /proc (kernel-mode frames are
+         * not sampled -- the kernel's own RIP would say nothing). */
+        if ((r->cs & 3) == 3) {
+            tcb_t *cur = sched_current();
+            if (cur) cur->sampled_rip = r->rip;
+        }
         irq_dispatch((int)(r->int_no - 32), r);
         /* On the way back to Ring 3, deliver any pending unblocked signal
          * (e.g. one posted by kill() from another thread, or SIGALRM). */

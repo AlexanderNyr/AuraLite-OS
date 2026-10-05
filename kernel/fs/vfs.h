@@ -261,9 +261,27 @@ struct iovec {
 int64_t vfs_readv(int fd, const struct iovec *iov, int iovcnt);
 int64_t vfs_writev(int fd, const struct iovec *iov, int iovcnt);
 
-/* OFD-table maintenance used by fork()/exit()/execve() in the process layer. */
-void    vfs_fork_inherit(struct ofd **dst, struct ofd **src, uint8_t *dst_cloexec,
-                         const uint8_t *src_cloexec);
+/* The file-descriptor table.  A process owns one; every thread of a
+ * CLONE_FILES thread group SHARES the same object (pointer + refs), so a
+ * file opened by one thread is visible in its siblings — the fork-style
+ * snapshot previously taken on clone() handed 7-Zip's extract worker an
+ * fd space where the panel thread's archive handle was EBADF (WR-2).
+ * fork() still copies (POSIX): a fresh table via fdtab_alloc() +
+ * vfs_fork_inherit(). */
+struct fdtab {
+    struct ofd *slots[VFS_MAX_FDS];   /* fd number -> shared OFD */
+    uint8_t     cloexec[VFS_MAX_FDS]; /* FD_CLOEXEC per slot */
+    volatile int refs;                /* sharing threads/processes (atomic) */
+};
+
+struct fdtab *fdtab_alloc(void);      /* zeroed table, refs = 1 */
+struct fdtab *fdtab_ref(struct fdtab *t);   /* NULL-safe */
+void          fdtab_unref(struct fdtab *t); /* last ref closes every fd */
+
+/* OFD-table maintenance used by fork()/exit()/execve() in the process layer.
+ * Copies the parent's slots (each OFD refcounted) and cloexec flags into
+ * the (already allocated) child table.  src may be NULL: empty child. */
+void    vfs_fork_inherit(struct fdtab *dst, const struct fdtab *src);
 void    vfs_close_ofd(struct ofd *o, struct vnode *unused);
 /* Explicit OFD references used by file-backed VMAs. */
 void    vfs_ofd_get(struct ofd *o);

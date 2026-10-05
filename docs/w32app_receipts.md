@@ -962,6 +962,28 @@ compositor.
 > need is listview virtual-item (`LVN_GETDISPINFO`) text rendering plus folder
 > navigation — a personality/comctl32 concern, named here and not yet done.
 
+> **Update 2026-10-05 (WR-2 close-out, phases а/б):** navigate and
+> byte-exact extract are now **live-verified**, end to end, by real GUI
+> input (absolute-pointer `input-send-event`, no scripted shortcuts):
+> double-click opens `wr2_fixture.zip` inside FM, `HELLO.TXT` is selected,
+> the toolbar Extract opens the real `IDD_COPY` (six template items,
+> host-exact layout), OK extracts, and `/fat/HELLO.TXT` is **byte-exact**
+> (217 bytes, md5 `3b44a2fc611f9c423bf0a8e6ab6eb077`, equal to the host
+> `zipfile` unpack of the same fixture). The gate is automated:
+> `tools/lab_wr2.sh verify` (clean boot → launch → clicks → md5 compare;
+> **PASS**). Personality gaps this forced, all named and fixed:
+> `DialogBoxIndirectParamW` created no template items (`dlg_create_items`
+> added; `DLGITEMTEMPLATE` creation-data length is read unaligned — the
+> padded read skipped OK/Cancel), the predefined dialog class `#32770` and
+> the standard control classes (`Button/Edit/Static/ListBox/ScrollBar/`
+> `ComboBox`) were not registered (`w32_user_register_dialog_class`), and
+> `FindResourceW(hInstance,…)` did not recognise the image base as the
+> main module (the W32A-11 `mnorm` pattern, now in `w32_rsrc.c`).
+> Kernel side: the WR-2 fd-table rework (shared `struct fdtab`,
+> `fdtab_ref/unref` at fork/exit) is live and stable, including under
+> `-smp 2` (5/5 clean boots). A-suite regression: a1 350, a6 113/0,
+> a8 168/0, a9 404/0 all green on the cleaned tree.
+
 ## CW-1 — Compositor child-window embedding & clipping — 2026-09-30
 
 `docs/plans/CW_COMPOSITOR_PLAN.md`. The kernel compositor (`kernel/gui/gui.c`)

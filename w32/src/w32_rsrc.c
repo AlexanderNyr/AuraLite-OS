@@ -55,7 +55,16 @@ static w32_rsrc_e *rsrc_alloc(void) {
 /* w32_module_file_bytes is defined in w32_module.c. */
 extern int w32_module_file_bytes(void *h, const uint8_t **d, size_t *sz);
 
-static void *mnorm(void *m) { if (!m) m = w32_GetModuleHandleA(0); return m; }
+/* W32A-11 pattern: NULL or the image base (the hInstance a WinMain program
+ * carries around) both mean the main executable.  Without the base check,
+ * FindResourceW(hInstance, IDD, RT_DIALOG) minted a bogus slot index and
+ * every dialog lookup of the image failed (WR-2: 7-Zip's IDD_COPY). */
+static void *mnorm(void *m) {
+    extern __attribute__((weak)) void *w32_module_exe_base(void);
+    if (!m || (w32_module_exe_base && m == w32_module_exe_base()))
+        m = w32_GetModuleHandleA(0);
+    return m;
+}
 
 static int parse_mod(void *mod, pe_image_t *out, const uint8_t **data_out, size_t *sz_out) {
     const uint8_t *d = 0; size_t sz = 0;
@@ -86,6 +95,7 @@ W32ABI void *FindResourceA(void *m, const char *name, const char *type) {
     return FindResourceW(m, (const uint16_t *)(uintptr_t)(nv & 0xFFFF),
                             (const uint16_t *)(uintptr_t)(tv & 0xFFFF));
 }
+
 W32ABI void *FindResourceExW(void *m, const uint16_t *type, const uint16_t *name, uint16_t lang) { return w32_FindResourceExW(m,type,name,lang); }
 W32ABI void *FindResourceExA(void *m, const char *type, const char *name, uint16_t lang) {
     uintptr_t nv = (uintptr_t)name, tv = (uintptr_t)type;

@@ -333,29 +333,52 @@ REL_STEP_SEC = 0.12
 CURSOR_TOL = 60      # per-channel match tolerance for the cursor sprite
 
 
+_QEMU_MAJOR_CACHE = {}
+
+
 def _qemu_major(a):
     """QEMU major version via QMP query-version (a pure query; the >=9 abort
     is specific to input-send-event), falling back to HMP `info version`.
-    None when nothing answerable is reachable."""
+    None when nothing answerable is reachable.
+
+    Cached per qmp/monitor pair: _input_device() asks on every event batch,
+    and the HMP fallback costs over a second per call -- uncached it pushed
+    the two presses of a dblclick 2.7 s apart, past the guest's 400 ms
+    double-click window, so every dblclick degraded into two singles."""
+    key = (getattr(a, "qmp", None), getattr(a, "monitor", None))
+    if key in _QEMU_MAJOR_CACHE:
+        return _QEMU_MAJOR_CACHE[key]
+    major = None
     if getattr(a, "qmp", None):
         try:
             s = _qmp_connect(a.qmp)
             r = _qmp_cmd(s, {"execute": "query-version"})
             s.close()
-            return int(r["return"]["qemu"]["major"])
+            # r is raw text and may carry trailing junk; take the last JSON
+            # object on it (the query-version reply).
+            for line in reversed(r.splitlines()):
+                line = line.strip()
+                if line.startswith("{"):
+                    try:
+                        v = json.loads(line)["return"]["qemu"]["major"]
+                        major = int(v)
+                        break
+                    except Exception:
+                        continue
         except Exception:
             pass
-    if getattr(a, "monitor", None):
+    if major is None and getattr(a, "monitor", None):
         try:
             s = _connect(a.monitor)
             out = _mon_send(s, "info version")
             s.close()
             m = re.search(r"QEMU (\d+)\.", out)
             if m:
-                return int(m.group(1))
+                major = int(m.group(1))
         except Exception:
             pass
-    return None
+    _QEMU_MAJOR_CACHE[key] = major
+    return major
 
 
 def _ps2_select(monitor):
@@ -538,14 +561,29 @@ def _rel_goto(a, tx, ty):
     return got == (tx, ty)
 
 
+def _input_device(a):
+    """The qdev id to address input events to, or None on QEMU >= 10.
+
+    QEMU 10 changed input-send-event's "device" argument to a console
+    property lookup and dies in object_property_find_err() when given a
+    qdev id ("Property 'qemu-fixed-text-console.device' not found") --
+    the whole emulator goes down.  Without the argument the events reach
+    the usb-tablet through the default console's input routing (verified
+    live).  Older QEMU needs the explicit id under -display none."""
+    major = _qemu_major(a)
+    if major is None or major >= 10:
+        return None
+    return getattr(a, "device", None)
+
+
 def _use_rel_pointer(a):
     """Prefer the PS/2 relative path on QEMU >= 9 (input-send-event aborts
     the emulator there); keep the proven QMP abs path on older QEMU.  The
     relative path needs the HMP monitor; without it there is no choice."""
-    major = _qemu_major(a)
-    if getattr(a, "monitor", None):
-        if major is None or major >= 9:
-            return True
+    # QEMU >= 9 used to abort on input-send-event, so PS/2 was the default
+    # there.  QEMU 10 works again WITHOUT the device argument (see
+    # _input_device); the abs tablet path is precise, so PS/2 stays only
+    # for an explicit --pointer rel.
     return False
 
 
@@ -577,14 +615,14 @@ def cmd_click(a):
         print("click %d,%d (ps/2)" % (a.x, a.y))
         return 0
     s = _qmp_connect(a.qmp)
-    _send_events(s, _abs_events(a.x, a.y, a.width, a.height), a.device)
+    _send_events(s, _abs_events(a.x, a.y, a.width, a.height), _input_device(a))
     time.sleep(0.05)
     _send_events(s, _abs_events(a.x, a.y, a.width, a.height) +
                     [{"type": "btn", "data": {"down": True, "button": "left"}}],
-                 a.device)
+                 _input_device(a))
     time.sleep(0.05)
     _send_events(s, [{"type": "btn", "data": {"down": False, "button": "left"}}],
-                 a.device)
+                 _input_device(a))
     s.close()
     print("click %d,%d" % (a.x, a.y))
     return 0
@@ -624,15 +662,15 @@ def cmd_dblclick(a):
         return 0
     s = _qmp_connect(a.qmp)
     move = _abs_events(a.x, a.y, a.width, a.height)
-    _send_events(s, move, a.device)
+    _send_events(s, move, _input_device(a))
     time.sleep(0.05)
     for _ in range(2):
         _send_events(s, move +
                      [{"type": "btn", "data": {"down": True, "button": "left"}}],
-                     a.device)
+                     _input_device(a))
         time.sleep(0.04)
         _send_events(s, [{"type": "btn",
-                          "data": {"down": False, "button": "left"}}], a.device)
+                          "data": {"down": False, "button": "left"}}], _input_device(a))
         time.sleep(0.06)
     s.close()
     print("dblclick %d,%d" % (a.x, a.y))
@@ -649,7 +687,7 @@ def cmd_move(a):
         print("move %d,%d (ps/2)" % (a.x, a.y))
         return 0
     s = _qmp_connect(a.qmp)
-    _send_events(s, _abs_events(a.x, a.y, a.width, a.height), a.device)
+    _send_events(s, _abs_events(a.x, a.y, a.width, a.height), _input_device(a))
     s.close()
     print("move %d,%d" % (a.x, a.y))
     return 0

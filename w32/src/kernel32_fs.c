@@ -2940,12 +2940,6 @@ W32_HANDLE w32_fs_create(const char *path, W32_DWORD access, W32_DWORD share,
     return h;
 }
 
-static void w32_fs_note_open(const char *n8);
-static void w32_fs_note_open(const char *n8) {
-    if (n8 && strstr(n8, "wr2_fixture"))
-        printf("[w32fs] CreateFileW: %s\n", n8);
-}
-
 W32ABI W32_HANDLE CreateFileW(W32_LPCWSTR path, W32_DWORD access,
                               W32_DWORD share, W32_SECURITY_ATTRIBUTES *sa,
                               W32_DWORD disposition, W32_DWORD flags,
@@ -2957,14 +2951,7 @@ W32ABI W32_HANDLE CreateFileW(W32_LPCWSTR path, W32_DWORD access,
     utf8 = fs_w16_dup(path);
     if (!utf8)
         return W32_INVALID_HANDLE_VALUE;
-    w32_fs_note_open(utf8);
     h = w32_fs_create(utf8, access, share, disposition, flags, tmpl);
-    if (strstr(utf8, "wr2_fixture")) {
-        extern int w32_dbg_heap_lane;
-        w32_dbg_heap_lane = 1;
-        printf("[w32fs] CreateFileW result: h=%p err=%u\n",
-               (void *)(uintptr_t)h, (unsigned)w32_get_last_error_raw());
-    }
     free(utf8);
     return h;
 }
@@ -2989,9 +2976,6 @@ W32ABI W32_DWORD SetFilePointer(W32_HANDLE h, W32_LONG distLow,
         off |= (int64_t)*distHigh << 32;
     pos = lseek(fd, (off_t)off,
                 method == 0u ? SEEK_SET : (method == 1u ? SEEK_CUR : SEEK_END));
-    if ((uintptr_t)h == 0x109)
-        printf("[w32fs] SetFilePointer h=0x109 off=%lld m=%u -> pos=%lld\n",
-               (long long)off, (unsigned)method, (long long)pos);
     if (pos < 0) {
         int e = errno;
         w32_set_last_error(e == ESPIPE ? W32_ERROR_INVALID_PARAMETER :
@@ -3017,9 +3001,6 @@ W32ABI W32_BOOL SetFilePointerEx(W32_HANDLE h, W32_LARGE_INTEGER dist,
     at = (int64_t)lseek(fd, (off_t)dist.QuadPart,
                         method == 0u ? SEEK_SET :
                         (method == 1u ? SEEK_CUR : SEEK_END));
-    if ((uintptr_t)h == 0x109)
-        printf("[w32fs] SetFilePointerEx h=0x109 off=%lld m=%u -> %lld\n",
-               (long long)dist.QuadPart, (unsigned)method, (long long)at);
     if (at < 0) {
         int e = errno;
         if (e == ESPIPE)
@@ -3061,8 +3042,6 @@ W32ABI W32_BOOL FlushFileBuffers(W32_HANDLE h) {
 }
 
 W32ABI W32_DWORD GetFileSize(W32_HANDLE h, W32_DWORD *high) {
-    if ((uintptr_t)h == 0x109)
-        printf("[w32fs] GetFileSize h=0x109\n");
     int fd;
     struct stat st;
 
@@ -3082,8 +3061,6 @@ W32ABI W32_DWORD GetFileSize(W32_HANDLE h, W32_DWORD *high) {
 }
 
 W32ABI W32_BOOL GetFileSizeEx(W32_HANDLE h, W32_LARGE_INTEGER *out) {
-    if ((uintptr_t)h == 0x109)
-        printf("[w32fs] GetFileSizeEx h=0x109\n");
     int fd;
     struct stat st;
 

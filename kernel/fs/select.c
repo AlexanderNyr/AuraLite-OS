@@ -43,7 +43,7 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
     (void)e; /* exception readiness is not supported yet; output is cleared. */
 
     for (int fd = 0; fd < nfds; fd++) {
-        struct ofd *o = cur->fd_table[fd];
+        struct ofd *o = (cur && cur->fdtab) ? cur->fdtab->slots[fd] : NULL;
         if (!o) continue;
 
         int can_read  = (r && FD_ISSET(fd, r))  && vfs_ofd_is_readable(o);
@@ -82,7 +82,7 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
         }
 
         for (int fd = 0; fd < nfds; fd++) {
-            struct ofd *o = cur->fd_table[fd];
+            struct ofd *o = (cur && cur->fdtab) ? cur->fdtab->slots[fd] : NULL;
             if (!o) continue;
             if (r && FD_ISSET(fd, r)) {
                 rwqs[fd] = vfs_get_read_wq(o);
@@ -129,7 +129,7 @@ static int do_select_kernel(int nfds, fd_set *r, fd_set *w, fd_set *e,
         FD_ZERO(&r_out); FD_ZERO(&w_out);
         ready = 0;
         for (int fd = 0; fd < nfds; fd++) {
-            struct ofd *o = cur->fd_table[fd];
+            struct ofd *o = (cur && cur->fdtab) ? cur->fdtab->slots[fd] : NULL;
             if (!o) continue;
 
             int can_read  = (r && FD_ISSET(fd, r))  && vfs_ofd_is_readable(o);
@@ -271,7 +271,7 @@ int do_ppoll(struct kernel_pollfd *ufds, uint64_t nfds,
         int fd = kfds[i].fd;
         if (fd < 0) continue;
         if (fd >= FD_SETSIZE) { kfds[i].revents |= POLLNVAL; continue; }
-        struct ofd *o = cur->fd_table[fd];
+        struct ofd *o = (cur && cur->fdtab) ? cur->fdtab->slots[fd] : NULL;
         short rev = 0;
         if (o && (kfds[i].events & POLLIN) && vfs_ofd_is_readable(o))
             rev |= POLLIN;

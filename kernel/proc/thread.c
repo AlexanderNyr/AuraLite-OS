@@ -575,11 +575,12 @@ int64_t do_wait4_pid(int64_t pid, int64_t *exit_code) {
 
 static void close_process_fds(tcb_t *t) {
     if (!t) return;
-    for (int fd = 0; fd < VFS_MAX_FDS; fd++) {
-        if (t->fd_table[fd] != NULL) {
-            vfs_close(fd);
-        }
-    }
+    /* FD tables are shared per thread group: each exiting thread drops one
+     * reference; the LAST one closes every fd.  A lone process therefore
+     * behaves exactly as before, and one thread's exit never yanks the
+     * group's files out from under its siblings (Linux semantics). */
+    fdtab_unref(t->fdtab);
+    t->fdtab = NULL;
 }
 
 static void zombie_enqueue(tcb_t *t) {

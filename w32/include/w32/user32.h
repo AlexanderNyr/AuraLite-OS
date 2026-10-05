@@ -353,6 +353,8 @@ void w32_user32_init(void);
 #define W32_VK_UP        0x26
 #define W32_VK_RIGHT     0x27
 #define W32_VK_DOWN      0x28
+#define W32_VK_INSERT    0x2D
+#define W32_VK_DELETE    0x2E
 
 /* ---- System metrics (the ledger's set) -------------------------------- */
 #define W32_SM_CXSCREEN        0
@@ -810,9 +812,20 @@ W32ABI int32_t MessageBoxIndirectW(const W32_MSGBOXPARAMSW *params);
 #define W32_DS_MODALFRAME     0x0080u
 #define W32_DS_SETFONT        0x0040u
 
-/* Dialog-template structures (packed 16-bit widths like on-disk). */
-typedef struct { uint32_t style, exStyle; uint32_t items; int16_t x,y,cx,cy;
+/* Dialog-template structures: the on-disk Win32 shapes, byte-packed.
+ * WR-2: the old header carried the item count as a DWORD, which reads a
+ * real on-disk DLGTEMPLATE two bytes skewed (cdit swallows x, cx lands on
+ * cy, and the menu word becomes cy) -- every dialog shipped inside a real
+ * Windows binary sized itself wrong.  The documented layout is style and
+ * extended style as DWORDs, cdit as a WORD, then x/y/cx/cy as 16-bit
+ * dialog units; each DLGITEMTEMPLATE that follows is DWORD-aligned and
+ * ends in class|title|creation-data variable fields. */
+#pragma pack(push, 1)
+typedef struct { uint32_t style, exStyle; uint16_t cdit; int16_t x,y,cx,cy;
                  /* menu|class|title|font follow, aligned per Win32. */ } W32_DLGTEMPLATE;
+typedef struct { uint32_t style, exStyle; int16_t x,y,cx,cy; uint16_t id;
+                 /* class|title|creation data follow, DWORD-aligned. */ } W32_DLGITEMTEMPLATE;
+#pragma pack(pop)
 
 typedef intptr_t W32_INT_PTR;
 

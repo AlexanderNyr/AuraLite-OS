@@ -768,10 +768,6 @@ void thr_child_main(struct w32_thread *t) {
     W32_DWORD me = (W32_DWORD)thr_gettid();
     W32_DWORD code;
 
-    printf("[w32thr] child_main: t=%p entry=%p stack=%p..%p rsp~%p tid=%u\n",
-           t, (void *)(uintptr_t)t->start, t->stack_base,
-           (char *)t->stack_base + t->stack_size, (void *)&me, me);
-
     teb->client_tid = me;
     if (thr_arch_prctl(THR_ARCH_SET_GS, (uint64_t)(uintptr_t)teb) != 0) {
         t->exit_code = W32_ERROR_INVALID_FUNCTION;
@@ -979,10 +975,6 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
     flags_cl |= THR_CLONE_SETTLS;
 #endif
 
-    printf("[w32thr] CreateThread entry=%p stack=%p..%p child_sp=%p tid_cell=%p\n",
-           (void *)(uintptr_t)start, stack,
-           (char *)stack + stack_sz, (void *)(uintptr_t)child_sp,
-           (void *)&t->tid);
     tid = thr_clone((unsigned long)flags_cl, child_sp,
                     (uint64_t)(uintptr_t)&t->tid,
                     (uint64_t)(uintptr_t)&t->tid_word,
@@ -2918,79 +2910,11 @@ static void thr_wait_dequeue(int n, W32_HANDLE *hs, struct thr_waiter *wr) {
     }
 }
 
-/* ---- w32_dbg wait ring --------------------------------------------------
- * The /tmp/w32trace printf changed the WR-2 click-hang's outcome (the
- * serial I/O slowed the 0 ms poll loop enough to let the input path win),
- * so the passive recorder keeps NO i/o in the hot path: every wait_n
- * entry and exit lands in this fixed ring and w32_dbg_dump_windows
- * prints it on demand.  This is what names the call a wedged handler is
- * stuck inside without perturbing the race being watched. */
-#define W32_WAIT_RING 64
-struct w32_wait_ent {
-    W32_DWORD tid;
-    W32_DWORD ms;
-    W32_HANDLE first;
-    int kind;          /* w32_handle_kind(first): -1 unknown */
-    int n;
-    int entering;      /* 1 = entered wait_n, 0 = returned */
-    W32_DWORD result;
-    void *caller;      /* __builtin_return_address(0): who asked */
-};
-static struct w32_wait_ent w32_wait_ring[W32_WAIT_RING];
-static unsigned w32_wait_seq;
-static int w32_wait_spin;    /* personality-internal, spin-protected */
-
-void w32_dbg_wait_note(int n, W32_HANDLE first, W32_DWORD ms,
-                       int entering, W32_DWORD result, void *caller) {
-    unsigned p;
-    int was = w32_wait_spin;
-    w32_wait_spin = 1;
-    p = w32_wait_seq++ % W32_WAIT_RING;
-    w32_wait_ring[p].tid = (W32_DWORD)thr_gettid();
-    w32_wait_ring[p].ms = ms;
-    w32_wait_ring[p].first = first;
-    w32_wait_ring[p].kind = first ? w32_handle_kind(first) : -1;
-    w32_wait_ring[p].n = n;
-    w32_wait_ring[p].entering = entering;
-    w32_wait_ring[p].result = result;
-    w32_wait_ring[p].caller = caller;
-    w32_wait_spin = was;
-}
-
-/* Printed from w32_dbg_dump_windows (weak: a binary that links
- * user32_win.o without the thread core still links). */
-void w32_dbg_wait_print(void) __attribute__((weak));
-void w32_dbg_wait_print(void) {
-    unsigned from = w32_wait_seq > W32_WAIT_RING
-                    ? w32_wait_seq - W32_WAIT_RING : 0;
-    printf("[w32dump] wait ring: %u calls, last %u follow\n",
-           w32_wait_seq, w32_wait_seq - from);
-    for (unsigned k = from; k < w32_wait_seq; k++) {
-        const struct w32_wait_ent *e = &w32_wait_ring[k % W32_WAIT_RING];
-        if (e->entering)
-            printf("[w32dump] wait[%u] tid=%u n=%d first=0x%llx kind=%d ms=%u caller=%p ENTER\n",
-                   k, (unsigned)e->tid, e->n,
-                   (unsigned long long)e->first, e->kind, (unsigned)e->ms,
-                   e->caller);
-        else
-            printf("[w32dump] wait[%u] tid=%u n=%d ms=%u EXIT r=0x%x\n",
-                   k, (unsigned)e->tid, e->n, (unsigned)e->ms,
-                   (unsigned)e->result);
-    }
-    fflush(stdout);
-}
-
-/* The wrapper: note the entry, run the real wait, note the exit. */
 static W32_DWORD thr_wait_n_impl(int n, W32_HANDLE *hs, int wait_all,
                                  W32_DWORD ms, int alertable);
 static W32_DWORD thr_wait_n(int n, W32_HANDLE *hs, int wait_all,
                             W32_DWORD ms, int alertable) {
-    w32_dbg_wait_note(n, n ? hs[0] : 0, ms, 1, 0,
-                      __builtin_return_address(0));
-    W32_DWORD r = thr_wait_n_impl(n, hs, wait_all, ms, alertable);
-    w32_dbg_wait_note(n, n ? hs[0] : 0, ms, 0, r,
-                      __builtin_return_address(0));
-    return r;
+    return thr_wait_n_impl(n, hs, wait_all, ms, alertable);
 }
 
 static W32_DWORD thr_wait_n_impl(int n, W32_HANDLE *hs, int wait_all,

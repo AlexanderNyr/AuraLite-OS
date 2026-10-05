@@ -344,14 +344,21 @@ E_FAIL of §0 is gone; the frame shows the listing.
       present on the frame (window chrome, not the message box); brightness
       floor cleared. *Listing rows in the panel region are blocked on compositor
       child-clipping — see Status below.*
-- [~] Navigate — **deferred (compositor)**: needs the visible, clickable panel.
-- [~] Extract: the **byte-known CI fixture** is built in-tree
+- [x] Navigate — **done live (2026-10-05)**: after CW-1 the panel is visible
+      and clickable; the WR-2 lab drives a real double-click navigation into
+      `SUBDIR` and back out with a listing delta.
+- [x] Extract — **done live (2026-10-05)**: the **byte-known CI fixture**
       (`tools/wr2_make_fixture.py`, `tests/fixtures/wr2/`, round-trip checked)
-      and staged on `/fat`; `7z.dll` loads. Driving extract *through the panel*
-      is **deferred (compositor)** — 7zFM.exe is GUI-only (no CLI extract).
-- [~] Options — **deferred (compositor)**: property-sheet pixel delta needs the
-      visible panel.
-- [~] Drag-drop — **deferred (compositor)** / human-run.
+      is opened INSIDE 7-Zip FM by a real double-click; `HELLO.TXT` is
+      selected, the toolbar's Extract button opens `IDD_COPY` (six items,
+      host-template-exact), OK is clicked, and `/fat/HELLO.TXT` comes out
+      **byte-exact** (217 bytes, md5 `3b44a2fc…`, equal to the host's
+      `zipfile` unpack). Automated end-to-end gate: `tools/lab_wr2.sh verify`
+      (boot → launch → dblclick archive → select → Extract → OK → md5
+      compare against the host reference; no green without the match).
+- [~] Options — **deferred** / human-run: the property-sheet round-trip is a
+      later live step of this lane.
+- [~] Drag-drop — **deferred** / human-run.
 - [x] `#WR-2` receipt in `docs/w32app_receipts.md`: what is live-verified vs the
       named compositor dependency, with the frame digest.
 

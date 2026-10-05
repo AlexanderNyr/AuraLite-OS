@@ -1133,11 +1133,8 @@ seh_unhandled(struct w32_seh_dispatch *f,
     eptrs.context = ctx;
 
     /* 1. The top filter's last chance. */
-    fprintf(stderr, "[seh] unhandled: top_filter=%p code=%08x rip=%llx\n",
-            seh_top_filter, rec->code, (unsigned long long)ctx->rip);
     if (seh_top_filter != NULL) {
         int32_t v = seh_top_filter(&eptrs);
-        fprintf(stderr, "[seh] top filter returned %d\n", (int)v);
         if (v == 1 /* EXCEPTION_EXECUTE_HANDLER */) {
 #ifdef AURALITE_W32_HOST_TEST
             fprintf(stderr, "W32-SEH-FILTER-EXECUTE code=0x%08x\n",
@@ -1171,8 +1168,6 @@ seh_unhandled(struct w32_seh_dispatch *f,
      * (unwinddump) still links; the dump itself is the /tmp/w32dump
      * diagnostic, answering "what did the app see when it died". */
     {
-        extern void w32_dbg_dump_windows(void) __attribute__((weak));
-        if (w32_dbg_dump_windows) w32_dbg_dump_windows();
     }
 #endif
 
@@ -1254,30 +1249,16 @@ static int seh_first_pass(struct w32_seh_dispatch *f,
         w32_dispatcher_context_t dc;
 
         ++walked;
-        if ((walked & 0xFFFFu) == 0) {
-            static int trace_w;
-            if (trace_w++ < 8)
-                fprintf(stderr, "[seh] walk %llu frames, pc=%llx rsp=%llx\n",
-                        (unsigned long long)walked,
-                        (unsigned long long)ctx->rip,
-                        (unsigned long long)ctx->rsp);
-        }
-        if (walked > W32_SEH_WALK_MAX) {
-            fprintf(stderr, "[seh] walk cap hit\n");
+        if (walked > W32_SEH_WALK_MAX)
             return 0;
-        }
         entry = RtlLookupFunctionEntry(ctx->rip, &base, NULL);
         if (!entry) {
             /* Leaf: pop the return address -- but only inside a known
              * image.  Past every image is bottom (no caller to find). */
             uint64_t b2 = 0;
             size_t s2 = 0;
-            if (seh_image_for_pc(ctx->rip, &b2, &s2) != 0) {
-                fprintf(stderr, "[seh] bottom at pc=%llx (walked=%llu)\n",
-                        (unsigned long long)ctx->rip,
-                        (unsigned long long)walked);
+            if (seh_image_for_pc(ctx->rip, &b2, &s2) != 0)
                 return 0;
-            }
             ctx->rip = *(volatile uint64_t *)(uintptr_t)ctx->rsp;
             ctx->rsp += 8;
             continue;
@@ -1314,14 +1295,6 @@ static int seh_first_pass(struct w32_seh_dispatch *f,
                 int32_t disp;
                 disp = ((w32_language_handler_fn)handler)(rec, establisher,
                                                           ctx, &dc);
-                {
-                    static int trace_p;
-                    if (trace_p++ < 20)
-                        fprintf(stderr, "[seh] pass handler=%llx est=%llx disp=%d pc=%llx\n",
-                                (unsigned long long)(uintptr_t)handler,
-                                (unsigned long long)establisher, (int)disp,
-                                (unsigned long long)ctx->rip);
-                }
                 if (disp == W32_EXCEPTION_CONTINUE_EXECUTION_NT) {
                     f->resume = *ctx;
                     f->resume_valid = 1;
@@ -2052,15 +2025,6 @@ static void seh_fault_c(int signo, siginfo_t *info, ucontext_t *uc,
     if (f->depth > 0)
         rec->nested = &f->records[f->depth - 1];
     seh_nest_signo[f->depth] = signo;
-    {
-        static int trace_n;
-        if (trace_n++ < 20)
-            fprintf(stderr, "[seh] fault signo=%d rip=%llx addr=%llx depth=%d\n",
-                    signo, (unsigned long long)uc->uc_mcontext.rip,
-                    signo == SIGSEGV && info ?
-                        (unsigned long long)(uintptr_t)info->si_addr : 0ull,
-                    f->depth);
-    }
     f->depth++;
     f->state |= W32_SEH_ST_ACTIVE;
     f->state &= ~(unsigned)W32_SEH_ST_RAISE;
@@ -2109,8 +2073,6 @@ static void seh_fault_c(int signo, siginfo_t *info, ucontext_t *uc,
         f = seh_entry_f;
         sf = seh_entry_sf;
         if (cont) {
-            fprintf(stderr, "[seh] first pass CONTINUE: resume rip=%llx\n",
-                    (unsigned long long)f->resume.rip);
             seh_apply_resume(sf, &f->resume);
             f->depth--;
             if (f->depth == 0)
@@ -2122,9 +2084,6 @@ static void seh_fault_c(int signo, siginfo_t *info, ucontext_t *uc,
             w32_context_t uctx = f->live;
             w32_exception_record_t urec = *rec;
             k = seh_unhandled(f, &urec, &uctx);
-            fprintf(stderr, "[seh] unhandled returned %d resume_valid=%d rip=%llx\n",
-                    k, f->resume_valid,
-                    (unsigned long long)f->resume.rip);
             if (k) {
                 f->depth--;
                 if (f->depth == 0)
