@@ -2902,11 +2902,27 @@ static void *ps_load_common(const char *n8, W32_DWORD flags, int ex) {
      * this file without w32_module.o). */
 #ifndef AURALITE_W32_HOST_TEST
     {
-        W32_HMODULE h = w32_LoadLibraryA(resolved);
-        free(resolved);
-        if (!h)
-            return NULL;   /* loader already set the error */
-        return h;
+        /* An empty file can never map as a DLL, but it keeps the historical
+         * recorded-module contract the A-2 gate pins (w32a2_proc's scratch
+         * round-trip, and the host twin in test_w32_a2.c): LoadLibrary on
+         * the empty scratch file succeeds, GetModuleFileName answers its
+         * path, FreeLibrary frees the cookie.  Non-empty files -- real DLLs
+         * and non-PE files alike -- keep the W32A-11 mapped/refused path,
+         * so 7-Zip's codecs still load and broken images still refuse. */
+        struct stat st;
+        if (stat(resolved, &st) == 0 && S_ISREG(st.st_mode) &&
+            st.st_size == 0) {
+            cookie = ps_load_record(resolved);
+            free(resolved);
+            return cookie;
+        }
+        {
+            W32_HMODULE h = w32_LoadLibraryA(resolved);
+            free(resolved);
+            if (!h)
+                return NULL;   /* loader already set the error */
+            return h;
+        }
     }
 #endif
     cookie = ps_load_record(resolved);

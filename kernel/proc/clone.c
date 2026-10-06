@@ -144,8 +144,15 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
      * Linux — a fork-style snapshot here once gave each thread a private
      * copy, so a file opened by one thread was EBADF in another (WR-2:
      * 7-Zip's panel thread opened the archive, its extract worker could
-     * not read it). */
-    child->fdtab = fdtab_ref(parent->fdtab);
+     * not read it).
+     * FD-table fix: drop the child's creation-time table before taking the
+     * shared ref (it is empty -- the child has not run -- so unref just
+     * frees it); if the parent somehow has no table, the child keeps its
+     * own rather than inheriting NULL. */
+    if (parent->fdtab) {
+        fdtab_unref(child->fdtab);
+        child->fdtab = fdtab_ref(parent->fdtab);
+    }
 
     /* Inherit credentials, pgid/sid, controlling tty, cwd, signal dispositions. */
     child->uid = parent->uid; child->euid = parent->euid; child->suid = parent->suid;

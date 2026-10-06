@@ -464,7 +464,7 @@ EXPECTED_UNION = 611
 # exports after W32A-6; 607 after W32A-7; 620 after the modeless-dialog /
 # MENUITEMINFO / MessageBoxIndirect completion on 2026-09-28; the W32A-0
 # baseline was 44 exports, gap 569).
-EXPECTED_GAP = 4       # W32A-16 (Notepad++ app gate) closed the 9 symbols the
+EXPECTED_GAP = 3       # W32A-16 (Notepad++ app gate) closed the 9 symbols the
                        # pinned notepad++.exe named that still fell through to a
                        # loud TODO stub: the DeferWindowPos layout batch
                        # (Begin/Defer/EndDeferWindowPos, user32_win.c) and the
@@ -479,6 +479,11 @@ EXPECTED_GAP = 4       # W32A-16 (Notepad++ app gate) closed the 9 symbols the
                        # (7-Zip/PuTTY surface) and GetPrivateProfileIntW +
                        # GetPrivateProfileSectionNamesW (the NppConverter plugin's
                        # unimplemented INI-profile family) -- other phases' work.
+                       # WR-2 then landed CharPrevExA REAL (kernel32_loc.c: the
+                       # ANSI CRT walk backwards, replacing the FAILLOUD stub in
+                       # the bind table), so 4 -> 3.  The 3 that remain:
+                       # SetPriorityClass (7-Zip/PuTTY surface) and the NppConverter
+                       # plugin's INI-profile pair -- other phases' work.
                        #
                        # History of the count:
                        # W32A-7 closed 81 of the 122 W32A-6 left (GDI breadth:

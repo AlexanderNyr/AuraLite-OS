@@ -561,8 +561,11 @@ int64_t do_fork(void) {
          * (TEB-lite) comes along like FS above. */
         child->user_gs_base = parent->user_gs_base;
         /* Share the parent's open-file descriptions (shared seek offset/flags),
-         * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags. */
-        child->fdtab = fdtab_alloc();
+         * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags.
+         * FD-table fix: kthread_create_unstarted() already gave the child its
+         * own (empty) table; reuse it rather than leaking it behind a second
+         * allocation. */
+        if (!child->fdtab) child->fdtab = fdtab_alloc();
         vfs_fork_inherit(child->fdtab, parent->fdtab);
         /* W32A-14: fork() creates a SEPARATE address space — the child gets
          * the break VALUE (via the shared cell if the parent is a grouped
@@ -1315,7 +1318,12 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
     /* The spawned child joins the spawner's process group / session and shares
      * its controlling terminal (so a foreground spawn is killable by Ctrl+C). */
     if (child->parent) {
-        child->fdtab = fdtab_alloc();
+        /* FD-table fix: reuse the child's creation-time table (empty, fresh)
+         * instead of leaking it behind a second fdtab_alloc().  A parent on
+         * the fallback table (fdtab == NULL) yields an empty child table and
+         * spawn_thread's vfs_ensure_std_fds() wires stdio, exactly like a
+         * spawn from the gui-compositor kernel thread. */
+        if (!child->fdtab) child->fdtab = fdtab_alloc();
         vfs_fork_inherit(child->fdtab, child->parent->fdtab);
         child->pgid = child->parent->pgid;
         child->sid  = child->parent->sid;

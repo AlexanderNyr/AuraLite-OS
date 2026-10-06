@@ -34,6 +34,20 @@ static int exception_to_signal(uint64_t vec) {
     }
 }
 
+/*
+ * WR-2 vtable-crash lane probe: 1 when @p lies in a PRESENT, USER page of
+ * the faulting address space.  Called from the exception handler with the
+ * user CR3 still installed, so paging_get_flags() walks THAT address space;
+ * the walk itself reads only kernel-half page-table pages and cannot fault.
+ * Without this probe the lane dereferenced canonical-but-UNMAPPED user
+ * pointers (RAX=0xffffffff, a patched WNDPROC, ...) from CPL0 and the
+ * exception handler BSOD'ed on its own diagnostic (CI 101043794764).
+ */
+static int wr2_user_page_ok(uint64_t p) {
+    uint64_t flags = paging_get_flags(p);
+    return ((flags & PAGE_FLAG_PRESENT) && (flags & PAGE_FLAG_USER)) ? 1 : 0;
+}
+
 /* Intel SDM Vol.3, 6-15: mnemonic for each CPU exception vector. */
 static const char *exception_messages[32] = {
     "Division by Zero",            "Debug",
@@ -232,10 +246,25 @@ void isr_handler(struct registers *r) {
         /* WR-2 vtable-crash lane: if the fault is a user #GP/#PF with a
          * plausible user-space RCX/RAX, dump the quadwords behind both so
          * the serial log shows WHAT the poisoned object contains (a wide
-         * path string was found this way).  Best effort: no paging checks,
-         * the words are read only when the pointer is canonical-user. */
+         * path string was found this way).
+         *
+         * FD/WR-2 fix (CI 101043794764): "canonical user" is NOT "mapped".
+         * A user #PF by definition carries registers that can point at
+         * UNMAPPED user addresses — RAX=0xffffffff (stackguard's depth
+         * counter), RCX=0xfffffff5, or a WNDPROC patched to 0x4000300011be
+         * (u32bad.exe) — and reading those from CPL0 faulted INSIDE the
+         * exception handler itself: BSOD PAGE_FAULT with CR2 equal to the
+         * very register being dumped, killing the guest in the
+         * stack_guard / w32_a4_unwind / w32_user32 shards.  Every word is
+         * now gated on the page tables of the still-installed user CR3:
+         * PRESENT|USER in the walk, or the row is skipped.  The walk reads
+         * only kernel-half table pages, so it cannot itself fault. */
         if (from_user && (r->int_no == 13 || r->int_no == 14)) {
             static const uint64_t lo = 0x10000ull, hi = 0x0000800000000000ull;
+            /* WR-2 probe: 1 when every byte of [p, p+len) lies in a
+             * user-mapped, present page of the faulting address space. */
+            #define WR2_USER_RANGE_OK(p, len)                                    \
+                (wr2_user_page_ok(p) && wr2_user_page_ok((p) + (len) - 1))
             uint64_t regs[2];
             regs[0] = r->rcx;
             regs[1] = r->rax;
@@ -243,6 +272,8 @@ void isr_handler(struct registers *r) {
                 uint64_t p = regs[k];
                 if (p < lo || p >= hi)
                     continue;
+                if (!WR2_USER_RANGE_OK(p, 0x20))
+                    continue;   /* unmapped user pointer: skip, don't fault */
                 kprintf("[EXCEPTION] mem[%c%cx]=%016llx %016llx %016llx %016llx\n",
                         k == 0 ? 'R' : 'R', k == 0 ? 'C' : 'A',
                         (unsigned long long)*(uint64_t *)(p + 0),
@@ -253,7 +284,7 @@ void isr_handler(struct registers *r) {
                  * object (past the wide-path overlay), which told the
                  * vtable-crash investigation which C++ member layout the
                  * dead block used to carry. */
-                if (p + 0x58 < hi)
+                if (p + 0x58 < hi && WR2_USER_RANGE_OK(p + 0x20, 0x30))
                     kprintf("[EXCEPTION] mem+20=%016llx %016llx %016llx %016llx %016llx %016llx\n",
                             (unsigned long long)*(uint64_t *)(p + 0x20),
                             (unsigned long long)*(uint64_t *)(p + 0x28),
@@ -264,20 +295,22 @@ void isr_handler(struct registers *r) {
                 /* WR-2: the 0x594f4 helper's frame keeps the QI'd
                  * IGetFolderArcProps at rsp+0x108; its vtable word names
                  * which module built the poisoned object.  Frame layout
-                 * pinned by objdump of the shipped 7zFM.exe. */
+                 * pinned by objdump of the shipped 7zFM.exe.
+                 * rsp can point at the (unmapped) guard page in a stack
+                 * overflow — the same WR2 probe guards the chase. */
                 {
                     uint64_t slot = r->rsp + 0x108;
-                    if (slot >= lo && slot + 8 < hi) {
+                    if (slot >= lo && slot + 8 < hi && WR2_USER_RANGE_OK(slot, 8)) {
                         uint64_t iface = *(uint64_t *)slot;
                         kprintf("[EXCEPTION] iface=%016llx\n",
                                 (unsigned long long)iface);
-                        if (iface >= lo && iface + 8 < hi)
+                        if (iface >= lo && iface + 8 < hi && WR2_USER_RANGE_OK(iface, 8))
                             kprintf("[EXCEPTION] iface.vt=%016llx\n",
                                     (unsigned long long)*(uint64_t *)iface);
                         /* WR-2: CAgentFolder::GetFolderArcProps reads its
                          * member at iface+0x88 and hands out member+8; if
                          * that word is stale, the chase ends here. */
-                        if (iface >= lo && iface + 0x98 < hi)
+                        if (iface >= lo && iface + 0x98 < hi && WR2_USER_RANGE_OK(iface + 0x70, 0x28))
                             kprintf("[EXCEPTION] iface+70=%016llx %016llx %016llx %016llx %016llx\n",
                                     (unsigned long long)*(uint64_t *)(iface + 0x70),
                                     (unsigned long long)*(uint64_t *)(iface + 0x78),

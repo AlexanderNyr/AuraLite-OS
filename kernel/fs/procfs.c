@@ -254,7 +254,8 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
         return n;
     }
     if (vn->inode_id == 0x7FFFFFF1ull) { /* /proc/self/fd — the open FDs */
-        struct ofd **ft = sched_current() ? sched_current()->fdtab->slots : NULL;
+        struct ofd **ft = (sched_current() && sched_current()->fdtab)
+                            ? sched_current()->fdtab->slots : NULL;
         for (int i = 0; i < VFS_MAX_FDS && n < max; i++) {
             if (ft && ft[i]) {
                 memset(&out[n], 0, sizeof(out[n]));
@@ -352,9 +353,17 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
          * addresses into the target image, so a wedged app names the
          * guest call chain it is stuck in (the WR-2 click-hang). */
         extern int thread_get_all(struct tcb *out[], int max);
+#ifdef __x86_64__
+        /* Parity fix (CI 101043794764): the user-stack page-table walk below
+         * is x86_64-only (PML4/HHDM), so its constants and the
+         * boot_get_hhdm_offset() call must sit under the same guard as the
+         * walk — the rv64/a64/i386 -fsyntax-only lanes in
+         * check_parity_claims.py failed on the undeclared call and the
+         * then-unused statics. */
         static const uint64_t IMG_LO = 0x400000000000ull;
         static const uint64_t IMG_HI = 0x400000200000ull;   /* +2 MiB span */
         uint64_t hhdm_off = boot_get_hhdm_offset();
+#endif
         struct tcb *list[128];
         int n = thread_get_all(list, 128);
         len = ksnprintf(text, sizeof(text), "  TID  STATE     U-RIP           NAME\n");

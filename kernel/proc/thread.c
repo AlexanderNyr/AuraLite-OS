@@ -28,6 +28,7 @@
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/lapic.h"
+#include "kernel/fs/vfs.h"      /* fdtab_alloc (per-thread FD table) */
 #include "drivers/timer/pit.h"
 
 /* Implemented in context.asm */
@@ -321,8 +322,24 @@ tcb_t *kthread_create_unstarted(void (*fn)(void *), void *arg,
     }
 
     setup_initial_stack(tcb, fn, arg);
-    /* New threads start with cloexec cleared and the fd table zeroed
-     * (kmalloc + memset above). */
+    /* FD-table fix (CI 101043794764): every thread gets its OWN fd table at
+     * creation.  The pre-WR2 code carried fd_table[] as an inline TCB array,
+     * so it always existed; the struct fdtab refactor left ->fdtab NULL for
+     * threads nobody explicitly assigned one -- which is every kthread AND
+     * the init shell.  Their opens then landed in the SHARED fallback table
+     * (so the shell's /dev/tty0 and its pipe fds were globally visible, and
+     * concurrent kernel-thread opens raced one unlocked slot array), while
+     * spawn()/fork() inherited "NULL parent table" as an EMPTY table and
+     * vfs_ensure_std_fds() silently re-wired the child's stdio to /dev/null:
+     * musl stdio flushes via writev(2), which goes through the VFS, so
+     * busybox (unlike echo/cat, whose raw write(1) takes the SYS_WRITE
+     * console fast path) printed nothing at all -- the failing lx_busybox
+     * receipt.  A private table here restores the old per-thread semantics:
+     * fork()/spawn() reuse it via vfs_fork_inherit(), CLONE_FILES replaces
+     * it with a shared ref, and thread exit drops it in close_process_fds.
+     * Allocation failure degrades to the fallback table, exactly as before.
+     * cloexec starts clear (fdtab_alloc zeroes the table). */
+    tcb->fdtab = fdtab_alloc();
     thread_register_tcb(tcb);
     /* NOT enqueued yet: the caller completes field initialisation and then
      * publishes the thread with kthread_start(). */

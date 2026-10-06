@@ -733,7 +733,8 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
 
     struct ofd *file_ofd = NULL;
     if (!anonymous) {
-        if (fd >= VFS_MAX_FDS || cur->fdtab->slots[fd] == NULL) {
+        if (fd >= VFS_MAX_FDS || !cur->fdtab ||
+            cur->fdtab->slots[fd] == NULL) {
             return (uint64_t)-EBADF;
         }
         file_ofd = cur->fdtab->slots[fd];
@@ -1273,7 +1274,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * filesystem push its own metadata if it can. */
         tcb_t *fc = sched_current();
         if (!fc) return (uint64_t)-EBADF;
-        if (a1 >= VFS_MAX_FDS || fc->fdtab->slots[a1] == NULL)
+        /* FD-table fix: guard ->fdtab — a thread on the fallback table
+         * (no private fdtab, e.g. kmain) must get EBADF, not a NULL-deref
+         * BSOD.  This is the fault the f2fs/btrfs CI shard died on
+         * (CR2=0x18, RIP inside this arm, the shell's `fsync` builtin). */
+        if (a1 >= VFS_MAX_FDS || !fc->fdtab || fc->fdtab->slots[a1] == NULL)
             return (uint64_t)-EBADF;
         struct ofd *fo = fc->fdtab->slots[a1];
         page_cache_flush(fo);
@@ -1522,7 +1527,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         int fd = (int)a1;
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-EBADF;
-        if (fd < 0 || fd >= VFS_MAX_FDS || !cur->fdtab->slots[fd])
+        if (fd < 0 || fd >= VFS_MAX_FDS || !cur->fdtab || !cur->fdtab->slots[fd])
             return (uint64_t)-EBADF;
         struct ofd *o = cur->fdtab->slots[fd];
         struct vnode *vn = o->vn;
@@ -2969,7 +2974,7 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         int r = vfs_dup2(old, new_);
         if (r >= 0 && (flags & 0x80000)) {
             tcb_t *cur = sched_current();
-            if (cur && r < 64)
+            if (cur && r < VFS_MAX_FDS && cur->fdtab)
                 cur->fdtab->cloexec[r] = 1;
         }
         return (uint64_t)vfs_errno(r, EBADF);
