@@ -61,22 +61,37 @@ fi
 # xorriso's El Torito can boot a plain sector-0 image, but pointing at
 # an already-formed hybrid disk makes the resulting file usable both
 # as `qemu -cdrom` AND as `dd if=... of=/dev/sdX` -- which is the whole
-# point of a "hybrid" image.  16 MiB is comfortable: MBR + Stage 2 +
-# 15 MiB FAT32 partition holding kernel.elf (~2 MiB) plus optional
-# initrd (~few MiB).
+# point of a "hybrid" image.
+#
+# The FAT32 partition is sized from its contents (kernel.elf + initrd.tar),
+# never below 40 MiB.  The old fixed 15 MiB partition ran out of space as
+# soon as initrd.tar (22 MB and growing) was copied in ("Disk full").  FAT32
+# needs at least 65525 clusters, which is why the floor is 40 MiB.
+FAT_MIN_MB=40
+payload=$(wc -c < "$KERNEL_ELF")
+if [ -f "$BUILD/initrd.tar" ]; then
+    payload=$((payload + $(wc -c < "$BUILD/initrd.tar")))
+fi
+FAT_MB=$(( (payload + 1048575) / 1048576 + 8 ))   # +8 MiB: FAT tables, dir entries
+if [ "$FAT_MB" -lt "$FAT_MIN_MB" ]; then FAT_MB=$FAT_MIN_MB; fi
+FAT_SECTORS=$((FAT_MB * 2048))
+RAW_MB=$((FAT_MB + 1))                            # MBR + Stage 2 + LBA 128 lead-in
+
 RAW_IMG="$BUILD/auralite-bios.raw"
 FAT_IMG="$BUILD/auralite-bios.fat.img"
 
-echo "[mkiso-bios] assembling raw hybrid image at $RAW_IMG"
-dd if=/dev/zero of="$RAW_IMG" bs=1M count=16 status=none
+echo "[mkiso-bios] assembling raw hybrid image at $RAW_IMG (FAT32 partition ${FAT_MB} MiB)"
+dd if=/dev/zero of="$RAW_IMG" bs=1M count="$RAW_MB" status=none
 
 # Sector 0: MBR.  Sector 1..N: Stage 2.
 dd if="$MBR_BIN"    of="$RAW_IMG" bs=512 count=1 conv=notrunc status=none
 dd if="$STAGE2_BIN" of="$RAW_IMG" bs=512 seek=1 conv=notrunc status=none
 
-# FAT32 partition (15 MiB) built out-of-place with mformat/mcopy.
-dd if=/dev/zero of="$FAT_IMG" bs=1M count=15 status=none
-mformat -i "$FAT_IMG" -F -h 32 -s 32 -t 480 ::
+# FAT32 partition built out-of-place with mformat/mcopy.  -T gives the exact
+# sector count of the file.  The old "-t 480 -h 32 -s 32" geometry described
+# a 240 MiB disk, not the 15 MiB file it was written into.
+dd if=/dev/zero of="$FAT_IMG" bs=1M count="$FAT_MB" status=none
+mformat -i "$FAT_IMG" -F -T "$FAT_SECTORS" ::
 mcopy -i "$FAT_IMG" "$KERNEL_ELF" ::KERNEL.ELF
 if [ -f "$BUILD/initrd.tar" ]; then
     mcopy -i "$FAT_IMG" "$BUILD/initrd.tar" ::INITRD.TAR
@@ -89,7 +104,7 @@ dd if="$FAT_IMG" of="$RAW_IMG" bs=512 seek=128 conv=notrunc status=none
 # what firmware (real BIOS / SeaBIOS / OVMF) consults to enumerate
 # partitions; without it a real machine would not present the FAT
 # partition to `dd`/mount tools.
-python3 - "$RAW_IMG" <<'PY'
+python3 - "$RAW_IMG" "$FAT_SECTORS" <<'PY'
 import struct, sys
 img = open(sys.argv[1], 'r+b')
 img.seek(0x1BE)                     # first partition-table entry
@@ -104,7 +119,7 @@ img.write(struct.pack('<BBBBBBBBII',
     0x80, 0, 2, 0,
     0x0C,
     0, 0, 0,
-    128, 15*2048))
+    128, int(sys.argv[2])))
 img.close()
 PY
 

@@ -13,3 +13,6 @@ boot/limine/
 # `make iso` (and by `make sdk-check` in a temporary directory) from the
 # staged SDK, so a committed .elf would be a stale copy of a generated file.
 examples/*/*.elf
+
+# Python bytecode caches created when tools/*.py are imported (check_*.py, etc.)
+__pycache__/

@@ -901,16 +901,24 @@ static int cmd_run_argv(const char *prog, char *const argv[]) {
     return rc;
 }
 
+static int parse_ipv4(const char *s, uint32_t *out);
+
 static void cmd_ping(const char *host) {
     if (!host) {
         puts("ping: missing hostname");
         return;
     }
-    printf("Resolving %s...\n", host);
-    uint32_t ip = dns_resolve(host);
-    if (ip == 0) {
-        printf("ping: could not resolve %s\n", host);
-        return;
+    /* A dotted-quad literal is used as-is.  Sending it through dns_resolve()
+     * made every IP literal fail with NXDOMAIN (and the negative answer was
+     * then cached for 24 h). */
+    uint32_t ip = 0;
+    if (parse_ipv4(host, &ip) != 0) {
+        printf("Resolving %s...\n", host);
+        ip = dns_resolve(host);
+        if (ip == 0) {
+            printf("ping: could not resolve %s\n", host);
+            return;
+        }
     }
     char ipstr[20];
     /* Simple IP to string. */

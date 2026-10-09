@@ -78,6 +78,14 @@ static W32_WCHAR *ps_cmdline_w;
 static uint64_t ps_birth_ft;
 static W32_DWORD ps_encode_cookie;
 
+/* Free a NULL-free array of n strings and the array itself.  Used when a
+ * realloc() of the array fails: the old contents must not leak. */
+static void ps_free_strv(char **v, size_t n) {
+    if (!v) return;
+    for (size_t i = 0; i < n; i++) free(v[i]);
+    free(v);
+}
+
 static void ps_dos_path(const char *host, char *dos, size_t cap);
 static const char *ps_temp_dir(void);
 
@@ -492,18 +500,24 @@ static char **ps_split_cmdline(const char *cmd, int *argcOut) {
                 for (k = 0; k < bs / 2; k++) {
                     if (blen + 1 >= bcap) {
                         bcap *= 2;
-                        word = (char *)realloc(word, bcap);
-                        if (!word)
-                            goto fail;
+                        {
+                            char *nw = (char *)realloc(word, bcap);
+                            if (!nw)
+                                goto fail;
+                            word = nw;
+                        }
                     }
                     word[blen++] = '\\';
                 }
                 if (bs % 2 == 1) {
                     if (blen + 1 >= bcap) {
                         bcap *= 2;
-                        word = (char *)realloc(word, bcap);
-                        if (!word)
-                            goto fail;
+                        {
+                            char *nw = (char *)realloc(word, bcap);
+                            if (!nw)
+                                goto fail;
+                            word = nw;
+                        }
                     }
                     word[blen++] = '"';
                     p++;
@@ -516,9 +530,12 @@ static char **ps_split_cmdline(const char *cmd, int *argcOut) {
                 for (k = 0; k < bs; k++) {
                     if (blen + 1 >= bcap) {
                         bcap *= 2;
-                        word = (char *)realloc(word, bcap);
-                        if (!word)
-                            goto fail;
+                        {
+                            char *nw = (char *)realloc(word, bcap);
+                            if (!nw)
+                                goto fail;
+                            word = nw;
+                        }
                     }
                     word[blen++] = '\\';
                 }
@@ -528,9 +545,12 @@ static char **ps_split_cmdline(const char *cmd, int *argcOut) {
                 for (k = 0; k < bs; k++) {
                     if (blen + 1 >= bcap) {
                         bcap *= 2;
-                        word = (char *)realloc(word, bcap);
-                        if (!word)
-                            goto fail;
+                        {
+                            char *nw = (char *)realloc(word, bcap);
+                            if (!nw)
+                                goto fail;
+                            word = nw;
+                        }
                     }
                     word[blen++] = '\\';
                 }
@@ -540,17 +560,23 @@ static char **ps_split_cmdline(const char *cmd, int *argcOut) {
                 for (k = 0; k < bs; k++) {
                     if (blen + 1 >= bcap) {
                         bcap *= 2;
-                        word = (char *)realloc(word, bcap);
-                        if (!word)
-                            goto fail;
+                        {
+                            char *nw = (char *)realloc(word, bcap);
+                            if (!nw)
+                                goto fail;
+                            word = nw;
+                        }
                     }
                     word[blen++] = '\\';
                 }
                 if (blen + 1 >= bcap) {
                     bcap *= 2;
-                    word = (char *)realloc(word, bcap);
-                    if (!word)
-                        goto fail;
+                    {
+                        char *nw = (char *)realloc(word, bcap);
+                        if (!nw)
+                            goto fail;
+                        word = nw;
+                    }
                 }
                 word[blen++] = *p++;
             }
@@ -558,9 +584,12 @@ static char **ps_split_cmdline(const char *cmd, int *argcOut) {
         word[blen] = '\0';
         if (argc >= cap) {
             cap *= 2;
-            argv = (char **)realloc(argv, (size_t)(cap + 1) * sizeof(char *));
-            if (!argv)
-                goto fail;
+            {
+                char **nargv = (char **)realloc(argv, (size_t)(cap + 1) * sizeof(char *));
+                if (!nargv)
+                    goto fail;
+                argv = nargv;
+            }
         }
         argv[argc++] = word;
     }
@@ -753,12 +782,16 @@ static char **ps_env_block(const W32_WCHAR *block, int *countOut) {
                 one[need] = '\0';
                 if (n >= cap) {
                     cap *= 2;
-                    envp = (char **)realloc(envp,
+                    {
+                        char **nenvp = (char **)realloc(envp,
                         (size_t)(cap + 1) * sizeof(char *));
-                    if (!envp) {
-                        free(one);
-                        w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
-                        return NULL;
+                        if (!nenvp) {
+                            ps_free_strv(envp, (size_t)n);
+                            free(one);
+                            w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+                            return NULL;
+                        }
+                        envp = nenvp;
                     }
                 }
                 envp[n++] = one;
@@ -1144,11 +1177,15 @@ W32ABI W32_BOOL CreateProcessA(W32_LPCSTR app, W32_LPSTR cmdline,
             memcpy(one, p, n + 1);
             if (envc >= cap) {
                 cap *= 2;
-                envp = (char **)realloc(envp,
+                {
+                    char **nenvp = (char **)realloc(envp,
                     (size_t)(cap + 1) * sizeof(char *));
-                if (!envp) {
-                    free(one);
-                    return ps_fail(W32_ERROR_NOT_ENOUGH_MEMORY);
+                    if (!nenvp) {
+                        ps_free_strv(envp, (size_t)envc);
+                        free(one);
+                        return ps_fail(W32_ERROR_NOT_ENOUGH_MEMORY);
+                    }
+                    envp = nenvp;
                 }
             }
             if (strchr(one, '='))
@@ -1855,12 +1892,16 @@ W32ABI W32_DWORD ExpandEnvironmentStringsW(W32_LPCWSTR src, W32_LPWSTR dst,
                     size_t vl = strlen(v);
                     while (len + vl + 1 > cap) {
                         cap *= 2;
-                        out = (char *)realloc(out, cap);
-                        if (!out) {
-                            free(s8);
-                            w32_set_last_error(
-                                W32_ERROR_NOT_ENOUGH_MEMORY);
-                            return 0;
+                        {
+                            char *nout = (char *)realloc(out, cap);
+                            if (!nout) {
+                                free(out);
+                                free(s8);
+                                w32_set_last_error(
+                                    W32_ERROR_NOT_ENOUGH_MEMORY);
+                                return 0;
+                            }
+                            out = nout;
                         }
                     }
                     memcpy(out + len, v, vl);
@@ -1874,11 +1915,15 @@ W32ABI W32_DWORD ExpandEnvironmentStringsW(W32_LPCWSTR src, W32_LPWSTR dst,
                 p++;
                 if (len + 2 > cap) {
                     cap *= 2;
-                    out = (char *)realloc(out, cap);
-                    if (!out) {
-                        free(s8);
-                        w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
-                        return 0;
+                    {
+                        char *nout = (char *)realloc(out, cap);
+                        if (!nout) {
+                            free(out);
+                            free(s8);
+                            w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+                            return 0;
+                        }
+                        out = nout;
                     }
                 }
                 out[len++] = '%';
@@ -1888,11 +1933,15 @@ W32ABI W32_DWORD ExpandEnvironmentStringsW(W32_LPCWSTR src, W32_LPWSTR dst,
         }
         if (len + 2 > cap) {
             cap *= 2;
-            out = (char *)realloc(out, cap);
-            if (!out) {
-                free(s8);
-                w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
-                return 0;
+            {
+                char *nout = (char *)realloc(out, cap);
+                if (!nout) {
+                    free(out);
+                    free(s8);
+                    w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+                    return 0;
+                }
+                out = nout;
             }
         }
         out[len++] = *p++;

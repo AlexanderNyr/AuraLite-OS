@@ -128,6 +128,9 @@ static int decode_png(const uint8_t *d, size_t n, uint32_t **px, int *ow, int *o
     uint8_t trns[256];
     int npal = 0, ntrns = 0;
     memset(trns, 255, sizeof trns);
+    /* A palette image without PLTE indexes pal[] anyway; zero it so those
+     * pixels are deterministic instead of whatever the stack held. */
+    memset(pal, 0, sizeof pal);
     /* Concatenate IDAT.  Cap at 1 MiB of compressed bytes. */
     uint8_t *idat = NULL;
     size_t idat_len = 0, idat_cap = 0;

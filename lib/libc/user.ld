@@ -69,7 +69,10 @@ SECTIONS
         *(.data .data.*)
     } :data
 
-    .bss ALIGN(16) : {
+    /* ALIGN(32): input .bss sections carry 32-byte alignment; with ALIGN(16)
+     * ld.lld warned "address of section .bss is not a multiple of alignment (32)"
+     * for every user program that has such an input. */
+    .bss ALIGN(32) : {
         *(.bss .bss.*)
         *(COMMON)
     } :data

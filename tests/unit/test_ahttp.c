@@ -267,6 +267,35 @@ static void *srv_main(void *arg) {
                 srv_respond(c, "200 OK", "Connection: close\r\n", "c");
                 close(c);
                 break;
+            } else if (strcmp(path, "/cl-short") == 0) {
+                /* Declares 100 bytes, sends 3, hangs up: a truncated body. */
+                const char *r = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\n"
+                                "Connection: close\r\n\r\nabc";
+                send(c, r, strlen(r), 0);
+                close(c);
+                break;
+            } else if (strcmp(path, "/cl-neg") == 0) {
+                /* atoi() turned "-1" into a huge length. */
+                const char *r = "HTTP/1.1 200 OK\r\nContent-Length: -1\r\n"
+                                "Connection: close\r\n\r\nabcdef";
+                send(c, r, strlen(r), 0);
+                close(c);
+                break;
+            } else if (strcmp(path, "/chunk-huge") == 0) {
+                /* 16 hex digits: the size used to wrap size_t to a small value. */
+                const char *r = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                                "Connection: close\r\n\r\n"
+                                "FFFFFFFFFFFFFFF0\r\nabc\r\n0\r\n\r\n";
+                send(c, r, strlen(r), 0);
+                close(c);
+                break;
+            } else if (strcmp(path, "/chunk-trailer") == 0) {
+                /* Trailer fields after the last chunk must be consumed, so the
+                 * kept-alive socket is positioned at the next response. */
+                const char *r = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n"
+                                "Connection: keep-alive\r\n\r\n"
+                                "3\r\nabc\r\n0\r\nX-Trailer: 1\r\n\r\n";
+                send(c, r, strlen(r), 0);
             } else {
                 srv_respond(c, "404 Not Found", "Connection: keep-alive\r\n", "nf");
             }
@@ -579,6 +608,66 @@ static void test_method_validation(void) {
 
 /* ---- Main ---- */
 
+/* Framing hardening: each case is a response the old parser accepted as a
+ * complete body (or mis-framed).  Every one must now end in an error, or in
+ * a clean kept-alive reuse for the trailer case. */
+static void test_framing_hardening(void) {
+    char url[128];
+    pthread_t th;
+    ahttp_response *r;
+    int ok;
+
+    srv_start(1);
+    pthread_create(&th, NULL, srv_main, NULL);
+    ahttp_client *c = ahttp_client_new();
+    srv_url(url, sizeof(url), "/cl-short");
+    r = ahttp_client_get(c, url);
+    ok = r && r->error == AHTTP_ERR_RESPONSE;
+    if (r) ahttp_response_free(r);
+    ahttp_client_free(c);
+    srv_join(th);
+    CHECK(ok, "framing: truncated Content-Length body is an error");
+
+    srv_start(1);
+    pthread_create(&th, NULL, srv_main, NULL);
+    c = ahttp_client_new();
+    srv_url(url, sizeof(url), "/cl-neg");
+    r = ahttp_client_get(c, url);
+    ok = r && r->error == AHTTP_ERR_RESPONSE;
+    if (r) ahttp_response_free(r);
+    ahttp_client_free(c);
+    srv_join(th);
+    CHECK(ok, "framing: negative Content-Length is rejected");
+
+    srv_start(1);
+    pthread_create(&th, NULL, srv_main, NULL);
+    c = ahttp_client_new();
+    srv_url(url, sizeof(url), "/chunk-huge");
+    r = ahttp_client_get(c, url);
+    ok = r && r->error == AHTTP_ERR_TOO_LARGE;
+    if (r) ahttp_response_free(r);
+    ahttp_client_free(c);
+    srv_join(th);
+    CHECK(ok, "framing: 16-digit chunk size is refused, not wrapped");
+
+    srv_start(2);
+    pthread_create(&th, NULL, srv_main, NULL);
+    c = ahttp_client_new();
+    srv_url(url, sizeof(url), "/chunk-trailer");
+    r = ahttp_client_get(c, url);
+    ok = r && r->error == AHTTP_OK && r->status_code == 200 &&
+         r->body_len == 3 && memcmp(r->body, "abc", 3) == 0;
+    if (r) ahttp_response_free(r);
+    srv_url(url, sizeof(url), "/second");
+    r = ahttp_client_get(c, url);
+    ok = ok && r && r->error == AHTTP_OK && r->status_code == 200 &&
+         r->reused_connection == 1;
+    if (r) ahttp_response_free(r);
+    ahttp_client_free(c);
+    srv_join(th);
+    CHECK(ok, "framing: chunk trailer consumed, socket reused cleanly");
+}
+
 int main(void) {
     printf("=== N6/X6 HTTP Client Test Suite ===\n\n");
 
@@ -597,6 +686,7 @@ int main(void) {
     test_307_repost();
     test_redirect_loop_guard();
     test_method_validation();
+    test_framing_hardening();
 
     printf("\n=== %d/%d passed ===\n", tests_run - tests_failed, tests_run);
     return tests_failed ? 1 : 0;

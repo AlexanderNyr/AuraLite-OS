@@ -407,7 +407,7 @@ check_groups() {
     return "$bad"
 }
 
-# The partition is checked on EVERY run (198 cases, 13 groups);
+# The partition is checked on EVERY run (212 cases, 15 groups);
 # --check-groups checks and exits, for the CI step and the curious.
 if ! check_groups; then
     exit 2

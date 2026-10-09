@@ -606,7 +606,7 @@ make test-integration       # full QEMU integration suite
 bash tests/integration/run_all.sh --group w32  # the Win32 CI shard
 ```
 
-The full suite currently registers 198 black-box QEMU cases in 13 thematic CI
+The full suite currently registers 212 black-box QEMU cases in 15 thematic CI
 shards (with Win32 in its own `w32` shard). Cases cover AHCI, FAT32 persistence,
 ext2 cross-OS round-trips, the ext4/f2fs/btrfs/exFAT/NTFS interop lanes,
 USB MSC/HID/hub/xHCI rings,
@@ -818,7 +818,7 @@ Start here:
 - [`docs/build_and_run.md`](docs/build_and_run.md) — build/run/troubleshooting.
 - [`docs/status.md`](docs/status.md) — current feature and limitation matrix.
 - [`docs/residue_ledger.md`](docs/residue_ledger.md) — the machine-checked
-  debt ledger (54 rows; the RESIDUE series' terminal state, RESIDUE2 open).
+  debt ledger (59 rows; the RESIDUE series' terminal state, RESIDUE2 open).
 - [`TODO.md`](TODO.md) — fine-grained known limitations, annotated against the
   ledger.
 - [`docs/architecture.md`](docs/architecture.md) — kernel architecture.
@@ -858,7 +858,7 @@ Start here:
   usefully, the list of behaviours that are approximations.
 - [`docs/plans/W32APP_PLAN.md`](docs/plans/W32APP_PLAN.md) — the Win32 *application*
   ladder that grows that personality to real software (**complete**, W32A-0 –
-  W32A-18). It lands 929 functions across 21 modules — registry, incremental
+  W32A-18). It lands 935 functions across 21 modules — registry, incremental
   COM/IME/themes, WinSock, the msvcrt surface and real `.pdata`/`.xdata` SEH —
   each with a per-function D9 class (`REAL`/`FAIL-CLEAN`/`REFUSE`) generated into
   [`docs/win32.md`](docs/win32.md) so the docs cannot drift from the code. Three

@@ -416,16 +416,16 @@ Install VNC tooling:
 sudo apt install vncdotool
 ```
 
-### `psf_font.inc file not found`
+### `psf2_default_font.inc file not found`
 
 The current source tree expects:
 
 ```text
-drivers/framebuffer/psf_font.inc
+drivers/framebuffer/psf2_default_font.inc
 ```
 
 If it is missing, regenerate or restore it before building. It contains the
-embedded PSF-style console font data used by `psf_font.h`.
+embedded PSF2 console font data, included by `drivers/framebuffer/psf.c`.
 
 ### VirtualBox boots but networking fails
 

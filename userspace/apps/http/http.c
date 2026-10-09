@@ -31,7 +31,10 @@ static void fetch_once(const char *url) {
     ahttp_response *r = ahttp_client_get(g_client, url);
     if (!r) { puts("Error: no response object (out of memory?)."); return; }
     if (r->error != AHTTP_OK) {
-        printf("Fetch failed (error %d)\n", r->error);
+        /* Say why, not just a number: -26 from the TLS layer used to print as
+         * "error -4" with no hint that certificate validation was the cause. */
+        printf("Fetch failed: %s (error %d)\n",
+               ahttp_strerror(r->error, r->tls_error), r->error);
         ahttp_response_free(r);
         return;
     }

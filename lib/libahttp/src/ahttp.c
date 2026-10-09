@@ -439,7 +439,7 @@ static int transport_connect(transport *t, const char *host, int port, int use_t
         cfg.num_roots = num_roots;
         cfg.now = now;
         t->tls = atls_tls_new(&cfg, tls_send_cb, tls_recv_cb, t);
-        if (!t->tls) { closesocket(t->fd); return AHTTP_ERR_TLS; }
+        if (!t->tls) { g_last_tls_error = 0; closesocket(t->fd); return AHTTP_ERR_TLS; }
         int hrc = atls_tls_handshake(t->tls);
         g_last_tls_error = hrc;
         /* Y7: the live-web paste line.  Printed even when certval
@@ -684,9 +684,32 @@ static int read_headers(reader *r, growbuf *hb) {
             status = parse_status_line(line);
             if (status < 0) return -1;
         }
-        growbuf_append(hb, (const uint8_t *)line, (size_t)n);
+        /* The result used to be ignored: a header block over the cap was
+         * silently cut short and the rest of the response mis-parsed. */
+        if (growbuf_append(hb, (const uint8_t *)line, (size_t)n) != 0) return -1;
     }
     return status;
+}
+
+/* Strict Content-Length value: optional blanks, decimal digits, then blanks
+ * up to the end of the header line.  atoi() accepted "-1" (wrapping to a
+ * huge size_t), "12abc" (as 12) and overflowed silently. */
+static int parse_content_length(const char *v, size_t *out) {
+    const char *p = v;
+    size_t n = 0;
+    int digits = 0;
+    while (*p == ' ' || *p == '\t') p++;
+    while (*p >= '0' && *p <= '9') {
+        /* Saturates once past the cap, so the value can never wrap. */
+        if (n <= AHTTP_MAX_BODY) n = n * 10 + (size_t)(*p - '0');
+        digits++;
+        p++;
+    }
+    if (digits == 0) return -1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != '\r' && *p != '\n' && *p != '\0') return -1;
+    *out = n;
+    return 0;
 }
 
 /* Read body with Content-Length. */
@@ -696,7 +719,10 @@ static int read_body_content_length(reader *r, growbuf *bb, size_t content_len) 
         size_t want = content_len - bb->len;
         if (want > sizeof(tmp)) want = sizeof(tmp);
         int n = reader_read(r, tmp, want);
-        if (n <= 0) break;
+        /* The peer closed (or the transport failed) before the declared length
+         * arrived.  That is a truncated response; it used to be returned as a
+         * complete one. */
+        if (n <= 0) return AHTTP_ERR_RESPONSE;
         int rc = growbuf_append(bb, tmp, (size_t)n);
         if (rc != 0) return rc;
     }
@@ -709,20 +735,32 @@ static int read_body_chunked(reader *r, growbuf *bb) {
     while (1) {
         int n = reader_readline(r, line, sizeof(line));
         if (n <= 0) return AHTTP_ERR_RESPONSE;
-        /* Parse chunk size (hex). */
+        /* Parse chunk size (hex).  The size is bounded before every multiply:
+         * a long run of digits used to wrap size_t, and bb->len + chunk_size
+         * could wrap too, so a huge chunk looked empty and the stream lost
+         * sync with the peer. */
         size_t chunk_size = 0;
+        int ndigits = 0;
         for (const char *p = line; *p && *p != '\r' && *p != '\n'; p++) {
             char c = *p;
             int v = -1;
             if (c >= '0' && c <= '9') v = c - '0';
             else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
             else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
-            if (v < 0) break;
+            if (v < 0) break;                       /* ";ext" starts here */
+            if (chunk_size > AHTTP_MAX_BODY / 16) return AHTTP_ERR_TOO_LARGE;
             chunk_size = chunk_size * 16 + (size_t)v;
+            ndigits++;
         }
+        if (ndigits == 0) return AHTTP_ERR_RESPONSE;   /* no chunk size given */
+        if (chunk_size > AHTTP_MAX_BODY - bb->len) return AHTTP_ERR_TOO_LARGE;
         if (chunk_size == 0) {
-            /* Last chunk. Skip trailing CRLF. */
-            reader_readline(r, line, sizeof(line));
+            /* Last chunk.  Consume optional trailer fields up to the blank
+             * line, so a kept-alive connection starts the next response clean. */
+            for (;;) {
+                if (reader_readline(r, line, sizeof(line)) <= 0) break;
+                if (line[0] == '\r' || line[0] == '\n') break;
+            }
             break;
         }
         /* Read chunk data. */
@@ -1082,8 +1120,14 @@ static int client_exchange(ahttp_client *c, const ahttp_url *u,
         } else if (te && strstr(te, "chunked")) {
             brc = read_body_chunked(rd, &bb);
         } else if (cl) {
-            size_t content_len = (size_t)atoi(cl);
-            brc = read_body_content_length(rd, &bb, content_len);
+            size_t content_len = 0;
+            if (parse_content_length(cl, &content_len) != 0) {
+                brc = AHTTP_ERR_RESPONSE;           /* not a decimal length */
+            } else if (content_len > AHTTP_MAX_BODY) {
+                brc = AHTTP_ERR_TOO_LARGE;          /* refuse before reading */
+            } else {
+                brc = read_body_content_length(rd, &bb, content_len);
+            }
         } else {
             /* No framing: body runs to EOF → the server closes. */
             close_after = 1;
@@ -1168,7 +1212,12 @@ static ahttp_response *client_do(ahttp_client *c, const char *method,
         int reused = 0;
         rc = client_exchange(c, &parsed, cur_method, cur_ct,
                              cur_body, cur_body_len, resp, &reused);
-        if (rc != 0) { resp->error = rc; return resp; }
+        if (rc != 0) {
+            resp->error = rc;
+            /* Keep the raw TLS/certval code so ahttp_strerror() can name the cause. */
+            if (rc == AHTTP_ERR_TLS) resp->tls_error = g_last_tls_error;
+            return resp;
+        }
         resp->reused_connection = reused;
 
         int status = resp->status_code;

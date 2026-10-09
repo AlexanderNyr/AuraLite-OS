@@ -563,7 +563,7 @@ static W32_INT_PTR W32ABI cd_ofn_proc(W32_HWND dlg, W32_UINT msg,
             W32_HWND edit = GetDlgItem(dlg, CD_ID_EDIT);
             int sel = (int)SendMessageW(files, W32_LB_GETCURSEL, 0, 0);
             if (sel >= 0) {
-                uint16_t name[CD_LIST_TEXT];
+                uint16_t name[CD_LIST_TEXT] = { 0 };   /* LB_GETTEXT can fail and leave it untouched */
                 SendMessageW(files, W32_LB_GETTEXT, (W32_WPARAM)(uint32_t)sel,
                              (W32_LPARAM)(uintptr_t)name);
                 SetWindowTextW(edit, name);
@@ -1314,7 +1314,10 @@ static void cd_bf_fill(cd_bf_ctx_t *ctx, W32_HWND list) {
             if (ctx->count >= 64) break;
             size_t o = 0;
             ctx->paths[ctx->count][o++] = '/';
-            while (fd.cFileName[o - 1] && o + 1 < 278) {
+            /* Stop at the NUL or at the end of cFileName (260 elements, not
+             * bytes), whichever is first. */
+            while (o - 1 < sizeof fd.cFileName / sizeof fd.cFileName[0] &&
+                   fd.cFileName[o - 1] && o + 1 < 278) {
                 ctx->paths[ctx->count][o] = fd.cFileName[o - 1];
                 o++;
             }

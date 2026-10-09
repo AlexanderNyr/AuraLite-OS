@@ -466,7 +466,6 @@ static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
     if (got_one) return 0;
 
     /* Integration Test Fallback: Simulate incoming SYN from gateway/test peer (10.0.2.2:54321) */
-    if (got_one) return 0;
     memset(out_tcp, 0, 20);
     out_tcp->src_port = htons_(54321);
     out_tcp->dst_port = htons_(src_port);

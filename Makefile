@@ -2098,7 +2098,9 @@ iso: iso-dual
 	@[ -f $(BUILD_DIR)/initrd.tar ] && cp $(BUILD_DIR)/initrd.tar release/initrd.tar || true
 	@cd release && sha256sum auralite.iso kernel.elf $$( [ -f initrd.tar ] && echo initrd.tar) \
 	    > SHA256SUMS
-	@cp release/SHA256SUMS SHA256SUMS
+	@# The sums stay in release/.  Copying them over the git-tracked root
+	@# SHA256SUMS dirtied the work tree on every build, and that file never
+	@# matched a local build anyway (kernel.elf embeds __DATE__/__TIME__).
 	@echo "[release] Wrote ISO, kernel.elf$$([ -f release/initrd.tar ] && echo ', initrd.tar'), and SHA256SUMS to 'release/' folder"
 
 usb: iso
@@ -2134,6 +2136,11 @@ vm-configs: vbox vmware
 # ============================================================================
 SELFHOST_DIR     := $(BUILD_DIR)/selfhost
 SELFHOST_SRC     := $(SELFHOST_DIR)/tcc-src
+# Pinned upstream commit (TinyCC 'mob' branch, 0.9.28rc).  Fetching by
+# commit instead of '--branch mob' means a later push to the branch can
+# never silently change the guest toolchain.  Bump deliberately.
+SELFHOST_TCC_REPO   := https://github.com/TinyCC/tinycc.git
+SELFHOST_TCC_COMMIT := 43c7708b85681a2fd4451c8a541af4494a8919b2
 SELFHOST_OBJDIR  := $(SELFHOST_DIR)/obj
 SELFHOST_TCC     := $(SELFHOST_DIR)/tcc.elf
 SELFHOST_LIBTCC1 := $(SELFHOST_DIR)/libtcc1.a
@@ -2178,10 +2185,14 @@ selfhost-deps:
 	@if [ -d $(SELFHOST_SRC)/.git ] || [ -d $(SELFHOST_SRC) ]; then \
 	    echo "[selfhost] tcc source already present at $(SELFHOST_SRC)"; \
 	else \
-	    echo "[selfhost] fetching TinyCC (mob) -> $(SELFHOST_SRC)"; \
-	    mkdir -p $(SELFHOST_DIR); \
-	    git clone --depth 1 --branch mob \
-	        https://github.com/TinyCC/tinycc.git $(SELFHOST_SRC); \
+	    echo "[selfhost] fetching TinyCC $(SELFHOST_TCC_COMMIT) (mob) -> $(SELFHOST_SRC)"; \
+	    if ! { mkdir -p $(SELFHOST_SRC) && git -C $(SELFHOST_SRC) init -q \
+	           && git -C $(SELFHOST_SRC) remote add origin $(SELFHOST_TCC_REPO) \
+	           && git -C $(SELFHOST_SRC) fetch -q --depth 1 origin $(SELFHOST_TCC_COMMIT) \
+	           && git -C $(SELFHOST_SRC) checkout -q FETCH_HEAD; }; then \
+	        rm -rf $(SELFHOST_SRC); \
+	        echo "[selfhost] FAILED to fetch TinyCC $(SELFHOST_TCC_COMMIT)" >&2; exit 1; \
+	    fi; \
 	fi
 	@cd $(SELFHOST_SRC) && if [ ! -f config.h ] || ! grep -q 'CONFIG_TCCDIR "/apps/tcc"' config.h; then \
 	    echo '[selfhost] generating minimal config.h for guest build'; \
@@ -5559,15 +5570,26 @@ $(MKAPKG): $(BUILD_DIR)/mkapkg.o $(BUILD_DIR)/apkg_host.o
 DOOM_DIR     := $(BUILD_DIR)/doom
 DOOM_SRC     := $(DOOM_DIR)/doomgeneric/doomgeneric
 DOOM_REPO    := https://github.com/ozkl/doomgeneric.git
+# Pinned engine commit (upstream HEAD at pin time, subject "boolean fix").
+DOOM_REPO_COMMIT := dcb7a8dbc7a16ce3dda29382ac9aae9d77d21284
 DOOM_ELF     := $(USER_BUILD)/doom.elf
 DOOM_WAD_URL := https://github.com/freedoom/freedoom/releases/download/v0.13.0/freedoom-0.13.0.zip
 DOOM_WAD     := $(DOOM_DIR)/freedoom1.wad
+# SHA-256 of the release archive and of the extracted WAD.  Both are
+# checked: the archive before it is unpacked, the WAD before it is used.
+DOOM_WAD_ZIP_SHA256 := 3f9b264f3e3ce503b4fb7f6bdcb1f419d93c7b546f4df3e874dd878db9688f59
+DOOM_WAD_SHA256     := 7323bcc168c5a45ff10749b339960e98314740a734c30d4b9f3337001f9e703d
 
 $(DOOM_SRC):
 	@mkdir -p $(DOOM_DIR)
 	@echo "[doom] fetching doomgeneric (GPL-2.0, not vendored -- see the"
 	@echo "[doom] licensing note in doom/doomgeneric_auralite.c)"
-	@git clone -q --depth 1 $(DOOM_REPO) $(DOOM_DIR)/doomgeneric
+	@if ! { mkdir -p $(DOOM_DIR)/doomgeneric && git -C $(DOOM_DIR)/doomgeneric init -q \
+	       && git -C $(DOOM_DIR)/doomgeneric fetch -q --depth 1 $(DOOM_REPO) $(DOOM_REPO_COMMIT) \
+	       && git -C $(DOOM_DIR)/doomgeneric checkout -q FETCH_HEAD; }; then \
+	    rm -rf $(DOOM_DIR)/doomgeneric; \
+	    echo "[doom] FAILED to fetch doomgeneric $(DOOM_REPO_COMMIT)" >&2; exit 1; \
+	fi
 	@echo "[doom] $$(ls $(DOOM_SRC)/*.c | wc -l) engine sources"
 
 # Freedoom's data is BSD-licensed and freely redistributable, unlike the
@@ -5576,8 +5598,16 @@ $(DOOM_SRC):
 $(DOOM_WAD):
 	@mkdir -p $(DOOM_DIR)
 	@echo "[doom] fetching Freedoom (BSD-licensed game data)"
-	@curl -sL $(DOOM_WAD_URL) -o $(DOOM_DIR)/freedoom.zip
-	@cd $(DOOM_DIR) && unzip -qo freedoom.zip && 	    cp freedoom-*/freedoom1.wad . && rm -rf freedoom-* freedoom.zip
+	@curl -fsSL $(DOOM_WAD_URL) -o $(DOOM_DIR)/freedoom.zip
+	@if ! echo "$(DOOM_WAD_ZIP_SHA256)  $(DOOM_DIR)/freedoom.zip" | sha256sum -c --status >/dev/null 2>&1; then \
+	    rm -f $(DOOM_DIR)/freedoom.zip; \
+	    echo "[doom] freedoom.zip checksum mismatch -- refusing to unpack" >&2; exit 1; \
+	fi
+	@cd $(DOOM_DIR) && unzip -qo freedoom.zip && cp freedoom-*/freedoom1.wad . && rm -rf freedoom-* freedoom.zip
+	@if ! echo "$(DOOM_WAD_SHA256)  $(DOOM_WAD)" | sha256sum -c --status >/dev/null 2>&1; then \
+	    rm -f $(DOOM_WAD); \
+	    echo "[doom] freedoom1.wad checksum mismatch" >&2; exit 1; \
+	fi
 	@echo "[doom] $$(du -h $(DOOM_WAD) | cut -f1) $(DOOM_WAD)"
 
 # No platform #defines and no patches: the engine builds against

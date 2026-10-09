@@ -183,6 +183,10 @@ static void test_https_wrong_root(void) {
     ahttp_response *r = ahttp_get(url);
     CHECK(r != NULL && r->error == AHTTP_ERR_TLS,
           "https with wrong root is refused (chain validation)");
+    /* certval codes are negative; the raw one must reach the response so
+     * ahttp_strerror() can name the cause instead of a generic message. */
+    CHECK(r != NULL && r->tls_error < 0,
+          "https with wrong root: raw certval code kept in response");
     if (r) ahttp_response_free(r);
     ahttp_set_trust_roots(NULL, 0, NULL);
 }
