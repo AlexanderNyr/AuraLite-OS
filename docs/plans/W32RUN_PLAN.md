@@ -1,12 +1,12 @@
 # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
 
-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2…WR-5 planned.
+## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-09 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, byte-exact extract; a clean extract, navigate-back and Tools > Options are named gaps); WR-3…WR-5 planned.
 
 | Phase | State |
 |---|---|
 | WR-0 The live-GUI lane and its oracles (OVMF + screendump + input harness) | ✅ done (2026-09-29) |
-| WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ⬜ planned |
-| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | ⬜ planned |
+| WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ✅ done (2026-09-29) |
+| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | PARTIAL (2026-10-09): gate 22/22 — panel, navigate delta, byte-exact extract; named gaps: clean extract ("Progress Error"), navigate back, Options (no menu subsystem); drag-drop deferred |
 | WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | ⬜ planned |
 | WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | ⬜ planned |
 | WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ⬜ planned |
@@ -336,53 +336,70 @@ open their **real main window** — the two-pane file manager — list `/fat`,
 navigate, extract a known archive byte-exactly, and persist an option. The
 E_FAIL of §0 is gone; the frame shows the listing.
 
+**Status (2026-10-09): PARTIAL — the panel is live and gated; four named gaps.**
+The live gate `tests/integration/cases/test_wr2_7zip_live.sh` passes its
+**22 assertions** under the WR-0 lane (OVMF, TCG). It proves: launch with all 292
+imports bound and no `E_FAIL` or fault; the main window and the CW-1 clipped
+panes; the `/fat` rows drawn by the panel (LVN_GETDISPINFO); a real double-click
+into `SUBDIR` changes the listing (pixel delta); a second 7-Zip window opened at
+`C:\fat` opens the CI fixture archive, selects `HELLO.TXT`, and Extract raises a
+window over it; and `/fat/HELLO.TXT` is **byte-exact** (217 bytes, md5
+`3b44a2fc…`, equal to the host's unpack). The shell still answers after the GUI
+session.
+
+Named gaps. The gate prints each as a SKIP line; none is counted as a pass.
+
+1. **Clean extract — not achieved.** The window that Extract raises is not
+   painted: its frame shows a blank white box at the top left
+   (`wr2_copy_dlg.png`). After OK, 7-Zip shows **"Progress Error"**
+   (`wr2_extracted.png`) although the bytes are correct. The cause is not
+   isolated. FAT32 has no `settimes` hook, so `SetFileTime` on `/fat` does fail
+   (kernel probe: `/fat` failed, `/tmp` succeeded). A diagnostic build that forced
+   `SetFileTime` to succeed on FAT did **not** remove the error. That build was
+   not shipped and was reverted.
+2. **Navigate back (Backspace) — not achieved.** In the gate run, Backspace did
+   not move the panel back up from `C:\fat\SUBDIR\` (`wr2_nav_back.png`). The
+   archive step therefore uses a second 7-Zip window.
+3. **Tools > Options round-trip — not reachable.** The personality draws no menu
+   bar (`SM_CYMENU` is reserved), `TrackPopupMenu` draws nothing, and
+   `LoadAcceleratorsW` returns an empty table. Closing this needs a menu and
+   popup subsystem in the window layer. It is not started.
+4. **Drag-drop** — deferred, human-run, outside this gate.
+
+The 2026-09-30 status blamed the interaction half on compositor child-clipping.
+CW-1 delivered that clipping on 2026-09-30, so that blocker is not the cause of
+any gap above.
+
 #### Tasks
 
-- [x] Live launch: `run w32run /fat/7zFM.exe` reaches the main window (no
-      `Error #80004005`); serial shows 292 imports bound and the process alive.
-- [x] **Live-frame gate (main window)**: the 7-Zip main-window title bar is
-      present on the frame (window chrome, not the message box); brightness
-      floor cleared. *Listing rows in the panel region are blocked on compositor
-      child-clipping — see Status below.*
-- [x] Navigate — **done live (2026-10-05)**: after CW-1 the panel is visible
-      and clickable; the WR-2 lab drives a real double-click navigation into
-      `SUBDIR` and back out with a listing delta.
-- [x] Extract — **done live (2026-10-05)**: the **byte-known CI fixture**
-      (`tools/wr2_make_fixture.py`, `tests/fixtures/wr2/`, round-trip checked)
-      is opened INSIDE 7-Zip FM by a real double-click; `HELLO.TXT` is
-      selected, the toolbar's Extract button opens `IDD_COPY` (six items,
-      host-template-exact), OK is clicked, and `/fat/HELLO.TXT` comes out
-      **byte-exact** (217 bytes, md5 `3b44a2fc…`, equal to the host's
-      `zipfile` unpack). Automated end-to-end gate: `tools/lab_wr2.sh verify`
-      (boot → launch → dblclick archive → select → Extract → OK → md5
-      compare against the host reference; no green without the match).
-- [~] Options — **deferred** / human-run: the property-sheet round-trip is a
-      later live step of this lane.
-- [~] Drag-drop — **deferred** / human-run.
-- [x] `#WR-2` receipt in `docs/w32app_receipts.md`: what is live-verified vs the
-      named compositor dependency, with the frame digest.
-
-#### Status (2026-09-30) — 7-Zip personality complete and LIVE; interaction gate on the compositor
-
-The 7-Zip personality for WR-2 is **done and verified live** (13/13 in
-`test_wr2_7zip_live.sh` under QEMU/OVMF/TCG): launch, imports, address bar
-(`ReBarWindow32` + `ComboBoxEx32` now real), main window on the framebuffer, no
-`E_FAIL`/fault/exit. The remaining pixel-driven steps (panel listing, navigate,
-extract-through-panel, options) are blocked on ONE dependency **outside this
-phase's scope**: the compositor does not clip `WS_CHILD` into its parent, so
-7-Zip's panes composite as separate top-level surfaces and the file panel is
-not drawn inside the window. Named here (D-WR4), deferred to a compositor phase,
-not faked. Deliverables below all landed.
+- [x] Live launch: `w32run /fat/7zFM.exe C:/fat &` reaches the main window with
+      no `Error #80004005`; serial shows 292 imports bound and the process alive.
+- [x] Live-frame gate (main window): the 7-Zip main-window title bar is present
+      on the frame; the brightness floor is cleared.
+- [x] Panel rows and clipping: the `/fat` file rows are drawn (Phase B,
+      LVN_GETDISPINFO glyph pixels), and the CW-1 clipped panes are asserted.
+- [x] Navigate, listing delta: a real double-click on `SUBDIR` changes the
+      listing (gate, 2026-10-09). Navigate back with Backspace: **not achieved**
+      (gap 2).
+- [~] Extract, bytes: **byte-exact** (gate, 2026-10-09; the lab
+      `tools/lab_wr2.sh verify` checked the same md5 on 2026-10-05). Extract,
+      clean finish: **not achieved** (gap 1). The lab checks the md5 only, so it
+      did not see the post-copy error box.
+- [ ] Options — **not reachable** (gap 3). Needs a menu/popup subsystem first.
+- [~] Drag-drop — deferred, human-run (gap 4).
+- [x] `#WR-2` receipt in `docs/w32app_receipts.md`: live-verified results vs the
+      named gaps, with the 2026-10-09 gate run and the screenshot names.
 
 #### Test gate
 
-- `test_wr2_7zip_live.sh` green under the WR-0 lane: main window present,
-  `/fat` listed, navigate delta, byte-exact extract of the CI fixture archive,
-  option round-trip. Receipt updated; frame digest committed.
+- `test_wr2_7zip_live.sh`: **22/22** assertions pass; the named gaps print as
+  SKIP lines. The plan's required checks: main window ✅, `/fat` listed ✅,
+  navigate delta ✅, byte-exact extract ✅, option round-trip ❌ (gap 3).
 
-**Deliverable:** `tests/integration/cases/test_wr2_7zip_live.sh`, the CI
-fixture archive builder, receipt edits, `patches/WR2_7zip_live.patch` (any
-personality fixes the live run forces — e.g. panel-init ordering).
+**Deliverable:** `tests/integration/cases/test_wr2_7zip_live.sh` (the gate), the
+CI fixture archive builder (`tools/wr2_make_fixture.py`), the receipt
+(`docs/w32app_receipts.md` §WR-2, 2026-10-09 update), and these plan status
+edits. The 2026-10-09 pass needed no personality code change.
 
 ---
 

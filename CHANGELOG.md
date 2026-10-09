@@ -112,6 +112,22 @@ scattering as separate top-level surfaces over a black interior.
   plus folder navigation — a personality/comctl32 concern, now unblocked by the
   compositor but not yet done.
 
+## [WR-2 — interaction gate: navigate and byte-exact extract gated; honest partial] 2026-10-09
+
+`tests/integration/cases/test_wr2_7zip_live.sh` now drives navigate and extract
+through real pointer input. It passes 22/22 assertions under OVMF/TCG. New
+assertions: a double-click into `SUBDIR` changes the listing; a second 7-Zip
+window at `C:\fat` opens the CI fixture archive, selects `HELLO.TXT`, and Extract
+raises a window; the extracted `/fat/HELLO.TXT` is byte-exact against the host
+unpack (md5 `3b44a2fc…`, 217 bytes); the shell answers after the GUI session.
+
+Not achieved, printed as named SKIP lines and not faked: a clean extract (the
+Extract window is not painted, and 7-Zip then shows "Progress Error" although the
+bytes are correct); navigate back with Backspace; Tools > Options (no menu bar or
+popup subsystem yet); drag-drop (deferred). FAT32 refuses file times (no
+`settimes` hook), but that is not the sole trigger of the error box. Receipt:
+`docs/w32app_receipts.md` §WR-2, 2026-10-09 update.
+
 ## [WR-2 — App run I: 7-Zip File Manager, live on the framebuffer] 2026-09-30
 
 The pinned 7-Zip File Manager (`7zFM.exe` + `7z.dll`, 24.09) runs live on the

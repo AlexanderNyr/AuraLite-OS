@@ -984,6 +984,56 @@ compositor.
 > `-smp 2` (5/5 clean boots). A-suite regression: a1 350, a6 113/0,
 > a8 168/0, a9 404/0 all green on the cleaned tree.
 
+> **Update 2026-10-09 (WR-2 gate re-run: the interaction half, honest partial).**
+> `tests/integration/cases/test_wr2_7zip_live.sh` now drives navigate and extract
+> itself, through real pointer and key input. Result: **22/22** assertions pass
+> under OVMF/TCG, plus named SKIP lines for the gaps below. The gate starts 7-Zip
+> as background jobs (`w32run … &`). A first window double-clicks into `SUBDIR`
+> and the listing changes (`wr2_nav_sub.png`). A second window opened at `C:\fat`
+> opens the archive, selects `HELLO.TXT`, and Extract raises a window over it
+> (`wr2_arc_sel.png`, `wr2_copy_dlg.png`). OK writes `/fat/HELLO.TXT`, and `cat`
+> over serial matches the host unpack: md5 `3b44a2fc611f9c423bf0a8e6ab6eb077`,
+> 217 bytes. Afterwards the shell answers `ls /fat`.
+>
+> Findings, all observed in the gate run. None is fixed in this pass.
+>
+> | Item | Status | Evidence |
+> | --- | --- | --- |
+> | Clean extract | **not achieved** | After OK, 7-Zip shows `Progress Error` (`wr2_extracted.png`), though the bytes are correct. |
+> | Extract window | **not painted** | The frame shows a blank white box at the top left (`wr2_copy_dlg.png`). The OK click still completes the copy. |
+> | Navigate back (Backspace) | **not achieved** | After Backspace the panel is still `C:\fat\SUBDIR\` (`wr2_nav_back.png`). |
+> | Tools > Options | **not reachable** | No menu bar is drawn (`SM_CYMENU` reserved). `TrackPopupMenu` draws nothing. `LoadAcceleratorsW` returns an empty table. |
+> | Drag-drop | deferred | Human-run, outside this gate. |
+>
+> Root-cause work on the Progress Error (negative results, recorded so they are not repeated):
+>
+> - FAT32 has no `settimes` hook (`fat32_ops` in `kernel/fs/fat32.c` has no `.settimes`;
+>   `vnode_settimes` in `kernel/fs/vfs.c` returns `-EOPNOTSUPP` for it). On the running
+>   kernel, `settimes /fat/... 111 222` prints `failed`, and the same call on `/tmp`
+>   succeeds. So `SetFileTime` on FAT does fail.
+> - Diagnostic build, **not shipped**: `SetFileTime` forced to report success on FAT
+>   (`kernel32_fs.c`). The Progress Error still appeared (`e1_extracted.png`). So the
+>   failed file time is not the sole trigger. The change was reverted with `git checkout`
+>   and the tree was rebuilt.
+> - A tmpfs control (the same archive copied to `/tmp`) was inconclusive. The copy
+>   window stayed open through the 15 s wait, and `/tmp/HELLO.TXT` did not appear.
+>   That is not a clean comparison.
+> - Failing-call log (diagnostic builds, not shipped): every call that fails through
+>   `fs_fail`, `fs_fail_c` or `w32_set_last_error` was printed during the copy. No file
+>   API failed during the copy. `SetFileAttributesW` was never called. The only codes
+>   seen were `WAIT_TIMEOUT` polls (258) and the end-of-listing `ERROR_NO_MORE_FILES`
+>   (18). So the trigger is either a silent `FALSE` return with no last-error code, or
+>   7-Zip's handling of its own extraction result. The next step is to find which result
+>   7-Zip checks, not to stub more file APIs.
+>
+> Note on the 2026-10-05 update: `tools/lab_wr2.sh verify` checks the md5 only. It does
+> not look at the frame after OK, so it did not see the Progress Error. The byte-exact
+> result above stands. The "clean" claim does not.
+>
+> Phase status: **PARTIAL**. The plan's required checks that pass in the gate are main
+> window, `/fat` listed, navigate delta, and byte-exact extract. Option round-trip is not
+> reachable (named gap). See `docs/plans/W32RUN_PLAN.md` §WR-2.
+
 ## CW-1 — Compositor child-window embedding & clipping — 2026-09-30
 
 `docs/plans/CW_COMPOSITOR_PLAN.md`. The kernel compositor (`kernel/gui/gui.c`)
