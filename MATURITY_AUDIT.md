@@ -1,5 +1,11 @@
 # MATURITY_PLAN.md — audit
 
+> **Dated snapshot, not the current state.** This audit was measured at the
+> tree `U8 update` + the USB U9 work. It has not been re-run against `518e989`.
+> It stays as the record of that audit. For the current feature state see
+> [`docs/status.md`](docs/status.md); for the plan it audits see
+> [`docs/plans/MATURITY_PLAN.md`](docs/plans/MATURITY_PLAN.md).
+
 Checked against the tree, not against the document. Every claim below was
 verified by running something or reading the code it refers to.
 

@@ -2,6 +2,80 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Bugfix update `518e989` and documentation refresh] 2026-10-09
+
+**Bugfix update** (upstream commit `518e989`, 20 files).  Checked in this
+refresh: `make test-unit` on `518e989` exits 0.  The earlier checks (`make iso`,
+the BL5 BIOS smoke test, QEMU `ping 10.0.2.2` and HTTP fetches) were run on the
+pre-upstream patch against base `7a393dd`; they were not re-run on `518e989`.
+
+- **Build and image:** the BIOS image's FAT partition is sized from its
+  contents (it was fixed at 15 MiB, too small for `initrd.tar`; minimum 40 MiB
+  so FAT32 has enough clusters).  The user linker script aligns `.bss` to 32
+  bytes, which removes the `ld.lld` alignment warnings.  `.gitignore` covers
+  `__pycache__/`.  `make iso` no longer overwrites the tracked root
+  `SHA256SUMS`; the file stays in `release/`.
+- **Supply chain:** TinyCC and doomgeneric are fetched by pinned commit, and a
+  failed fetch removes its directory.  Freedoom is downloaded with `curl -fsSL`,
+  and the archive and the WAD are SHA-256-checked before use.
+- **Shell:** `ping <IPv4>` takes a dotted-quad address directly.  It used to go
+  through DNS, fail with NXDOMAIN, and cache that answer for 24 h.
+- **libahttp:** `Content-Length` is parsed strictly.  A body cut short before its
+  declared length is `AHTTP_ERR_RESPONSE`, not success.  Chunk-size overflow is
+  rejected, and trailers are consumed before keep-alive reuse.  Header buffer
+  growth errors are reported.  `tls_error` is now populated, so `Fetch failed`
+  names the cause through `ahttp_strerror()`.
+- **virtio-blk:** sector count bound (8 sectors), `NEXT` and `WRITE` descriptor
+  flags set per link, and bounded completion polling.  A request that times out
+  takes the device out of service and leaks its frames on purpose, because the
+  device may still DMA into them.  Reads and writes share one
+  `virtio_blk_transfer`.  No in-tree caller exercises this path yet.
+- **Userspace:** `kernel32` process-state reallocations go through temporaries
+  (`ps_free_strv`).  `comdlg32` bounds `cFileName` and zeroes `name[]`.
+  `wv_image` zeroes its palette.  A duplicate check in `tcp.c` was removed.
+
+**Documentation refresh** (current-state pages only).  Historical records are
+unchanged: `docs/BL*_REPORT.md`, `docs/*_receipts.md`, `docs/plans/`, and the
+older entries in this file.
+
+- Keyboard: the DE layout has two dead keys (`´`, `^`); US has none.
+- Tests: 212 cases in 15 CI shards.  The Win32 shards are `w32-core`,
+  `w32-gui` and `w32-apps`.  The fast-subset list matches `SLOW_CASES_RE`.
+  `tests/integration/RESULTS.md` is marked as a stale reference run.
+- USB: mass storage runs over UHCI, OHCI, EHCI and xHCI.  FAT32 under
+  `/usb/fat` takes in-place overwrites, and ext2 is auto-detected and read-only
+  under `/usb/ext2`.
+- Filesystems: exFAT is a full read/write surface, and NTFS is a read-only reader.
+- GUI: the compositor is event-driven, paced at about 100 Hz while busy.  It is
+  not a fixed 100 FPS.
+- OpenGL: the GLSL front end and interpreter are reachable through the GL API
+  since G11c.
+- Networking: `ping <hostname>` resolves through DNS.  Replies from external
+  hosts depend on QEMU SLIRP, and the verified target is `10.0.2.2`.
+- gbrowser: `/apps/gbrowser` kept its name in W8 (the old browser was removed,
+  the program was not retired).  The user stack is 4 MiB, `SPAWN_MAX_IMAGE` is
+  16 MiB, and the frame-limit file is `/tmp/gbrowser.frames`.
+- Drivers: the OHCI, EHCI and xHCI transfer paths are implemented
+  (`driver_guide.md`).  The per-CPU LAPIC timer exists; HPET and TSC-deadline do
+  not.  `make run-usb-msc` uses QEMU's default UHCI controller.
+- USB: the `i8042=off` boot hang comes from the unbounded drain loop in
+  `keyboard_init()` (`usb.md`).
+- POSIX.2024 summary: the total row no longer shows partial items, since no row
+  is partial.
+- `MATURITY_AUDIT.md` is marked as a dated snapshot (U8/U9 tree).
+- Smaller fixes: `registers_t` becomes `struct registers`, `vfs_linkat` becomes
+  `vfs_link`, the user stack-top address in `memory_map.md` loses a digit, and
+  `test_idle_rx_drain` becomes `test_e1000_idle_drain`.
+
+Known and not changed: the default `AURALITE_VERSION` is still `0.0.1`, while
+the tags run to `v0.0.2`.  P-384 chain validation is a feature gap (see
+`tls.md`).  Code comments that still describe older behaviour, left for a code
+change: `drivers/keyboard/keymap.c:46` ("no dead-key support yet"),
+`lib/libgl/src/auraglx.c:348` ("100 FPS"), `.github/workflows/integration.yml:243`
+("13 parallel" shards; there are 15), and the W0 header of
+`userspace/apps/gbrowser/gbrowser.c`.  Open bug, not fixed by a docs change: the
+unbounded drain loop in `keyboard_init()` (`drivers/keyboard/keyboard.c:407`).
+
 ## [CW-1 — Compositor child-window embedding & clipping] 2026-09-30
 
 The kernel compositor now has real parent/child windows, so an app's `WS_CHILD`

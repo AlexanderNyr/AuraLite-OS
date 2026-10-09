@@ -83,7 +83,7 @@ kmain (kernel/kernel.c)
    ├── mouse_init()          PS/2 mouse (IRQ 12, scroll-wheel event support)
    ├── wm_demo()             framebuffer window-manager demo
    ├── r3d_demo()            software 3D renderer demo
-   ├── gui_init()            kernel GUI compositor (100 FPS thread) + GUI syscalls
+   ├── gui_init()            kernel GUI compositor (event-driven thread, about 100 Hz while busy) + GUI syscalls
    ├── process_self_test()   spawn /hello in an isolated address space
    ├── user_mode_self_test() load init.elf (shell) → Ring 3
    └── yield forever         shell runs interactively
@@ -267,7 +267,7 @@ Local APIC instead (`irq.c` chooses per attach state).
 The 256 vector stubs and their addresses are macro-generated; `isr_table[]`
 (an address array in `.rodata`) is consumed by `idt_init()` to fill every gate.
 Vectors that push an error code (8, 10–14, 17) use `ISR_ERR`; the rest push a
-dummy zero so `registers_t` is always the same shape.
+dummy zero so `struct registers` is always the same shape.
 
 ## Bootloader handoff bridge
 
@@ -424,7 +424,7 @@ user_test_thread (Ring 0)
    │  entry = elf_load(init_bin, init_bin_size)
    │     validate Ehdr (magic, 64-bit, x86_64)
    │     for each PT_LOAD: map pages (USER), copy file bytes, zero .bss
-   │  map_user_stack()  → map 64 KiB near 0x7FFFF0000000
+   │  map_user_stack()  → map the 4 MiB user stack + guard page below 0x7FFFF0000000
    │  tss_set_rsp0(kstack)
    ▼
 jump_to_user_asm (user_entry.asm)
@@ -500,12 +500,12 @@ Bresenham lines, and bitmap/PSF-font text.
 The legacy framebuffer window-manager demo remains for compatibility tests. The
 newer kernel GUI layer (`kernel/gui/`) manages windows, Z-order, focus,
 drag/resize/minimize/maximize/close state, per-window event rings, cursor shapes,
-and a cooperative compositor thread (`gui_compositor_thread`).
+and an event-driven compositor thread (`gui_compositor_thread`).
 
 ### GUI Anti-Freeze Architecture (Windows 10 / QEMU)
-To prevent QEMU and Windows display throttling or freezing, the compositor architecture incorporates two key mechanisms:
-1. **Guaranteed 100 FPS Updates:** `dirty = 1` is forcibly set on every compositor tick, guaranteeing that the frame buffer is composited 100 times per second.
-2. **Cooperative Sleeping:** `gui_compositor_thread` uses a cooperative sleep loop (`while (timer_get_ticks() < target) sched_yield();`) instead of `hlt` spin-locking. This prevents the compositor from monopolizing the 50ms scheduler quantum, drastically improving UI responsiveness and event handling for userspace apps.
+The compositor must neither monopolise the CPU nor stall the display under QEMU or Windows. `gui_compositor_thread` (`kernel/gui/gui.c`) is therefore event-driven (OPT O4 and O7):
+1. **Sleep until there is work:** the thread waits on a wait queue (`gui_wq`). The pending flag is checked under `gui_wake_lock`, so a wake-up cannot be lost. Keyboard and mouse IRQs, the GUI syscall layer and the 1 Hz PIT clock line (which also drives notification expiry) poke it. An idle desktop performs no compositing.
+2. **Paced drain with blocking sleeps:** while `gui_pending`, `full_dirty` or dirty rectangles remain, the thread runs `gui_compositor_tick()` and then `timer_sleep_ms(10)`, which gives about 100 Hz. The sleep is a real blocking sleep rather than a `sched_yield()` spin, so the gap is idle time the scheduler can give to other threads. A tick composites only when something is dirty; frames are not forced on every tick.
 
 User GUI applications talk to it through `SYS_GUI_CALL`
 and `SYS_GUI_EVENT`, wrapped by `libauragui` widgets and drawing helpers.

@@ -121,8 +121,9 @@ exposed for the USB stack's probing and enumeration tests.
 Writable storage is best exercised with AHCI/SATA disks. The first AHCI disk is
 used for `/disk` and `/fat`; a second AHCI disk enables `/ext2`.
 
-USB Mass Storage is currently ready through the UHCI backend. In QEMU this is
-exercised by:
+`make run-usb-msc` attaches a `usb-storage` test stick to QEMU's default UHCI
+controller (`-usb`). MSC also works through OHCI, EHCI and xHCI (see
+`docs/status.md`). The target is run with:
 
 ```bash
 make run-usb-msc

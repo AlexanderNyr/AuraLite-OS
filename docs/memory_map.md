@@ -105,7 +105,7 @@ The kernel reaches any physical address as `physical + HHDM_offset`.
 |--------------|------------------------------|---------|---------------------------------|
 | User code    | `0x40000000`                 | varies  | ELF PT_LOAD segments, per-segment R/X/W from `p_flags` (RX text, R rodata, RW data) |
 | User data    | `~0x40000120`                | varies  | rodata + .bss (co-located)      |
-| User stack   | below `0x7FFFF00000000`, randomised | 4 MiB usable + unmapped guard page | Grows down, USER + RW + NX |
+| User stack   | below `0x7FFFF0000000`, randomised | 4 MiB usable + unmapped guard page | Grows down, USER + RW + NX |
 
 The ELF loader maps segments at their `p_vaddr` (linked at `0x40000000` via
 `lib/libc/user.ld`) and honours `p_flags`: non-`PF_X` segments are mapped

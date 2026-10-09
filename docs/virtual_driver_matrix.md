@@ -20,7 +20,7 @@ Boot log prefix:
 | Realtek RTL8169/8168 | `10ec:8169`, `10ec:8168` | onboard / PCI cards (QEMU has no 8169) | Network driver (`drivers/r8169/`; host-model data path — QEMU cannot emulate the chip, so it is gated against a register-level model, `test_r8169_driver`; real silicon PENDING-USER, metal slot 10). |
 | virtio-net | `1af4:1000` (transitional), `1af4:1041` (modern) | QEMU, VirtualBox | Active network driver (`drivers/virtio_net/`; second in probe order, `test_virtio_net`). |
 | AHCI SATA | class `01/06`, e.g. `8086:2922` | QEMU, VirtualBox, VMware | Active DMA sector read/write. |
-| virtio-blk | `1af4:1001` (transitional), `1af4:1042` (modern) | QEMU, VirtualBox | Active storage lane: shared virtio transport (MMIO + PCI, RES-21/R7) with an ext2 mount gate (`test_vblk_ext2`). |
+| virtio-blk | `1af4:1001` (transitional), `1af4:1042` (modern) | QEMU, VirtualBox | Active storage lane: shared virtio transport (MMIO + PCI, RES-21/R7) with ext2 mount gates on the MMIO lanes (`tests/integration/a64_fs_smoke.sh` and `rv_fs_smoke.sh`). |
 | UHCI USB 1.1 | class `0c/03/00`, e.g. `8086:7020` | QEMU, VirtualBox, VMware | Active control/bulk backend; USB MSC works through UHCI. |
 | xHCI USB 3.x | class `0c/03/30`, `1b36:000d`, `1033:0194` | QEMU (`-device qemu-xhci`) | Active since the USB U-series: real command/event/transfer rings — control with short-packet/stall recovery, bulk, interrupt, nested hubs. MSC bulk works through xHCI (`test_xhci_bulk`, `test_usb_xhci_hub`). |
 | Bootloader-provided framebuffer | firmware-provided | all | Active boot framebuffer; no native SVGA acceleration. |

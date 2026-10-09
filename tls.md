@@ -1,6 +1,6 @@
 # AuraLite OS — TLS Implementation Documentation
 
-**Last updated:** 2026-09-05 (REALINTERNET2_PLAN Y5–Y7: ML-KEM-768 + X25519MLKEM768 hybrid ClientHello, SHA3/SHAKE, live-web protocol)
+**Last updated:** 2026-10-09 (bugfix update `518e989`: libahttp Content-Length, truncation, chunk and trailer hardening; earlier, 2026-09-05: REALINTERNET2_PLAN Y5–Y7, ML-KEM-768 + X25519MLKEM768 hybrid ClientHello, SHA3/SHAKE, live-web protocol)
 
 This document describes the TLS stack implemented in AuraLite OS, its
 capabilities, limitations, and security properties.  It exists because an
@@ -73,8 +73,8 @@ is more valuable than a padlock icon.
 |---|---|
 | HTTP/1.1 | ✅ |
 | Host header | ✅ |
-| Chunked transfer encoding | ✅ |
-| Content-Length | ✅ |
+| Chunked transfer encoding | ✅ (chunk-size overflow is rejected; trailer fields are consumed so a keep-alive connection stays aligned) |
+| Content-Length | ✅ (strict decimal parse; a body cut short before its declared length is `AHTTP_ERR_RESPONSE`, not success) |
 | Connection: close | ✅ |
 | Redirects (301/302/307/308) | ✅ (max 5 hops) |
 | Growing response buffer | ✅ (1 MiB cap) |

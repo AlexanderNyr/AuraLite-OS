@@ -1,45 +1,55 @@
 # AuraLite OS GUI Browser (`/apps/gbrowser`)
 
-**Status:** Phases W0–W7 of [`WEBVIEW_PLAN.md`](plans/WEBVIEW_PLAN.md) —
-all phases W0–W8 complete. `gbrowser` was retired in W8.
+**Status:** all phases W0–W8 of [`WEBVIEW_PLAN.md`](plans/WEBVIEW_PLAN.md) are
+complete. In W8 the web view took over the name `/apps/gbrowser`, and the older
+listbox-based browser was removed. §1 describes the current program and §2 its
+current limits. §§6–12 are the per-phase records.
 
 This document states what the web view is, what it deliberately is not, and
 what the presentation path costs on this build. It follows the project
 convention that limitations are discovered by reading, not by pointing at a
-blank window — the window itself carries the same statement.
+blank window. The limitations are listed in §2.
 
 ---
 
 ## 1. What it is
 
-`/apps/gbrowser` is a windowed program that renders a *standing page*: a pixel
-buffer written by the program itself and presented with `ag_blit()` — the
-same presentation path the renderer will use for the life of this program.
+`/apps/gbrowser` is the AuraLite GUI web view. It opens `http://` and
+`https://` pages (HTTP/1.1 through libahttp, TLS 1.3 with chain validation),
+tokenises the HTML, builds a DOM, lays out blocks and inline text, applies the
+inline CSS subset and paints the result into an 800×600 × 32-bit page buffer.
+That buffer is presented with `ag_blit()`. The window has Back, Fwd, Home and
+Go buttons, an address bar, a status strip that shows the hovered link, and
+scrolling with the wheel and arrow keys. It decodes images (the formats and
+their limits are in §2), draws form widgets (`input`, `button`, `textarea`,
+`select`), and renders `<canvas data-scene="cube">` once through an OpenGL FBO
+(§12).
 
-Phase W0 delivers the plumbing and its measured cost:
+The W0 scaffold is still the base of the program:
 
-- a window and an event loop (close, `q`/Esc to quit, wheel and arrow keys to
-  scroll);
-- a heap-allocated 800×600 × 32-bit page buffer (the user stack is 64 KiB and
-  must never hold it);
-- the benchmark of the presentation path, run at startup;
-- an optional `/tmp/webview.frames` limit (same convention as `/glcube`) so
-  automated runs cannot hang;
-- the honest limitation statement, drawn in the window itself.
+- a window and an event loop (close, `q` or Esc to quit);
+- a heap-allocated 800×600 × 32-bit page buffer (the stack must never hold it,
+  see §4);
+- the blit benchmark, run at startup (§3);
+- an optional frame limit read from `/tmp/gbrowser.frames` (same convention as
+  `/glcube`), so automated runs cannot hang.
 
-## 2. What it cannot do (as of W0)
+The W0 window drew its limitation statement inside the window. The current
+window does not; §2 is the list of limits.
+
+## 2. What it cannot do
 
 These are plan decisions, not TODOs; each has a pointer to where it lives.
 
 | Limitation | Why | Reference |
 |---|---|---|
-| **HTTPS is real, not complete** | TLS 1.3 + chain validation against `/etc/ssl/roots.pem`.  Missing: P-384/SHA-384 leaf signatures (`example.com` / `ietf.org` still `hrc=-26`), JS, SVG, video. | `WEBVIEW_PLAN.md` D6, `docs/live_web.md` |
-| **No JavaScript** | A JS engine is larger than the whole plan and would not fit `SPAWN_MAX_IMAGE` (1 MiB). Permanent within this plan. | `WEBVIEW_PLAN.md` D5 |
-| **Images are decoded, not complete** | PNG (8-bit, no Adam7), baseline JPEG, GIF first frame, BMP 24/32.  Cap 8 images / 800×600.  No SVG, no APNG, no video. | this document §13 |
-| **No proportional fonts** | The only rasteriser is PSF2 8×16 monospace. `<b>` is rendered as a synthesised double-strike until a real font path exists. | `WEBVIEW_PLAN.md` D7 |
+| **HTTPS is real, not complete** | TLS 1.3 + chain validation against `/etc/ssl/roots.pem`.  Missing: P-384/SHA-384 leaf signatures (`example.com` and `ietf.org` currently fail with `hrc=-26`, unsupported signature algorithm), JS, SVG, video. | `WEBVIEW_PLAN.md` D6, `docs/live_web.md` |
+| **No JavaScript** | A JS engine was judged larger than the whole plan: it would not have fit the 1 MiB spawn limit of W0 (`SPAWN_MAX_IMAGE` is now 16 MiB). Permanent within this plan. | `WEBVIEW_PLAN.md` D5 |
+| **Images are decoded, not complete** | PNG without Adam7 interlace, baseline JPEG (SOF0), GIF first frame only (no animation), uncompressed BMP 24/32, and `data:` URLs. Up to 8 image slots per page (`WV_MAX_IMG`), each at most 800×600 (`WV_IMAGE_MAX_W` / `WV_IMAGE_MAX_H`). No SVG, no APNG, no video. | `wv_image.c` |
+| **No proportional fonts** | All glyphs are 8×16 monospace: the VGA PSF2 blob for ASCII and a generated table for windows-1251 0x80–0xFF (`wv_cp1251_font.inc`). `<b>` is a synthesised double-strike (`wv_paint.c`) until a real font path exists. | `WEBVIEW_PLAN.md` D7 |
 | **No CSS beyond a named subset** | `display` (`block`/`inline`/`none`), `color`, `background-color`, `width`, `height`, `margin`, `padding`, `border`, `font-weight`, `text-align`. Adding to the list is a decision, not a slope. | `WEBVIEW_PLAN.md` D4 |
 | **No standards compliance claim** | This renders a deliberately chosen subset. | `WEBVIEW_PLAN.md` §7 |
-| **Response buffer limits** | `gbrowser`'s 16 KiB static buffer is being replaced in W6 by a growing one with an explicit cap. | `WEBVIEW_PLAN.md` W6 |
+| **Response size ceiling** | The response buffer starts at 8 KiB and doubles up to `WV_HTTP_MAX_CAP` (512 KiB). An append past the ceiling is refused: the prefix is kept and the buffer is marked `refused`. | `wv_http.c`, `WEBVIEW_PLAN.md` W6 |
 
 ## 3. The measured presentation path
 
@@ -66,15 +76,16 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 
 ## 4. Hard constraints inherited from the kernel
 
-- **The user stack is 64 KiB.** The parser (W1) and the layout walk (W3) are
-  iterative by design, with explicit depth caps — not patched after a crash.
-  `kernel/proc/guard.c` classifies an overflow as `[GUARD] user stack
-  overflow`; W2's gate runs a 10 000-deep document in QEMU where the real
-  limit applies.
-- **`SPAWN_MAX_IMAGE` is 1 MiB.** `gbrowser.elf` is ~130 KiB as of W0; the
-  budget for a tokeniser, a DOM, layout, CSS and painting is the remaining
-  ~870 KiB, and the failure mode (a diagnosed spawn refusal) must not become
-  the only sign the budget was blown.
+- **The user stack is 4 MiB** (`USER_STACK_SIZE`, `kernel/arch/x86_64/syscall.c`).
+  It was 64 KiB when the W1–W3 gates were written. The parser (W1) and the
+  layout walk (W3) are iterative by design, with explicit depth caps — not
+  patched after a crash. `kernel/proc/guard.c` classifies an overflow as
+  `[GUARD] user stack overflow`; W2's gate runs a 10 000-deep document in QEMU
+  where the real limit applies.
+- **`SPAWN_MAX_IMAGE` is 16 MiB** (`kernel/proc/process.c`). When W0 set the
+  size budget the limit was 1 MiB, and `gbrowser.elf` was ~130 KiB. The W0 rule
+  still holds: the spawn refusal must not be the only sign that the budget was
+  exceeded.
 
 ## 5. Roadmap
 
@@ -88,7 +99,7 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 | W5 | Inline CSS subset (D4) | ✅ complete (2026-08-07) |
 | W6 | Navigation: links, history, growing fetch, HTTP/1.1 | ✅ complete (2026-08-07) |
 | W7 | `<canvas>` with an OpenGL context via FBO | ✅ complete (2026-08-07) |
-| W8 | Retire or keep `gbrowser` | ✅ complete (2026-08-07) — retired |
+| W8 | Retire or keep `gbrowser` | ✅ complete (2026-08-07) — kept under the name: the web view took `/apps/gbrowser`, and the old listbox-based browser was removed |
 
 ## 6. The tokeniser (W1)
 

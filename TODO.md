@@ -6,12 +6,12 @@ known limitations and future work for the post-phase tree. See
 for the feature matrix.
 
 **RESIDUE R12 note — read this first.** The machine-checked INDEX of
-coarse debt is [`docs/residue_ledger.md`](docs/residue_ledger.md) (54
+coarse debt is [`docs/residue_ledger.md`](docs/residue_ledger.md) (59
 rows, class/status arithmetic enforced by
 `tools/check_residue_claims.py`, marker counts ratcheted against
 `tools/residue_baseline.txt`); when this file and the ledger disagree,
 the ledger wins.  This file is kept IN FULL — its fine-grained
-entries and investigation narratives are the detail no 54-row ledger
+entries and investigation narratives are the detail no 59-row ledger
 can carry — but full duplication drifts, and the R12 audit measured
 exactly how much: **thirteen entries below claimed something the tree
 had already closed.**  Each one now carries an inline
@@ -423,7 +423,7 @@ build when a box and the plan disagree.
   **Done (`RESIDUE2_PLAN.md` T4 → `patches/RESIDUE2_T4_posix.patch`):**
   SysV shared memory/semaphores/message queues (`kernel/ipc/sysvipc.c`,
   host gate `test_sysvipc`; attachments survive `execve` per POSIX),
-  hard links (`vfs_link`/`vfs_linkat`, Q13 seam), FIFO/symlink storage
+  hard links (`vfs_link`, Q13 seam, behind `link(2)` and `linkat(2)`), FIFO/symlink storage
   walked component-by-component through the canonicalising resolver
   (`test_fifo_symlinks` green; `vfs_realpath` is the same walk the
   install policy judges through). (class: POSIX)
@@ -566,8 +566,8 @@ build when a box and the plan disagree.
   an AltGr third layer (`KB_MOD_ALTGR`, raised by right Alt on PS/2 and USB);
   `make KEYMAP=de` selects the boot default at compile time and the `kbd`
   shell command (non-standard `SYS_KBD_LAYOUT` 601) switches/enumerates at
-  runtime.  The remaining gap from the old text is unchanged: still no
-  dead-key support (the German ´ key emits nothing unshifted).
+  runtime.  The remaining gap from the old text was dead-key support (the German ´
+  key emitted nothing unshifted); the next bullet closes it.
 - ~~Keyboard dead keys.~~ **Done (`RESIDUE2_PLAN.md` T4 →
   `patches/RESIDUE2_T4_posix.patch`):** layouts carry a `dead[]` side
   table (the pinned lo/hi bytes are untouched — Shift+´ still emits
@@ -586,9 +586,9 @@ build when a box and the plan disagree.
   enumeration works including xHCI route strings. HID and MSC runtime
   attach/read/detach are QEMU-tested through the polling hotplug monitor, and
   active media is exposed at `/usb` through usbfs. FAT32 superfloppy/partition
-  root files are auto-detected read-only under `/usb/fat`; writable FAT32, ext2
-  hotplug automount, isochronous devices and broader hardware recovery paths are
-  still future work.
+  root files are auto-detected read-only under `/usb/fat` (writable FAT32 and ext2
+  automount came later, see the next bullet); isochronous devices and broader
+  hardware recovery paths are still future work.
 - ~~Writable FAT32 on USB, ext2 hotplug automount~~ **Done (RESIDUE2
   T6, 2026-09-06):** in-place + slack-grow writes to existing FAT32
   files through MSC WRITE(10), verified host-side from the raw image
@@ -639,7 +639,7 @@ build when a box and the plan disagree.
   flood the serial log today).~~ **Done (RESIDUE2 T5):** the passive
   input poller drains e1000/rtl8139/virtio rings while idle; unsolicited
   frames are consumed, no RX-overrun spam. Gated by
-  `test_idle_rx_drain` (L2 lab idledrain mode). (class: networking)
+  `test_e1000_idle_drain` (L2 lab `idledrain` mode, `tests/integration/l2lab.py`). (class: networking)
   (RESIDUE2 T5)
 - ~~Production TCP: sliding windows, congestion control, real
   packet queues.~~ **Done (RESIDUE2 T5):** audited — sliding send
@@ -792,7 +792,7 @@ that — so the parked lx items stay bullets, not boxes):
   `-ENETDOWN` (was raw -1 == EPERM). Gated by `test_udp_blocking`
   (L2 lab: knock → delayed reply → blocked past the host delay).
 - [x] Process-owned socket-style client handles (`socket/connect/send/recv/close`).
-- [x] Per-connection TCP state (`tcp_handle_t`, up to `TCP_MAX_CONNS=8`).  Legacy `SYS_NET_*` syscalls are now a thin shim over the per-connection layer and are formally **deprecated**.
+- [x] Per-connection TCP state (`tcp_handle_t`, up to `TCP_MAX_CONNS=8` at the time, 16 since REALINTERNET X5).  Legacy `SYS_NET_*` syscalls are now a thin shim over the per-connection layer and are formally **deprecated**.
 - [x] Full BSD socket ABI baseline including `sockaddr`, `bind`, `listen` and `accept` for AF_INET/SOCK_STREAM.
 - [x] UDP user sockets.
 - [x] Basic one-segment TCP retransmission and fixed RTO for SYN/data/FIN. Better packet queues, congestion control and sliding windows remain future work.

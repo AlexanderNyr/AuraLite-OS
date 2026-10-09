@@ -3,6 +3,15 @@
 Reference run on Debian 13 / QEMU 10.0.8 / clang 19 / 2 CPU / 512 MiB RAM.
 Full ext2 and GUI visual assertions require `e2fsprogs` and `vncdotool`.
 
+> **Stale record: read this first.** The "Latest full run" table below is the
+> reference run of an earlier revision (16 cases, 177/177 asserts). It has not
+> been re-run for the current tree (`518e989`, 2026-10-09). The suite now
+> registers 212 cases in 15 CI shards (see [`README.md`](README.md)), and the
+> CI logs are the current evidence. Measured at `518e989` on 2026-10-09:
+> `make test-unit` exits 0 (host unit gates and the `tools/check_*` claim
+> checkers, on Debian 13 with clang 19.1.7). No integration
+> run was repeated for this record.
+
 ```bash
 make test-unit && make test-integration
 ```

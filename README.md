@@ -68,7 +68,7 @@ additional post-phase extensions.
   five-rung ladder is CI-gated as the `lx` shard, and
   `tools/check_lx_claims.py` keeps the plan honest.
 - Framebuffer console, 2D graphics, PS/2 keyboard/mouse, window-manager demo,
-  kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus, 100 FPS guaranteed refresh rate), GUI syscalls and bundled GUI applications.
+  kernel GUI compositor v2.0 (theme engine, desktop icons, notifications, window snapping, start menu, context menus; an event-driven compositor, paced at about 100 Hz while there is work to do), GUI syscalls and bundled GUI applications.
 - Host-side unit tests and QEMU integration tests for the main subsystems.
 
 ### Experimental / partial
@@ -78,7 +78,9 @@ additional post-phase extensions.
   - `ext4`: Experimental ext4-like driver with extent tree parsing (`/ext4`).
   - `btrfs`: Experimental Copy-on-Write B-tree filesystem prototype (`/btrfs`).
   - `f2fs`: Experimental Flash-Friendly File System log-structured prototype (`/f2fs`).
-  - `exfat` & `ntfs`: Skeleton/scaffolding drivers (`/exfat`, `/ntfs`).
+  - `exfat` (`/exfat`): full read/write surface; volumes formatted by the
+    kernel pass `fsck.exfat`.  `ntfs` (`/ntfs`): read-only reader, checked
+    byte-exact against host `mkntfs` volumes.
 - Per-process address spaces, `spawn`, `fork`, `execve`, `wait4` are present but
   simplified.
 - USB host-controller support: UHCI, OHCI, EHCI and xHCI all have QEMU-tested
@@ -89,9 +91,10 @@ additional post-phase extensions.
   the residue ledger (RES-38).
 - AHCI detects/initialises ports and DMA read/write passes the QEMU AHCI test
   disk self-test; broader real-hardware coverage remains experimental.
-- USB Mass Storage runs through UHCI and the xHCI bulk path; hotplugged FAT32
-  media is exposed read-only under `/usb/fat`.  Writable FAT32 and ext2
-  automount on USB remain future work.
+- USB Mass Storage runs over UHCI, OHCI, EHCI and xHCI bulk transfers.
+  Hotplugged FAT32 media appears under `/usb/fat`, where existing files can be
+  overwritten in place (creating new clusters is future work).  Hotplugged
+  ext2 is detected automatically and exposed read-only under `/usb/ext2`.
 - Bluetooth HCI and Wi-Fi 802.11 layers are protocol frameworks that require
   working lower-level USB/chipset drivers.
 - GUI v2.0 adds a theme engine, desktop icons, notifications, window snapping,
@@ -400,8 +403,8 @@ rem ------------------------------------------------------------------
 rem [4] Pick a CPU accelerator.
 rem
 rem     WHY THIS MATTERS: AuraLite is a real x86_64 kernel with a GUI
-rem     compositor that targets 100 FPS and redraws the whole screen
-rem     every frame. Without hardware-assisted virtualization, QEMU
+rem     compositor that renders whenever the screen changes. Without
+rem     hardware-assisted virtualization, QEMU
 rem     falls back to TCG (pure software instruction-by-instruction
 rem     emulation), which is easily 10-50x slower -- that is exactly
 rem     what makes the cursor jerky and the screen update only once
@@ -603,11 +606,11 @@ exit /b 1
 make test-unit              # host-side unit tests
 make test-integration-fast  # QEMU smoke/integration subset
 make test-integration       # full QEMU integration suite
-bash tests/integration/run_all.sh --group w32  # the Win32 CI shard
+bash tests/integration/run_all.sh --group w32-core  # one Win32 CI shard (the others are w32-gui and w32-apps)
 ```
 
 The full suite currently registers 212 black-box QEMU cases in 15 thematic CI
-shards (with Win32 in its own `w32` shard). Cases cover AHCI, FAT32 persistence,
+shards (Win32 runs in three shards: `w32-core`, `w32-gui` and `w32-apps`). Cases cover AHCI, FAT32 persistence,
 ext2 cross-OS round-trips, the ext4/f2fs/btrfs/exFAT/NTFS interop lanes,
 USB MSC/HID/hub/xHCI rings,
 networking (DNS failover, TCP x5, TLS/HTTPS, IPv6), SMP, selfhost closures,
@@ -808,6 +811,13 @@ gui
 exit
 ```
 
+`ping <host>` accepts a dotted-quad address or a name.  A name is resolved by
+the DNS client first, then an ICMP echo goes to the resulting address.  Under
+the QEMU user network (SLIRP) the verified path is the gateway (`ping 10.0.2.2`,
+which the test suite uses).  Replies from external hosts depend on what SLIRP
+forwards and are not part of the test suite, so `ping example.com` may print
+`No reply` even when name resolution works.
+
 ---
 
 ## Documentation map
@@ -918,15 +928,18 @@ Short version:
 - FAT32 and ext2 are featureful enough for integration tests, but their hardware
   coverage is primarily QEMU/AHCI and they should still be treated as hobby OS
   filesystems rather than production-grade implementations.
-- USB MSC runs through UHCI and the xHCI bulk path — the old
-  synthesised-BOT-reply shim is gone (`xhci_bulk_transfer` queues real TRBs
-  since the U-series; `drivers/usb/xhci.c` documents where the synthesis used
-  to live).  OHCI/EHCI transfer engines are not wired to the MSC class driver
-  yet (ledger RES-38).
+- USB MSC runs over the UHCI, OHCI, EHCI and xHCI bulk paths; `drivers/usb/msc.c`
+  dispatches to each one, and QEMU cases exercise MSC through each of the four.
+  The old synthesised-BOT-reply shim is gone (`xhci_bulk_transfer` queues real
+  TRBs since the U-series).  Transfer breadth beyond the QEMU-tested cases
+  (full scheduling, HID collections, EHCI split transactions) is tracked in
+  the residue ledger (RES-38).
 - The keyboard ships US and DE layouts, selectable at build time
   (`make KEYMAP=de`) and switchable at runtime with the `kbd` command
-  (`SYS_KBD_LAYOUT`). There are still no dead keys, so layouts needing them are
-  not fully represented.
+  (`SYS_KBD_LAYOUT`).  The DE layout has its two German dead keys, `´` and `^`:
+  each arms an accent that combines with the next letter (`´` then `e` gives
+  `é`).  The US layout has none, and the dead keys of other layouts are not
+  represented yet.
 - **TLS 1.3 and an HTTPS client exist and are tested against a local
   openssl s_server and against the live web.**
   `INTERNET_PLAN.md` N0–N7 shipped the entropy source, crypto primitives,
@@ -939,9 +952,9 @@ Short version:
   ClientHello (group `0x11EC`): a live fetch now negotiates the hybrid
   group with PQ-preferring servers.  What remains is the signature-algorithm
   boundary of the chain validator (Ed25519, RSA-PKCS#1v1.5-SHA256,
-  RSA-PSS-SHA256, ECDSA P-256): chains signed with e.g. ECDSA P-384
-  (Let's Encrypt YE2 today) fail with a named `certval` error rather than a
-  mystery EOF.  `docs/live_web.md` is the user-run paste-back protocol for
+  RSA-PSS-SHA256, ECDSA P-256): chains signed with ECDSA P-384
+  (for example the GTS R4 to WE2 path, see `docs/trust_store.md`) fail with a named `certval`
+  error rather than a mystery EOF.  `docs/live_web.md` is the user-run paste-back protocol for
   public-web receipts.
   See [`docs/plans/INTERNET_PLAN.md`](docs/plans/INTERNET_PLAN.md),
   [`docs/plans/REALINTERNET_PLAN.md`](docs/plans/REALINTERNET_PLAN.md) and

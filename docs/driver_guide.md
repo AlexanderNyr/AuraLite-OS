@@ -142,10 +142,13 @@ Location: `drivers/timer/pit.c`
 - Default frequency: 100 Hz.
 - IRQ 0 increments a global tick counter and drives scheduler preemption.
 
+The application processors have their own LAPIC timers: each AP programs its
+own periodic timer (`ap_entry()` → `lapic_timer_start_periodic()`, calibrated in
+`smp_init()`; `kernel/arch/x86_64/lapic.c`).
+
 Future work:
 
-- LAPIC timer per CPU;
-- HPET or TSC-deadline timer for higher precision.
+- HPET or TSC-deadline timer for higher precision (neither is implemented).
 
 ## PCI
 
@@ -359,12 +362,14 @@ UHCI is the first USB path with a working class-driver data path:
 
 ### OHCI/EHCI/xHCI
 
-These drivers currently provide controller detection, register mapping, basic
-initialisation and port reporting. They also expose a stable control/bulk
-backend API (`*_control_transfer`, `*_bulk_transfer`) so `usb_core` and class
-drivers can dispatch to them uniformly. The functions currently return `-1`
-with explicit diagnostics until the real ED/TD, qTD or TRB scheduling paths are
-completed.
+These drivers provide controller detection, register mapping, initialisation
+and port reporting, and a stable control/bulk backend API
+(`*_control_transfer`, `*_bulk_transfer`) that `usb_core` and the class drivers
+dispatch to. The transfer paths are implemented: OHCI builds ED/TD chains, EHCI
+uses async qTDs (with interrupt endpoints on the periodic schedule), and xHCI
+uses slots and TRBs. The functions return `-1` for invalid arguments or an
+uninitialised controller. `docs/usb.md` lists what is still approximated, for
+example the xHCI event ring, which the polling thread drains.
 
 ### USB core
 

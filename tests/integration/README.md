@@ -9,10 +9,10 @@ tests/integration/
 ├── README.md                 ← this file
 ├── run_all.sh                ← top-level orchestrator (+ ALL_CASES registry)
 ├── lib/lib.sh                ← shared helpers (qemu launcher, asserts, colors)
-└── cases/                    ← 192 case scripts, one per behaviour
+└── cases/                    ← 212 case scripts, one per behaviour
 ```
 
-The 192 cases are partitioned into **12 thematic CI shards** so they run in
+The 212 cases are partitioned into **15 thematic CI shards** so they run in
 parallel instead of one ~2 h job. The partition lives in `run_all.sh`
 (`GROUP_NAMES` / `group_re()`) and is **self-checked on every invocation**:
 each registered case must match exactly one shard regex — a case that matches
@@ -26,7 +26,10 @@ none (or two) refuses to run rather than silently dropping out of CI.
 | `fsfull` | `test_ext4`, `test_f2fs`, `test_btrfs`, `test_exfat`, `test_ntfs` (FSFULL F2–F7, multi-boot harnesses) |
 | `usb` | `test_usb_msc`, `test_usb_hotplug`, `test_xhci_bulk`, `test_usbfs_fat32` |
 | `net` | `test_networking`, `test_dns_cache`, `test_ip_frag`, `test_tcp_x5`, `test_tcp6`, `test_https6`, `test_x25519mlkem`, `test_tls`, `test_gbrowser_net` |
-| `gui` | `test_gui`, `test_opengl`, `test_3d_render`, `test_virgl_gpu`, `test_gbrowser`, `test_doom`, `test_w32_*` |
+| `gui` | `test_gui`, `test_opengl`, `test_3d_render`, `test_virgl_gpu`, `test_gbrowser`, `test_doom` |
+| `w32-core` | `test_w32_pe_loader`, `test_w32_kernel32`, `test_w32_crt`, `test_w32_loadlibrary`, `test_w32_integration` |
+| `w32-gui` | `test_w32_user32`, `test_w32a5_user32win`, `test_w32a6_user32dlg`, `test_w32a7_gdi`, `test_w32a8_comctl32`, `test_w32a11_theme` |
+| `w32-apps` | `test_w32a10_furniture`, `test_w32a12_winsock`, `test_w32a15_7zip_fixture`, `test_wr1_shell_namespace`, `test_wr2_7zip_launch`, `test_wr2_7zip_live` |
 | `selfhost-script` | `test_selfhost_script`, `test_selfhost_pipe`, `test_selfhost_shmake`, `test_selfhost_build` (SH6) |
 | `selfhost-closure` | `test_selfhost_tcc`, `test_selfhost_kernel_guest`, `test_selfhost_closure` (SH8 — the only shard needing the guest `/bin/tcc`) |
 | `selfhost-img` | `test_selfhost_mkinitrd`, `test_selfhost_mkiso`, `test_selfhost_iso` (SH7 image twins) |
@@ -46,7 +49,8 @@ NO_COLOR=1 tests/integration/run_all.sh          # plain text
 
 The fast subset skips everything matching `SLOW_CASES_RE` in `run_all.sh`:
 FAT32 persistence, `http_get`, `ext2`, `fs_stress`, `doom`,
-`ahci_large_read`, the selfhost closure pair (`kernel_guest`, `closure`)
+`ahci_large_read`, `gui_lane_smoke`, `ota_apply`, `wr2_7zip_launch`,
+`wr2_7zip_live`, the selfhost closure pair (`kernel_guest`, `closure`)
 and the whole `fsfull` shard (`ext4`, `f2fs`, `btrfs`, `exfat`, `ntfs`).
 
 Per-case run:

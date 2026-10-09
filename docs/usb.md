@@ -44,7 +44,7 @@ This is the honest half of the document.
 | **Streams / UAS** | absent | Mass storage uses Bulk-Only Transport. |
 | **USB-C / Power Delivery** | absent | No PD negotiation, no alternate modes. |
 | **Suspend / resume** | partial | Port suspend and resume exist; no device-level power management. |
-| **`i8042=off` boot** | broken (kernel) | The kernel hangs initialising the PS/2 controller when the i8042 is absent, so a USB-only input configuration cannot boot. |
+| **`i8042=off` boot** | broken (kernel) | The kernel hangs initialising the PS/2 controller when the i8042 is absent: `keyboard_init()` (`drivers/keyboard/keyboard.c`) drains the output buffer in an unbounded loop (`while (inb(KB_STATUS) & 0x01)`), which does not end while the status port keeps bit 0 set. A USB-only input configuration therefore cannot boot. (The PS/2 mouse waits are bounded.) |
 
 ## Device location encoding
 

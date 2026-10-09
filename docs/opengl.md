@@ -391,8 +391,8 @@ Under QEMU expect roughly an order of magnitude worse. Practical advice:
 
 A GLSL ES 1.0 compiler front end lives in `lib/libgl/src/glsl_*.c`: a lexer, a
 recursive-descent parser and a type checker, producing a typed AST. It is
-**not yet reachable from the GL API** — `glCreateShader` and friends arrive in
-G11c — but it is complete, tested and runs on the target.
+complete, tested and runs on the target.  On its own it is not reachable from
+the GL API; G11c connects it (`glCreateShader` and friends, see below).
 
 ### What it accepts
 
@@ -456,8 +456,8 @@ is destroyed; 112 KB of the floor is the type checker's symbol table.
 ## The GLSL execution engine (phase G11b)
 
 An AST-walking interpreter in `lib/libgl/src/glsl_exec.c` runs the tree the front
-end produces. It is still not reachable from the GL API — that is G11c — but
-it computes correct results for the whole language.
+end produces.  The interpreter computes correct results for the whole
+language; G11c attaches it to the GL API (see below).
 
 ### How a shader reaches the outside world
 

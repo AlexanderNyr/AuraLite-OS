@@ -23,7 +23,7 @@ F4 (the source tree) and F5 (aliases removed).
 | `/disk` | diskfs | yes | small persistent store on AHCI |
 | `/fat` | FAT32 | yes | full FAT32 with LFN and subdirectories |
 | `/ext2` | ext2 | yes | full ext2 with indirect blocks |
-| `/usb` | usbfs | no | hotplugged USB mass storage; FAT32 media exposed read-only under `/usb/fat` |
+| `/usb` | usbfs | partly | hotplugged USB mass storage; FAT32 under `/usb/fat` takes in-place overwrites (no new-cluster allocation yet); ext2 is read-only under `/usb/ext2` |
 
 Resolution is by longest-prefix mount match, then the filesystem's own lookup.
 
