@@ -506,6 +506,12 @@ static int surf_of_dc(gdi_dc_t *d, surf_t *s) {
 /* Window-DC rendering: raster into an ARGB temp, then one blit. */
 typedef void (*surf_draw_fn)(surf_t *s, void *user);
 
+/* WR-2: a top-level window with a menu has its client origin that many rows
+ * below the top of the compositor's content area.  Defined in user32_win.c.
+ * Everything that maps a client coordinate onto window pixels adds this;
+ * leaving it out draws a program's own pixels over its menu bar. */
+extern int w32_win_client_dy(int win_index);
+
 static int win_raster_blit(gdi_dc_t *d, int32_t bx, int32_t by,
                            int32_t bw, int32_t bh, surf_draw_fn fn, void *user) {
     if (bw <= 0 || bh <= 0) return 1;
@@ -520,7 +526,8 @@ static int win_raster_blit(gdi_dc_t *d, int32_t bx, int32_t by,
     s.dc = d; s.is_mem = 0; s.argb = tmp;
     s.w = bw; s.h = bh; s.ox = bx; s.oy = by; s.win_wid = wid;
     fn(&s, user);
-    ag_blit_alpha(wid, bx, by, (uint32_t)bw, (uint32_t)bh,
+    ag_blit_alpha(wid, bx, by + w32_win_client_dy(d->slot),
+                  (uint32_t)bw, (uint32_t)bh,
                   (const uint32_t *)tmp, (uint32_t)bw);
     pool_free(tmp, want);
     return 1;
@@ -1245,7 +1252,7 @@ W32ABI W32_DWORD GetPixel(W32_HDC hdc, int32_t x, int32_t y) {
     if (d->kind == 0) {
         int wid = w32_win_ag_wid(d->slot);
         if (wid < 0) return W32_CLR_INVALID;
-        int32_t ag = ag_get_pixel(wid, x, y);
+        int32_t ag = ag_get_pixel(wid, x, y + w32_win_client_dy(d->slot));
         if (ag < 0) return W32_CLR_INVALID;
         return w32_ag_to_colorref((uint32_t)ag);
     }
@@ -1265,7 +1272,8 @@ W32ABI W32_DWORD SetPixel(W32_HDC hdc, int32_t x, int32_t y, W32_DWORD color) {
     if (d->kind == 0) {
         int wid = w32_win_ag_wid(d->slot);
         if (wid < 0) return W32_CLR_INVALID;
-        ag_fill_rect(wid, (uint32_t)x, (uint32_t)y, 1, 1, ag);
+        ag_fill_rect(wid, (uint32_t)x,
+                     (uint32_t)(y + w32_win_client_dy(d->slot)), 1, 1, ag);
         return color;
     }
     return W32_CLR_INVALID;
@@ -1339,7 +1347,10 @@ static void blit_body(surf_t *dst, void *user) {
                 } else if (c->src_dc && c->src_dc->kind == 0) {
                     int wid = w32_win_ag_wid(c->src_dc->slot);
                     int32_t p = wid >= 0
-                        ? ag_get_pixel(wid, c->sx + x, c->sy + y) : -1;
+                        ? ag_get_pixel(wid, c->sx + x,
+                                       c->sy + y
+                                       + w32_win_client_dy(c->src_dc->slot))
+                        : -1;
                     s = p >= 0 ? (uint32_t)p : 0;
                 }
             }
@@ -2540,7 +2551,9 @@ W32ABI W32_BOOL ExtTextOutW(W32_HDC hdc, int32_t x, int32_t y, W32_UINT flags,
                 for (int32_t yy = r->top; yy < r->bottom; yy++)
                     for (int32_t xx = r->left; xx < r->right; xx++)
                         if (clip_has(d, xx, yy))
-                            ag_fill_rect(wid, xx, yy, 1, 1, bk);
+                            ag_fill_rect(wid, xx,
+                                         yy + w32_win_client_dy(d->slot),
+                                         1, 1, bk);
         }
     }
     return text_dispatch(hdc, x, y, s, len, dx, clip);

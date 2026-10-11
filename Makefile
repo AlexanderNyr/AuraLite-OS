@@ -3844,6 +3844,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_ahci_serialisation \
                 $(BUILD_DIR)/test_vma_m4 \
                 $(BUILD_DIR)/test_w32_utf \
+                $(BUILD_DIR)/test_w32_accel \
+                $(BUILD_DIR)/test_w32_menu \
                 $(BUILD_DIR)/test_w32_pe \
                 $(BUILD_DIR)/test_w32_abi \
                 $(BUILD_DIR)/test_w32_kernel32 \
@@ -3884,6 +3886,24 @@ $(BUILD_DIR)/test_w32_utf: tests/unit/test_w32_utf.c w32/src/w32_utf.c \
 
 $(BUILD_DIR)/test_w32_pe: tests/unit/test_w32_pe.c w32/src/w32_pe.c \
                           w32/include/w32/w32_pe.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+# WR-2: the RT_ACCELERATOR decoder (w32_rsrc.c) and its chord matcher, pinned
+# against the 16-byte table the 7-Zip 24.09 7zFM.exe ships.  w32_errno.c comes
+# along because w32_rsrc.c reports failures through w32_set_last_error.
+$(BUILD_DIR)/test_w32_accel: tests/unit/test_w32_accel.c w32/src/w32_rsrc.c \
+                             w32/src/w32_errno.c w32/include/w32/user32.h \
+                             w32/include/w32/w32_rsrc.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+# WR-2: the RT_MENU decoder (w32_rsrc.c), pinned against a menu built in-tree
+# in the shape the 7-Zip 24.09 7zFM.exe ships.  See the grammar comment in
+# w32/include/w32/user32.h for why this is not the documented MENUEX layout.
+$(BUILD_DIR)/test_w32_menu: tests/unit/test_w32_menu.c w32/src/w32_rsrc.c \
+                            w32/src/w32_errno.c w32/include/w32/user32.h \
+                            w32/include/w32/w32_rsrc.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
 

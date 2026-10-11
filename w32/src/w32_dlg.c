@@ -25,6 +25,16 @@
 #include "w32/w32_rsrc.h"
 #include "w32/w32_errno.h"
 #include "w32/w32_utf.h"
+#include "w32/user32_priv.h"
+/* WR-2 popup: paint straight into the compositor like the menu bar does. */
+extern int ag_fill_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_t color);
+extern int ag_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color);
+extern void ag_render_now(void);
+/* WR-2 popup: forward decls (definitions live further down with the rest of
+ * the menu table machinery). */
+static int w32_menu_kind(W32_HMENU h, int pos, uint32_t *id_out);
+static W32_HMENU w32_menu_sub(W32_HMENU h, int pos);
+int w32_menu_bar_item(W32_HMENU h, int pos, char *label, size_t cap, uint32_t *id_out);
 
 #include <stdint.h>
 #include <string.h>
@@ -527,11 +537,136 @@ W32ABI W32_BOOL InsertMenuW(W32_HMENU h, uint32_t pos, W32_UINT fl, uintptr_t id
 W32ABI W32_BOOL InsertMenuA(W32_HMENU h, uint32_t pos, W32_UINT fl, uintptr_t id, const char *t) {
     (void)t; return InsertMenuW(h, pos, fl, id, 0);
 }
+/* WR-2 popup: a real modal dropdown.  A borderless top-most window is created
+ * at the track point and painted directly into the compositor; SetCapture
+ * funnels all mouse input to it so hover works and a release outside the
+ * items dismisses.  A nested GetMessageW loop makes it modal on the caller's
+ * thread (the Win32 contract: TrackPopupMenu does not return until the user
+ * chooses or dismisses).  On a leaf item the owner gets WM_COMMAND; on a
+ * popup item the submenu recurses to the right. */
+struct w32_popup {
+    W32_HMENU menu; W32_HWND owner, hwnd;
+    int n, row_h, width, height, hover, done;
+    uint32_t chosen_id; W32_HMENU sub; int chosen_pos;
+};
+static struct w32_popup PP;
+
+#define POP_BG 0x00F0F0F0u
+#define POP_EDGE 0x00808080u
+#define POP_HI 0x003060C0u
+
+static void popup_redraw(void) {
+    int wid = w32_win_ag_wid(w32_win_index_from_hwnd(PP.hwnd));
+    if (wid < 0) return;
+    ag_fill_rect(wid, 0, 0, (uint32_t)PP.width, (uint32_t)PP.height, POP_BG);
+    ag_fill_rect(wid, 0, 0, (uint32_t)PP.width, 1, POP_EDGE);
+    ag_fill_rect(wid, 0, PP.height-1, (uint32_t)PP.width, 1, POP_EDGE);
+    ag_fill_rect(wid, 0, 0, 1, (uint32_t)PP.height, POP_EDGE);
+    ag_fill_rect(wid, PP.width-1, 0, 1, (uint32_t)PP.height, POP_EDGE);
+    for (int pos = 0; pos < PP.n; pos++) {
+        uint32_t id = 0;
+        int kind = w32_menu_kind(PP.menu, pos, &id);
+        int y0 = 2 + pos * PP.row_h;
+        if (kind == 1) { ag_fill_rect(wid, 4, y0 + PP.row_h/2, (uint32_t)(PP.width-8), 1, POP_EDGE); continue; }
+        if (pos == PP.hover) ag_fill_rect(wid, 2, y0, (uint32_t)(PP.width-4), (uint32_t)PP.row_h, POP_HI);
+        char label[64];
+        if (!w32_menu_bar_item(PP.menu, pos, label, sizeof label, &id)) continue;
+        uint32_t fg = (pos == PP.hover) ? 0x00FFFFFFu : 0x00000000u;
+        ag_draw_text(wid, 22, y0 + 4, label, fg);
+        if (kind == 2) ag_draw_text(wid, PP.width - 12, y0 + 4, ">", fg);
+    }
+    ag_render_now();
+}
+
+static W32_LRESULT W32ABI w32_popup_proc(W32_HWND h, W32_UINT m,
+                                         W32_WPARAM wp, W32_LPARAM lp) {
+    switch (m) {
+    case W32_WM_PAINT: {
+        W32_PAINTSTRUCT ps;
+        BeginPaint(h, &ps); popup_redraw(); EndPaint(h, &ps);
+        return 0;
+    }
+    case W32_WM_MOUSEMOVE: {
+        int32_t y = (int16_t)(lp >> 16);
+        int pos = (y - 2) / PP.row_h;
+        int nh = (pos >= 0 && pos < PP.n && w32_menu_kind(PP.menu, pos, 0) != 1) ? pos : -1;
+        if (nh != PP.hover) { PP.hover = nh; popup_redraw(); }
+        return 0;
+    }
+    case W32_WM_LBUTTONUP: {
+        int32_t x = (int16_t)(lp & 0xFFFF), y = (int16_t)(lp >> 16);
+        if (x < 0 || y < 0 || x >= PP.width || y >= PP.height) {
+            PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); return 0;
+        }
+        int pos = (y - 2) / PP.row_h;
+        if (pos < 0 || pos >= PP.n) { PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); return 0; }
+        int kind = w32_menu_kind(PP.menu, pos, 0);
+        if (kind == 1) return 0;
+        PP.hover = pos; PP.done = 1;
+        if (kind == 2) { PP.sub = w32_menu_sub(PP.menu, pos); PP.chosen_pos = pos; }
+        else { PP.sub = 0; w32_menu_kind(PP.menu, pos, &PP.chosen_id); }
+        PostQuitMessage(0);
+        return 0;
+    }
+    case W32_WM_KEYDOWN:
+        if (wp == W32_VK_ESCAPE) { PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); }
+        return 0;
+    }
+    return DefWindowProcW(h, m, wp, lp);
+}
+
 W32ABI W32_BOOL TrackPopupMenu(W32_HMENU h, W32_UINT fl, int32_t x, int32_t y, int32_t r, W32_HWND o, const W32_RECT *rc) {
-    (void)x; (void)y; (void)r; (void)rc; (void)fl;
-    w32_menu_t *m = menu_from_h(h); if (!m) return 0;
+    (void)r; (void)rc; (void)fl;
+    w32_menu_t *m = menu_from_h(h); if (!m || m->n == 0) return 0;
     if (o) SendMessageW(o, W32_WM_INITMENUPOPUP, (W32_WPARAM)h, 0);
-    (void)m; return 1;
+
+    static const uint16_t cls[] = {'W','3','2','P','o','p','u','p',0};
+    static int reg = 0;
+    if (!reg) {
+        W32_WNDCLASSEXW c; memset(&c, 0, sizeof c);
+        c.cbSize = (uint32_t)sizeof c;
+        c.lpfnWndProc = w32_popup_proc;
+        c.lpszClassName = cls;
+        RegisterClassExW(&c);
+        reg = 1;
+    }
+
+    memset(&PP, 0, sizeof PP);
+    PP.menu = h; PP.owner = o; PP.n = m->n; PP.row_h = 20; PP.hover = -1;
+    PP.chosen_id = (uint32_t)-1;
+    PP.width = 120;
+    for (int pos = 0; pos < PP.n; pos++) {
+        char lb[64]; uint32_t id;
+        if (w32_menu_bar_item(h, pos, lb, sizeof lb, &id)) {
+            int wl = (int)strlen(lb) * 7 + 44;
+            if (wl > PP.width) PP.width = wl;
+        }
+    }
+    PP.height = 4 + PP.n * PP.row_h + 2;
+
+    PP.hwnd = CreateWindowExW(W32_WS_EX_TOPMOST, cls, 0, W32_WS_POPUP,
+                              x, y, PP.width, PP.height, o, 0, 0, 0);
+    if (!PP.hwnd) return 0;
+    ShowWindow(PP.hwnd, W32_SW_SHOWNOACTIVATE);
+    UpdateWindow(PP.hwnd);
+    SetCapture(PP.hwnd);
+
+    W32_MSG msg;
+    while (!PP.done && GetMessageW(&msg, 0, 0, 0) > 0)
+        DispatchMessageW(&msg);
+
+    ReleaseCapture();
+    W32_HMENU sub = PP.sub; int cpos = PP.chosen_pos;
+    uint32_t cid = PP.chosen_id; W32_HWND pw = PP.hwnd;
+    PP.hwnd = 0;
+    DestroyWindow(pw);
+
+    if (sub) {
+        TrackPopupMenu(sub, 0, x + PP.width - 2, y + 2 + cpos * PP.row_h, 0, o, 0);
+    } else if (cid != (uint32_t)-1 && o) {
+        SendMessageW(o, W32_WM_COMMAND, (W32_WPARAM)(cid & 0xFFFF), 0);
+    }
+    return 1;
 }
 W32ABI W32_BOOL TrackPopupMenuEx(W32_HMENU h,W32_UINT fl,int32_t x,int32_t y,W32_HWND o,void *tp){(void)tp;return TrackPopupMenu(h,fl,x,y,0,o,0);}
 W32ABI W32_HMENU GetMenu(W32_HWND w) {
@@ -549,6 +684,10 @@ W32ABI W32_HMENU GetSystemMenu(W32_HWND w, W32_BOOL rev) {
     if (!inited) { sm = menu_alloc(); inited = 1; }
     return h_from_menu(sm);
 }
+/* WR-2: the menu bar lives in the window layer, so a menu change has to be
+ * announced to it -- a frame window never repaints on its own. */
+extern void w32_win_menu_bar_changed(W32_HWND hwnd);
+
 W32ABI W32_BOOL SetMenu(W32_HWND w, W32_HMENU h) {
     w32_menu_t *m = menu_from_h(h);
     if (h && !m) return 0;
@@ -556,6 +695,9 @@ W32ABI W32_BOOL SetMenu(W32_HWND w, W32_HMENU h) {
         if (menus[i].used && menus[i].attached == w) menus[i].attached = 0;
     }
     if (m) m->attached = w;
+    /* WR-2: attaching or replacing a menu changes the non-client area, and a
+     * frame window will not repaint by itself -- redraw the bar now. */
+    w32_win_menu_bar_changed(w);
     return 1;
 }
 W32ABI W32_BOOL CheckMenuItem(W32_HMENU h, uint32_t item, W32_UINT fl) {
@@ -567,6 +709,46 @@ W32ABI W32_BOOL CheckMenuItem(W32_HMENU h, uint32_t item, W32_UINT fl) {
     return old ? W32_MF_CHECKED : W32_MF_UNCHECKED;
 }
 W32ABI int GetMenuItemCount(W32_HMENU h) { w32_menu_t *m=menu_from_h(h); return m?m->n:-1; }
+
+/* WR-2: one top-level menu bar entry, formatted for painting.  Internal to
+ * the personality (not an exported Win32 name): the menu bar painter in
+ * user32_win.c needs a label and a command id by position, and reaching into
+ * the menu table from there would duplicate knowledge of its layout.
+ * Returns 0 when `pos` is out of range, which is how the caller stops. */
+int w32_menu_bar_item(W32_HMENU h, int pos, char *label, size_t cap, uint32_t *id_out) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m || pos < 0 || pos >= m->n) return 0;
+    if (id_out) *id_out = (uint32_t)m->items[pos].id;
+
+    size_t k = 0;
+    const uint16_t *t = (const uint16_t *)m->items[pos].text_w;
+    if (t) {
+        for (; *t && k + 1 < cap; t++) {
+            if (*t == (uint16_t)'&') continue;   /* mnemonic, not a character */
+            if (*t == (uint16_t)'\t') break;          /* accelerator hint: bar shows none */
+            label[k++] = (*t < 0x80u) ? (char)*t : '?';
+        }
+    }
+    label[k] = 0;
+    return 1;
+}
+/* WR-2 popup half: classify an item so the dropdown can draw separators,
+ * highlight strings and recurse into submenus.  kind: 0 string, 1 separator,
+ * 2 popup; -1 out of range. */
+static int w32_menu_kind(W32_HMENU h, int pos, uint32_t *id_out) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m || pos < 0 || pos >= m->n) return -1;
+    if (id_out) *id_out = (uint32_t)m->items[pos].id;
+    if (m->items[pos].flags & W32_MF_SEPARATOR) return 1;
+    if (m->items[pos].flags & W32_MF_POPUP) return 2;
+    return 0;
+}
+static W32_HMENU w32_menu_sub(W32_HMENU h, int pos) {
+    w32_menu_t *m = menu_from_h(h);
+    if (!m || pos < 0 || pos >= m->n) return 0;
+    return m->items[pos].sub;
+}
+
 W32ABI uint32_t GetMenuItemID(W32_HMENU h, int pos) { w32_menu_t *m=menu_from_h(h); if(!m||pos<0||pos>=m->n)return (uint32_t)-1; return (uint32_t)m->items[pos].id; }
 
 /* MENUITEMINFO round-trip over the same item records AppendMenu/InsertMenu
@@ -769,7 +951,7 @@ W32ABI int GetMenuStringW(W32_HMENU h, W32_UINT item, uint16_t *buf,
     buf[n] = 0;
     return n;
 }
-W32ABI W32_BOOL DrawMenuBar(W32_HWND w){(void)w;return 1;}
+W32ABI W32_BOOL DrawMenuBar(W32_HWND w){ w32_win_menu_bar_changed(w); return 1; }
 W32ABI W32_BOOL RemoveMenu(W32_HMENU h, uint32_t item, W32_UINT fl) {
     w32_menu_t *m=menu_from_h(h); if(!m)return 0;
     int idx=menu_find(m,item,fl); if(idx<0)return 0;
@@ -780,10 +962,72 @@ W32ABI W32_BOOL RemoveMenu(W32_HMENU h, uint32_t item, W32_UINT fl) {
 W32ABI W32_BOOL DeleteMenu(W32_HMENU h,uint32_t item,W32_UINT fl){return RemoveMenu(h,item,fl);}
 W32ABI W32_BOOL EnableMenuItem(W32_HMENU h,uint32_t item,W32_UINT fl){(void)h;(void)item;(void)fl;return 0;}
 W32ABI W32_BOOL GetMenuBarInfo(W32_HWND w,long obj,long item,void *pm){(void)w;(void)obj;(void)item;(void)pm;return 1;}
+/* LoadMenuW: decode the RT_MENU resource instead of discarding it.
+ *
+ * Until this, the resource was found, locked, and thrown away, and an empty
+ * CreateMenu() was handed back -- so an application's menu bar had nothing in
+ * it, which is a large part of why WR-2's Tools > Options round-trip was
+ * unreachable.
+ *
+ * The decoding is w32_menu_parse() in w32_rsrc.c, pinned by
+ * tests/unit/test_w32_menu.c and fitted against the 3 532-byte table the
+ * pinned 7-Zip 24.09 7zFM.exe ships (see w32/include/w32/user32.h for the
+ * grammar and for why the documented MENUEX layout does not describe it).
+ *
+ * The flat, depth-annotated item list is folded back into the menu tree here
+ * with an explicit submenu stack rather than recursion, matching how the
+ * parser reads it.  A missing or undecodable resource returns NULL: the old
+ * "always succeed with an empty menu" left an application unable to tell
+ * "this app has no menu" from "the loader failed". */
+#define W32_MENU_LOAD_MAX 256
+
 W32ABI W32_HMENU LoadMenuW(W32_HINSTANCE inst, const uint16_t *name) {
-    void *h = FindResourceW(inst, name, (const uint16_t *)(uintptr_t)W32_RT_MENU);
-    if (h) (void)LockResource(h);
-    return CreateMenu();
+    void *hr = FindResourceW(inst, name, (const uint16_t *)(uintptr_t)W32_RT_MENU);
+    if (!hr) return 0;
+
+    const void *data = LockResource(hr);
+    const size_t sz  = (size_t)SizeofResource(inst, hr);
+
+    static w32_menu_item_raw raw[W32_MENU_LOAD_MAX];
+    const int n = w32_menu_parse(data, sz, raw, W32_MENU_LOAD_MAX);
+    if (n <= 0) return 0;                 /* malformed or absent: refuse */
+
+    const W32_HMENU root = CreateMenu();
+    if (!root) return 0;
+
+    /* Open submenus by depth.  stack[d] is the menu that depth-d items are
+     * appended to; a popup pushes its new submenu at d+1 and its MF_END
+     * pops. */
+    W32_HMENU stack[W32_MENU_MAX_DEPTH + 2];
+    stack[0] = root;
+    int top = 0;
+
+    for (int i = 0; i < n; i++) {
+        uint32_t d = raw[i].depth;
+        if (d > (uint32_t)top) d = (uint32_t)top;   /* defensive: never index past the stack */
+
+        w32_menu_t *m = menu_from_h(stack[d]);
+        if (!m || m->n >= W32_MENU_ITEMS) continue; /* full: drop this item, do not corrupt */
+
+        w32_menu_item_t *it = &m->items[m->n++];
+        it->id     = raw[i].id;
+        it->state  = raw[i].state;
+        it->text_w = raw[i].text;         /* points into the mapped resource */
+        it->flags  = (raw[i].type == W32_MFT_SEPARATOR) ? W32_MF_SEPARATOR
+                                                        : W32_MF_STRING;
+
+        if (raw[i].flags & W32_MENUITEM_F_POPUP) {
+            const W32_HMENU sub = CreateMenu();
+            it->sub   = sub;
+            it->flags |= W32_MF_POPUP;
+            if (sub && top + 1 < (int)(sizeof stack / sizeof stack[0]))
+                stack[++top] = sub;
+        }
+        if (raw[i].flags & W32_MENUITEM_F_END) {
+            if (top > 0) top--;
+        }
+    }
+    return root;
 }
 W32ABI W32_HMENU LoadMenuA(W32_HINSTANCE inst,const char *name) {
     uintptr_t v=(uintptr_t)name; if(v>>16)return 0;
@@ -894,24 +1138,51 @@ W32ABI int CopyAcceleratorTableW(W32_HACCEL src, W32_ACCEL *dst, int c) {
     return a->n;
 }
 W32ABI W32_BOOL DestroyAcceleratorTable(W32_HACCEL acc) { w32_accel_t *a=acc_f(acc); if(!a)return 0; a->used=0; return 1; }
+/* LoadAcceleratorsW: decode the RT_ACCELERATOR resource instead of dropping
+ * it.  Until this, the resource was found and then discarded, and an empty
+ * table was handed back -- so no application hot key ever fired, which is
+ * part of why WR-2's Tools > Options round-trip was unreachable.
+ *
+ * The decoding is w32_accel_parse() in w32_rsrc.c, pinned by
+ * tests/unit/test_w32_accel.c against the 16-byte table the 7-Zip 24.09
+ * 7zFM.exe actually ships.  A missing or undecodable resource returns NULL,
+ * which is what the caller is told to expect on failure; the old code's
+ * "always succeed with an empty table" was indistinguishable from an
+ * application that defines no accelerators at all. */
 W32ABI W32_HACCEL LoadAcceleratorsW(W32_HINSTANCE inst, const uint16_t *name) {
     void *hr = FindResourceW(inst, name, (const uint16_t *)(uintptr_t)W32_RT_ACCELERATOR);
-    W32_ACCEL empty = {0};
-    if (hr) (void)LockResource(hr);
-    return CreateAcceleratorTableW(&empty, 0);
+    if (!hr) return 0;
+
+    const void *data = LockResource(hr);
+    const size_t sz  = (size_t)SizeofResource(inst, hr);
+
+    W32_ACCEL t[W32_ACCEL_MAX_ENTRIES];
+    const int n = w32_accel_parse(data, sz, t, W32_ACCEL_MAX_ENTRIES);
+    if (n <= 0) return 0;               /* malformed or absent: refuse */
+    return CreateAcceleratorTableW(t, n);
 }
 W32ABI W32_HACCEL LoadAcceleratorsA(W32_HINSTANCE inst,const char *name) {
     uintptr_t v=(uintptr_t)name; if(v>>16)return 0;
     return LoadAcceleratorsW(inst,(const uint16_t*)(v&0xFFFF));
 }
+/* TranslateAcceleratorW: match on the chord, not just the key.
+ *
+ * The previous version compared `e->key` alone, so a table entry flagged
+ * FALT fired on a bare key press too.  On the pinned 7-Zip table that means
+ * `Alt+F12 -> 736` would also have fired on F12 by itself, which is a wrong
+ * action, not a missing one.  w32_accel_match() (w32_rsrc.c, pinned by
+ * tests/unit/test_w32_accel.c) does the chord comparison; the modifier state
+ * comes from GetKeyState, which the delivered-message path already feeds. */
 W32ABI int TranslateAcceleratorW(W32_HWND w, W32_HACCEL acc, W32_MSG *msg) {
     w32_accel_t *a=acc_f(acc); (void)w; if(!a||!msg)return 0;
-    if (msg->message != 0x0100 && msg->message != 0x0104) return 0;
+    if (msg->message != 0x0100 && msg->message != 0x0104) return 0;  /* KEYDOWN / SYSKEYDOWN */
     int vk = (int)(intptr_t)msg->wParam;
+    const int shift = (GetKeyState(W32_VK_SHIFT)   & 0x8000) != 0;
+    const int ctrl  = (GetKeyState(W32_VK_CONTROL) & 0x8000) != 0;
+    const int alt   = (GetKeyState(W32_VK_MENU)    & 0x8000) != 0;
     for (int i=0; i<a->n; i++) {
-        W32_ACCEL *e = &a->entries[i];
-        if ((e->flags & W32_FVIRTKEY) && e->key == vk) {
-            PostMessageW(w, W32_WM_COMMAND, (W32_WPARAM)e->cmd, 0);
+        if (w32_accel_match(&a->entries[i], vk, shift, ctrl, alt)) {
+            PostMessageW(w, W32_WM_COMMAND, (W32_WPARAM)a->entries[i].cmd, 0);
             return 1;
         }
     }

@@ -177,9 +177,17 @@ _Static_assert(sizeof(ui_theme_t) == sizeof(ag_theme_t), "ag_theme_t drifted");
 _Static_assert(AG_DROP_PATH_MAX == 256, "file-drop ABI drifted");
 #endif
 
+/* w32_dlg.c: one top-level menu bar entry, formatted for painting (see the
+ * note there).  Declared *after* the AURALITE_W32_HOST_TEST conditional
+ * above: the ag_* declaration blocks live inside its two arms, so a
+ * declaration placed among them is invisible to whichever build is not
+ * being compiled -- the guest build silently lost this one first time. */
+int w32_menu_bar_item(W32_HMENU, int, char *, size_t, uint32_t *);
+
 #define UI_MAX_CLASSES  32
 #define UI_CLASSLONG_SLOTS 4          /* W32A-14: cbClsExtra qword slots */
 #define UI_MAX_WINDOWS  32
+#define UI_MENU_BAR_MAX 16       /* top-level menu items tracked for hit-testing */
 #define UI_MAX_QUEUES   16
 /* 256: a message queue must absorb a burst of creation traffic (every
  * visible CreateWindowExW posts WM_SIZE, the pump adds WM_PAINT for each
@@ -223,6 +231,13 @@ struct ui_class {
     W32_HICON icon_sm;            /* W32A-14: GCLP_HICONSM (PuTTY stamps this) */
     W32_HCURSOR cursor;
     int       comctl;             /* W32A-8: a common-control class (WS_CHILD ok) */
+    /* WR-2: WNDCLASS.lpszMenuName.  Win32 keeps this in the class, not in the
+     * window: a window created with hMenu == NULL gets the class menu.  Both
+     * spellings have to survive -- a string name is copied (the class table
+     * outlives the caller's stack), a MAKEINTRESOURCE id is kept as an int. */
+    int       has_menu;
+    uintptr_t menu_int;           /* MAKEINTRESOURCE(id): id, else 0 */
+    uint16_t  menu_w[UI_CNAME_MAX];
     /* W32A-14: generic class-long store for cbClsExtra offsets, so a
      * SetClassLongPtr/GetClassLongPtr round-trip on a positive index works
      * without a special field per app.  Indexed by (offset / 8). */
@@ -262,6 +277,13 @@ struct ui_window {
     W32_DWORD layered_key, layered_flags;
     uint8_t   layered_alpha;
     int       is_desktop;
+    /* Menu bar hit-testing: the x/width/command-id of each top-level item
+     * the painter laid out, so a click on the bar can be resolved to the
+     * WM_COMMAND id it belongs to.  Filled by ui_paint_menu_bar. */
+    int       mb_n;
+    int32_t   mb_x[UI_MENU_BAR_MAX];
+    int32_t   mb_w[UI_MENU_BAR_MAX];
+    uint32_t  mb_id[UI_MENU_BAR_MAX];
 };
 
 struct ui_msg {
@@ -406,10 +428,137 @@ uint32_t w32_win_client_h(int i) {
  * comes from here rather than from cached fields, which is what keeps a
  * user's title-bar drag visible to GetWindowRect. */
 static void ui_decor(const struct ui_window *w, uint32_t *bw, uint32_t *th);
+static uint32_t ui_menu_h(const struct ui_window *w);
+
+int w32_win_client_dy(int win_index) {
+    if (win_index < 0 || win_index >= UI_MAX_WINDOWS) return 0;
+    if (!windows[win_index].in_use) return 0;
+    return (int)ui_menu_h(&windows[win_index]);
+}
+
+/* ---- the menu bar --------------------------------------------------------
+ *
+ * WR-2: the menu bar is real non-client area now.  One constant is the single
+ * authority for its height, because SM_CYMENU, GetClientRect and the
+ * client<->screen conversions all have to agree: if GetClientRect says the
+ * client is 20px shorter than the coordinate conversions assume, every
+ * layout pass a program makes drifts by 20px per pass.  That is the same
+ * class of bug ui_decor's comment describes for the border width, which made
+ * 7-Zip FM's panel relayout ping-pong until the process died.
+ *
+ * The bar sits *inside* the compositor content area, at its top, so the
+ * window's outer rect is unchanged and the client shrinks -- which is what
+ * Win32 does: SetMenu recalculates the client via WM_NCCALCSIZE and the outer
+ * size stays what the program asked for. */
+#define UI_MENU_BAR_H 20u
+
+/* Height of this window's menu bar, or 0 when it has none.  A child or a
+ * popup never shows one: on Win32 a child's window rect IS its layout rect,
+ * and charging a child a menu bar would reintroduce exactly the drift
+ * ui_decor was fixed to remove. */
+/* WR-2: how far below the top of the compositor's content area a window's
+ * client origin sits -- zero except for a top-level window that has a menu.
+ * The GDI half needs this: every path that turns a client coordinate into a
+ * window pixel has to add it, or a program's own drawing lands on top of the
+ * menu bar.  Declared non-static for w32_gdi.c. */
+int w32_win_client_dy(int win_index);
+
+static uint32_t ui_menu_h(const struct ui_window *w) {
+    if (!w) return 0;
+    if (w->style & (W32_WS_POPUP | W32_WS_CHILD)) return 0;
+    if (w < windows || w >= windows + UI_MAX_WINDOWS) return 0;
+    /* GetMenu scans the menu table for a menu attached to this HWND. */
+    return GetMenu(idx_to_hwnd((int)(w - windows))) ? UI_MENU_BAR_H : 0u;
+}
+
+/* Paint the menu bar: the top UI_MENU_BAR_H rows of the compositor content
+ * area.  Drawn with the ag_* primitives directly rather than through a DC,
+ * because a window DC is client-relative and the client now starts *below*
+ * this strip -- painting through it would land on the application's content.
+ *
+ * Named limitation: this runs from the default WM_PAINT path and after
+ * SetMenu.  A program that handles WM_PAINT itself and never lets the default
+ * run gets the bar painted only when SetMenu is called; full WM_NCPAINT
+ * support (so the compositor asks the personality to draw non-client area on
+ * every damage) is still a gap. */
+static void ui_paint_menu_bar(int i) {
+    if (i < 0 || i >= UI_MAX_WINDOWS) return;
+    struct ui_window *w = &windows[i];
+    const uint32_t mh = ui_menu_h(w);
+    if (!mh || w->ag_wid < 0) return;
+
+    uint32_t cw = 0, ch = 0;
+    ag_window_get_size(w->ag_wid, &cw, &ch);
+    if (cw == 0 || ch < mh) return;
+
+    ui_theme_t t;
+    uint32_t bg = 0x00F0F0F0u;
+    if (ag_theme_get(&t) == 0) bg = t.win_content;
+    const uint32_t fg = 0x00000000u;
+    const uint32_t line = 0x00808080u;
+
+    ag_fill_rect(w->ag_wid, 0, 0, cw, mh, bg);
+    ag_fill_rect(w->ag_wid, 0, (int32_t)mh - 1, cw, 1, line);
+
+    W32_HMENU hm = GetMenu(idx_to_hwnd(i));
+    if (!hm) return;
+
+    /* Lay the top-level items out left to right.  Positions are recorded so
+     * a later click can be hit-tested against them. */
+    int32_t x = 8;
+    for (int pos = 0; pos < UI_MENU_BAR_MAX; pos++) {
+        char label[64];
+        uint32_t id = 0;
+        if (!w32_menu_bar_item(hm, pos, label, sizeof label, &id)) break;
+        if (!label[0]) continue;
+
+        const int32_t tw = (int32_t)strlen(label) * 7 + 12;
+        if (x + tw > (int32_t)cw) break;      /* no room: stop, do not clip */
+
+        w->mb_x[pos]    = x;
+        w->mb_w[pos]    = tw;
+        w->mb_id[pos]   = id;
+        w->mb_n         = pos + 1;
+
+        ag_draw_text(w->ag_wid, x + 6, (int32_t)(mh / 2) - 6, label, fg);
+        x += tw;
+    }
+}
+
+/* WR-2: repaint a window's menu bar now.  Needed because a frame window whose
+ * client is fully covered by children never receives WM_PAINT of its own --
+ * measured on the pinned 7zFM.exe: every EndPaint in a live 7-Zip session
+ * belongs to a WS_CHILD pane, never to the frame that owns the menu.  So the
+ * bar cannot wait for a paint cycle; it is stamped when the menu is attached
+ * and whenever the program says the bar changed (SetMenu / DrawMenuBar). */
+void w32_win_menu_bar_changed(W32_HWND hwnd) {
+    int i = w32_win_index_from_hwnd(hwnd);
+    if (i < 0) return;
+    ui_paint_menu_bar(i);
+    ag_window_invalidate(windows[i].ag_wid);
+    ag_render_now();
+}
+
+/* WR-2: a child's x/y are relative to its parent's CLIENT area, and that area
+ * starts below the parent's menu bar.  Every compositor coordinate for a
+ * child therefore carries the parent's client origin; without it a pane
+ * created at parent-client y=0 lands on top of the menu bar and hides it --
+ * which is exactly what 7-Zip FM's toolbar did. */
+static int32_t ui_parent_client_dy_idx(int p) {
+    if (p < 0 || p >= UI_MAX_WINDOWS || !windows[p].in_use) return 0;
+    return (int32_t)ui_menu_h(&windows[p]);
+}
+static int32_t ui_parent_client_dy(const struct ui_window *w) {
+    if (!w || !(w->style & W32_WS_CHILD)) return 0;
+    return ui_parent_client_dy_idx(w->parent);
+}
 
 static void ui_refresh_geom(struct ui_window *w) {
     if (w->ag_wid < 0) return;
     ag_window_get_pos(w->ag_wid, &w->x, &w->y);
+    /* The compositor holds content coordinates; a child's rect is reported in
+     * its parent's client coordinates, so take the menu bar back off. */
+    w->y -= ui_parent_client_dy(w);
     uint32_t cw = 0, ch = 0;
     ag_window_get_size(w->ag_wid, &cw, &ch);
     /* The compositor reports the client (content) size; the outer rect adds
@@ -452,6 +601,30 @@ static struct ui_class *ui_find_class_w(const uint16_t *name) {
     return 0;
 }
 
+/* WR-2: record WNDCLASS.lpszMenuName.  The published rule is that a pointer
+ * whose high word is zero is MAKEINTRESOURCE(id), not an address. */
+static void ui_class_set_menu(struct ui_class *k, const uint16_t *mn) {
+    k->has_menu = 0;
+    k->menu_int = 0;
+    k->menu_w[0] = 0;
+    if (!mn) return;
+    uintptr_t v = (uintptr_t)mn;
+    if ((v >> 16) == 0) {
+        if ((v & 0xFFFF) == 0) return;        /* MAKEINTRESOURCE(0): nothing */
+        k->menu_int = v & 0xFFFF;
+        k->has_menu = 1;
+        return;
+    }
+    w16_copy(k->menu_w, mn, UI_CNAME_MAX);
+    if (k->menu_w[0]) k->has_menu = 1;
+}
+
+/* The name CreateWindowExW hands to LoadMenuW, or NULL for "no class menu". */
+static const uint16_t *ui_class_menu(const struct ui_class *k) {
+    if (!k || !k->has_menu) return 0;
+    return k->menu_int ? (const uint16_t *)(uintptr_t)k->menu_int : k->menu_w;
+}
+
 static W32_WORD ui_register_class(const W32_WNDCLASSEXW *c) {
     if (!c || !c->lpszClassName || !c->lpfnWndProc) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
@@ -479,6 +652,7 @@ static W32_WORD ui_register_class(const W32_WNDCLASSEXW *c) {
         k->style  = c->style;
         k->icon   = c->hIcon;
         k->cursor = c->hCursor;
+        ui_class_set_menu(k, c->lpszMenuName);
         return (W32_WORD)(i + 1);            /* ATOM, non-zero */
     }
     w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
@@ -518,7 +692,22 @@ W32ABI W32_WORD RegisterClassExA(const W32_WNDCLASSEXA *c) {
     w.cbSize = c->cbSize; w.style = c->style; w.lpfnWndProc = c->lpfnWndProc;
     w.cbClsExtra = c->cbClsExtra; w.cbWndExtra = c->cbWndExtra;
     w.hInstance = c->hInstance; w.hIcon = c->hIcon; w.hCursor = c->hCursor;
-    w.hbrBackground = c->hbrBackground; w.lpszMenuName = 0;
+    w.hbrBackground = c->hbrBackground;
+    /* WR-2: an ANSI menu name is a real name too -- convert it instead of
+     * dropping the class menu on the floor.  A MAKEINTRESOURCE id is not a
+     * pointer, so it passes through untouched. */
+    uint16_t mname[UI_CNAME_MAX];
+    uintptr_t mv = (uintptr_t)c->lpszMenuName;
+    if (c->lpszMenuName && (mv >> 16) != 0) {
+        if (a_to_w16(mname, UI_CNAME_MAX, (const char *)c->lpszMenuName) <= 0) {
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        w.lpszMenuName = mname;
+    } else {
+        /* NULL, or MAKEINTRESOURCE(id): not an address, so carry the bits. */
+        w.lpszMenuName = (const uint16_t *)(uintptr_t)mv;
+    }
     w.lpszClassName = name; w.hIconSm = c->hIconSm;
     return ui_register_class(&w);
 }
@@ -558,7 +747,7 @@ W32ABI W32_BOOL GetClassInfoW(W32_HINSTANCE inst, const uint16_t *name,
     out->hIcon = k->icon;
     out->hCursor = k->cursor;
     out->hbrBackground = k->has_bg ? k->hbr : 0;
-    out->lpszMenuName = 0;
+    out->lpszMenuName = (uint16_t *)ui_class_menu(k);
     out->lpszClassName = k->name_w;
     out->hIconSm = k->icon;
     return W32_TRUE;
@@ -734,7 +923,12 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
         return 0;
     }
 
-    int ag_wid = ag_window_create(x, y, (uint32_t)w, (uint32_t)h, title_a, flags);
+    /* WR-2: a child is positioned in parent-client coordinates. */
+    int32_t y_ag = y;
+    if (style & W32_WS_CHILD)
+        y_ag += ui_parent_client_dy_idx(w32_win_index_from_hwnd(parent));
+
+    int ag_wid = ag_window_create(x, y_ag, (uint32_t)w, (uint32_t)h, title_a, flags);
     if (ag_wid < 0) {
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -759,7 +953,13 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     win->visible = (style & W32_WS_VISIBLE) ? 1 : 0;
     win->minimized = win->maximized = 0;
     win->enabled = (style & W32_WS_DISABLED) ? 0 : 1;
-    win->ctrl_id = (int32_t)(intptr_t)menu;
+    /* Win32 overloads this parameter: for a child window it is the control
+     * identifier, for a top-level window it is the window's menu.  Storing it
+     * as ctrl_id unconditionally meant a top-level window's menu was never
+     * attached, so GetMenu returned 0 and no menu bar could be shown -- which
+     * is why WR-2's menu stayed invisible even after LoadMenuW began decoding
+     * RT_MENU. */
+    win->ctrl_id = (style & W32_WS_CHILD) ? (int32_t)(intptr_t)menu : 0;
     /* GWLP_USERDATA starts zeroed on Windows; a stale slot here handed
      * 7-Zip's dialog proc a garbage `this` pointer for the WM_SIZE that
      * ShowWindow posts before WM_INITDIALOG, and its virtual call crashed
@@ -770,6 +970,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     win->n_inv = 0;
     win->tracking_leave = 0;
     win->layered_key = 0; win->layered_alpha = 255; win->layered_flags = 0;
+    win->mb_n = 0;
     ui_unlock();
 
     /* CW-1: embed a WS_CHILD in its parent's compositor surface, so it is
@@ -778,7 +979,24 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
         ag_window_set_parent(ag_wid, parent_ag);
     }
 
+    /* WR-2: hMenu == NULL does not mean "this window has no menu".  Win32
+     * falls back to the class's lpszMenuName, and that is exactly how 7-Zip
+     * FM gets its menu bar: the frame class registers
+     * MAKEINTRESOURCE(IDR_MAINFRAME) and the frame is created with
+     * hMenu == NULL, so without this fallback GetMenu() stays 0 forever, no
+     * menu bar is drawn and the client area is never shortened by CYMENU.
+     * Only a top-level window has a menu bar; a WS_CHILD carries its control
+     * id in the same parameter. */
+    if (!(style & W32_WS_CHILD) && !menu) {
+        const uint16_t *mn = ui_class_menu(k);
+        if (mn) menu = LoadMenuW(inst, mn);
+    }
+
     W32_HWND hwnd = idx_to_hwnd(slot);
+
+    /* Attach the window menu before WM_NCCREATE, so a program that calls
+     * GetMenu from its create path sees what it passed in. */
+    if (!(style & W32_WS_CHILD) && menu) SetMenu(hwnd, menu);
 
     /* Win32 sends WM_NCCREATE then WM_CREATE before CreateWindowEx returns,
      * and a program that allocates its state in WM_CREATE depends on it.
@@ -817,6 +1035,9 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
         PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(win));
         InvalidateRect(hwnd, 0, W32_TRUE);
     }
+    /* WR-2: draw the bar here rather than waiting for WM_PAINT -- a frame
+     * whose client is covered by child panes never gets one. */
+    if (!(style & W32_WS_CHILD) && menu) w32_win_menu_bar_changed(hwnd);
     return hwnd;
 }
 
@@ -988,7 +1209,9 @@ W32ABI W32_HDC BeginPaint(W32_HWND hwnd, W32_PAINTSTRUCT *ps) {
         r.left = 0; r.top = 0; r.right = (int32_t)cw; r.bottom = (int32_t)ch;
     }
     uint32_t bg = w32_win_bg_color(i);
-    ag_fill_rect(w->ag_wid, r.left, r.top,
+    /* WR-2: rcPaint is what the program sees, so it stays in client
+     * coordinates; the erase itself has to land below the menu bar. */
+    ag_fill_rect(w->ag_wid, r.left, r.top + (int32_t)ui_menu_h(w),
                  (uint32_t)(r.right - r.left), (uint32_t)(r.bottom - r.top), bg);
 
     ps->hdc = w32_win_make_dc(i);
@@ -1007,6 +1230,12 @@ W32ABI W32_BOOL EndPaint(W32_HWND hwnd, const W32_PAINTSTRUCT *ps) {
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
     ui_inv_clear(&windows[i]);
     windows[i].painting = 0;
+    /* WR-2: stamp the menu bar last.  It is non-client area, so the program's
+     * own WM_PAINT must never be able to draw over it -- and a program that
+     * handles WM_PAINT itself never reaches the default handler, so hooking
+     * the bar there would leave 7-Zip FM (which does) with no menu bar at
+     * all.  EndPaint runs for every paint cycle, whoever handled the message. */
+    ui_paint_menu_bar(i);
     ag_render_now();
     return W32_TRUE;
 }
@@ -1151,9 +1380,36 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
         ui_note_hover(w32_win_index_from_hwnd(hwnd));
         ui_post_to(hwnd, W32_WM_MOUSEMOVE, mk, lp, e->x, e->y);
         break;
-    case UI_EVT_MOUSE_DOWN:
+    case UI_EVT_MOUSE_DOWN: {
+        /* WR-2: a press above the client origin (client y < 0) on a window
+         * that has a menu is a menu-bar hit, and the window manager owns it --
+         * the application must never see it as a client click.  7-Zip FM
+         * handles WM_LBUTTONDOWN itself and never reaches DefWindowProcW, so
+         * intercepting here (before the app's proc) is what actually opens the
+         * dropdown. */
+        int midx = w32_win_index_from_hwnd(hwnd);
+        int32_t bar_h = (midx >= 0) ? (int32_t)ui_menu_h(w) : 0;
+        /* e->y is compositor content space: the bar is rows [0, bar_h). */
+        if (midx >= 0 && e->y >= 0 && e->y < bar_h &&
+            !(w->style & (W32_WS_CHILD | W32_WS_POPUP))) {
+            W32_HMENU bmenu = GetMenu(hwnd);
+            if (bmenu) {
+                for (int pos = 0; pos < w->mb_n; pos++) {
+                    if (e->x >= w->mb_x[pos] && e->x < w->mb_x[pos] + w->mb_w[pos]) {
+                        W32_HMENU sub = GetSubMenu(bmenu, pos);
+                        if (sub) {
+                            W32_POINT pt; pt.x = w->mb_x[pos]; pt.y = 0;
+                            ClientToScreen(hwnd, &pt);
+                            TrackPopupMenu(sub, 0, pt.x, pt.y, 0, hwnd, 0);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         ui_post_to(hwnd, W32_WM_LBUTTONDOWN, mk, lp, e->x, e->y);
         break;
+    }
     case UI_EVT_MOUSE_UP:
         ui_post_to(hwnd, W32_WM_LBUTTONUP, mk, lp, e->x, e->y);
         break;
@@ -1468,17 +1724,49 @@ W32ABI W32_LRESULT DefWindowProcW(W32_HWND hwnd, W32_UINT msg,
         /* A program that does not paint is not allowed to spin: the default
          * erases the class background and validates. */
         if (i < 0) return 0;
+        /* The menu bar is stamped by EndPaint, so it survives a program that
+         * paints its own client; nothing to add here. */
         W32_PAINTSTRUCT ps;
         W32_HDC dc = BeginPaint(hwnd, &ps);
         (void)dc;
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case W32_WM_LBUTTONDOWN: {
+        /* WR-2: a click above the client origin (client y < 0) lands on the
+         * menu bar.  A frame window does not handle it, so the default opens
+         * the dropdown for the hit item -- this is what makes Tools > Options
+         * reachable by mouse. */
+        if (i < 0) return 0;
+        int32_t cx = (int16_t)(lp & 0xFFFF), cy = (int16_t)(lp >> 16);
+        W32_HMENU menu = GetMenu(hwnd);
+        if (cy < 0 && menu) {
+            struct ui_window *w = &windows[i];
+            for (int pos = 0; pos < w->mb_n; pos++) {
+                if (cx >= w->mb_x[pos] && cx < w->mb_x[pos] + w->mb_w[pos]) {
+                    W32_HMENU sub = GetSubMenu(menu, pos);
+                    if (sub) {
+                        W32_POINT pt; pt.x = w->mb_x[pos]; pt.y = 0;
+                        ClientToScreen(hwnd, &pt);
+                        TrackPopupMenu(sub, 0, pt.x, pt.y, 0, hwnd, 0);
+                    }
+                    return 0;
+                }
+            }
+        }
+        return 0;
+    }
     case W32_WM_ERASEBKGND: {
         if (i < 0) return 0;
         struct ui_class *k = windows[i].cls >= 0 ? &classes[windows[i].cls] : 0;
         if (k && k->has_bg) {
-            ag_clear(windows[i].ag_wid, k->bg);
+            /* WR-2: ag_clear would wipe the whole content area, menu bar
+             * included, so erase the client rows only. */
+            uint32_t cw = 0, ch = 0;
+            ag_window_get_size(windows[i].ag_wid, &cw, &ch);
+            uint32_t dy = ui_menu_h(&windows[i]);
+            if (ch > dy) ag_fill_rect(windows[i].ag_wid, 0, (int32_t)dy,
+                                      cw, ch - dy, k->bg);
             return W32_TRUE;
         }
         return W32_FALSE;
@@ -1923,8 +2211,12 @@ W32ABI W32_BOOL GetClientRect(W32_HWND hwnd, W32_RECT *r) {
     if (i < 0 || !r) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
     uint32_t w = 0, h = 0;
     ag_window_get_size(windows[i].ag_wid, &w, &h);
+    /* The menu bar is non-client: it occupies the top of the compositor
+     * content area, so the client is what is left underneath. */
+    const uint32_t mh = ui_menu_h(&windows[i]);
     r->left = 0; r->top = 0;
-    r->right = (int32_t)w; r->bottom = (int32_t)h;
+    r->right = (int32_t)w;
+    r->bottom = (int32_t)(h >= mh ? h - mh : 0);
     return W32_TRUE;
 }
 
@@ -1936,7 +2228,7 @@ W32ABI W32_BOOL ClientToScreen(W32_HWND hwnd, W32_POINT *pt) {
     uint32_t bw = 0, th = 0;
     ui_decor(&windows[i], &bw, &th);
     pt->x += x + (int32_t)bw;
-    pt->y += y + (int32_t)(th + bw);
+    pt->y += y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
     return W32_TRUE;
 }
 
@@ -1948,7 +2240,7 @@ W32ABI W32_BOOL ScreenToClient(W32_HWND hwnd, W32_POINT *pt) {
     uint32_t bw = 0, th = 0;
     ui_decor(&windows[i], &bw, &th);
     pt->x -= x + (int32_t)bw;
-    pt->y -= y + (int32_t)(th + bw);
+    pt->y -= y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
     return W32_TRUE;
 }
 
@@ -2268,8 +2560,8 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
     if (!(flags & W32_SWP_NOMOVE)) {
         if (x == W32_CW_USEDEFAULT) x = w->x;
         if (y == W32_CW_USEDEFAULT) y = w->y;
-        ag_window_move(w->ag_wid, x, y);
-        w->x = x; w->y = y;
+        ag_window_move(w->ag_wid, x, y + ui_parent_client_dy(w));
+        w->x = x; w->y = y;      /* logical: parent-client coordinates */
     }
     if (!(flags & W32_SWP_NOSIZE)) {
         if (cx > 0 && cy > 0) {            ag_window_resize(w->ag_wid, (uint32_t)cx, (uint32_t)cy);
@@ -2820,7 +3112,9 @@ W32ABI int32_t GetSystemMetrics(int32_t index) {
     case W32_SM_CYICON:     return have ? (int32_t)t.icon_size : 32;
     case W32_SM_CXCURSOR:
     case W32_SM_CYCURSOR:   return 16;
-    case W32_SM_CYMENU:     return 20;          /* no menu bar yet: reserved */
+    case W32_SM_CYMENU:     return (int32_t)UI_MENU_BAR_H;  /* the real menu
+                                 * bar height; ui_menu_h() charges it to a
+                                 * window that has a menu attached */
     case W32_SM_CXMIN:
     case W32_SM_CXMINTRACK: return 80;          /* the compositor's floor */
     case W32_SM_CYMIN:

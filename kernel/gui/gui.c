@@ -172,6 +172,24 @@ static uint16_t drop_epoch[GUI_MAX_WINDOWS][GUI_DROP_SLOTS];
 /* Event waiters must not follow an integer HWND into its next lifetime. */
 static uint32_t window_epoch[GUI_MAX_WINDOWS];
 static int focused = -1;
+/* WR-2 gap 2: the KEYBOARD target, tracked separately from `focused`.
+ *
+ * `focused` is the window-manager focus: it picks the highlighted title bar
+ * and the Alt+F4 victim, and recompute_focus() deliberately skips NO_DECOR
+ * windows so a WS_CHILD pane can never own it.  That is correct for chrome
+ * and fatal for input: Win32 delivers WM_KEYDOWN to the focused window, and
+ * in a real app that window is usually a CHILD (7-Zip's file panel is a
+ * SysListView32 WS_CHILD that owns Backspace = "up one level").
+ *
+ * Mouse input already had no such problem -- hit_window() descends into the
+ * child subtree, so a click on the panel reaches the panel.  Keys went to
+ * the top level instead, which is exactly why "double-click navigates"
+ * worked while "Backspace goes up" did not.
+ *
+ * key_focus may therefore name a child.  -1 means "follow the top level".
+ * It is reset whenever the top-level focus changes, and cleared when its
+ * owner hides, minimises or dies. */
+static int key_focus = -1;
 /* W32A-5: SetCapture.  -1 = nobody; otherwise the wid that receives every
  * mouse event until it releases.  Cleared when the owner dies (see
  * gui_cleanup_process). */
@@ -373,6 +391,7 @@ void gui_init(void) {
     gui_pending = 1;                /* first frame draws without a poke */
     gui_wq_ready = 1;
     focused = -1;
+    key_focus = -1;
     cursor  = GUI_CURSOR_ARROW;
     active_theme = default_theme;
     gui_clock_base_ticks = timer_get_ticks();
@@ -386,6 +405,18 @@ void gui_init(void) {
 /* ===================================================================
  * Z-order and focus
  * =================================================================== */
+
+/* WR-2 gap 2: the window that key events go to.  A child key_focus wins
+ * only while it is still live and visible; otherwise fall back to the
+ * top-level WM focus.  Returning `focused` keeps every pre-existing caller's
+ * behaviour bit-identical when no child has taken the keyboard. */
+static int gui_key_target(void) {
+    if (key_focus >= 0 && key_focus < GUI_MAX_WINDOWS &&
+        windows[key_focus].in_use && windows[key_focus].visible &&
+        !windows[key_focus].minimized)
+        return key_focus;
+    return focused;
+}
 
 static void recompute_focus(void) {
     int top = -1, topz = -1;
@@ -407,6 +438,9 @@ static void recompute_focus(void) {
             gui_post_event(focused, &e);
         }
         focused = top;
+        /* A new top-level window takes the keyboard with it: a child of the
+         * window that just lost focus must not keep receiving keys. */
+        key_focus = top;
         if (focused >= 0) {
             windows[focused].focused = 1;
             gui_event_t e = { GUI_EVT_FOCUS, 0,0,0,0,0,0 };
@@ -428,7 +462,20 @@ int gui_raise_window(int wid) {
     return 0;
 }
 
-int gui_focus_window(int wid) { return gui_raise_window(wid); }
+int gui_focus_window(int wid) {
+    if (!win_alive(wid)) return -1;
+    /* WR-2 gap 2: SetFocus on a CHILD must move the keyboard, not the
+     * z-order.  A child carries GUI_WIN_NO_DECOR, so recompute_focus() would
+     * never elect it; raising it instead would leave key_focus on the top
+     * level and the child's control would still not see WM_KEYDOWN. */
+    if (win_has_parent(&windows[wid]) || (windows[wid].flags & GUI_WIN_NO_DECOR)) {
+        gui_event_t fe = { GUI_EVT_FOCUS, 0,0,0,0,0,0 };
+        key_focus = wid;
+        gui_post_event(wid, &fe);
+        return 0;
+    }
+    return gui_raise_window(wid);
+}
 
 /* ---- W32A-5: Z-order, flags, capture and metrics ------------------------ */
 
@@ -557,6 +604,7 @@ static void request_window_close(int wid) {
     w->visible = 0;
     w->minimized = 0;
     if (focused == wid) focused = -1;
+    if (key_focus == wid) key_focus = -1;   /* WR-2 gap 2 */
     if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
     if (last_hover_wid == wid) last_hover_wid = -1;
     recompute_focus();
@@ -656,6 +704,7 @@ static void gui_free_slot_locked(int wid) {
     spinlock_release(&gui_evt_lock);
     w->parent = -1;                         /* memset left it 0 (a valid slot) */
     if (focused == wid) focused = -1;
+    if (key_focus == wid) key_focus = -1;   /* WR-2 gap 2 */
     if (captured == wid) captured = -1;     /* W32A-5 */
     if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
     if (last_hover_wid == wid) last_hover_wid = -1;
@@ -732,6 +781,7 @@ void gui_cleanup_process(uint64_t owner_pid) {
         memset(&windows[i], 0, sizeof(windows[i]));
         spinlock_release(&gui_evt_lock);
         if (focused == i) focused = -1;
+        if (key_focus == i) key_focus = -1;   /* WR-2 gap 2 */
         if (captured == i) captured = -1;
         if (drag_wid == i) { drag_wid = -1; drag_mode = 0; }
         if (last_hover_wid == i) last_hover_wid = -1;
@@ -771,6 +821,7 @@ int gui_hide_window(int wid) {
     windows[wid].visible = 0;
     mark_window_dirty(&windows[wid]);
     if (focused == wid) { focused = -1; recompute_focus(); }
+    if (key_focus == wid) key_focus = -1;   /* WR-2 gap 2 */
     full_dirty = 1;
     return 0;
 }
@@ -898,6 +949,7 @@ int gui_minimize_window(int wid) {
     windows[wid].minimized = 1;
     mark_window_dirty(&windows[wid]);
     if (focused == wid) { focused = -1; recompute_focus(); }
+    if (key_focus == wid) key_focus = -1;   /* WR-2 gap 2 */
     full_dirty = 1;
     return 0;
 }
@@ -2718,6 +2770,24 @@ static void route_mouse_event(const mouse_event_t *ev) {
                        "(last tick=%u wid=%d part=%d)\n",
                        now, wid, part, dbl, last_click_tick, last_click_wid,
                        last_click_part);
+                /* WR-2 gap 2: a click gives the KEYBOARD to whatever was hit,
+                 * child included -- `wid` comes from hit_window(), which
+                 * already descends the child subtree.  Without this the panel
+                 * under the cursor still would not own Backspace after the
+                 * user clicked on it. */
+                if (wid != key_focus) {
+                    int prev = gui_key_target();
+                    key_focus = wid;
+                    if (prev >= 0 && prev != wid && win_alive(prev)) {
+                        gui_event_t be = { GUI_EVT_BLUR, 0,0,0,0,0,0 };
+                        gui_post_event(prev, &be);
+                    }
+                    gui_event_t fe = { GUI_EVT_FOCUS, 0,0,0,0,0,0 };
+                    gui_post_event(wid, &fe);
+                    if (win_has_parent(&windows[wid]))
+                        kprintf("[gui] key focus -> child wid %d (parent %d)\n",
+                                wid, windows[wid].parent);
+                }
                 gui_event_t e = {0};
                 e.type    = dbl ? GUI_EVT_MOUSE_DBLCLICK : GUI_EVT_MOUSE_DOWN;
                 e.x       = mx - content_x(w);
@@ -2819,12 +2889,16 @@ static void route_key_event(const kb_event_t *ke) {
         }
     }
 
-    if (focused < 0) return;
+    /* WR-2 gap 2: keys go to the KEYBOARD target, which may be a WS_CHILD
+     * pane -- the top-level WM focus is chrome-only and would swallow every
+     * keystroke a child control owns. */
+    int ktarget = gui_key_target();
+    if (ktarget < 0) return;
     gui_event_t e = {0};
     e.type = ke->pressed ? GUI_EVT_KEY_DOWN : GUI_EVT_KEY_UP;
     e.key  = ke->key;
     e.mods = ke->mods;
-    gui_post_event(focused, &e);
+    gui_post_event(ktarget, &e);
 }
 
 /* ===================================================================

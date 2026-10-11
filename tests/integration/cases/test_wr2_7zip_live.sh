@@ -14,6 +14,8 @@
 #   - CW-1: the file panes composite clipped inside the 7-Zip client area;
 #   - Phase B: the panel draws real /fat rows (LVN_GETDISPINFO);
 #   - navigate: a real double-click on SUBDIR changes the listing (pixel delta);
+#   - navigate back: a real Backspace returns the panel to the C:\fat root rows
+#     (WR-2 gap 2 closed — keyboard focus now reaches the WS_CHILD panel);
 #   - extract: in a second 7-Zip window at C:\fat, a real double-click opens the
 #     byte-known CI fixture archive, HELLO.TXT is selected, the toolbar's
 #     Extract raises a modal window (frame delta), and OK writes /fat/HELLO.TXT.
@@ -28,9 +30,6 @@
 #     "Progress Error" (wr2_extracted.png) although the bytes are correct.  Not
 #     isolated: a diagnostic build that forced SetFileTime to succeed on FAT did
 #     not remove the error (that build was not shipped).
-#   - navigate back with Backspace (up one level): the key does not move the
-#     7-Zip panel in this personality (see wr2_nav_back.png, which stays in
-#     C:\fat\SUBDIR\).  The archive step therefore uses a second window.
 #   - Tools > Options property-sheet round-trip.  The personality draws no menu
 #     bar (SM_CYMENU is reserved), TrackPopupMenu draws nothing and
 #     LoadAccelerators returns an empty table, so Options cannot be reached by
@@ -177,20 +176,22 @@ il_assert_grep "$GL_LOG" "w32run /fat/7zFM\\.exe C:/fat" \
 # --- navigate, by real pointer input ----------------------------------------
 # The pointer is parked off the 7-Zip window between actions, so every frame
 # measures the listing and not the cursor.  Coordinates are for the 1280x800
-# frame with the default 7-Zip layout: root listing rows 7zFM.exe y=148,
-# 7Z.DLL y=162, wr2_fixture.zip y=176, AURALOG.TXT y=190, ALongFileName.txt
-# y=204, SUBDIR y=218; toolbar Extract is btn[1] at (132,95); the Copy dialog's
-# OK is at (448,288).
+# frame with the default 7-Zip layout.  WR-2: the menu bar now occupies the
+# first UI_MENU_BAR_H rows of the client, so every WS_CHILD pane sits 20px
+# lower than before.  Root listing rows 7zFM.exe y=168, 7Z.DLL y=182,
+# wr2_fixture.zip y=196, AURALOG.TXT y=210, ALongFileName.txt y=224, SUBDIR
+# y=238; toolbar Extract is btn[1] at (132,119).  The Copy dialog is a popup
+# with no menu bar, so its OK stays at (448,288).
 PARK_X=1200
 PARK_Y=420
-LIST="88 140 975 655"
+LIST="88 150 975 670"
 
 gl_move "$PARK_X" "$PARK_Y"
 sleep 1
 gl_shot wr2_nav_root
 ROOT_PPM="$GL_LAST_PPM"
 
-gl_dblclick 500 218          # SUBDIR
+gl_dblclick 500 238          # SUBDIR
 sleep 5
 gl_move "$PARK_X" "$PARK_Y"
 gl_shot wr2_nav_sub
@@ -202,6 +203,45 @@ if [ "$FD_RC" -eq 0 ]; then
 else
     il_fail "navigate: double-click on SUBDIR did not change the listing (rc=$FD_RC: $FD_OUT)"
 fi
+
+# --- navigate BACK with Backspace (WR-2 gap 2) -------------------------------
+# 7-Zip's panel is a WS_CHILD SysListView32 that owns VK_BACK ("up one level").
+# Before the key-focus fix the compositor routed keys only to `focused`, and
+# recompute_focus() skips GUI_WIN_NO_DECOR windows -- every WS_CHILD carries
+# that flag -- so the panel could never see the key while mouse clicks reached
+# it fine (hit_window() descends the child subtree).  The key target is now a
+# separate slot that a click or SetFocus can point at a child.
+#
+# The token is `backspace`, NOT `bs`: measured on Debian 13's qemu 10.0.13,
+# `sendkey bs` answers "invalid parameter: bs" while `sendkey backspace` is
+# accepted.  A wrong token here would have been a silent no-op, so both facts
+# are asserted -- the listing CHANGED, and it changed back to EXACTLY the
+# C:\fat root listing (up one level, not sideways).
+gl_key backspace
+sleep 5
+gl_move "$PARK_X" "$PARK_Y"
+gl_shot wr2_nav_back
+BACK_PPM="$GL_LAST_PPM"
+frame_delta "$SUB_PPM" "$BACK_PPM" "$LIST"
+IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+if [ "$FD_RC" -eq 0 ]; then
+    il_pass "navigate back: Backspace moved the panel out of SUBDIR (pixel delta, $FD_OUT)"
+else
+    il_fail "navigate back: Backspace did not change the listing (rc=$FD_RC: $FD_OUT)"
+fi
+frame_delta "$ROOT_PPM" "$BACK_PPM" "$LIST"
+IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+if [ "$FD_RC" -eq 1 ]; then
+    il_pass "navigate back: the listing is back to the C:\\fat root rows (up one level)"
+else
+    il_fail "navigate back: the listing is not the C:\\fat root listing (rc=$FD_RC: $FD_OUT)"
+fi
+# NOTE: no serial receipt is asserted for the key-focus transfer.  GL_LOG is
+# only accumulated while gl_send/gl_cmd hold the serial reader, so a compositor
+# print emitted during a `sleep` window is not captured -- a grep on it would
+# be a flake, not a fact.  The two pixel deltas above ARE the fact: the listing
+# changed, and it changed back to exactly the C:\fat root rows.  That is the
+# WR-0 oracle method (D-WR0), and it is stronger than a log line.
 
 # --- extract: a second 7-Zip window, opened at C:\fat --------------------------
 # The first window stays in SUBDIR.  The second one is on top and starts at the
@@ -219,7 +259,7 @@ else
     il_fail "second 7-Zip window is not on the C:\\fat root listing (rc=$FD_RC: $FD_OUT)"
 fi
 
-gl_dblclick 500 176          # wr2_fixture.zip opens as a folder inside 7-Zip
+gl_dblclick 500 196          # wr2_fixture.zip opens as a folder inside 7-Zip
 sleep 7
 gl_move "$PARK_X" "$PARK_Y"
 gl_shot wr2_arc_open
@@ -232,13 +272,13 @@ else
     il_fail "extract: double-click on wr2_fixture.zip did not open it (rc=$FD_RC: $FD_OUT)"
 fi
 
-gl_click 500 148             # HELLO.TXT: first row of the archive listing
+gl_click 500 168             # HELLO.TXT: first row of the archive listing
 sleep 2
 gl_move "$PARK_X" "$PARK_Y"
 gl_shot wr2_arc_sel
 SEL_PPM="$GL_LAST_PPM"
 
-gl_click 132 95              # toolbar Extract (btn[1])
+gl_click 132 119             # toolbar Extract (btn[1])
 sleep 5
 gl_move "$PARK_X" "$PARK_Y"
 gl_shot wr2_copy_dlg
@@ -304,8 +344,7 @@ fi
 
 # --- named gaps: printed, not counted as passes -----------------------------
 il_skip "WR-2 clean extract NOT achieved: the Extract window is not painted (blank white box, wr2_copy_dlg.png) and 7-Zip shows 'Progress Error' after OK (wr2_extracted.png) although the bytes above are correct. Not isolated: forcing SetFileTime to succeed on FAT did not remove the error (diagnostic build, not shipped)."
-il_skip "WR-2 navigate back (Backspace = up one level): not asserted — in the gate run the key did not move the 7-Zip panel (wr2_nav_back.png stays in C:\\fat\\SUBDIR\\)."
-il_skip "WR-2 Tools > Options round-trip: not reachable — no menu bar is drawn (SM_CYMENU reserved), TrackPopupMenu draws nothing, LoadAccelerators is empty. Needs a menu/popup subsystem first (W32RUN_PLAN WR-2)."
+il_skip "WR-2 Tools > Options round-trip: the menu BAR half now lands -- RegisterClassW remembers lpszMenuName, CreateWindowExW falls back to it (7-Zip FM registers MAKEINTRESOURCE(71)), SetMenu attaches it, SM_CYMENU is the real 20, the client shrinks and child panes offset below the bar, and EndPaint stamps the bar (rendered frame: build/wr2-visual/menubar_left.png).  What remains is the POPUP half: TrackPopupMenu still sends WM_INITMENUPOPUP and returns without painting a dropdown, so Tools > Options cannot be reached by mouse. Not asserted in the guest here: this gate exercises the panel and the extract, not the popup path."
 il_skip "WR-2 drag-drop: deferred, human-run, outside this gate."
 
 gl_stop

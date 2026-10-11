@@ -1,6 +1,6 @@
 # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
 
-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-09 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, byte-exact extract; a clean extract, navigate-back and Tools > Options are named gaps); WR-3…WR-5 planned.
+## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3…WR-5 planned.
 
 | Phase | State |
 |---|---|
@@ -336,16 +336,34 @@ open their **real main window** — the two-pane file manager — list `/fat`,
 navigate, extract a known archive byte-exactly, and persist an option. The
 E_FAIL of §0 is gone; the frame shows the listing.
 
-**Status (2026-10-09): PARTIAL — the panel is live and gated; four named gaps.**
-The live gate `tests/integration/cases/test_wr2_7zip_live.sh` passes its
-**22 assertions** under the WR-0 lane (OVMF, TCG). It proves: launch with all 292
-imports bound and no `E_FAIL` or fault; the main window and the CW-1 clipped
-panes; the `/fat` rows drawn by the panel (LVN_GETDISPINFO); a real double-click
-into `SUBDIR` changes the listing (pixel delta); a second 7-Zip window opened at
+**Status (2026-10-10): PARTIAL — the panel is live and gated; gap 2 closed,
+three named gaps remain.** The live gate
+`tests/integration/cases/test_wr2_7zip_live.sh` passes **24 assertions** under
+the WR-0 lane (OVMF, TCG). It proves: launch with all 292 imports bound and no
+`E_FAIL` or fault; the main window and the CW-1 clipped panes; the `/fat` rows
+drawn by the panel (LVN_GETDISPINFO); a real double-click into `SUBDIR` changes
+the listing (pixel delta); **a real Backspace returns the panel to exactly the
+`C:\fat` root rows (gap 2, closed 2026-10-10)**; a second 7-Zip window opened at
 `C:\fat` opens the CI fixture archive, selects `HELLO.TXT`, and Extract raises a
 window over it; and `/fat/HELLO.TXT` is **byte-exact** (217 bytes, md5
 `3b44a2fc…`, equal to the host's unpack). The shell still answers after the GUI
 session.
+
+**How gap 2 was closed.** It was not an accelerator problem: the pinned
+`7zFM.exe`'s `RT_ACCELERATOR` (id 72, 16 bytes) holds exactly **two** entries —
+`F1 → 960` and `Alt+F12 → 736` — so Backspace is handled by 7-Zip's own window
+procedure as `WM_KEYDOWN`/`VK_BACK` on the **panel**, which is a `WS_CHILD`
+`SysListView32`. The compositor never delivered it there: `route_key_event()`
+posted to `focused`, and `recompute_focus()` skips `GUI_WIN_NO_DECOR` windows —
+a flag every `WS_CHILD` carries (`user32_win.c:607`) — so a child could never
+own the keyboard. Mouse input had no such problem, because `hit_window()`
+already descends the child subtree; that asymmetry is precisely why
+"double-click navigates" passed while "Backspace goes up" did not. The fix
+splits the two notions in `kernel/gui/gui.c`: `focused` stays the
+window-manager focus (title-bar highlight, Alt+F4 victim) and a new `key_focus`
+slot names the keyboard target, which **may be a child**. A client-area click
+or `gui_focus_window()` on a `NO_DECOR` window moves `key_focus`; it is reset
+when the top-level focus changes and cleared on hide/minimise/destroy.
 
 Named gaps. The gate prints each as a SKIP line; none is counted as a pass.
 
@@ -357,14 +375,58 @@ Named gaps. The gate prints each as a SKIP line; none is counted as a pass.
    (kernel probe: `/fat` failed, `/tmp` succeeded). A diagnostic build that forced
    `SetFileTime` to succeed on FAT did **not** remove the error. That build was
    not shipped and was reverted.
-2. **Navigate back (Backspace) — not achieved.** In the gate run, Backspace did
-   not move the panel back up from `C:\fat\SUBDIR\` (`wr2_nav_back.png`). The
-   archive step therefore uses a second 7-Zip window.
-3. **Tools > Options round-trip — not reachable.** The personality draws no menu
-   bar (`SM_CYMENU` is reserved), `TrackPopupMenu` draws nothing, and
-   `LoadAcceleratorsW` returns an empty table. Closing this needs a menu and
-   popup subsystem in the window layer. It is not started.
-4. **Drag-drop** — deferred, human-run, outside this gate.
+2. **Tools > Options round-trip — not reachable by mouse.** The menu *data*
+   loads and, as of 2026-10-11, the menu *bar* is drawn; what still does not
+   paint is the *popup*, so a mouse user cannot open Tools > Options.
+   `TrackPopupMenu` still sends `WM_INITMENUPOPUP` and returns without painting
+   a dropdown. The remaining work is a popup tracker in the window layer.
+
+   **Resource half closed 2026-10-10.** `LoadMenuW` (`w32_dlg.c:783`) used to find
+   `RT_MENU`, lock it, and throw it away, returning an empty `CreateMenu()`. It now
+   decodes the resource through `w32_menu_parse()` (`w32/src/w32_rsrc.c`) and folds
+   the flat, depth-annotated item list back into a menu tree. The grammar was
+   **fitted against the real bytes**, not assumed: the pinned `7zFM.exe` carries one
+   `RT_MENU` (id 71, 3 532 bytes) whose layout is an 8-byte header and a **14-byte**
+   item prefix (`dwType, dwState, dwMenuId, wFlags, WCHAR text[]`), *not* the 20-byte
+   MENUEX template the published documentation describes — three earlier attempts to
+   walk it as documented MENUEX looped or read off the end. A parser built from the
+   fitted grammar consumes that resource **exactly**: 3 532 of 3 532 bytes, 90 items,
+   zero resyncs, 75 string items + 14 separators + 1 column break, top level
+   `&File, &Edit, &View, F&avorites, &Tools, &Help`. Pinned by
+   `tests/unit/test_w32_menu.c` (11 checks, in `make test-unit`).
+
+   **Accelerator half closed 2026-10-10.** `LoadAcceleratorsW` no longer discards
+   its resource: it decodes `RT_ACCELERATOR` through `w32_accel_parse()`
+   (`w32/src/w32_rsrc.c`) and returns a real table, or `NULL` when the resource is
+   absent or undecodable — the old code always returned a *usable empty table*,
+   which made "this app has no accelerators" indistinguishable from "the loader
+   failed". `TranslateAcceleratorW` now matches the whole chord: it compared the
+   key alone before, so the pinned table's `Alt+F12 -> 736` would also have fired
+   on a bare F12 — a wrong action, not a missing one. Both are pinned by
+   `tests/unit/test_w32_accel.c` (11 checks, in `make test-unit`), whose fixture is
+   the 16-byte table emitted in-tree rather than foreign bytes committed. The
+   round-trip above stays a gap: it needs the menu bar, and this gate does not
+   assert the guest-side accelerator load either — that is host-pinned only.
+
+   **Menu-bar half closed 2026-10-11.** The bar was never going to appear from
+   `CreateWindowExW(…hMenu…)` alone: 7-Zip FM registers its frame class with
+   `lpszMenuName = MAKEINTRESOURCE(71)` and creates the frame with `hMenu==NULL`,
+   and `RegisterClassW` used to drop `lpszMenuName` on the floor. The class now
+   remembers it (`ui_class_set_menu`), `CreateWindowExW` resolves it through
+   `LoadMenuW` and attaches it via `SetMenu`; `SM_CYMENU` returns the real
+   `UI_MENU_BAR_H` (20) and the client shrinks by that much, with
+   `GetClientRect`/`ClientToScreen`/`ScreenToClient` all agreeing through one
+   authority (`ui_menu_h`). The live boot exposed two load-bearing facts: (1) a
+   frame whose client is fully covered by child panes never receives `WM_PAINT`,
+   so the bar is stamped in `EndPaint` and on `SetMenu`/`DrawMenuBar`
+   (`w32_win_menu_bar_changed`); (2) a child's y is parent-client-relative, so
+   every child create/move and `ui_refresh_geom` carries the parent's client
+   offset (`w32_win_client_dy`, applied in `w32_gdi.c`'s window-DC blit/get/set
+   paths) or the toolbar lands on top of the bar. Verified by a rendered frame
+   (`docs/wr2-visual/menubar_left.png`: File Edit View Favorites Tools Help …)
+   and by the WR-2 gate, whose pane coordinates shifted exactly +20 and were
+   re-measured from fresh frames rather than assumed.
+3. **Drag-drop** — deferred, human-run, outside this gate.
 
 The 2026-09-30 status blamed the interaction half on compositor child-clipping.
 CW-1 delivered that clipping on 2026-09-30, so that blocker is not the cause of
@@ -379,22 +441,30 @@ any gap above.
 - [x] Panel rows and clipping: the `/fat` file rows are drawn (Phase B,
       LVN_GETDISPINFO glyph pixels), and the CW-1 clipped panes are asserted.
 - [x] Navigate, listing delta: a real double-click on `SUBDIR` changes the
-      listing (gate, 2026-10-09). Navigate back with Backspace: **not achieved**
-      (gap 2).
+      listing (gate, 2026-10-09).
+- [x] Navigate back with Backspace (gate, **2026-10-10** — gap 2 closed by the
+      compositor `key_focus` split, above). Two pixel facts: the listing changed
+      out of `SUBDIR` (`bbox=(88, 143, 222, 223)`), and it changed back to
+      **exactly** the `C:\fat` root rows (`fb_oracle delta` → `bbox=None`,
+      i.e. identical). No serial receipt is asserted for the transfer: `GL_LOG`
+      is only accumulated while `gl_send`/`gl_cmd` hold the reader, so a
+      compositor print during a `sleep` window is not captured and a grep on it
+      would be a flake, not a fact.
 - [~] Extract, bytes: **byte-exact** (gate, 2026-10-09; the lab
       `tools/lab_wr2.sh verify` checked the same md5 on 2026-10-05). Extract,
       clean finish: **not achieved** (gap 1). The lab checks the md5 only, so it
       did not see the post-copy error box.
-- [ ] Options — **not reachable** (gap 3). Needs a menu/popup subsystem first.
-- [~] Drag-drop — deferred, human-run (gap 4).
+- [ ] Options — **not reachable** (gap 2). Needs a menu/popup subsystem first.
+- [~] Drag-drop — deferred, human-run (gap 3).
 - [x] `#WR-2` receipt in `docs/w32app_receipts.md`: live-verified results vs the
       named gaps, with the 2026-10-09 gate run and the screenshot names.
 
 #### Test gate
 
-- `test_wr2_7zip_live.sh`: **22/22** assertions pass; the named gaps print as
-  SKIP lines. The plan's required checks: main window ✅, `/fat` listed ✅,
-  navigate delta ✅, byte-exact extract ✅, option round-trip ❌ (gap 3).
+- `test_wr2_7zip_live.sh`: **24/24** assertions pass (measured 2026-10-10,
+  OVMF/TCG, Debian 13, qemu 10.0.13); the named gaps print as SKIP lines. The
+  plan's required checks: main window ✅, `/fat` listed ✅, navigate delta ✅,
+  **navigate back ✅**, byte-exact extract ✅, option round-trip ❌ (gap 2).
 
 **Deliverable:** `tests/integration/cases/test_wr2_7zip_live.sh` (the gate), the
 CI fixture archive builder (`tools/wr2_make_fixture.py`), the receipt

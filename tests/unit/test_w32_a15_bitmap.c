@@ -226,6 +226,18 @@ uint32_t w32_gdi_host_dpi(void){return theme_dpi;}
 #include "../../w32/src/user32_win.c"
 #include "../../w32/src/user32.c"
 #include "../../w32/src/w32_gdi.c"      /* W32A-7: the GDI engine */
+/* WR-2 menu API stubs, same reasoning as the a5 gate: the window layer now
+ * resolves a registered class's lpszMenuName (LoadMenuW) and attaches it
+ * (SetMenu), and the menu bar asks GetMenu/w32_menu_bar_item when painting.
+ * The real implementations live in w32_dlg.c, which these GDI gates do not
+ * amalgamate; no menu is ever created here, so "no menu attached" is the
+ * truthful answer and keeps their geometry identical to before. */
+W32ABI W32_HMENU GetMenu(W32_HWND w){(void)w;return 0;}
+W32ABI W32_BOOL SetMenu(W32_HWND w,W32_HMENU m){(void)w;(void)m;return 0;}
+W32ABI W32_HMENU LoadMenuW(W32_HINSTANCE i,const uint16_t*n){(void)i;(void)n;return 0;}
+int w32_menu_bar_item(W32_HMENU h,int pos,char*label,size_t cap,uint32_t*id){
+    (void)h;(void)pos;(void)id; if(label&&cap)label[0]=0; return 0;}
+
 
 /* mirror-struct calls: defined after the includes, like the a6 gate */
 int ag_theme_get(ui_theme_t *out){if(out)memset(out,0,sizeof(ui_theme_t));return 0;}

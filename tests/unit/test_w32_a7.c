@@ -243,6 +243,18 @@ int ag_rect_outline(int wid,int x,int y,int w,int h,uint32_t c){
 }
 void ag_render_now(void){}
 void ag_alert(const char*a,const char*b){(void)a;(void)b;}
+
+/* WR-2 menu API stubs, same reasoning as the a5 gate: the window layer now
+ * resolves a registered class's lpszMenuName (LoadMenuW) and attaches it
+ * (SetMenu), and the menu bar asks GetMenu/w32_menu_bar_item when painting.
+ * The real implementations live in w32_dlg.c, which this GDI gate does not
+ * amalgamate; no menu is ever created here, so "no menu attached" is the
+ * truthful answer and keeps this suite's geometry identical to before. */
+W32ABI W32_HMENU GetMenu(W32_HWND w){(void)w;return 0;}
+W32ABI W32_BOOL SetMenu(W32_HWND w,W32_HMENU m){(void)w;(void)m;return 0;}
+W32ABI W32_HMENU LoadMenuW(W32_HINSTANCE i,const uint16_t*n){(void)i;(void)n;return 0;}
+int w32_menu_bar_item(W32_HMENU h,int pos,char*label,size_t cap,uint32_t*id){
+    (void)h;(void)pos;(void)id; if(label&&cap)label[0]=0; return 0;}
 int ag_set_clipboard(const char*t){(void)t;return 0;}
 int ag_get_clipboard(char*b,int sz){if(!b||sz<=0)return -1;b[0]=0;return 0;}
 uint32_t w32_gdi_host_dpi(void){return theme_dpi;}

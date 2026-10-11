@@ -343,6 +343,32 @@ int ag_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 void ag_render_now(void) { renders++; }
 void ag_alert(const char *t, const char *m) { (void)t; (void)m; }
 
+/* ---- menu API ------------------------------------------------------------ */
+/* WR-2: the window layer now owns the menu bar -- RegisterClassW remembers
+ * WNDCLASS.lpszMenuName, CreateWindowExW resolves it through LoadMenuW when
+ * hMenu is NULL and attaches the result via SetMenu, ui_menu_h() asks GetMenu
+ * how many pixels the client area has to give up, and the WM_PAINT default
+ * paints the bar with w32_menu_bar_item().  The real implementations live in
+ * w32_dlg.c, which this gate does not amalgamate (its scope is the
+ * cross-thread SendMessage path; the menu API is covered by W32A-6, which
+ * does include w32_dlg.c).
+ *
+ * These stubs are not a shortcut around the feature: no class this suite
+ * registers carries a menu name, so LoadMenuW is never reached and "no menu
+ * attached" is the truthful answer -- exactly the geometry this gate saw
+ * before the menu bar existed (ui_menu_h() -> 0). */
+W32ABI W32_HMENU GetMenu(W32_HWND w) { (void)w; return 0; }
+W32ABI W32_BOOL SetMenu(W32_HWND w, W32_HMENU m) { (void)w; (void)m; return 0; }
+W32ABI W32_HMENU LoadMenuW(W32_HINSTANCE inst, const uint16_t *name) {
+    (void)inst; (void)name; return 0;
+}
+int w32_menu_bar_item(W32_HMENU h, int pos, char *label, size_t cap,
+                      uint32_t *id_out) {
+    (void)h; (void)pos; (void)id_out;
+    if (label && cap) label[0] = '\0';
+    return 0;
+}
+
 static void fake_event(int wid, uint32_t type, int32_t x, int32_t y,
                        uint32_t key, uint8_t buttons, uint8_t mods,
                        uint16_t data) {

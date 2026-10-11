@@ -1034,6 +1034,224 @@ compositor.
 > window, `/fat` listed, navigate delta, and byte-exact extract. Option round-trip is not
 > reachable (named gap). See `docs/plans/W32RUN_PLAN.md` §WR-2.
 
+> **Update 2026-10-10 (WR-2 gap 2 closed: navigate back with Backspace).** The gate is
+> now **24/24** (was 22/22) and prints **three** SKIP lines instead of four.
+>
+> **Root cause — measured, not guessed.** The first hypothesis was accelerator tables,
+> and it is wrong. Parsing the pinned `7zFM.exe`'s resources directly (PE `.rsrc` at
+> RVA `0xe8000`) gives exactly one `RT_ACCELERATOR`, id **72**, **16 bytes = two
+> `ACCEL` entries**:
+>
+> | fVirt | key | cmd |
+> |---|---|---|
+> | `FVIRTKEY\|FNOINVERT` (0x0003) | `VK_F1` (0x70) | 960 |
+> | `FVIRTKEY\|FNOINVERT\|FALT` (0x0093) | `VK_F12` (0x7b) | 736 |
+>
+> No `VK_BACK` entry exists, so Backspace is handled by 7-Zip's own window procedure as
+> `WM_KEYDOWN`/`VK_BACK` on the **panel** — a `WS_CHILD` `SysListView32`.
+>
+> The compositor never delivered it there. `route_key_event()` posted to `focused`, and
+> `recompute_focus()` skips `GUI_WIN_NO_DECOR` windows — a flag **every** `WS_CHILD`
+> carries (`w32/src/user32_win.c:607`) — so a child could never own the keyboard. Mouse
+> input was unaffected because `hit_window()` already descends the child subtree. That
+> asymmetry is exactly why "double-click navigates" passed while "Backspace goes up"
+> did not. `SetFocus()` on the panel made it worse-looking rather than better: it called
+> `ag_window_focus` → `gui_focus_window` → `gui_raise_window` → `recompute_focus()`,
+> which re-elected the top level every time.
+>
+> **The fix** (`kernel/gui/gui.c`) splits two notions that were conflated:
+>
+> - `focused` stays the **window-manager** focus: title-bar highlight and the Alt+F4
+>   victim, still top-level-only;
+> - a new `key_focus` slot names the **keyboard** target and **may be a child**.
+>   `gui_key_target()` prefers it while it is live and visible, else falls back to
+>   `focused`, so every pre-existing caller is bit-identical when no child has taken
+>   the keyboard. A client-area click moves it (with `GUI_EVT_BLUR`/`GUI_EVT_FOCUS` to
+>   the old and new targets); `gui_focus_window()` on a `NO_DECOR` window moves it
+>   instead of touching z-order; `recompute_focus()` resets it when the top level
+>   changes; and all five hide/destroy/cleanup sites clear it.
+>
+> **Receipt (measured 2026-10-10, OVMF/TCG, Debian 13, qemu 10.0.13).** Two pixel facts
+> from the gate's own `fb_oracle` over the region `88 140 975 655`, thresh 40:
+>
+> | comparison | result | meaning |
+> |---|---|---|
+> | `wr2_nav_sub` vs `wr2_nav_back` | `rc=0`, `bbox=(88, 143, 222, 223)` | Backspace **changed** the listing |
+> | `wr2_nav_root` vs `wr2_nav_back` | `rc=1`, `bbox=None` | the listing is **byte-identical** to the `C:\fat` root rows — up one level, not sideways |
+>
+> The `backspace` token is itself measured: on Debian 13's qemu 10.0.13, `sendkey bs`
+> answers `invalid parameter: bs` while `sendkey backspace` is accepted. A wrong token
+> would have been a silent no-op, which is why both the "changed" and the
+> "identical to root" halves are asserted rather than one.
+>
+> **Not asserted, and why.** No serial receipt for the key-focus transfer. `GL_LOG` is
+> only accumulated while `gl_send`/`gl_cmd` hold the serial reader, so a compositor
+> print emitted during a `sleep` window is never captured (confirmed: the pre-existing
+> `gui_dbg_click` print in the same code path does not appear in `GL_LOG` either). A
+> grep on it would be a flake, not a fact; the two pixel deltas are the fact.
+>
+> **Gap 2 (Options) measurement for the record.** The same resource walk finds one
+> `RT_MENU`, id **71**, **3 532 bytes, 92 items**, fully legible: `&File` →
+> `&Open\tEnter`, `Open &Inside\tCtrl+PgDn`, `&View\tF3`, `&Edit\tF4`, `Rena&me\tF2`,
+> `&Copy To...\tF5`, `&Delete\tDel`, `P&roperties\tAlt+Enter`, a `CRC` submenu
+> (CRC-32/64, XXH64, MD5, SHA-1/256/384/512, SHA3-256, BLAKE2sp), `Di&ff`,
+> `Create Folder\tF7`, `E&xit\tAlt+F4`, then top-level `&Edit` / `&View`. So the data is
+> present and reachable — `LoadMenuW` (`w32/src/w32_dlg.c:783`) finds the resource and
+> **discards it**, returning an empty `CreateMenu()`; `LoadAcceleratorsW`
+> (`w32_dlg.c:897`) finds `RT_ACCELERATOR` and returns `CreateAcceleratorTableW(&empty, 0)`,
+> ignoring the two real entries; `TrackPopupMenu` (`w32_dlg.c:530`) sends
+> `WM_INITMENUPOPUP` and returns 1 without painting. What is missing is a parser, a
+> menu-bar painter and popup tracking — not data.
+>
+> Phase status: **PARTIAL**, three named gaps (clean extract, Tools > Options,
+> drag-drop). See `docs/plans/W32RUN_PLAN.md` §WR-2.
+
+> **Update 2026-10-10 (WR-2: the accelerator half of the Options gap closed).**
+>
+> `LoadAcceleratorsW` (`w32/src/w32_dlg.c`) found `RT_ACCELERATOR` and threw it
+> away, returning `CreateAcceleratorTableW(&empty, 0)`. It now decodes the
+> resource through `w32_accel_parse()` and returns a real table, or `NULL` on a
+> missing or undecodable resource.
+>
+> **The contract change is the point.** Always succeeding with an empty table
+> meant an application could not distinguish "I define no accelerators" from
+> "the loader failed" — which is why no hot key ever fired and nothing looked
+> wrong. `NULL` on failure is the documented behaviour and the only one an
+> application can act on.
+>
+> `TranslateAcceleratorW` compared `e->key` alone, so it ignored `FALT`/
+> `FCONTROL`/`FSHIFT`. On the pinned table that meant `Alt+F12 -> 736` also fired
+> on a bare F12. It now matches the full chord via `w32_accel_match()`, taking
+> modifier state from `GetKeyState`. A wrong action is worse than a missing one,
+> so this was not left as a follow-up.
+>
+> **Decoder.** `w32_accel_parse()` lives in `w32/src/w32_rsrc.c` beside the other
+> resource parsers and reads every field from raw little-endian bytes rather than
+> casting to a packed struct, so the host and the guest cannot disagree. It
+> refuses a size that is not a multiple of 8, a reserved flag bit, and a `cmd`
+> above `0xFFFF` (WM_COMMAND ids are a WORD). It returns `-2` rather than `-1`
+> when the caller's buffer is too small, so "malformed" stays distinguishable
+> from "grow and retry".
+>
+> **Receipt (`tests/unit/test_w32_accel.c`, 11 checks, wired into
+> `make test-unit`).** The fixture is the 16-byte table emitted in-tree — no
+> foreign bytes committed, the same rule `tools/wr2_make_fixture.py` follows:
+>
+> | fVirt | key | cmd |
+> |---|---|---|
+> | `FVIRTKEY\|FNOINVERT` (0x0003) | `VK_F1` (0x70) | 960 |
+> | `FVIRTKEY\|FNOINVERT\|FALT` (0x0093) | `VK_F12` (0x7b) | 736 |
+>
+> Negative control, measured rather than asserted by inspection — two mutations
+> of the shipped parser were built and run against the test:
+>
+> | mutation | result |
+> |---|---|
+> | decode drops modifier bits | **3 failures**, incl. `hit_bare_f12=736 want -1` — exactly the pre-fix defect |
+> | matcher ignores `FSHIFT` | **2 failures** |
+>
+> Unmutated: `11/11 checks passed`, `w32 accel: PASS`.
+>
+> **One test expectation of mine was wrong and the test caught it.** I first
+> asserted that *every* truncation of the 16-byte blob is refused. `len == 8` is
+> one whole record, so the parser correctly accepts it; the run reported
+> `refused=14 want 15`. The parser was right. The test now asserts 14 refusals
+> plus that the single accepted truncation decodes as entry 0 with the second
+> record untouched.
+>
+> **An existing assertion pinned the old defect and was updated.**
+> `tests/unit/test_w32_a6.c:621` asserted `LoadAcceleratorsW(...) != 0` under the
+> name "LoadAcceleratorsW fallback" — i.e. it required the missing-resource case
+> to yield a usable empty table. That is the behaviour being removed, so the
+> assertion was changed to `la == 0` with the reasoning recorded at the call
+> site. A6 is `113 checks, 0 failures` after the change (the count is unchanged;
+> one assertion was replaced by one).
+>
+> **Measured this run (Debian 13, qemu 10.0.13, OVMF/TCG):** `make iso` exit 0
+> (`build/auralite.iso`, 84 934 656 bytes) · `make test-unit` exit 0, including
+> the new test · `test_wr2_7zip_live.sh` **24/24**, exit 0, still 3 SKIPs ·
+> `check_w32app_claims` / `check_test_registry` / `check_provenance` all OK.
+>
+> **Not asserted, and why.** The guest-side load is not exercised here: this gate
+> drives the panel and the extract, not the menu or hot-key paths, and there is
+> no menu bar to reach `Tools > Options` through. So the accelerator decoder is
+> host-pinned only. Claiming it works end-to-end in 7-Zip would outrun the
+> evidence; the round-trip stays an open gap until the menu bar exists.
+
+> **Update 2026-10-10 (WR-2: the RT_MENU half of the Options gap closed).**
+>
+> `LoadMenuW` found `RT_MENU`, locked it, and discarded it, returning an empty
+> `CreateMenu()`. It now decodes the resource through `w32_menu_parse()`
+> (`w32/src/w32_rsrc.c`) and folds the resulting flat, depth-annotated item list
+> back into a menu tree with an explicit submenu stack — no recursion, matching
+> how the parser reads it.
+>
+> **The grammar was fitted, not assumed, and the documented one is wrong.** Three
+> earlier attempts to walk the pinned `7zFM.exe` `RT_MENU` (id 71, 3 532 bytes) as
+> the documented MENUEX template — a 20-byte item prefix — looped or were
+> OOM-killed. That layout does not describe this resource. What does is an 8-byte
+> header and a **14-byte** item prefix:
+>
+> ```
+> header  +0 WORD wVersion=1 · +2 WORD wOffset=4 · +4 DWORD dwHelpId=0
+> item    +0 DWORD dwType    0 string · 0x20 column break · 0x800 separator
+>         +4 DWORD dwState   MFS_*, 0 = enabled
+>         +8 DWORD dwMenuId  WM_COMMAND id
+>        +12 WORD  wFlags    0x0001 submenu follows · 0x0080 MF_END
+>        +14 WCHAR szText[]  NUL-terminated, then align to 4
+>             if submenu: DWORD dwHelpId (4), then the child items
+> ```
+>
+> Note `wOffset` is 4, which cannot be an offset into an 8-byte header; items start
+> right after the header. Two details had to be measured rather than guessed: the
+> `0x20` type (a column break — this project's `W32_MFT_MENUBARBREAK`, which the
+> pinned bytes use) and `wFlags 0x0080` (`MF_END`) as the *only* submenu
+> terminator. Getting the first wrong desyncs the walk; missing the second makes
+> it run off the end.
+>
+> **The evidence that the grammar is right rather than merely plausible:** a parser
+> built from it consumes the resource **exactly** — 3 532 of 3 532 bytes, 90 items,
+> zero resyncs — and yields 75 string items, 14 separators and 1 column break, with
+> the top level reading `&File, &Edit, &View, F&avorites, &Tools, &Help` and the
+> two-column Edit submenu intact.
+>
+> **Cross-validation against the accelerator table.** The decoded top level contains
+> `&Contents...\tF1` with id **960** — exactly the command id the pinned
+> `RT_ACCELERATOR` maps `F1` to. The two independently decoded resources agree on
+> the same id, which neither decoder was told about.
+>
+> **Receipt (`tests/unit/test_w32_menu.c`, 11 checks, in `make test-unit`).** The
+> fixture is a menu emitted in-tree in the shape the pinned resource carries — no
+> foreign bytes committed. Negative control, measured: three mutations of the
+> shipped parser were built and run against the test.
+>
+> | mutation | result |
+> |---|---|
+> | `MF_END` ignored (depth never pops) | **11 failures** |
+> | submenu `dwHelpId` not skipped | **5 failures** |
+> | unknown type bits accepted | **1 failure** |
+>
+> Unmutated: `11/11 checks passed`, `w32 menu: PASS`.
+>
+> **Five of my own test expectations were wrong and the run caught every one.**
+> The fixture holds 14 items, not 13; truncating the final alignment byte is not
+> an error because the record is still whole; the depth-cap test needed a buffer
+> larger than the cap or the `-2` check fires first; and `&Contents` carries
+> `MF_END`, so the two items after it are at depth 0, not 1 (the pinned resource
+> behaves the same way). In each case the parser was right and the assertion was
+> corrected.
+>
+> **Measured this run (Debian 13, qemu 10.0.13, OVMF/TCG):** `make iso` exit 0
+> (`build/auralite.iso`, 84 934 656 bytes) · `make test-unit` exit 0 with both new
+> decoders passing and A6 at `113 checks, 0 failures` · `test_wr2_7zip_live.sh`
+> **24/24**, exit 0, still 3 SKIPs.
+>
+> **Not asserted, and why.** Nothing paints a menu yet: `SM_CYMENU` is still
+> reserved and `TrackPopupMenu` still returns without drawing, so the guest never
+> exercises this loader and the round-trip stays an open gap. The decoder is
+> host-pinned. What is now true is that the data is available to the window layer;
+> what is still missing is the menu bar and popup tracking.
+
 ## CW-1 — Compositor child-window embedding & clipping — 2026-09-30
 
 `docs/plans/CW_COMPOSITOR_PLAN.md`. The kernel compositor (`kernel/gui/gui.c`)
@@ -1075,3 +1293,36 @@ options property-sheet still need the listview to render virtual items via
 human-run (guest lacks `sha256sum`; snapshot=on blocks host readback). These are
 personality/comctl32 work, now unblocked by the compositor, and named rather
 than asserted.
+
+> **Update 2026-10-11 (WR-2 step 8: the menu BAR lands).** The frame class of the
+> pinned `7zFM.exe` registers `lpszMenuName = MAKEINTRESOURCE(71)` and creates its
+> frame with `hMenu==NULL`; `RegisterClassW` used to discard the menu name, so
+> `GetMenu()` stayed 0 and no bar could ever appear. Now the class remembers it
+> (`ui_class_set_menu`), `CreateWindowExW` falls back to it via `LoadMenuW` and
+> attaches through `SetMenu`; `SM_CYMENU` returns the real `UI_MENU_BAR_H` (20) and
+> the client shrinks accordingly, with `GetClientRect`/`ClientToScreen`/
+> `ScreenToClient` agreeing through one authority (`ui_menu_h`).
+>
+> Two load-bearing facts the live boot exposed, both fixed: (1) a frame whose
+> client is fully covered by child panes never receives `WM_PAINT`, so the bar is
+> stamped in `EndPaint` and on `SetMenu`/`DrawMenuBar`
+> (`w32_win_menu_bar_changed`); (2) a child's y is parent-client-relative, so
+> child create/move and `ui_refresh_geom` carry the parent's client offset
+> (`w32_win_client_dy`, also applied in `w32_gdi.c`'s window-DC blit/get/set
+> paths) or the toolbar paints on top of the bar.
+>
+> Verified by a rendered frame (`docs/wr2-visual/menubar_left.png` shows
+> "File Edit View Favorites Tools Help …") and by re-measuring the gate: every
+> pane row shifted exactly +20 (root rows 168/182/196/210/224/238, Extract at
+> (132,119)); the Copy dialog is a menu-less popup so its OK stays at (448,288).
+>
+> | Check | Result | Notes |
+> | --- | --- | --- |
+> | `make test-unit` | **exit 0** | A5 122/0, A6 113/0, A7 169/0 (menu-API stubs added to the GDI gates that don't amalgamate `w32_dlg.c`; a6's two `LoadMenuW` expectations aligned to the real loader's "0 on missing resource" contract) |
+> | `test_wr2_7zip_live.sh` | **24/24** | pane coordinates re-measured +20; SKIP text now says the bar paints and only the popup half remains |
+> | rendered frame | bar visible | `docs/wr2-visual/menubar_left.png` / `menubar3_crop.png` |
+>
+> Remaining (still a SKIP, not a pass): the **popup** half — `TrackPopupMenu`
+> sends `WM_INITMENUPOPUP` and returns without painting a dropdown, so
+> Tools > Options is still unreachable by mouse; clean extract ("Progress
+> Error") and drag-drop remain as before.

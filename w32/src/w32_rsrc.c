@@ -212,3 +212,155 @@ W32ABI int EnumResourceNamesA(void *m, const char *type,
                               W32_BOOL (W32ABI *cb)(void *, const char *, uintptr_t), uintptr_t lp) {
     (void)m; (void)type; (void)cb; (void)lp; return 1;
 }
+
+/* ---- RT_ACCELERATOR decoding ------------------------------------------
+ *
+ * Split out of w32_dlg.c's LoadAcceleratorsW so the format knowledge lives
+ * in the resource file beside the other parsers and a host unit test can
+ * drive it over in-memory bytes.  See the layout comment in
+ * w32/include/w32/user32.h.
+ *
+ * Every field is read from the raw little-endian bytes rather than cast to a
+ * packed struct: the guest is x86_64 today, but a struct read would make the
+ * alignment and endianness of the decoder depend on the host, and the point
+ * of this function is to be checkable on the host with the same answer. */
+#define W32_ACCEL_REC_SIZE 8u
+#define W32_ACCEL_FLAG_MASK \
+    (uint16_t)(W32_FVIRTKEY | W32_FNOINVERT | W32_FSHIFT | W32_FCONTROL | W32_FALT)
+
+int w32_accel_parse(const void *data, size_t size, W32_ACCEL *out, size_t cap) {
+    if (!data || size == 0u || (size % W32_ACCEL_REC_SIZE) != 0u) return -1;
+
+    const size_t n = size / W32_ACCEL_REC_SIZE;
+    if (!out) return (int)n;            /* size query only */
+    if (n > cap) return -2;             /* caller's buffer is too small */
+
+    const uint8_t *p = (const uint8_t *)data;
+    for (size_t i = 0; i < n; i++) {
+        const uint16_t fv  = (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+        const uint16_t key = (uint16_t)((uint16_t)p[2] | ((uint16_t)p[3] << 8));
+        const uint32_t cmd = (uint32_t)p[4]        | ((uint32_t)p[5] << 8)
+                           | ((uint32_t)p[6] << 16) | ((uint32_t)p[7] << 24);
+
+        /* A reserved flag bit means this is not an accelerator table we
+         * understand.  Refusing the whole resource beats silently dropping
+         * the bit and reporting a wrong hot key: an accelerator that fires
+         * on the wrong chord is worse than one that never fires. */
+        if ((fv & (uint16_t)~W32_ACCEL_FLAG_MASK) != 0u) return -1;
+        if (cmd > 0xFFFFu) return -1;   /* WM_COMMAND ids are a WORD */
+
+        out[i].flags = (uint8_t)fv;
+        out[i].key   = key;
+        out[i].cmd   = (uint16_t)cmd;
+        p += W32_ACCEL_REC_SIZE;
+    }
+    return (int)n;
+}
+
+int w32_accel_match(const W32_ACCEL *e, int key, int shift, int ctrl, int alt) {
+    if (!e) return 0;
+
+    /* Modifiers must match exactly.  This is the behaviour the old
+     * TranslateAcceleratorW skipped: it compared only the key, so the pinned
+     * 7-Zip table's `Alt+F12 -> 736` would also have fired on a bare F12. */
+    if (shift != ((e->flags & W32_FSHIFT)   ? 1 : 0)) return 0;
+    if (ctrl  != ((e->flags & W32_FCONTROL) ? 1 : 0)) return 0;
+    if (alt   != ((e->flags & W32_FALT)     ? 1 : 0)) return 0;
+
+    if (e->flags & W32_FVIRTKEY) return (int)e->key == key;
+
+    /* Character entry: the table stores an uppercase ANSI char, and the
+     * message carries whatever the user typed. */
+    int a = key;
+    if (a >= 'a' && a <= 'z') a -= 'a' - 'A';
+    return a == (int)e->key;
+}
+
+/* ---- RT_MENU decoding --------------------------------------------------
+ *
+ * See the long comment in w32/include/w32/user32.h for how this grammar was
+ * fitted and what it consumes exactly.  The short version: an 8-byte header
+ * and a 14-byte item prefix, which is NOT the 20-byte MENUEX template layout
+ * the published documentation describes -- that one does not fit the bytes a
+ * real application ships.
+ *
+ * Written iteratively with a depth counter rather than recursively.  A
+ * resource is data, not code, and a recursive walk over hostile nesting
+ * would be a stack-exhaustion primitive.  Depth is also capped, so the
+ * counter cannot run away either.
+ *
+ * Every read is bounds-checked against `size`; the text scan additionally
+ * caps the item length, so a resource with no NUL terminates with an error
+ * instead of running to the end of the mapping. */
+#define W32_MENU_HDR_SIZE   8u
+#define W32_MENU_REC_HDR    14u
+#define W32_MENU_MAX_TEXT   256u
+
+static uint32_t menu_rd32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8)
+         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static uint16_t menu_rd16(const uint8_t *p) {
+    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+int w32_menu_parse(const void *data, size_t size, w32_menu_item_raw *out, size_t cap) {
+    if (!data || size < W32_MENU_HDR_SIZE) return -1;
+
+    const uint8_t *p = (const uint8_t *)data;
+    size_t pos   = W32_MENU_HDR_SIZE;   /* items start right after the header */
+    size_t n     = 0;
+    uint32_t depth = 0;
+
+    while (pos < size) {
+        if (pos + W32_MENU_REC_HDR > size) return -1;      /* truncated prefix */
+
+        const uint32_t type  = menu_rd32(p + pos);
+        const uint32_t state = menu_rd32(p + pos + 4);
+        const uint32_t id    = menu_rd32(p + pos + 8);
+        const uint16_t flags = menu_rd16(p + pos + 12);
+
+        if ((type & (uint32_t)~W32_MFT_KNOWN_MASK) != 0u) return -1;
+        if ((flags & (uint16_t)~(W32_MENUITEM_F_POPUP | W32_MENUITEM_F_END)) != 0u)
+            return -1;
+
+        /* Text: NUL-terminated UTF-16LE, starting at the end of the prefix. */
+        size_t t = pos + W32_MENU_REC_HDR;
+        size_t chars = 0;
+        while (t + 1 < size && menu_rd16(p + t) != 0u) {
+            if (++chars > W32_MENU_MAX_TEXT) return -1;    /* no NUL in range */
+            t += 2;
+        }
+        if (t + 1 >= size) return -1;                      /* unterminated */
+
+        if (out) {
+            if (n >= cap) return -2;                       /* caller too small */
+            out[n].type  = type;
+            out[n].state = state;
+            out[n].id    = id;
+            out[n].flags = flags;
+            out[n].depth = depth;
+            /* Points into the resource rather than copying: the caller keeps
+             * the resource mapped for the life of the menu, which is what
+             * LoadResource/LockResource already guarantee. */
+            out[n].text  = (const uint16_t *)(const void *)(p + pos + W32_MENU_REC_HDR);
+        }
+        n++;
+
+        size_t next = (t + 2 + 3u) & ~(size_t)3u;          /* align to 4 */
+
+        if (flags & W32_MENUITEM_F_POPUP) {
+            if (next + 4u > size) return -1;               /* submenu dwHelpId */
+            next += 4u;
+            if (depth + 1u > W32_MENU_MAX_DEPTH) return -1;
+            depth++;
+        }
+        if (flags & W32_MENUITEM_F_END) {
+            if (depth > 0u) depth--;
+        }
+        pos = next;
+    }
+
+    if (n == 0) return -1;               /* an empty menu is not a menu */
+    return (int)n;
+}

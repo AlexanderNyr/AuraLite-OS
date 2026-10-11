@@ -478,9 +478,13 @@ int main(void) {
            "CheckMenuItem reports prior state");
         ok(RemoveMenu(m,101,W32_MF_BYCOMMAND)==1,"RemoveMenu by id");
         ok(GetMenuItemCount(m)==2,"count after remove");
+        /* WR-2: LoadMenuW is real now and its contract is 0 on a missing or
+         * malformed resource.  The synthetic PE carries DLG/STRING resources
+         * but no RT_MENU id 7, so the honest answer here is refusal -- the
+         * older "possibly empty" expectation predated the real loader. */
         W32_HMENU lm=LoadMenuW(fake_main_module,(const uint16_t*)(uintptr_t)7);
-        ok(lm!=0,"LoadMenuW returns a (possibly empty) menu");
-        ok(DestroyMenu(m)==1 && DestroyMenu(pop)==1 && DestroyMenu(lm)==1,
+        ok(lm==0,"LoadMenuW refuses a module with no RT_MENU id 7");
+        ok(DestroyMenu(m)==1 && DestroyMenu(pop)==1 && (lm==0 || DestroyMenu(lm)==1),
            "DestroyMenu reclaims slots");
         DestroyWindow(hw);
     }
@@ -617,8 +621,18 @@ int main(void) {
         m.wParam='X';
         ok(TranslateAcceleratorW(hw,a,&m)==0,"TranslateAcceleratorW ignores vkeys");
         ok(DestroyAcceleratorTable(a)==1,"DestroyAcceleratorTable");
+        /* WR-2 changed this contract, deliberately.  It used to assert
+         * la != 0, i.e. that a missing resource still yielded a usable empty
+         * table -- which pinned the defect that WR-2 removed: an app could
+         * not tell "I define no accelerators" from "your loader failed", and
+         * no application hot key ever fired.  LoadAcceleratorsW now returns
+         * NULL when there is no RT_ACCELERATOR to load, which is what the
+         * documented failure is.  fake_main_module has no resource bytes, so
+         * the absent-resource path is what is reachable here; the positive
+         * path is pinned at the decoder level by tests/unit/test_w32_accel.c
+         * against the 16-byte table the real 7zFM.exe ships. */
         W32_HACCEL la=LoadAcceleratorsW(fake_main_module,(const uint16_t*)(uintptr_t)99);
-        ok(la!=0 && DestroyAcceleratorTable(la)==1,"LoadAcceleratorsW fallback");
+        ok(la==0,"LoadAcceleratorsW reports failure on a missing resource");
         DestroyWindow(hw);
     }
 
