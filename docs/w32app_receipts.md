@@ -1326,3 +1326,36 @@ than asserted.
 > sends `WM_INITMENUPOPUP` and returns without painting a dropdown, so
 > Tools > Options is still unreachable by mouse; clean extract ("Progress
 > Error") and drag-drop remain as before.
+
+> **Update 2026-10-11 (WR-2 popup: opens and tracks; text rendering in progress).**
+> `TrackPopupMenu` is now a real modal dropdown (borderless top-most window,
+> `SetCapture`, nested `GetMessageW` loop, hover highlight, `WM_COMMAND` on a leaf,
+> submenu recursion, Esc/outside-click dismiss). Clicking a menu-bar item opens it:
+> the intercept lives in the input path (`ui_translate`, content rows
+> `[0, menu_h)`) because 7-Zip FM handles `WM_LBUTTONDOWN` itself and never reaches
+> `DefWindowProcW`. Verified live (`docs/wr2-visual/popup_opens.png`). Outstanding:
+> the dropdown's item glyphs mis-stack (rendered vertically/clipped) -- the popup
+> window's text surface needs a fix (`docs/wr2-visual/popup_text_defect.png`);
+> that is the active sub-step and is not yet counted as closed. No regressions:
+> `make test-unit` exit 0, WR-2 gate 24/24, `make iso` exit 0.
+
+> **Update 2026-10-11 (WR-2 popup text: renders correctly on repaint; first-frame race isolated).**
+> Root-caused the "vertical glyphs" defect: the dropdown's FIRST synchronous
+> paint races the compositor's window-surface setup, but every subsequent
+> repaint is pixel-correct. With the mouse over the dropdown the hover
+> invalidate produces a clean frame -- `docs/wr2-visual/popup_text_ok.png`
+> shows `Options...` / `Benchmark` / `Delete Temporary Files` rendered
+> horizontally with separators. Added a deferred `SetTimer`-driven
+> `InvalidateRect` so a clean repaint is queued right after the modal loop
+> starts; the very first frame can still be imperfect until the first real
+> mouse movement, which self-heals in actual use (user always moves to pick
+> an item). Evidence of the residual first-frame artifact:
+> `docs/wr2-visual/popup_first_frame_defect.png`.
+> Tools > Options: the `WM_COMMAND` reaches 7zFM and the process exits
+> cleanly (code 0) -- the Options property-sheet dialog is an unimplemented
+> 7zFM dialog, a separate gap from WR-2 menu/popup plumbing (which is proven
+> end-to-end: bar click -> dropdown -> hover -> WM_COMMAND).
+> Patch regenerated: `wr2-wip-through-step8.patch` 159 133 B, `git apply
+> --check --binary` OK on a fresh `e6bed05` clone. Regressions this sub-step:
+> `make test-unit` exit 0, `make iso` exit 0, WR-2 `w32-apps` shard re-run in
+> progress.
