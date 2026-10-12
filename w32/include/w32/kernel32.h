@@ -442,6 +442,7 @@ W32ABI W32_BOOL  SystemTimeToTzSpecificLocalTime(const W32_TIME_ZONE_INFORMATION
                                                 const W32_SYSTEMTIME *in,
                                                 W32_SYSTEMTIME *out);
 W32ABI void      GetSystemTimeAsFileTime(W32_FILETIME *out);
+W32ABI void      GetSystemTimePreciseAsFileTime(W32_FILETIME *out);
 W32ABI void      GetLocalTime(W32_SYSTEMTIME *out);
 W32ABI W32_DWORD GetTimeZoneInformation(W32_TIME_ZONE_INFORMATION *out);
 W32ABI W32_BOOL  QueryPerformanceCounter(W32_LARGE_INTEGER *out);
@@ -1167,6 +1168,13 @@ W32ABI W32_BOOL  SleepConditionVariableSRW(W32_CONDITION_VARIABLE *cv,
                                            W32_SRWLOCK *lock, W32_DWORD ms,
                                            W32_DWORD flags);
 W32ABI void      WakeAllConditionVariable(W32_CONDITION_VARIABLE *cv);
+/* WR-3 step2: the WaitOnAddress family (api-ms-win-core-synch-l1-2-1).
+ * Notepad++'s CRT probes for it before using it — see w32_module.c for how
+ * the api-ms-win-* spelling reaches these exports. */
+W32ABI W32_BOOL  WaitOnAddress(void *addr, void *cmpbuf, W32_SIZE_T size,
+                               W32_DWORD timeout_ms);
+W32ABI void      WakeByAddressSingle(void *addr);
+W32ABI void      WakeByAddressAll(void *addr);
 W32ABI W32_BOOL  InitOnceBeginInitialize(W32_INIT_ONCE *once, W32_DWORD flags,
                                          W32_BOOL *pending, void **ctx);
 W32ABI W32_BOOL  InitOnceComplete(W32_INIT_ONCE *once, W32_DWORD flags,

@@ -2183,6 +2183,88 @@ W32ABI void WakeAllConditionVariable(W32_CONDITION_VARIABLE *cv) {
     (void)thr_futex_wake(&cv->seq, 0x7FFFFFFF);
 }
 
+/* ---- WaitOnAddress family (WR-3 step2, api-ms-win-core-synch-l1-2-1) --------
+ *
+ * The observed consumer is the CRT's startup probe: notepad++.exe calls
+ * LoadLibraryExW("api-ms-win-core-synch-l1-2-0", 0, ...) and GetProcAddress
+ * for these three names — with the API-set spelling refused (NULL) the
+ * delay-load helper indexed its module table off the NULL handle and
+ * faulted at CR2=0x18 (measured 2026-10-11).  With the set resolving to
+ * kernel32 (see w32_module.c), these bodies decide what the probe finds.
+ *
+ * Semantics kept honest:
+ *   WaitOnAddress  — TRUE when the value at *addr already differs from
+ *                    *cmpbuf; else block until a wake or a change is seen,
+ *                    TRUE; on expiry FALSE + ERROR_TIMEOUT.  Spurious TRUE
+ *                    is explicitly legal on Windows ("may return before
+ *                    any wake"), so one global wake-sequence for every
+ *                    address is correct: a wake at X can wake a waiter on
+ *                    Y (spurious), a wake is never missed.
+ *   WakeByAddress* — Windows documents no return value and no per-caller
+ *                    quota; bump the epoch, wake the herd.
+ * Comparisons are byte-wise volatile loads of 1/2/4/8 bytes (the contract's
+ * only allowed sizes); other sizes fail clean.
+ */
+static volatile uint32_t woa_seq;
+
+static int woa_differ(const volatile void *a, const void *b, W32_SIZE_T size) {
+    switch (size) {
+    case 1:
+        return *(const volatile uint8_t *)a != *(const uint8_t *)b;
+    case 2:
+        return *(const volatile uint16_t *)a != *(const uint16_t *)b;
+    case 4:
+        return *(const volatile uint32_t *)a != *(const uint32_t *)b;
+    default:
+        return *(const volatile uint64_t *)a != *(const uint64_t *)b;
+    }
+}
+
+W32ABI W32_BOOL WaitOnAddress(void *addr, void *cmpbuf, W32_SIZE_T size,
+                              W32_DWORD timeout_ms) {
+    uint32_t seq;
+    if (!addr || !cmpbuf ||
+        (size != 1 && size != 2 && size != 4 && size != 8)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+        return W32_FALSE;
+    }
+    if (woa_differ(addr, cmpbuf, size))
+        return W32_TRUE;
+    seq = woa_seq;
+    if (timeout_ms == W32_INFINITE) {
+        for (;;) {
+            thr_checkpoint();
+            (void)thr_futex_wait(&woa_seq, seq);
+            if (woa_seq != seq || woa_differ(addr, cmpbuf, size))
+                return W32_TRUE;
+        }
+    }
+    {
+        uint64_t deadline = GetTickCount64() + timeout_ms;
+        for (;;) {
+            struct timespec sl = { 0, THR_POLL_NS };
+            thr_checkpoint();
+            if (woa_seq != seq || woa_differ(addr, cmpbuf, size))
+                return W32_TRUE;
+            if ((int64_t)(GetTickCount64() - deadline) >= 0) {
+                w32_set_last_error(W32_ERROR_TIMEOUT);
+                return W32_FALSE;
+            }
+            nanosleep(&sl, 0);
+        }
+    }
+}
+
+W32ABI void WakeByAddressSingle(void *addr) {
+    (void)addr;
+    __sync_fetch_and_add(&woa_seq, 1);
+    (void)thr_futex_wake(&woa_seq, 0x7FFFFFFF);
+}
+
+W32ABI void WakeByAddressAll(void *addr) {
+    WakeByAddressSingle(addr);
+}
+
 /* ---- InitOnce (Begin/Complete) ----------------------------------------------------------------
  *
  * 8 bytes, zero-init valid (INIT_ONCE_STATIC_INIT).  States: 0 unrun,

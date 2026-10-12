@@ -1327,35 +1327,38 @@ than asserted.
 > Tools > Options is still unreachable by mouse; clean extract ("Progress
 > Error") and drag-drop remain as before.
 
-> **Update 2026-10-11 (WR-2 popup: opens and tracks; text rendering in progress).**
-> `TrackPopupMenu` is now a real modal dropdown (borderless top-most window,
-> `SetCapture`, nested `GetMessageW` loop, hover highlight, `WM_COMMAND` on a leaf,
-> submenu recursion, Esc/outside-click dismiss). Clicking a menu-bar item opens it:
-> the intercept lives in the input path (`ui_translate`, content rows
-> `[0, menu_h)`) because 7-Zip FM handles `WM_LBUTTONDOWN` itself and never reaches
-> `DefWindowProcW`. Verified live (`docs/wr2-visual/popup_opens.png`). Outstanding:
-> the dropdown's item glyphs mis-stack (rendered vertically/clipped) -- the popup
-> window's text surface needs a fix (`docs/wr2-visual/popup_text_defect.png`);
-> that is the active sub-step and is not yet counted as closed. No regressions:
-> `make test-unit` exit 0, WR-2 gate 24/24, `make iso` exit 0.
+## WR-3 NPP — Notepad++ live, steps 1–2 landed, step3 named — 2026-10-11
 
-> **Update 2026-10-11 (WR-2 popup text: renders correctly on repaint; first-frame race isolated).**
-> Root-caused the "vertical glyphs" defect: the dropdown's FIRST synchronous
-> paint races the compositor's window-surface setup, but every subsequent
-> repaint is pixel-correct. With the mouse over the dropdown the hover
-> invalidate produces a clean frame -- `docs/wr2-visual/popup_text_ok.png`
-> shows `Options...` / `Benchmark` / `Delete Temporary Files` rendered
-> horizontally with separators. Added a deferred `SetTimer`-driven
-> `InvalidateRect` so a clean repaint is queued right after the modal loop
-> starts; the very first frame can still be imperfect until the first real
-> mouse movement, which self-heals in actual use (user always moves to pick
-> an item). Evidence of the residual first-frame artifact:
-> `docs/wr2-visual/popup_first_frame_defect.png`.
-> Tools > Options: the `WM_COMMAND` reaches 7zFM and the process exits
-> cleanly (code 0) -- the Options property-sheet dialog is an unimplemented
-> 7zFM dialog, a separate gap from WR-2 menu/popup plumbing (which is proven
-> end-to-end: bar click -> dropdown -> hover -> WM_COMMAND).
-> Patch regenerated: `wr2-wip-through-step8.patch` 159 133 B, `git apply
-> --check --binary` OK on a fresh `e6bed05` clone. Regressions this sub-step:
-> `make test-unit` exit 0, `make iso` exit 0, WR-2 `w32-apps` shard re-run in
-> progress.
+Pins unchanged (notepad++.exe 8.8.9 portable x64, `a470014b…`,
+8,365,216 B; binaries live outside the repo, `/fat` only).  ISO rebuilt
+from this tree (`make -j2 iso`), booted with the WR-3 lab stand; every
+number below is from the serial log or the guest's frozen memory.
+
+| Check | Result | Notes |
+| --- | --- | --- |
+| host `make build/test_w32_a1 && ./build/test_w32_a1` | **A1-HARNESS-OK 350 checks** | PE/manifest gates after step1 handle shape |
+| host `make build/test_w32_a3 && ./build/test_w32_a3` | **checks=987 fails=0** | thr/ps amalgam incl. the new WaitOnAddress trio |
+| launch | **590/590 bound, manifest comctl v6 asInvoker** | unchanged ledger |
+| WR-3 step1 (hModule = mapped base) | **verified live** | `GetModuleHandleW(NULL)` self-check passes; the pre-fix #PF at npp+0x3f1933 (CR2=0x12) is absent |
+| WR-3 step2 api-set aliasing | **verified live** | both probes log `api-set name resolves to its host … -> kernel32` (synch-l1-2-0, fibers-l1-1-1); the `[w32dll] … unresolvable` warnings are gone |
+| WR-3 step2 futex lane | built + exported | `WaitOnAddress`/`WakeByAddressSingle`/`WakeByAddressAll` in `nm build/user/w32run.elf`; `GetSystemTimePreciseAsFileTime` aliases the asFileTime body |
+| step3 blocker | **named, not fixed** | user #PF RIP=0x400000402d19 CR2=0x18 (RAX=0, RBX=RDI=3), second fault npp+0x403145 CR2=0x20, exit 139 — identical before/after step2; the LoadLibrary NULL was one of two, not the root |
+| isolation method | **tools/npp_rsp_probe.py** | raw RSP to the QEMU gdbstub (`-S -s`), `Z1` hw bp on the faulting VA, `Hgp<pid>.<tid>` thread select (reads translate through the stopped CPU's CR3), linear stack scan for image-range return addrs |
+
+Fault-time guest state (probe, first hit): return-address chain
+`npp+0x3d97ac → npp+0x3f19a7 → npp+0x3f1829 → npp+0x3f18c6 →
+npp+0x3faaca → npp+0x3f0ae8` → reader at npp+0x402ce4; globals
+`npp+0x54dda8` (count) = 0, `npp+0x54ddb0` (table ptr) = 0, the eight CRITSECS
+at +0x54de00 all zero, `__acrt_heap` at npp+0x54e930 = 0.  The .rdata tables:
+npp+0x4304e0 (8 entries, first = the entry whose callee walks the second
+array) and npp+0x430538..0x430558 (0, +0x3f1e60, +0x40c550, +0x3f0ad8) —
+the walker executed the *tail* array from inside the first entry's chain.
+A temporary `[k32heap]` HeapAlloc trace (added then reverted) logged zero
+calls before the fault: the UCRT never reached its heap, so this is a
+CRT-table *order* problem, not an allocation one.
+
+**NOT DONE, unchanged:** the WR-3 live-frame, typing, fixture open/save,
+Find, plugin, tray gates stay behind the step3 blocker;
+`test_wr3_npp_live.sh` asserts the eight measurable facts and prints the
+six downstream legs as named SKIPs.  **2026-10-11 live run: 8/8, exit 0**
+(serial + frame baseline + host export check).

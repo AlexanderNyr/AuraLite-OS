@@ -88,17 +88,40 @@ static w32_module_t *find_by_name(const char *name);
  * a token the program can fabricate must not be dereferenceable. */
 #define HMODULE_BIAS 0x4000
 
+/* WR-3 step1 — Windows hands out the *mapped image base* as a module's
+ * HMODULE, and real programs rely on that: notepad++.exe (8.8.9) calls
+ * GetModuleHandleW(NULL), casts the result to PIMAGE_DOS_HEADER and reads
+ * e_magic/e_lfanew to prove its own image is PE32+.  A pseudo-token made
+ * that dereference fault at CR2=0x4012 (the handle itself).  Mapped
+ * modules — the main EXE and file DLLs — therefore answer with their base
+ * (the pseudo-token stays NULL-safe by construction: no module maps at a
+ * small address); builtin personality modules have no image to point at
+ * and keep the biased token. */
 static W32_HMODULE slot_to_handle(int i) {
+    if (modules[i].base)
+        return (W32_HMODULE)modules[i].base;
     return (W32_HMODULE)(uintptr_t)(HMODULE_BIAS + i);
 }
 
 static w32_module_t *handle_to_slot(W32_HMODULE h) {
     uintptr_t v = (uintptr_t)h;
-    if (v < HMODULE_BIAS) return NULL;
-    uintptr_t i = v - HMODULE_BIAS;
-    if (i >= W32_MODULE_MAX) return NULL;
-    if (!modules[i].used) return NULL;
-    return &modules[i];
+    int i;
+    if (!v)
+        return NULL;
+    if (v >= (uintptr_t)HMODULE_BIAS) {
+        /* The Windows-shaped handle: HMODULE == mapping base.  Checked
+         * first, exact — a base is never confused with a bias token
+         * because the bias range holds no mappings. */
+        for (i = 0; i < W32_MODULE_MAX; i++) {
+            if (modules[i].used && modules[i].base &&
+                (uintptr_t)modules[i].base == v)
+                return &modules[i];
+        }
+        i = (int)(v - (uintptr_t)HMODULE_BIAS);
+        if (i < W32_MODULE_MAX && modules[i].used)
+            return &modules[i];
+    }
+    return NULL;
 }
 
 static int ieq(const char *a, const char *b) {
@@ -110,6 +133,33 @@ static int ieq(const char *a, const char *b) {
         if (ca != cb) return 0;
         if (!ca) return 1;
     }
+}
+
+/* WR-3 step2: Windows API sets — api-ms-win-* and ext-ms-win-* are virtual
+ * DLLs, a contract-name a program may LoadLibrary without the host DLL's
+ * name ever appearing.  The loader maps a set onto its host; AuraLite
+ * hosts every core/ext set the pinned apps probe with kernel32.  Path-like
+ * names (directory separators present) are files and never sets:
+ * C:\fat\api-ms-win-x.dll keeps its disk meaning. */
+static int ieq_prefix(const char *s, const char *pfx) {
+    while (*pfx) {
+        char a = *s, b = *pfx;
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+        s++, pfx++;
+    }
+    return 1;
+}
+
+static int is_api_set_name(const char *name) {
+    const char *b = name, *p = name;
+    if (!name)
+        return 0;
+    for (; *p; p++)
+        if (*p == '\\' || *p == '/')
+            b = p + 1;
+    return ieq_prefix(b, "api-ms-win-") || ieq_prefix(b, "ext-ms-win-");
 }
 
 /* Windows programs say "kernel32", "KERNEL32.dll" and "KERNEL32.DLL"
@@ -204,7 +254,10 @@ void w32_module_init(void) {
 }
 
 static w32_module_t *find_by_name(const char *name) {
-    for (int i = 0; i < W32_MODULE_MAX; i++) {
+    int i;
+    if (is_api_set_name(name))
+        name = "kernel32";          /* WR-3 step2: the set's host (see above) */
+    for (i = 0; i < W32_MODULE_MAX; i++) {
         if (!modules[i].used || modules[i].loading) continue;
         if (module_name_matches(modules[i].name, name)) return &modules[i];
     }
@@ -954,6 +1007,29 @@ int w32_module_find_by_address(const void *pc, uint8_t **base, size_t *span) {
         }
     }
     return -1;
+}
+
+/* WR-3 step1: GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+ * addr) — answer with the module that owns `addr`, in the same shape a
+ * handle from any other query carries (mapping base for mapped modules). */
+int w32_module_handle_for_address(const void *pc, void **handle_out) {
+    uint8_t *base;
+    size_t span;
+    int i;
+    if (w32_module_find_by_address(pc, &base, &span) != 0)
+        return 0;
+    for (i = 0; i < W32_MODULE_MAX; i++) {
+        if (modules[i].used && modules[i].base == base) {
+            if (handle_out)
+                *handle_out = slot_to_handle(i);
+            return 1;
+        }
+    }
+    /* The mapping exists but its table row is gone (detached): report the
+     * base itself — the address IS inside it, which is the contract. */
+    if (handle_out)
+        *handle_out = base;
+    return 1;
 }
 
 void w32_module_detach_all(void) {

@@ -1715,6 +1715,18 @@ W32ABI W32_BOOL GetModuleHandleExW(W32_DWORD flags, const void *nameOrAddr,
         return ps_fail(W32_ERROR_INVALID_PARAMETER);
     ps_mods_init_self();
     if (flags & W32_GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) {
+        /* WR-3 step1: an address inside a loader module resolves to THAT
+         * module's handle (the image base for mapped modules).  Weak-linked
+         * like the exe-handle query: the A-3 host harness amalgamates this
+         * file without w32_module.o. */
+        extern __attribute__((weak)) int
+            w32_module_handle_for_address(const void *, void **);
+        void *h = NULL;
+        if (w32_module_handle_for_address &&
+            w32_module_handle_for_address(nameOrAddr, &h) && h) {
+            *modOut = h;
+            return 1;
+        }
         /* One module owns every address in this process. */
         if (!nameOrAddr)
             return ps_fail(W32_ERROR_INVALID_PARAMETER);
@@ -2901,6 +2913,20 @@ static void *ps_load_record(const char *hostpath) {
     return NULL;
 }
 
+#ifndef AURALITE_W32_HOST_TEST
+/* WR-3 step2: case-insensitive ASCII prefix test, for the API-set names. */
+static int ps_ieq_prefix(const char *s, const char *pfx) {
+    while (*pfx) {
+        char a = *s, b = *pfx;
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+        s++, pfx++;
+    }
+    return 1;
+}
+#endif
+
 static void *ps_load_common(const char *n8, W32_DWORD flags, int ex) {
     char *resolved = NULL;
     printf("[w32dll] LoadLibrary request: \"%s\"\n", n8 ? n8 : "(null)");
@@ -2911,6 +2937,32 @@ static void *ps_load_common(const char *n8, W32_DWORD flags, int ex) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return NULL;
     }
+#ifndef AURALITE_W32_HOST_TEST
+    /* WR-3 step2: a Windows API set (api-ms-win-*, ext-ms-win-*) is a
+     * virtual DLL — there is no file of that name to resolve.  The MSVC
+     * delay-load helper LoadLibraryExW's the set and then indexes its
+     * module table off the answer: a NULL here faulted notepad++.exe at
+     * CR2=0x18 (measured 2026-10-11).  Answer with the set's host, the
+     * kernel32 loader row, so GetProcAddress(WaitOnAddress, ...) and the
+     * sibling probes resolve against the bind table.  Path-bearing names
+     * are never sets; those keep walking the resolver.  Guarded: the A-3
+     * host harness has no w32_module.o and no api-set probe. */
+    {
+        const char *b = n8, *p = n8;
+        for (; *p; p++)
+            if (*p == '\\' || *p == '/')
+                b = p + 1;
+        if (ps_ieq_prefix(b, "api-ms-win-") ||
+            ps_ieq_prefix(b, "ext-ms-win-")) {
+            void *h = w32_GetModuleHandleA("kernel32");
+            if (h) {
+                printf("[w32dll] api-set name resolves to its host: "
+                       "\"%s\" -> kernel32\n", n8);
+                return h;
+            }
+        }
+    }
+#endif
     if (ex) {
         if (flags & ~(W32_DONT_RESOLVE_DLL_REFERENCES |
                       W32_LOAD_WITH_ALTERED_SEARCH_PATH |

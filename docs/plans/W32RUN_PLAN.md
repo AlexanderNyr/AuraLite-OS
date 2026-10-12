@@ -482,9 +482,30 @@ the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-
 
 #### Tasks
 
-- [ ] Live launch: `gui_run notepad++.exe` reaches the editor window; serial
-      shows Scintilla registered and the frame laid out (`BeginDeferWindowPos`
-      batch, REAL since W32A-16).
+- [x] Live launch (past bind): `w32run /fat/notepad++.exe` maps at
+      0x400000000000, binds **590/590**, and now survives the CRT's own
+      `GetModuleHandleW(NULL)` image check — WR-3 step1 made hModule the
+      mapped base (slot-shaped handles are history; the pre-fix user #PF at
+      npp+0x3f1933, CR2=0x12, is gone).  Measured live 2026-10-11.
+- [x] Delay-load api-set + futex lane (WR-3 step2): `api-ms-win-core-*` /
+      `ext-ms-win-*` basenames alias to their host module in both the loader
+      and the guest-side `LoadLibrary`/`GetModuleHandle` lane, and
+      `WaitOnAddress`/`WakeByAddressSingle`/`WakeByAddressAll` are exported.
+      Serial now shows both NPP probes resolving (`-> kernel32`) instead of
+      the helper receiving NULL.  `GetSystemTimePreciseAsFileTime` aliases
+      `GetSystemTimeAsFileTime` so the UCRT feature probe stores a real
+      pointer (removes the guest/Windows divergence at npp+0x3d8890).
+- [ ] **CRT walk-order blocker (step3, open):** NPP faults at
+      npp+0x402d19 (CR2=0x18) — the reader of the 512-entry lock table
+      indexes `npp+0x54ddb0` while it is still NULL and `npp+0x54dda8` is 0.
+      Isolated with `tools/npp_rsp_probe.py` (raw-RSP Z1 breakpoint at the
+      faulting VA, stack scan of the frozen guest): the chain is
+      preinit-entry npp+0x3d9560 → npp+0x3f18fc → do_cinit-style walker
+      npp+0x1403faaa8 over the three-slot tail array at npp+0x430538, whose
+      third entry npp+0x3f0ad8 calls the table reader before the table's
+      allocator entry (npp+0x4304f8+0x18) has run; `__acrt_heap`
+      (npp+0x54e930) is NULL at the fault, i.e. the UCRT tables are being
+      dispatched out of order, not via a missing KERNEL32 export.
 - [ ] **Live-frame gate**: `window_present` on the Notepad++ frame; the
       Scintilla client region is non-empty; the tab bar (COMCTL32) is present.
 - [ ] Type + render: inject text via `gui_input type`, assert a content delta

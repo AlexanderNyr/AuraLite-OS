@@ -219,6 +219,19 @@ static W32_DWORD W32ABI w_once_user(void *p) {
     return 0;
 }
 
+/* WR-3 step2: the WaitOnAddress wake path.  p selects the flavour:
+ * 0 = WakeByAddressSingle, 1 = WakeByAddressAll. */
+static volatile W32_DWORD w_woa_val;
+static W32_DWORD W32ABI w_woa_setter(void *p) {
+    Sleep(50);
+    w_woa_val = 2;
+    if ((uintptr_t)p)
+        WakeByAddressAll((void *)&w_woa_val);
+    else
+        WakeByAddressSingle((void *)&w_woa_val);
+    return 0;
+}
+
 static W32_DWORD W32ABI w_mutex_spin(void *p) {
     W32_HANDLE m = (W32_HANDLE)p;
     for (int i = 0; i < 2000; i++) {
@@ -724,6 +737,38 @@ int main(int argc, char **argv) {
         CHECK(GetTickCount64() - t_cv0 >= 50);
         CHECK(!SleepConditionVariableSRW(&w_cv, &w_srw, 50, 1)); /* shared */
         ReleaseSRWLockExclusive(&w_srw);
+    }
+
+    /* ---- 11b. WaitOnAddress family (WR-3 step2) ---- */
+    {
+        W32_DWORD cmp;
+        W32_HANDLE h;
+        uint64_t t0;
+        w_woa_val = 1;
+        cmp = 2;
+        CHECK(WaitOnAddress((void *)&w_woa_val, &cmp, 4, 0));  /* differs */
+        cmp = 1;
+        t0 = GetTickCount64();
+        CHECK(!WaitOnAddress((void *)&w_woa_val, &cmp, 4, 60)); /* equal: expiry */
+        CHECK_EQ(GetLastError(), W32_ERROR_TIMEOUT);
+        CHECK(GetTickCount64() - t0 >= 60);
+        CHECK(!WaitOnAddress((void *)&w_woa_val, &cmp, 3, 0)); /* bad size */
+        CHECK_EQ(GetLastError(), W32_ERROR_INVALID_PARAMETER);
+        CHECK(!WaitOnAddress(0, &cmp, 4, 0));                    /* null addr */
+        CHECK(!WaitOnAddress((void *)&w_woa_val, 0, 4, 0));      /* null cmp */
+        cmp = 1;
+        h = CreateThread(0, 0, w_woa_setter, (void *)(uintptr_t)0, 0, 0);
+        CHECK(h != 0);
+        CHECK(WaitOnAddress((void *)&w_woa_val, &cmp, 4, W32_INFINITE));
+        CHECK_EQ(WaitForSingleObject(h, 5000), W32_WAIT_OBJECT_0);
+        CHECK(CloseHandle(h));
+        w_woa_val = 1;
+        cmp = 1;
+        h = CreateThread(0, 0, w_woa_setter, (void *)(uintptr_t)1, 0, 0);
+        CHECK(h != 0);
+        CHECK(WaitOnAddress((void *)&w_woa_val, &cmp, 4, W32_INFINITE));
+        CHECK_EQ(WaitForSingleObject(h, 5000), W32_WAIT_OBJECT_0);
+        CHECK(CloseHandle(h));
     }
 
     /* ---- 12. InitOnce + SList ---- */

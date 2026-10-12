@@ -100,6 +100,11 @@ void *w32_module_exe_base(void);
  * without mappings never match (the unwinder cannot walk loader code). */
 int w32_module_find_by_address(const void *pc, uint8_t **base, size_t *span);
 
+/* WR-3 step1: the owning module's HMODULE in the exact shape
+ * GetModuleHandle would answer (mapping base for mapped modules, biased
+ * token for a builtin).  1 on a hit, 0 when no module owns the address. */
+int w32_module_handle_for_address(const void *pc, void **handle_out);
+
 /* GetProcAddress: NULL + ERROR_PROC_NOT_FOUND for an unknown name, never a
  * crash, and never a pointer to a forwarder string. */
 void *W32ABI w32_GetProcAddress(W32_HMODULE mod, const char *name);
@@ -115,7 +120,9 @@ int W32ABI w32_FreeLibrary(W32_HMODULE mod);
 void W32ABI FreeLibraryWhenCallbackReturns(void *instance, W32_HMODULE mod);
 
 /* kernel32_ps.c owns a second module table (LoadLibrary cookies,
- * 0x4D000000+slot — disjoint from the loader's 0x4000+i handles).
+ * 0x4D000000+slot — disjoint from the loader's handles, which since WR-3
+ * step1 are the mapping base for mapped modules and the biased 0x4000+i
+ * token for builtins only).
  * w32_FreeLibrary tries the loader first, then this. */
 int ps_mod_free(void *mod);
 

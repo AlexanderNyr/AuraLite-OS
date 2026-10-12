@@ -530,6 +530,7 @@ static const w32_export_t exports[] = {
     { K32, "CompareFileTime",            (void *)CompareFileTime            },
     { K32, "SystemTimeToTzSpecificLocalTime",(void *)SystemTimeToTzSpecificLocalTime},
     { K32, "GetSystemTimeAsFileTime",    (void *)GetSystemTimeAsFileTime    },
+    { K32, "GetSystemTimePreciseAsFileTime", (void *)GetSystemTimePreciseAsFileTime },
     { K32, "GetLocalTime",               (void *)GetLocalTime               },
     { K32, "GetTimeZoneInformation",     (void *)GetTimeZoneInformation     },
     { K32, "QueryPerformanceCounter",    (void *)QueryPerformanceCounter    },
@@ -666,6 +667,11 @@ static const w32_export_t exports[] = {
      * Tls/Fls, critical sections, exclusive SRW + CV, InitOnce, SList,
      * events, mutexes, semaphores, waits, APCs, threadpool. */
     { K32, "AcquireSRWLockExclusive",    (void *)AcquireSRWLockExclusive    },
+    /* WR-3 step2: the WaitOnAddress family — the CRT probes these names on
+     * the api-ms-win-core-synch-l1-2-0 alias (see w32_module.c). */
+    { K32, "WaitOnAddress",              (void *)WaitOnAddress              },
+    { K32, "WakeByAddressSingle",        (void *)WakeByAddressSingle        },
+    { K32, "WakeByAddressAll",           (void *)WakeByAddressAll           },
     { K32, "CloseThreadpoolWork",        (void *)CloseThreadpoolWork        },
     { K32, "CreateEventA",               (void *)CreateEventA               },
     { K32, "CreateEventW",               (void *)CreateEventW               },

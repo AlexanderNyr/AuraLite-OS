@@ -2721,6 +2721,14 @@ W32ABI void GetSystemTimeAsFileTime(W32_FILETIME *out) {
     fs_ft_split(fs_unix_to_ft((int64_t)ts.tv_sec, ts.tv_nsec), out);
 }
 
+/* WR-3 step2: NPP's CRT probes this name via GetProcAddress(kernel32)
+ * during _initterm_e (0x1403d8844) and stores the result in a global call
+ * pointer.  Returning NULL makes the CRT take its fallback lane forever;
+ * precise-vs-asFileTime is below our clock's resolution anyway, so alias it. */
+W32ABI void GetSystemTimePreciseAsFileTime(W32_FILETIME *out) {
+    GetSystemTimeAsFileTime(out);
+}
+
 W32ABI void GetLocalTime(W32_SYSTEMTIME *out) {
     W32_FILETIME ft;
     if (!out)
