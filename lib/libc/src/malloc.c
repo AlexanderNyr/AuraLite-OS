@@ -2,6 +2,7 @@
 #include "unistd.h"
 #include "string.h"
 #include <stdint.h>
+#include <stdio.h>
 #include <errno.h>
 
 typedef struct block_meta {
@@ -30,25 +31,122 @@ static block_meta *find_free_block(block_meta **last, size_t size) {
     return current;
 }
 
+/* WR-3: chunked bump allocation.  The kernel services SYS_BRK in whole
+ * pages and reports the ROUNDED break back, so a naive "sbrk(exact)"
+ * loses up to 4095 bytes of tail padding on EVERY growth call: a chatty
+ * allocator (Notepad++'s start-up makes a few hundred thousand small
+ * HeapAllocs) silently burned ~4 KB of address space and physical memory
+ * per block and died of OOM at ~1 GB of pure rounding waste.  Grabbing
+ * 256 KB chunks and bump-allocating inside them turns the per-block waste
+ * into per-chunk waste (1/64th of one page each).  The leftover tail of a
+ * chunk that no longer fits the next request is dropped -- bounded by one
+ * chunk per size class transition, negligible against the old behaviour. */
+#define MALLOC_CHUNK (256ull << 10)
+
+static volatile unsigned char rs_lock;
+
 static block_meta *request_space(block_meta* last, size_t size) {
-    block_meta *block;
-    block = sbrk(0);
-    void *request = sbrk(size + META_SIZE);
-    if (request == (void*)-1) {
-        return NULL;
+    static unsigned char *cur = NULL, *end = NULL;
+    size_t need = (size + META_SIZE + 15u) & ~(size_t)15u;
+    unsigned char *p;
+
+    (void)last;
+    /* Growth moves shared bump pointers; NPP allocates from several
+     * threads at once, so serialise the chunk grab (the free-list paths
+     * stay as lock-free as they always were). */
+    while (__atomic_test_and_set(&rs_lock, __ATOMIC_ACQUIRE))
+        ;
+    if (cur == NULL) {
+        cur = (unsigned char *)sbrk(0);
+        if (cur == (unsigned char *)-1) {
+            cur = NULL;
+            __atomic_clear(&rs_lock, __ATOMIC_RELEASE);
+            return NULL;
+        }
+        end = cur;
     }
-    
-    if (last) {
-        last->next = block;
+    if ((size_t)(end - cur) < need) {
+        size_t chunk = need > MALLOC_CHUNK ? (need + 4095u) & ~(size_t)4095u
+                                           : (size_t)MALLOC_CHUNK;
+        unsigned char *nb = (unsigned char *)sbrk((intptr_t)chunk);
+        if (nb == (unsigned char *)-1) {
+            __atomic_clear(&rs_lock, __ATOMIC_RELEASE);
+            return NULL;
+        }
+        cur = nb;
+        end = nb + chunk;
+        if ((size_t)(end - cur) < need) {
+            __atomic_clear(&rs_lock, __ATOMIC_RELEASE);
+            return NULL;
+        }
     }
+    p = cur;
+    cur += need;
+    block_meta *block = (block_meta *)p;
     block->size = size;
     block->next = NULL;
     block->free = 0;
+    __atomic_clear(&rs_lock, __ATOMIC_RELEASE);
     return block;
 }
 
 void *malloc(size_t size) {
     block_meta *block;
+    {
+        static uint64_t mtrc_tot = 0, mtrc_calls = 0;
+        mtrc_calls++;
+        mtrc_tot += size;
+        {
+            static int mtrc_mid;
+            if (size >= (32ull << 10) && size < (1ull << 20) && mtrc_mid < 400) {
+                mtrc_mid++;
+                {
+                    char b[40]; int n = 0, k;
+                    unsigned long ra2 = (unsigned long)__builtin_return_address(0);
+                    b[n++] = 'M'; b[n++] = 'I'; b[n++] = 'D'; b[n++] = ' ';
+                    for (k = 60; k >= 0; k -= 4) {
+                        int d = (int)((ra2 >> k) & 0xF);
+                        b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+                    }
+                    b[n++] = ' ';
+                    { uint64_t sz2 = size;
+                      for (k = 60; k >= 0; k -= 4) {
+                        int d = (int)((sz2 >> k) & 0xF);
+                        b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+                      } }
+                    b[n++] = '\n';
+                    fwrite(b, 1, (unsigned long)n, stdout);
+                    fflush(stdout);
+                }
+            }
+        }
+        if (size >= (1ull << 20) || (mtrc_calls % 20000ull) == 0) {
+            if (1) {
+            unsigned long ra = (unsigned long)__builtin_return_address(0);
+            char b[64]; int n = 0, k;
+            b[n++] = 'M'; b[n++] = '6'; b[n++] = '4'; b[n++] = ' ';
+            for (k = 60; k >= 0; k -= 4) {
+                int d = (int)((ra >> k) & 0xF);
+                b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+            }
+            b[n++] = ' ';
+            for (k = 60; k >= 0; k -= 4) {
+                uint64_t sz = size;
+                int d = (int)((sz >> k) & 0xF);
+                b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+            }
+            b[n++] = ' ';
+            { uint64_t tt = mtrc_tot; int k2;
+              for (k2 = 60; k2 >= 0; k2 -= 4) {
+                int d = (int)((tt >> k2) & 0xF);
+                b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+              } }
+            b[n++] = '\n';
+            fwrite(b, 1, (unsigned long)n, stdout);
+            fflush(stdout);
+            }
+        }
+    }
     if (size <= 0) return NULL;
     
     // align size

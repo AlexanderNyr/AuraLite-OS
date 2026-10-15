@@ -44,7 +44,7 @@ way `make sdk-check` does for the native SDK.
 
 <!-- BEGIN GENERATED: w32 export table -->
 
-*935 functions across 21 modules (900 REAL, 35 FAIL-CLEAN). This table is generated from
+*939 functions across 21 modules (904 REAL, 35 FAIL-CLEAN). This table is generated from
 `w32/src/w32_bind.c` and the D9 classes in `w32/app_ledger/*.imports` by
 `tools/gen_w32_api_table.py`; edit the export table or the ledgers, not this list.*
 
@@ -148,7 +148,7 @@ way `make sdk-check` does for the native SDK.
 - `ImmSetCompositionFontA` · `ImmSetCompositionFontW` · `ImmSetCompositionStringW`
 - `ImmSetCompositionWindow`
 
-**KERNEL32.dll** (277) — 276 REAL, 1 FAIL-CLEAN
+**KERNEL32.dll** (281) — 280 REAL, 1 FAIL-CLEAN
 
 - `AcquireSRWLockExclusive` · `Beep` · `CancelIo`
 - `ClearCommBreak` · `CloseHandle` · `CloseThreadpoolWork`
@@ -195,53 +195,55 @@ way `make sdk-check` does for the native SDK.
 - `GetProductInfo` · `GetStartupInfoA` · `GetStartupInfoW`
 - `GetStdHandle` · `GetStringTypeExA` · `GetStringTypeExW`
 - `GetStringTypeW` · `GetSystemDefaultLangID` · `GetSystemDirectoryA`
-- `GetSystemInfo` · `GetSystemTimeAsFileTime` · `GetTempPathA`
-- `GetTempPathW` · `GetThreadId` · `GetThreadTimes`
-- `GetTickCount` · `GetTickCount64` · `GetTimeFormatEx`
-- `GetTimeFormatW` · `GetTimeZoneInformation` · `GetUserDefaultLCID`
-- `GetUserDefaultLangID` · `GetVersion` · `GetVersionExW`
-- `GetVolumeInformationW` · `GetWindowsDirectoryA` · `GetWindowsDirectoryW`
-- `GlobalAlloc` · `GlobalFree` · `GlobalLock`
-- `GlobalMemoryStatus` · `GlobalMemoryStatusEx` · `GlobalSize`
-- `GlobalUnlock` · `HeapAlloc` · `HeapFree`
-- `HeapReAlloc` · `HeapSize` · `InitOnceBeginInitialize`
-- `InitOnceComplete` · `InitializeCriticalSection` · `InitializeCriticalSectionAndSpinCount`
-- `InitializeCriticalSectionEx` · `InitializeSListHead` · `InterlockedFlushSList`
-- `IsDBCSLeadByteEx` · `IsDebuggerPresent` · `IsProcessorFeaturePresent`
-- `IsValidCodePage` · `IsValidLocale` · `LCMapStringA`
-- `LCMapStringEx` · `LCMapStringW` · `LeaveCriticalSection`
-- `LoadLibraryA` · `LoadLibraryExA` · `LoadLibraryExW`
-- `LoadLibraryW` · `LoadResource` · `LoadStringA`
-- `LoadStringW` · `LocalAlloc` · `LocalFileTimeToFileTime`
-- `LocalFree` · `LockResource` · `MapViewOfFile`
-- `MoveFileExW` · `MoveFileW` · `MoveFileWithProgressW`
-- `MulDiv` · `MultiByteToWideChar` · `OpenProcess`
-- `OutputDebugStringW` · `Process32FirstW` · `Process32NextW`
-- `QueryPerformanceCounter` · `QueryPerformanceFrequency` · `QueueUserAPC`
-- `RaiseException` · `ReadConsoleW` · `ReadFile`
-- `RegisterApplicationRestart` · `ReleaseMutex` · `ReleaseSRWLockExclusive`
-- `ReleaseSemaphore` · `RemoveDirectoryW` · `ReplaceFileW`
-- `ResetEvent` · `ResumeThread` · `RtlCaptureContext`
-- `RtlLookupFunctionEntry` · `RtlPcToFileHeader` · `RtlUnwind`
-- `RtlUnwindEx` · `RtlVirtualUnwind` · `SetCommBreak`
-- `SetCommState` · `SetCommTimeouts` · `SetCurrentDirectoryA`
-- `SetCurrentDirectoryW` · `SetEndOfFile` · `SetEnvironmentVariableW`
-- `SetEvent` · `SetFileAttributesW` · `SetFilePointer`
-- `SetFilePointerEx` · `SetFileTime` · `SetHandleInformation`
-- `SetLastError` · `SetStdHandle` · `SetThreadAffinityMask`
-- `SetUnhandledExceptionFilter` · `SizeofResource` · `Sleep`
-- `SleepConditionVariableSRW` · `SleepEx` · `SubmitThreadpoolWork`
-- `SystemTimeToTzSpecificLocalTime` · `TerminateProcess` · `TerminateThread`
-- `TlsAlloc` · `TlsFree` · `TlsGetValue`
-- `TlsSetValue` · `TryAcquireSRWLockExclusive` · `TryEnterCriticalSection`
-- `UnhandledExceptionFilter` · `UnmapViewOfFile` · `UnregisterApplicationRestart`
-- `VirtualAlloc` · `VirtualFree` · `VirtualProtect`
-- `WaitForMultipleObjects` · `WaitForSingleObject` · `WaitForSingleObjectEx`
-- `WaitNamedPipeA` · `WakeAllConditionVariable` · `WideCharToMultiByte`
-- `WriteConsoleW` · `WriteFile` · `_XcptFilter`
-- `__C_specific_handler` · `lstrcatW` · `lstrcmpW`
-- `lstrcmpiA` · `lstrcmpiW` · `lstrcpyW`
-- `lstrcpynA` · `lstrcpynW` · `lstrlenW`
+- `GetSystemInfo` · `GetSystemTimeAsFileTime` · `GetSystemTimePreciseAsFileTime`
+- `GetTempPathA` · `GetTempPathW` · `GetThreadId`
+- `GetThreadTimes` · `GetTickCount` · `GetTickCount64`
+- `GetTimeFormatEx` · `GetTimeFormatW` · `GetTimeZoneInformation`
+- `GetUserDefaultLCID` · `GetUserDefaultLangID` · `GetVersion`
+- `GetVersionExW` · `GetVolumeInformationW` · `GetWindowsDirectoryA`
+- `GetWindowsDirectoryW` · `GlobalAlloc` · `GlobalFree`
+- `GlobalLock` · `GlobalMemoryStatus` · `GlobalMemoryStatusEx`
+- `GlobalSize` · `GlobalUnlock` · `HeapAlloc`
+- `HeapFree` · `HeapReAlloc` · `HeapSize`
+- `InitOnceBeginInitialize` · `InitOnceComplete` · `InitializeCriticalSection`
+- `InitializeCriticalSectionAndSpinCount` · `InitializeCriticalSectionEx` · `InitializeSListHead`
+- `InterlockedFlushSList` · `IsDBCSLeadByteEx` · `IsDebuggerPresent`
+- `IsProcessorFeaturePresent` · `IsValidCodePage` · `IsValidLocale`
+- `LCMapStringA` · `LCMapStringEx` · `LCMapStringW`
+- `LeaveCriticalSection` · `LoadLibraryA` · `LoadLibraryExA`
+- `LoadLibraryExW` · `LoadLibraryW` · `LoadResource`
+- `LoadStringA` · `LoadStringW` · `LocalAlloc`
+- `LocalFileTimeToFileTime` · `LocalFree` · `LockResource`
+- `MapViewOfFile` · `MoveFileExW` · `MoveFileW`
+- `MoveFileWithProgressW` · `MulDiv` · `MultiByteToWideChar`
+- `OpenProcess` · `OutputDebugStringW` · `Process32FirstW`
+- `Process32NextW` · `QueryPerformanceCounter` · `QueryPerformanceFrequency`
+- `QueueUserAPC` · `RaiseException` · `ReadConsoleW`
+- `ReadFile` · `RegisterApplicationRestart` · `ReleaseMutex`
+- `ReleaseSRWLockExclusive` · `ReleaseSemaphore` · `RemoveDirectoryW`
+- `ReplaceFileW` · `ResetEvent` · `ResumeThread`
+- `RtlCaptureContext` · `RtlLookupFunctionEntry` · `RtlPcToFileHeader`
+- `RtlUnwind` · `RtlUnwindEx` · `RtlVirtualUnwind`
+- `SetCommBreak` · `SetCommState` · `SetCommTimeouts`
+- `SetCurrentDirectoryA` · `SetCurrentDirectoryW` · `SetEndOfFile`
+- `SetEnvironmentVariableW` · `SetEvent` · `SetFileAttributesW`
+- `SetFilePointer` · `SetFilePointerEx` · `SetFileTime`
+- `SetHandleInformation` · `SetLastError` · `SetStdHandle`
+- `SetThreadAffinityMask` · `SetUnhandledExceptionFilter` · `SizeofResource`
+- `Sleep` · `SleepConditionVariableSRW` · `SleepEx`
+- `SubmitThreadpoolWork` · `SystemTimeToTzSpecificLocalTime` · `TerminateProcess`
+- `TerminateThread` · `TlsAlloc` · `TlsFree`
+- `TlsGetValue` · `TlsSetValue` · `TryAcquireSRWLockExclusive`
+- `TryEnterCriticalSection` · `UnhandledExceptionFilter` · `UnmapViewOfFile`
+- `UnregisterApplicationRestart` · `VirtualAlloc` · `VirtualFree`
+- `VirtualProtect` · `WaitForMultipleObjects` · `WaitForSingleObject`
+- `WaitForSingleObjectEx` · `WaitNamedPipeA` · `WaitOnAddress`
+- `WakeAllConditionVariable` · `WakeByAddressAll` · `WakeByAddressSingle`
+- `WideCharToMultiByte` · `WriteConsoleW` · `WriteFile`
+- `_XcptFilter` · `__C_specific_handler` · `lstrcatW`
+- `lstrcmpW` · `lstrcmpiA` · `lstrcmpiW`
+- `lstrcpyW` · `lstrcpynA` · `lstrcpynW`
+- `lstrlenW`
 
 *FAIL-CLEAN (binds, then reports honest failure)*
 - `ReadDirectoryChangesW`

@@ -147,6 +147,16 @@ static void vinfo_hints_invalidate(void) {
 }
 
 /* ---- Tiny endian helpers ---- */
+static inline int kstr_has(const char *h, const char *n) {
+    if (!h || !n || !*n) return 0;
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*b && *a == *b) { a++; b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
 static inline uint16_t rd16(const uint8_t *p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 static inline uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
 static inline void wr16(uint8_t *p, uint16_t v) { p[0]=v&0xFF; p[1]=(v>>8)&0xFF; }
@@ -1344,6 +1354,13 @@ static struct vnode *fat32_lookup_impl(void *fs_data, const char *path) {
     int found;
     char base[FAT_MAX_NAME] = {0};
     if (path_resolve(path, &parent, &it, &found, base, sizeof(base)) != 0) return NULL;
+    {
+        static int f32_trc;
+        if (f32_trc < 60 && path && kstr_has(path, "xml")) {
+            f32_trc++;
+            kprintf("[fat32trc] lookup '%s' found=%d size=%u fc=%u\n", path, found, it.size, it.first_cluster);
+        }
+    }
     if (!found) return NULL;
     int is_dir = (it.attr & FAT_ATTR_DIR) != 0;
     return &vinfo_intern(path,

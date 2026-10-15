@@ -661,6 +661,21 @@ void w32_thr_init(void) {
     teb->client_pid = thr_pid;
     teb->client_tid = thr_pid;
     teb->last_error = W32_ERROR_SUCCESS;
+    /* WR-3: the NT stack window.  Workers get theirs from the created
+     * stack (below); the main TEB used to ship zeros here, and MSVC's
+     * statically linked __CxxFrameHandler validates every establisher
+     * frame against TEB+0x08/0x10 -- a zero window makes it reject a
+     * perfectly good frame as "Corrupt stack data" and terminate the
+     * process (0xC0000409) instead of running the catch.  The kernel's
+     * main user stack is a 4 MiB window; publish a slightly wider one
+     * (8 MiB below a page-rounded probe plus headroom) so every real
+     * frame of the main thread validates. */
+    {
+        volatile char probe;
+        uint64_t sp = (uint64_t)(uintptr_t)&probe;
+        teb->nt_stack_base  = ((sp + 0x10000ull) + 0xFFFull) & ~0xFFFull;
+        teb->nt_stack_limit = teb->nt_stack_base - (8ull << 20);
+    }
     if (thr_arch_prctl(THR_ARCH_SET_GS, (uint64_t)(uintptr_t)teb) != 0) {
         munmap(teb, 4096);
         return;

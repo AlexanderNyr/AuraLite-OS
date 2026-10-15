@@ -105,7 +105,7 @@ gl_boot() {
         -drive "if=pflash,format=raw,file=$GL_VARS" \
         -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
         "${app_args[@]}" \
-        -m 512M -smp "${IL_SMP:-2}" -cpu "${IL_CPU:-qemu64}" \
+        -m ${GL_QEMU_MEM:-512M} -smp "${IL_SMP:-2}" -cpu "${IL_CPU:-qemu64}" \
         -no-reboot -no-shutdown -boot order=c \
         -netdev user,id=net0 -device e1000,netdev=net0 \
         -device usb-ehci,id=ehci -device usb-tablet,bus=ehci.0,id=gltablet \

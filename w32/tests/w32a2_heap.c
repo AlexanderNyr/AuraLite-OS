@@ -73,10 +73,26 @@ void __stdcall winstart(void) {
         CHECKX(VirtualProtect(stack, sizeof(stack), PAGE_READWRITE,
             &old), "heap-vprot-rw");
         CHECKX(old == PAGE_READWRITE, "heap-vprot-old");
-        CHECKX(!VirtualProtect(stack, sizeof(stack), PAGE_READONLY,
-            &old), "heap-vprot-ro-fails");
+        /* WR-3: the full Win32 protection set is accepted (recorded, not
+         * enforced — w32run maps images RWX and the kernel mprotect does not
+         * split VMAs), and oldProt reports what the previous call set.  The
+         * old refuse-everything-but-READWRITE behaviour aborted real static
+         * UCRT startup (Notepad++ .fptable PAGE_READONLY initializer). */
+        CHECKX(VirtualProtect(stack, sizeof(stack), PAGE_READONLY,
+            &old), "heap-vprot-ro");
+        CHECKX(old == PAGE_READWRITE, "heap-vprot-ro-old");
+        CHECKX(VirtualProtect(stack, sizeof(stack), PAGE_EXECUTE_READWRITE,
+            &old), "heap-vprot-rwx");
+        CHECKX(old == PAGE_READONLY, "heap-vprot-rwx-old");
+        CHECKX(GetLastError() == ERROR_SUCCESS, "heap-vprot-code");
+        CHECKX(!VirtualProtect(stack, sizeof(stack), 0, &old),
+            "heap-vprot-zero-fails");
         CHECKX(GetLastError() == ERROR_INVALID_PARAMETER,
-            "heap-vprot-ro-code");
+            "heap-vprot-zero-code");
+        CHECKX(!VirtualProtect(stack, sizeof(stack),
+            PAGE_READONLY | PAGE_READWRITE, &old), "heap-vprot-mix-fails");
+        CHECKX(GetLastError() == ERROR_INVALID_PARAMETER,
+            "heap-vprot-mix-code");
         CHECKX(!VirtualProtect(NULL, 8, PAGE_READWRITE, &old),
             "heap-vprot-null-fails");
         CHECKX(GetLastError() == ERROR_INVALID_PARAMETER,

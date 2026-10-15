@@ -23,6 +23,7 @@
  * test, which stubs the same functions itself (tests/unit/test_w32_kernel32.c).
  * Everything used from them is a POSIX declaration the test provides. */
 #ifndef AURALITE_W32_HOST_TEST
+#include <sys/mman.h>   /* WR-3: VirtualAlloc/VirtualFree page backing */
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
@@ -321,6 +322,14 @@ W32ABI W32_HANDLE CreateFileA(const char *path, W32_DWORD access,
  * program relying on reserve-then-commit fails loudly instead of corrupting
  * itself later. */
 
+/* WR-3: VirtualAlloc reservation registry (see VirtualFree RELEASE). */
+struct k32_va_ent { void *addr; unsigned long long size; };
+static struct k32_va_ent k32_va[1024];
+
+#ifndef W32_MEM_DECOMMIT
+#define W32_MEM_DECOMMIT 0x4000u   /* Win32 value; header lacks it */
+#endif
+
 W32ABI void *VirtualAlloc(void *addr, unsigned long long size,
                           W32_DWORD type, W32_DWORD protect) {
     (void)protect;
@@ -337,12 +346,34 @@ W32ABI void *VirtualAlloc(void *addr, unsigned long long size,
         w32_set_last_error(W32_ERROR_NOT_SUPPORTED);
         return 0;
     }
-    void *p = malloc((size_t)size);
-    if (!p) {
+    /* WR-3: real page-backed reservations.  The malloc shape wasted the
+     * heap allocator's block header space on every megabyte reservation
+     * and could never be released page-wise; mmap gives zero-filled
+     * anonymous pages exactly like Win32 COMMIT, and the k32_va table
+     * lets VirtualFree(MEM_RELEASE) give them back. */
+    unsigned long long rsz = (size + 0xFFFull) & ~0xFFFull;
+    int prot = PROT_READ | PROT_WRITE;
+    void *p;
+    int i;
+    switch (protect & 0xFFu) {
+    case W32_PAGE_READONLY:       prot = PROT_READ; break;
+    case W32_PAGE_EXECUTE:        prot = PROT_EXEC; break;
+    case W32_PAGE_EXECUTE_READ:   prot = PROT_READ | PROT_EXEC; break;
+    case W32_PAGE_NOACCESS:       prot = PROT_NONE; break;
+    default: break;
+    }
+    p = mmap(NULL, (size_t)rsz, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     }
-    memset(p, 0, (size_t)size);        /* Win32 commits zero-filled pages */
+    for (i = 0; i < 1024; i++) {
+        if (!k32_va[i].addr) {
+            k32_va[i].addr = p;
+            k32_va[i].size = rsz;
+            break;
+        }
+    }
     return p;
 }
 
@@ -357,9 +388,28 @@ W32ABI W32_BOOL VirtualFree(void *addr, unsigned long long size, W32_DWORD type)
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return W32_FALSE;
     }
+    if (type & W32_MEM_DECOMMIT)
+        return W32_TRUE;      /* pages stay: the reservation model is flat */
+    if (type & W32_MEM_RELEASE) {
+        int i;
+        for (i = 0; i < 1024; i++) {
+            if (k32_va[i].addr == addr) {
+                munmap(addr, (size_t)k32_va[i].size);
+                k32_va[i].addr = 0;
+                k32_va[i].size = 0;
+                return W32_TRUE;
+            }
+        }
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+        return W32_FALSE;
+    }
     free(addr);
     return W32_TRUE;
 }
+
+/* WR-3: per-page protection bookkeeping (see VirtualProtect). */
+struct k32_vp_slot { uint64_t base; uint64_t npages; uint8_t prot[128]; };
+static struct k32_vp_slot k32_vp[64];
 
 W32ABI W32_BOOL VirtualProtect(void *addr, W32_SIZE_T size,
                                W32_DWORD newProt, W32_DWORD *oldProt) {
@@ -367,17 +417,66 @@ W32ABI W32_BOOL VirtualProtect(void *addr, W32_SIZE_T size,
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return W32_FALSE;
     }
-    /* No mprotect syscall exists in AuraLite userspace, so protections can
-     * neither change nor be queried.  The one honest answer: every w32
-     * block is read/write, so a READWRITE "change" succeeds as a no-op and
-     * everything else — including execute-only, which cannot be verified —
-     * is refused rather than claimed. */
-    if (newProt != W32_PAGE_READWRITE) {
-        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
-        return W32_FALSE;
+    /* WR-3: bookkeeping-only protection model.  AuraLite userspace has no
+     * mprotect, so protections cannot touch the real pages; what a real
+     * app (Notepad++ 8.8.9's CRT re-protects its own sections at start-up)
+     * needs is a table that remembers what was asked and reports it back
+     * through oldProt, accepting the full Win32 protection set instead of
+     * refusing everything but READWRITE.  The side table is per 4 KiB page
+     * over tracked ranges; pages never touched read as READWRITE, which is
+     * what every w32 mapping really is. */
+    {
+        uint64_t base = (uint64_t)(uintptr_t)addr & ~(uint64_t)0xFFF;
+        uint64_t npages = (((uint64_t)(uintptr_t)addr + size) + 0xFFF) /
+                              0x1000 - base / 0x1000;
+        unsigned baseprot = newProt & 0xFFu;
+        unsigned mods = newProt & ~0xFFu;
+        int s = -1, i;
+        switch (baseprot) {
+        case W32_PAGE_READONLY: case W32_PAGE_READWRITE:
+        case W32_PAGE_WRITECOPY: case W32_PAGE_EXECUTE:
+        case W32_PAGE_EXECUTE_READ: case W32_PAGE_EXECUTE_READWRITE:
+        case W32_PAGE_EXECUTE_WRITECOPY: case W32_PAGE_NOACCESS:
+            break;
+        default:
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return W32_FALSE;
+        }
+        if (mods & ~(0x100u | 0x200u | 0x400u)) {  /* GUARD/NOCACHE/WC */
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return W32_FALSE;
+        }
+        for (i = 0; i < 64; i++) {
+            if (k32_vp[i].npages &&
+                base / 0x1000 >= k32_vp[i].base &&
+                base / 0x1000 + npages <= k32_vp[i].base + k32_vp[i].npages) {
+                s = i;
+                break;
+            }
+        }
+        if (s < 0 && npages <= 128) {
+            for (i = 0; i < 64; i++) {
+                if (!k32_vp[i].npages) {
+                    s = i;
+                    k32_vp[s].base = base / 0x1000;
+                    k32_vp[s].npages = npages;
+                    for (unsigned q = 0; q < npages; q++)
+                        k32_vp[s].prot[q] = (uint8_t)W32_PAGE_READWRITE;
+                    break;
+                }
+            }
+        }
+        if (s < 0) {
+            /* Untracked or oversized range: answer the honest default. */
+            *oldProt = W32_PAGE_READWRITE;
+            return W32_TRUE;
+        }
+        *oldProt = k32_vp[s].prot[base / 0x1000 - k32_vp[s].base];
+        for (uint64_t q = 0; q < npages; q++)
+            k32_vp[s].prot[base / 0x1000 - k32_vp[s].base + q] =
+                (uint8_t)newProt;
+        return W32_TRUE;
     }
-    *oldProt = W32_PAGE_READWRITE;
-    return W32_TRUE;
 }
 
 W32ABI W32_SIZE_T GetLargePageMinimum(void) {

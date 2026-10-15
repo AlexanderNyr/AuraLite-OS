@@ -209,12 +209,20 @@ typedef int32_t  W32_HRESULT;
 #define W32_HANDLE_FLAG_INHERIT 0x00000001u
 
 /* File mapping page protection and access. */
-#define W32_PAGE_NOACCESS          0x01u
-#define W32_PAGE_READONLY          0x02u
-#define W32_PAGE_READWRITE         0x04u
-#define W32_PAGE_WRITECOPY         0x08u
-#define W32_PAGE_EXECUTE_READ      0x20u
-#define W32_PAGE_EXECUTE_READWRITE 0x40u
+#define W32_PAGE_NOACCESS            0x01u
+#define W32_PAGE_READONLY            0x02u
+#define W32_PAGE_READWRITE           0x04u
+#define W32_PAGE_WRITECOPY           0x08u
+#define W32_PAGE_EXECUTE             0x10u
+#define W32_PAGE_EXECUTE_READ        0x20u
+#define W32_PAGE_EXECUTE_READWRITE   0x40u
+#define W32_PAGE_EXECUTE_WRITECOPY   0x80u
+/* Protection modifiers.  Accepted by VirtualProtect/VirtualAlloc and
+ * ignored: guard-page faults and cache attributes have no persona
+ * equivalent, and inventing one would change access behaviour. */
+#define W32_PAGE_GUARD               0x100u
+#define W32_PAGE_NOCACHE             0x200u
+#define W32_PAGE_WRITECOMBINE        0x400u
 #define W32_SEC_COMMIT             0x08000000u
 #define W32_SEC_RESERVE            0x04000000u
 #define W32_FILE_MAP_READ          0x0004u
@@ -646,6 +654,7 @@ typedef struct {
 #define W32_PF_RDTSCP_INSTRUCTION_AVAILABLE    32u
 #define W32_PF_NX_ENABLED                      12u
 #define W32_PF_3DNOW_INSTRUCTIONS_AVAILABLE     7u
+#define W32_PF_FASTFAIL_AVAILABLE              23u
 
 /* Toolhelp snapshot flags.  Only TH32CS_SNAPPROCESS is implemented. */
 #define W32_TH32CS_SNAPPROCESS  0x00000002u

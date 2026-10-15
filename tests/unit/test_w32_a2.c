@@ -1482,12 +1482,17 @@ static void test_heaps(void) {
         CHECK(LocalFree(p) == NULL);
     {
         char stack[64];
+        /* WR-3 contract: the protection table accepts the whole Win32
+         * set and reports the previous value per page. */
         CHECK(VirtualProtect(stack, sizeof(stack), W32_PAGE_READWRITE,
             &old));
         CHECK_EQ(old, (W32_DWORD)W32_PAGE_READWRITE);
-        CHECK(!VirtualProtect(stack, sizeof(stack), W32_PAGE_READONLY,
+        CHECK(VirtualProtect(stack, sizeof(stack), W32_PAGE_READONLY,
             &old));
-        CHECK_EQ(GetLastError(), W32_ERROR_INVALID_PARAMETER);
+        CHECK_EQ(old, (W32_DWORD)W32_PAGE_READWRITE);
+        CHECK(VirtualProtect(stack, sizeof(stack),
+            W32_PAGE_EXECUTE_READWRITE, &old));
+        CHECK_EQ(old, (W32_DWORD)W32_PAGE_READONLY);
         CHECK(!VirtualProtect(NULL, 8, W32_PAGE_READWRITE, &old));
         CHECK_EQ(GetLastError(), W32_ERROR_INVALID_PARAMETER);
     }

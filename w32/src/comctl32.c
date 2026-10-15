@@ -3023,6 +3023,10 @@ void W32ABI InitCommonControls(void) {
 }
 
 W32ABI W32_BOOL InitCommonControlsEx(const W32_INITCOMMONCONTROLSEX *icc) {
+    printf("[icce] InitCommonControlsEx icc=%p size=%lu mask=%08lx\n",
+           (const void *)icc,
+           icc ? (unsigned long)icc->dwSize : 0ul,
+           icc ? (unsigned long)icc->dwICC : 0ul);
     if (!icc || icc->dwSize < sizeof *icc) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;

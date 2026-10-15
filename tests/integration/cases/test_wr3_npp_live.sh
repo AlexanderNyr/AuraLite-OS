@@ -74,14 +74,47 @@ else
 fi
 
 # doLocalConf.xml: one line, keeps NPP portable so it never touches APPDATA.
-CONF="$IL_LOGDIR/wr3_doLocalConf.xml"
+# The on-disk name MUST be exactly doLocalConf.xml: gl_make_fat_disk copies
+# each staged file under its basename, and NPP's portable probe is a
+# GetFileAttributesExW for "<module dir>\doLocalConf.xml" -- a renamed
+# marker silently leaves NPP on the APPDATA config path.
+CONF="$IL_LOGDIR/doLocalConf.xml"
 printf '<?xml version="1.0" encoding="UTF-8" ?>\n<NotepadPlus>\n</NotepadPlus>\n' > "$CONF"
+
+# Sibling config documents: the portable zip ships them next to the exe and
+# NPP treats a missing langs/stylers document as FATAL -- the Configurator
+# raises a modal MessageBoxW ("Load langs.xml failed!" / "Load stylers.xml
+# failed") which blocks wWinMain forever, so the editor window never
+# appears.  Per D-WR3 the binaries and their data stay outside the repo:
+# whatever the staged WR3_NPP_DIR carries is delivered on /fat, and only
+# when a document is absent does the gate synthesize a minimal one that
+# parses and leaves NPP on its built-in defaults.
+STAGE=("$NPP" "$CONF")
+for f in config.xml contextMenu.xml shortcuts.xml langs.xml stylers.xml \
+         langs.model.xml stylers.model.xml; do
+    if [ -f "$WR3_NPP_DIR/$f" ]; then STAGE+=("$WR3_NPP_DIR/$f"); fi
+done
+st_have() {
+    local want="$1" f
+    for f in "${STAGE[@]}"; do [ "$(basename "$f")" = "$want" ] && return 0; done
+    return 1
+}
+if ! st_have langs.xml && ! st_have langs.model.xml; then
+    LANGS="$IL_LOGDIR/langs.xml"
+    printf '<?xml version="1.0" encoding="UTF-8" ?>\n<NotepadPlus>\n    <Languages>\n        <Language name="text" ext="" />\n    </Languages>\n</NotepadPlus>\n' > "$LANGS"
+    STAGE+=("$LANGS")
+fi
+if ! st_have stylers.xml && ! st_have stylers.model.xml; then
+    STYLERS="$IL_LOGDIR/stylers.model.xml"
+    printf '<?xml version="1.0" encoding="UTF-8" ?>\n<NotepadPlus>\n    <GlobalStyles>\n    </GlobalStyles>\n</NotepadPlus>\n' > "$STYLERS"
+    STAGE+=("$STYLERS")
+fi
 
 trap 'gl_stop; il_dump_on_error' EXIT
 
 # --- deliver the binary on a /fat disk and boot -------------------------------
 APP_IMG="$IL_LOGDIR/wr3_npp_live_fat.img"
-gl_make_fat_disk "$APP_IMG" "$NPP" "$CONF"
+gl_make_fat_disk "$APP_IMG" "${STAGE[@]}"
 export GL_APP_DISK="$APP_IMG"
 
 GL_SELFTEST=off
@@ -90,7 +123,7 @@ il_assert_grep "$GL_LOG" "auralite#" "reached the shell"
 
 # --- launch: the gate is the CRT making it past bind + api-set probes --------
 gl_send "w32run /fat/notepad++.exe &" 8
-sleep 20
+sleep 300
 
 il_assert_grep "$GL_LOG" "notepad[+][+][.]exe mapped at .* 590 import[(]s[)] bound" \
     "notepad++.exe bound its full import ledger (590)"

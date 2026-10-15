@@ -2448,6 +2448,29 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         tcb_t *cur = sched_current();
         if (!cur) return (uint64_t)-ENOMEM;
 
+        {
+            static uint64_t brktrc_last, brktrc_n;
+            uint64_t cur_bk = task_brk_get(cur);
+            if (a1 > cur_bk && a1 - cur_bk >= (1ull << 20) && brktrc_n < 60) {
+                brktrc_n++;
+                kprintf("[brktrc] grow=%llx req=%llx\n",
+                        (unsigned long long)(a1 - cur_bk),
+                        (unsigned long long)a1);
+            }
+            if (a1 >= brktrc_last + (8ull << 20)) {
+                uint64_t stk[4] = {0, 0, 0, 0};
+                brktrc_last = a1;
+                if (cur && cur->saved_user_rsp)
+                    copy_from_user(stk, (void *)(uintptr_t)cur->saved_user_rsp,
+                                   sizeof stk);
+                kprintf("[brktrc] cur=%llx req=%llx stk=%llx %llx %llx %llx\n",
+                        (unsigned long long)cur_bk,
+                        (unsigned long long)a1,
+                        (unsigned long long)stk[0], (unsigned long long)stk[1],
+                        (unsigned long long)stk[2], (unsigned long long)stk[3]);
+            }
+        }
+
         /* W32A-14: a thread group shares ONE break (tcb::sh_brk); take the
          * group lock for the whole read-map-advance sequence so two threads
          * sbrk()ing concurrently on SMP (-smp 2 lab) cannot both observe the

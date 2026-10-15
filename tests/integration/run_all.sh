@@ -133,6 +133,7 @@ ALL_CASES=(
     test_wr1_shell_namespace
     test_wr2_7zip_launch
     test_wr2_7zip_live
+    test_wr3_npp_live
     test_ahci_large_read
     test_doom
     test_stack_guard
@@ -302,7 +303,7 @@ ALL_CASES=(
 # is even slower: it runs the whole closure twice plus the QEMU idle that waits
 # out the closure's fixed budget, so it is the case "--fast" must never carry.
 # --fast skips both exactly like the other correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
+SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_wr3_npp_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #
@@ -372,10 +373,11 @@ group_re() {
         # 71+70+120+90+100+150+200+150+234+540+90 = 1815 s
         w32-gui)  echo '^test_(w32_user32|w32a5_user32win|w32a6_user32dlg|w32a7_gdi|w32a8_comctl32|w32a11_theme)$' ;;
         # 102+497+412+380+240+80 = 1711 s
-        w32-apps) echo '^test_(w32a10_furniture|w32a11_core_subset|w32a11_dragdrop|w32a11_tokens|w32a11_ole|w32a12_winsock|w32a14_putty_fixture|w32a15_7zip_fixture|w32a16_npp_fixture|wr1_shell_namespace|wr2_7zip_launch|wr2_7zip_live)$' ;;
-        # 180+180+135+105+301+90+90+90+90+90+0+0 = 1351 s (wr2 skips without
-        # the pinned binaries; with WR2_7ZIP_DIR staged this is the shard
-        # that grows, which is why it starts as the lightest of the three)
+        w32-apps) echo '^test_(w32a10_furniture|w32a11_core_subset|w32a11_dragdrop|w32a11_tokens|w32a11_ole|w32a12_winsock|w32a14_putty_fixture|w32a15_7zip_fixture|w32a16_npp_fixture|wr1_shell_namespace|wr2_7zip_launch|wr2_7zip_live|wr3_npp_live)$' ;;
+        # 180+180+135+105+301+90+90+90+90+90+0+0+0 = 1351 s (wr2/wr3 skip
+        # without the pinned binaries; with WR2_7ZIP_DIR/WR3_NPP_DIR staged
+        # this is the shard that grows, which is why it starts as the
+        # lightest of the three)
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
         # slowest (the SH8 closure, ~23 min in the guest plus the idle budget)
         # does not serialize behind the scripting cases.  selfhost-script = the

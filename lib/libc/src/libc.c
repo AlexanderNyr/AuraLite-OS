@@ -874,6 +874,31 @@ void* sbrk(intptr_t increment) {
     uint64_t cur_brk = (uint64_t)cur_raw;
     if (increment == 0) return (void*)cur_brk;
 
+    {
+        static uint64_t strc_grew, strc_next = 0;
+        if (increment > 0) strc_grew += (uint64_t)increment;
+        if (strc_grew >= strc_next) {
+            char b[96];
+            int n = 0, k;
+            uint64_t vals[3];
+            strc_next = strc_grew + (8ull << 20);
+            vals[0] = (uint64_t)increment;
+            vals[1] = (uint64_t)(uintptr_t)__builtin_return_address(0);
+            vals[2] = strc_grew;
+            for (int v = 0; v < 3; v++) {
+                b[n++] = v ? ' ' : 'S';
+                if (!v) { b[n++] = 'B'; b[n++] = 'R'; b[n++] = 'K'; b[n++] = ' '; }
+                for (k = 60; k >= 0; k -= 4) {
+                    int d = (int)((vals[v] >> k) & 0xF);
+                    b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+                }
+            }
+            b[n++] = '\n';
+            fwrite(b, 1, (unsigned long)n, stdout);
+            fflush(stdout);
+        }
+    }
+
     uint64_t new_brk = (uint64_t)syscall(12, cur_brk + increment, 0, 0, 0, 0, 0);
     if (new_brk == cur_brk) { errno = ENOMEM; return (void*)-1; }
 

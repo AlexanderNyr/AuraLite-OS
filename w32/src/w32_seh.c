@@ -35,6 +35,25 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+
+/* WR-3 diagnosis (temporary): the serial line drops single printf lines
+ * under the kernel writeback flood, so the SEH dispatch trace goes to a
+ * file on the /fat delivery disk instead; the poll harness cats it back
+ * before poweroff. */
+static FILE *w32trc_fp(void) {
+    static FILE *fp = (FILE *)-1;
+    if (fp == (FILE *)-1)
+        fp = fopen("/fat/w32trace.txt", "w");
+    return fp;
+}
+#define W32TRC(...) do { FILE *tf_ = w32trc_fp();            \
+        if (tf_) { fprintf(tf_, __VA_ARGS__); fflush(tf_); } } while (0)
+
+void w32trc_line(const char *fmt, unsigned long long a,
+                 unsigned long long b, unsigned long long c) {
+    FILE *tf = w32trc_fp();
+    if (tf) { fprintf(tf, fmt, a, b, c); fflush(tf); }
+}
 #include <stdlib.h>
 #include <string.h>
 
@@ -1229,6 +1248,13 @@ seh_unhandled(struct w32_seh_dispatch *f,
 #endif
 }
 
+static void seh_unwind_to(struct w32_seh_dispatch *f,
+                          uint64_t target_frame,
+                          uint64_t target_ip,
+                          w32_exception_record_t *rec,
+                          int resume_driven,
+                          uint64_t ret_value);
+
 /* ---- the first pass ------------------------------------------------------- */
 
 /* Walk frames calling personalities.  A personality that handles the
@@ -1293,12 +1319,42 @@ static int seh_first_pass(struct w32_seh_dispatch *f,
             dc.control_pc_is_unwinding = 0;
             {
                 int32_t disp;
+                W32TRC("[fp] pc=%llx handler=%p est=%llx code=%08x "
+                       "rsp=%llx hd=%p hdw=%08x\n",
+                       (unsigned long long)ctx->rip, handler,
+                       (unsigned long long)establisher,
+                       (unsigned)rec->code,
+                       (unsigned long long)ctx->rsp,
+                       handler_data,
+                       handler_data
+                           ? *(const unsigned *)(uintptr_t)handler_data : 0u);
                 disp = ((w32_language_handler_fn)handler)(rec, establisher,
                                                           ctx, &dc);
+                W32TRC("[fp]   -> disp=%d target_ip=%llx\n", disp,
+                       (unsigned long long)dc.target_ip);
                 if (disp == W32_EXCEPTION_CONTINUE_EXECUTION_NT) {
                     f->resume = *ctx;
                     f->resume_valid = 1;
                     return 1;
+                }
+                if (disp == 1 /* EXCEPTION_EXECUTE_HANDLER */) {
+                    /* WR-3: a foreign personality (MSVC's statically
+                     * linked __CxxFrameHandler inside a real app image)
+                     * matched a handler during the search pass and
+                     * published its landing point in the dispatcher
+                     * context.  Windows answers with the second pass to
+                     * exactly that (frame, TargetIp); refusing it here
+                     * is what made every typed C++ catch in a guest
+                     * image fall through to the D7 named death
+                     * (Notepad++ 8.8.9 throws std::string around its
+                     * certificate probe as ordinary control flow).
+                     * The unwind longjmps out of this walk. */
+                    if (dc.target_ip != 0) {
+                        f->target_msvc_funclet = 1;
+                        seh_unwind_to(f, establisher, dc.target_ip, rec,
+                                      0, 0);
+                        /* NOTREACHED */
+                    }
                 }
                 /* NESTED/COLLIDED returns from a personality are
                  * reserved for the OS; a personality returning them
@@ -1466,7 +1522,10 @@ static void seh_outside(void) {
 void W32ABI RtlUnwindEx(void *target_frame, void *target_ip,
                         w32_exception_record_t *record, void *return_value,
                         w32_context_t *context, void *history_table) {
-    struct w32_seh_dispatch *f = seh_current_frame();
+    struct w32_seh_dispatch *f;
+    W32TRC("[uw] RtlUnwindEx frame=%p ip=%p rec=%p ctx=%p\n", target_frame,
+           target_ip, (void *)record, (void *)context);
+    f = seh_current_frame();
     (void)return_value;
     (void)history_table;
     if (!f || !(f->state & W32_SEH_ST_ACTIVE))
@@ -1658,44 +1717,18 @@ int32_t W32ABI _XcptFilter(uint32_t code, w32_exception_pointers_t *info) {
     }
 }
 
-/* ---- RaiseException ------------------------------------------------------- */
-
-/* The RaiseException core: the trampoline above captured the CALLER
- * (the guest frame that raised) and tailcalls here.  Kept (not folded
- * into the trampoline) so the host test drives the same dispatch. */
-static void W32ABI __attribute__((used))
-RaiseException_c(uint32_t code, uint32_t flags, uint32_t num_args,
-                 const uint64_t *args, const w32_context_t *caller) {
-    struct w32_seh_dispatch *f = seh_current_frame();
-    w32_context_t ctx;
-    w32_exception_record_t rec;
-    uint32_t i;
-
-    if (!f) {
-        seh_die(W32_MSG_UNHANDLED, code, 0);
-        return;
-    }
-    if (f->depth >= W32_SEH_NEST_MAX) {
-        seh_die(W32_MSG_UNHANDLED, code, 0);
-        return;
-    }
-    ctx = *caller;   /* the trampoline captured the guest frame */
-    memset(&rec, 0, sizeof(rec));
-    rec.code = code;
-    rec.flags = flags & (W32_EXCEPTION_NONCONTINUABLE |
-                         W32_EXCEPTION_UNWINDING);
-    rec.address = (void *)(uintptr_t)ctx.rip;
-    rec.num_params = num_args > W32_EXCEPTION_MAXIMUM_PARAMETERS
-                         ? W32_EXCEPTION_MAXIMUM_PARAMETERS
-                         : num_args;
-    for (i = 0; i < rec.num_params; i++)
-        rec.params[i] = args ? args[i] : 0;
-
-    f->records[f->depth] = rec;
+/* The shared raise body: record publish, setjmp arm, first pass,
+ * unwind-to-bottom fallbacks.  `extra` carries W32_SEH_ST_CXX for
+ * _CxxThrowException so dtor-throw deaths keep their name. */
+static void seh_raise_core(struct w32_seh_dispatch *f,
+                         w32_exception_record_t *rec,
+                         const w32_context_t *ctx,
+                         unsigned extra) {
+    f->records[f->depth] = *rec;
     if (f->depth > 0)
         f->records[f->depth].nested = &f->records[f->depth - 1];
     f->depth++;
-    f->state |= W32_SEH_ST_ACTIVE | W32_SEH_ST_RAISE;
+    f->state |= W32_SEH_ST_ACTIVE | W32_SEH_ST_RAISE | extra;
     if ((f->state & W32_SEH_ST_UNWIND) && f->live_valid) {
         /* Nested during a sweep (libgcc's cancel raise): the captured
          * ctx is host-stack (inside the personality) and unusable as a
@@ -1704,7 +1737,7 @@ RaiseException_c(uint32_t code, uint32_t flags, uint32_t num_args,
          * guest cursor (already in f->live): the raising personality
          * runs there, so its target check matches on the first frame. */
     } else {
-        f->live = ctx;
+        f->live = *ctx;
     }
     f->live_valid = 1;
     f->resume_valid = 0;
@@ -1786,9 +1819,9 @@ RaiseException_c(uint32_t code, uint32_t flags, uint32_t num_args,
          * at bottom is unhandled: depth/state stay set across the
          * call (seh_unhandled's re-raise/exit choice reads them);
          * only a CONTINUE return unwinds them. */
-        if (rec.code == 0x20474343u /*STATUS_GCC_THROW*/ &&
-            !(rec.flags & W32_EXCEPTION_NONCONTINUABLE)) {
-            seh_unwind_to(f, 0, 0, &rec, 1, 0);
+        if (rec->code == 0x20474343u /*STATUS_GCC_THROW*/ &&
+            !(rec->flags & W32_EXCEPTION_NONCONTINUABLE)) {
+            seh_unwind_to(f, 0, 0, rec, 1, 0);
             f->depth--;
             if (f->depth == 0)
                 f->state &= ~(unsigned)(W32_SEH_ST_ACTIVE |
@@ -1798,7 +1831,7 @@ RaiseException_c(uint32_t code, uint32_t flags, uint32_t num_args,
         {
             int k;
             w32_context_t uctx = f->live;
-            k = seh_unhandled(f, &rec, &uctx);
+            k = seh_unhandled(f, rec, &uctx);
             if (k) {
                 extern void w32_seh_do_resume(const w32_context_t *ctx);
                 f->depth--;
@@ -1811,6 +1844,42 @@ RaiseException_c(uint32_t code, uint32_t flags, uint32_t num_args,
         }
 #endif
     }
+}
+
+/* ---- RaiseException ------------------------------------------------------- */
+
+/* The RaiseException core: the trampoline above captured the CALLER
+ * (the guest frame that raised) and tailcalls here.  Kept (not folded
+ * into the trampoline) so the host test drives the same dispatch. */
+static void W32ABI __attribute__((used))
+RaiseException_c(uint32_t code, uint32_t flags, uint32_t num_args,
+                 const uint64_t *args, const w32_context_t *caller) {
+    struct w32_seh_dispatch *f = seh_current_frame();
+    w32_context_t ctx;
+    w32_exception_record_t rec;
+    uint32_t i;
+
+    if (!f) {
+        seh_die(W32_MSG_UNHANDLED, code, 0);
+        return;
+    }
+    if (f->depth >= W32_SEH_NEST_MAX) {
+        seh_die(W32_MSG_UNHANDLED, code, 0);
+        return;
+    }
+    ctx = *caller;   /* the trampoline captured the guest frame */
+    memset(&rec, 0, sizeof(rec));
+    rec.code = code;
+    rec.flags = flags & (W32_EXCEPTION_NONCONTINUABLE |
+                         W32_EXCEPTION_UNWINDING);
+    rec.address = (void *)(uintptr_t)ctx.rip;
+    rec.num_params = num_args > W32_EXCEPTION_MAXIMUM_PARAMETERS
+                         ? W32_EXCEPTION_MAXIMUM_PARAMETERS
+                         : num_args;
+    for (i = 0; i < rec.num_params; i++)
+        rec.params[i] = args ? args[i] : 0;
+
+    seh_raise_core(f, &rec, &ctx, 0);
 }
 
 /* ---- the fault entry (guest) ------------------------------------------------
@@ -2134,14 +2203,16 @@ int w32_seh_armed(void) {
 
 /* ---- the msvcrt C++ surface (D7: named, never silently wrong) -------------- */
 
-/* _CxxThrowException(obj, throw_info): sweep cleanups to bottom,
- * then terminate with the typed-catch gap message.  Catch clauses are
- * NEVER matched (the D7 gap): a silent wrong-catch would be worse than a
- * named death. */
+/* _CxxThrowException(obj, throw_info): a full MSCXX raise.  Typed
+ * catches are matched by the raising image's own personality during the
+ * first pass (WR-3); only a throw no frame catches ends in the D7 named
+ * termination. */
 static void W32ABI __attribute__((used))
 _CxxThrowException_c(void *obj, void *throw_info,
                      const w32_context_t *caller) {
-    struct w32_seh_dispatch *f = seh_current_frame();
+    struct w32_seh_dispatch *f;
+    W32TRC("[cxx] throw obj=%p info=%p\n", obj, throw_info);
+    f = seh_current_frame();
     w32_context_t ctx;
     w32_exception_record_t rec;
 
@@ -2165,35 +2236,15 @@ _CxxThrowException_c(void *obj, void *throw_info,
     rec.params[1] = (uint64_t)(uintptr_t)obj;
     rec.params[2] = (uint64_t)(uintptr_t)throw_info;
 
-    f->records[f->depth] = rec;
-    if (f->depth > 0)
-        f->records[f->depth].nested = &f->records[f->depth - 1];
-    f->depth++;
-    f->state |= W32_SEH_ST_ACTIVE | W32_SEH_ST_RAISE | W32_SEH_ST_CXX;
-    f->live = ctx;
-    f->live_valid = 1;
-    f->resume_valid = 0;
-
-    sigprocmask(0 /*SIG_BLOCK with NULL set: query*/, NULL, &f->jb_mask);
-    if (setjmp(f->jb) != 0) {
-        /* The sweep is done (unwind-to-bottom never resumes): the gap. */
-        f->depth--;
-        if (f->depth == 0)
-            f->state &= ~(unsigned)(W32_SEH_ST_ACTIVE | W32_SEH_ST_RAISE |
-                                    W32_SEH_ST_CXX);
-#ifdef AURALITE_W32_HOST_TEST
-        if (f->harness_set)
-            siglongjmp(f->harness_jb, 1);
-        abort();
-#else
-        seh_die(W32_MSG_CXX_TYPED_CATCH_GAP, W32_CODE_MSCXX,
-                f->live.rip);
-#endif
-    }
-
-    /* Sweep every frame's cleanups, then fall into the gap above. */
-    RtlUnwindEx(NULL, NULL, &f->records[f->depth - 1], NULL, NULL, NULL);
-    /* NOTREACHED */
+    /* WR-3: a C++ throw is a raise like any other.  The image's own
+     * personality matches typed catches during the first pass; the
+     * D7 sweep-to-bottom-and-die shape stayed only while no guest
+     * image had been seen relying on catch as control flow.
+     * Notepad++ 8.8.9 throws std::string around its certificate
+     * probe on every start-up, so typed catch is now real.  An
+     * actually uncaught throw still bottoms out in seh_unhandled's
+     * D7 named death. */
+    seh_raise_core(f, &rec, &ctx, W32_SEH_ST_CXX);
 }
 
 void W32ABI w32_cxx_terminate(void) {

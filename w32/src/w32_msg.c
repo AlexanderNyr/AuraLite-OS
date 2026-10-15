@@ -372,12 +372,8 @@ W32ABI W32_DWORD FormatMessageW(W32_DWORD flags, const void *src,
     width = flags & W32_FORMAT_MESSAGE_MAX_WIDTH_MASK;
     if (flags & W32_FORMAT_MESSAGE_FROM_SYSTEM) {
         sys = msg_lookup(msgId);
-        if (!sys) {
-            w32_set_last_error(W32_ERROR_PROC_NOT_FOUND);
-            return 0;
-        }
-        /* Table texts are ASCII: widen directly. */
-        {
+        if (sys) {
+            /* Table texts are ASCII: widen directly. */
             size_t n = strlen(sys);
             sysW = (W32_WCHAR *)malloc((n + 1) * sizeof(W32_WCHAR));
             if (!sysW) {
@@ -386,6 +382,23 @@ W32ABI W32_DWORD FormatMessageW(W32_DWORD flags, const void *src,
             }
             for (i = 0; i <= n; i++)
                 sysW[i] = (W32_WCHAR)(unsigned char)sys[i];
+        } else {
+            /* WR-3: Windows synthesises a canonical text for unknown
+             * FROM_SYSTEM ids; returning failure here made Notepad++'s
+             * error reporter wcslen() a NULL buffer and die at start-up
+             * (crash #1).  The synthesised text is the documented wording. */
+            char fb[96];
+            int n = snprintf(fb, sizeof fb,
+                             "The system cannot find message text for "
+                             "message number %u.", (unsigned)msgId);
+            if (n < 0) n = 0;
+            sysW = (W32_WCHAR *)malloc((size_t)(n + 1) * sizeof(W32_WCHAR));
+            if (!sysW) {
+                w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
+                return 0;
+            }
+            for (i = 0; i <= (size_t)n; i++)
+                sysW[i] = (W32_WCHAR)(unsigned char)fb[i];
         }
         fmt = sysW;
     } else {

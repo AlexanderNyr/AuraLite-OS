@@ -1338,8 +1338,15 @@ W32ABI W32_BOOL GetExitCodeProcess(W32_HANDLE h, W32_DWORD *code) {
     return 1;
 }
 
+/* WR-3 diagnosis (temporary): file-backed trace, see w32_seh.c W32TRC. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c);
+
 W32ABI W32_BOOL TerminateProcess(W32_HANDLE h, W32_DWORD code) {
     struct ps_obj *o;
+    w32trc_line("[tp] TerminateProcess h=%llx code=%x ra=%llx\n",
+                (unsigned long long)(uint64_t)h, code,
+                (unsigned long long)(uint64_t)__builtin_return_address(0));
 
     (void)code;                 /* SIGKILL keeps no code */
     if (h == (W32_HANDLE)(intptr_t)-1) {
@@ -2508,6 +2515,16 @@ W32ABI W32_BOOL IsProcessorFeaturePresent(W32_DWORD feature) {
         if (!__get_cpuid(0x80000001u, &a, &b, &c, &d))
             return 0;
         return (d & (1u << 31)) != 0;
+    case W32_PF_FASTFAIL_AVAILABLE:
+        /* WR-3 (experimental): answer NO.  The personality does deliver
+         * int 0x29, but our SEH shim classifies a UCRT __fastfail as an
+         * unhandled access violation and terminates the process, while
+         * the legacy (pre-fastfail) UCRT failure path degrades to a
+         * reportable, filter-consulting exception.  Until the fastfail
+         * route consults the app's top-level filter, hiding the feature
+         * keeps real apps (Notepad++ 8.8.9) alive past a UCRT failure
+         * that on Windows would never fire at all. */
+        return 0;
     default:
         return 0;
     }

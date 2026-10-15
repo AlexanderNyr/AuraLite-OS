@@ -122,6 +122,23 @@ struct timespec { long tv_sec; long tv_nsec; };
 typedef long ssize_t;
 
 /* Pull in the implementation under test. */
+/* WR-3 mmap stubs: kernel32.c's VirtualAlloc now calls POSIX mmap, which
+ * the host unity build (-std=c11) neither declares nor needs for real. */
+#include <stddef.h>
+#define PROT_NONE 0
+#define PROT_READ 1
+#define PROT_WRITE 2
+#define PROT_EXEC 4
+#define MAP_PRIVATE 2
+#define MAP_ANONYMOUS 0x20
+#define MAP_FAILED ((void *)-1)
+static void *mmap(void *addr, size_t len, int prot, int flags, int fd,
+                  long off) {
+    (void)addr; (void)prot; (void)flags; (void)fd; (void)off;
+    return calloc(1, len ? len : 1);
+}
+static int munmap(void *addr, size_t len) { (void)len; free(addr); return 0; }
+
 #define AURALITE_W32_HOST_TEST 1
 #define main w32_unused_main
 #include "../../w32/src/w32_errno.c"

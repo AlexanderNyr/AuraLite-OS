@@ -326,6 +326,7 @@ int main(int argc, char **argv) {
     /* Enter the image.  The entry point is ms_abi, like every export. */
     typedef void __attribute__((ms_abi)) (*w32_entry_fn)(void);
     w32_entry_fn entry = (w32_entry_fn)(void *)(base + img.entry_point_rva);
+    fprintf(stderr, "w32run: calling entry at %p\n", (void *)entry);
     entry();
 
     /* A console PE is expected to call ExitProcess; reaching here means it

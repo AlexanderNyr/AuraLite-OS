@@ -367,6 +367,43 @@ void isr_handler(struct registers *r) {
             default:
                 si_addr = (r->int_no == 13) ? 0 : r->rip; break;
             }
+            if (r->int_no == 13 && (r->err_code & 0xFF) == 0x4a) {
+                /* WR-3 diagnosis: a soft int 0x29 (__fastfail) from user
+                 * mode -- UCRT's __report_gsfailure lands here.  The user
+                 * stack at this point carries the return addresses of the
+                 * frame whose /GS cookie mismatched; dump them so the
+                 * corrupting call chain can be symbolised offline. */
+                uint64_t stk[24];
+                int got = 0;
+                if (copy_from_user(stk, (const void *)(uintptr_t)r->rsp,
+                                   sizeof stk) == 0)
+                    got = 24;
+                kprintf("[ff] fastfail rip=%llx rsp=%llx rcx=%llx\n",
+                        (unsigned long long)r->rip,
+                        (unsigned long long)r->rsp,
+                        (unsigned long long)r->rcx);
+                for (int q = 0; q < got; q += 4)
+                    kprintf("[ff] stk%02d %llx %llx %llx %llx\n", q,
+                            (unsigned long long)stk[q],
+                            (unsigned long long)stk[q + 1],
+                            (unsigned long long)stk[q + 2],
+                            (unsigned long long)stk[q + 3]);
+                for (int w = 0; w < 4; w++) {
+                    const void *src = (w == 0) ? (const void *)r->rsi
+                                    : (w == 1) ? (const void *)r->rdi
+                                    : (w == 2) ? (const void *)r->rbx
+                                    : (const void *)(r->rsp + 0x60);
+                    char tb[72], ob[80];
+                    if (copy_from_user(tb, src, 64) == 0) {
+                        for (int c = 0; c < 64; c++)
+                            ob[c] = (tb[c] >= 0x20 && tb[c] < 0x7f) ? tb[c]
+                                                                    : '.';
+                        ob[64] = 0;
+                        kprintf("[ff] mem%d @%llx: %s\n", w,
+                                (unsigned long long)(uint64_t)src, ob);
+                    }
+                }
+            }
             if (signo && signal_raise_fault(r, signo, si_addr, si_code)) {
                 /* Handler frame installed; return to it. */
                 return;

@@ -358,6 +358,16 @@ static const struct vfs_mount *mnt(int i) {
 /* Resolve a path to a vnode (no creation). */
 static struct vnode *resolve_path(const char *path);
 
+static inline int kstr_has(const char *h, const char *n) {
+    if (!h || !n || !*n) return 0;
+    for (; *h; h++) {
+        const char *a = h, *b = n;
+        while (*b && *a == *b) { a++; b++; }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
 /*
  * RESIDUE2 T4 (the execvpe empty-PATH-segment receipt): relative paths
  * anchor at the calling thread's cwd.  vfs_canonical_path itself stays
@@ -790,6 +800,13 @@ int vfs_open(const char *path, int flags, int mode) {
     struct vnode *vn = resolve_path(path);
     int created = 0;
 
+    {
+        static int vfs_open_trc;
+        if (vfs_open_trc < 60 && path && kstr_has(path, ".xml")) {
+            vfs_open_trc++;
+            kprintf("[vfstrc] open '%s' flags=%x -> vn=%p\n", path, (unsigned)flags, vn);
+        }
+    }
     if (vn == NULL) {
         if (!(flags & O_CREAT)) return -ENOENT;
 

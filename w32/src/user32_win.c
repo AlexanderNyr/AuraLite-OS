@@ -954,12 +954,20 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     win->minimized = win->maximized = 0;
     win->enabled = (style & W32_WS_DISABLED) ? 0 : 1;
     /* Win32 overloads this parameter: for a child window it is the control
-     * identifier, for a top-level window it is the window's menu.  Storing it
-     * as ctrl_id unconditionally meant a top-level window's menu was never
-     * attached, so GetMenu returned 0 and no menu bar could be shown -- which
-     * is why WR-2's menu stayed invisible even after LoadMenuW began decoding
-     * RT_MENU. */
-    win->ctrl_id = (style & W32_WS_CHILD) ? (int32_t)(intptr_t)menu : 0;
+     * identifier, for a top-level window it is the window's menu.  The menu
+     * attach lives further down (SetMenu records it in the menu table; the
+     * bar painter asks GetMenu, not ctrl_id), so the WR-2 "menu never
+     * attached" fix does not need this slot at all.  Zeroing ctrl_id for
+     * top-level windows broke the A-6 dialog contract instead: GetDlgItem
+     * matches item windows -- parented WS_POPUP windows whose hMenu slot
+     * carries the control id -- through GWLP_ID, so the fixture's
+     * SetDlgItemTextW(ID_EDIT) stopped finding its item, WM_INITDIALOG took
+     * the .init_bad path and the dialog returned 76, not 77
+     * (test_w32a6_user32dlg, A6-DLG-RET-FAIL).  MSDN documents GWL_ID as
+     * "the identifier of the child window (or the menu identifier for a
+     * top-level window)", so recording the raw parameter for every window
+     * is the Win32-faithful behaviour for both roles. */
+    win->ctrl_id = (int32_t)(intptr_t)menu;
     /* GWLP_USERDATA starts zeroed on Windows; a stale slot here handed
      * 7-Zip's dialog proc a garbage `this` pointer for the WM_SIZE that
      * ShowWindow posts before WM_INITDIALOG, and its virtual call crashed
