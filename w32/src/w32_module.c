@@ -29,6 +29,7 @@
 #endif
 
 #include "w32/w32_module.h"
+#include "w32/w32_teb.h"
 #include "w32/w32_errno.h"
 #include "w32/w32_bind.h"
 #include "w32/w32_pe.h"
@@ -964,6 +965,29 @@ void w32_module_register_exe(uint8_t *base, size_t span,
     strcpy(modules[free].name, "(exe)");
     exe_slot = free;
     modules[free].seq = load_seq++;
+
+    /* WR-3: publish the image in the PEB -- ImageBaseAddress and the
+     * Subsystem the optional header declares.  The subsystem is at
+     * optional-header offset 0x44 for both PE32 and PE32+ (the two spellings
+     * differ only before SectionAlignment, which sits at 0x20 in both). */
+    {
+        uint32_t subsystem = 0;
+        if (file && file_size > 0x200 && file[0] == 'M' && file[1] == 'Z') {
+            uint32_t lf = (uint32_t)file[0x3c] |
+                          ((uint32_t)file[0x3d] << 8) |
+                          ((uint32_t)file[0x3e] << 16) |
+                          ((uint32_t)file[0x3f] << 24);
+            if (lf + 24 + 2 < file_size && file[lf] == 'P' && file[lf + 1] == 'E') {
+                uint32_t opt = lf + 24;
+                uint32_t magic = (uint32_t)file[opt] |
+                                 ((uint32_t)file[opt + 1] << 8);
+                if ((magic == 0x10b || magic == 0x20b) && opt + 0x46 <= file_size)
+                    subsystem = (uint32_t)file[opt + 0x44] |
+                                ((uint32_t)file[opt + 0x45] << 8);
+            }
+        }
+        w32_peb_publish_exe(base, subsystem);
+    }
 }
 
 /* W32A-7: the registered main EXE's handle, 0 when none.  The PS half's

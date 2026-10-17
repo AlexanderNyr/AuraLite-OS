@@ -417,6 +417,14 @@ static int ctl_surf_dispatch(ctl_surface_t *s, int type, int32_t x, int32_t y) {
 #define CTL_KIND_REBAR    10    /* WR-2: 7-Zip FM's address-bar band host */
 #define CTL_KIND_COMBOEX  11    /* WR-2: 7-Zip FM's address-bar path combo */
 
+/* WR-3 diagnosis (temporary): weak *reference* (the pattern from
+ * kernel32.c) so this file links with or without w32_seh.c.  Declared here,
+ * above the control procedures that trace, not beside the image-list code
+ * further down -- a declaration placed below a use does not exist for it. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+
 static W32_LRESULT ctl_generic_proc(W32_HWND, W32_UINT, W32_WPARAM, W32_LPARAM);
 
 /* The property-sheet page host: an internal class (WS_CHILD-able, the
@@ -435,7 +443,16 @@ static const uint16_t ps_page_cls[] = { 'A','u','r','a','P','S','P','a','g','e',
 #define TT_MAX_TOOLS    8
 #define HD_MAX_ITEMS    16
 #define RB_CBEX_MAX     32      /* WR-2: comboboxex path-history entries */
-#define CTL_MAX_WINDOWS 40
+/* WR-3: one state per control window, and Notepad++ 8.8.9 builds far more
+ * than 40 of them -- six SysTabControl32, two rebar, a toolbar, a status
+ * bar, two tooltips and every control of every dialog it instantiates at
+ * start-up.  Exhausting the table is silent and lethal: ctl_generic_proc
+ * finds no state and falls through to DefWindowProcW, so TCM_GETITEMW
+ * returns without touching the caller's lParam -- Notepad++ reads its
+ * Buffer* out of that lParam and faults on it (the 0xC0000005
+ * "Win32Exception" box).  128 covers the measured 45-window tree with the
+ * whole Plugins/Preferences dialog open. */
+#define CTL_MAX_WINDOWS 128
 
 typedef struct {
     int32_t  bitmap;      /* image-list index, -1 = none     */
@@ -617,6 +634,49 @@ CTL_CLASS_PROC(COMBOEX)
 
 /* The documented class names, as UTF-16 (see the header note: L""
  * literals are 4-byte wchar here and would truncate). */
+/* F30 (WR-3): the common-control structures ARE the ABI between a pinned
+ * application and this layer, and a struct that is 8 bytes off does not
+ * fail loudly -- it writes past the caller's buffer and the application
+ * dies somewhere else entirely (Notepad++'s TCITEMW lParam smashed a /GS
+ * cookie and the editor exited 0xC0000409 two hundred thousand
+ * instructions later).  These offsets are the documented MSVC x64 layout;
+ * a future edit to a header that moves one breaks the build here, where
+ * the mistake is, rather than in a running Notepad++. */
+#include <stddef.h>
+_Static_assert(offsetof(W32_TCITEMW, pszText)    == 0x10, "TCITEMW.pszText");
+_Static_assert(offsetof(W32_TCITEMW, cchTextMax) == 0x18, "TCITEMW.cchTextMax");
+_Static_assert(offsetof(W32_TCITEMW, iImage)     == 0x1c, "TCITEMW.iImage");
+_Static_assert(offsetof(W32_TCITEMW, lParam)     == 0x20, "TCITEMW.lParam");
+_Static_assert(sizeof(W32_TCITEMW)               == 0x28, "TCITEMW size");
+_Static_assert(offsetof(W32_TVITEMW, hItem)      == 0x08, "TVITEMW.hItem");
+_Static_assert(offsetof(W32_TVITEMW, pszText)    == 0x18, "TVITEMW.pszText");
+_Static_assert(offsetof(W32_TVITEMW, cChildren)  == 0x2c, "TVITEMW.cChildren");
+_Static_assert(offsetof(W32_TVITEMW, lParam)     == 0x30, "TVITEMW.lParam");
+_Static_assert(sizeof(W32_TVITEMW)               == 0x38, "TVITEMW size");
+_Static_assert(offsetof(W32_TOOLINFOW, hwnd)     == 0x08, "TOOLINFOW.hwnd");
+_Static_assert(offsetof(W32_TOOLINFOW, rect)     == 0x18, "TOOLINFOW.rect");
+_Static_assert(offsetof(W32_TOOLINFOW, lpszText) == 0x30, "TOOLINFOW.lpszText");
+_Static_assert(offsetof(W32_TOOLINFOW, lParam)   == 0x38, "TOOLINFOW.lParam");
+_Static_assert(offsetof(W32_HDITEMW, pszText)    == 0x08, "HDITEMW.pszText");
+_Static_assert(offsetof(W32_HDITEMW, lParam)     == 0x20, "HDITEMW.lParam");
+_Static_assert(offsetof(W32_HDITEMW, iOrder)     == 0x2c, "HDITEMW.iOrder");
+_Static_assert(offsetof(W32_PROPSHEETHEADERW, hwndParent) == 0x08,
+               "PROPSHEETHEADERW.hwndParent");
+_Static_assert(offsetof(W32_PROPSHEETHEADERW, pszCaption) == 0x20,
+               "PROPSHEETHEADERW.pszCaption");
+_Static_assert(offsetof(W32_PROPSHEETHEADERW, ppsp)       == 0x30,
+               "PROPSHEETHEADERW.ppsp");
+_Static_assert(offsetof(W32_PROPSHEETPAGEW, hInstance)    == 0x08,
+               "PROPSHEETPAGEW.hInstance");
+_Static_assert(offsetof(W32_PROPSHEETPAGEW, lParam)       == 0x30,
+               "PROPSHEETPAGEW.lParam");
+_Static_assert(offsetof(W32_PSHNOTIFY, lParam)            == 0x18,
+               "PSHNOTIFY.lParam");
+_Static_assert(offsetof(W32_LVITEMW, pszText)             == 0x18,
+               "LVITEMW.pszText");
+_Static_assert(offsetof(W32_LVITEMW, lParam)              == 0x28,
+               "LVITEMW.lParam");
+
 const uint16_t W32_WCN_TOOLBAR[]   = {'T','o','o','l','b','a','r','W','i','n','d','o','w','3','2',0};
 const uint16_t W32_WCN_STATUSBAR[] = {'m','s','c','t','l','s','_','s','t','a','t','u','s','b','a','r','3','2',0};
 const uint16_t W32_WCN_LISTVIEW[]  = {'S','y','s','L','i','s','t','V','i','e','w','3','2',0};
@@ -1950,8 +2010,19 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
         W32_TCITEMW *it = (W32_TCITEMW *)(uintptr_t)lp;
         if (!it || i < 0 || i > c->u.tc.n || c->u.tc.n >= 8) {
             w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            /* WR-3 diagnosis (temporary): Notepad++ faults on a NULL it
+             * reads back out of TCM_GETITEMW, so the insert must be watched
+             * too -- a refused insert is the other half of the same bug. */
+            if (w32trc_line)
+                w32trc_line("[tab] insert REFUSED i=%u n=%u\n",
+                            (unsigned long long)i, (unsigned long long)c->u.tc.n,
+                            0);
             return -1;
         }
+        if (w32trc_line)
+            w32trc_line("[tab] insert i=%u n=%u param=%u\n",
+                        (unsigned long long)i, (unsigned long long)c->u.tc.n,
+                        (unsigned long long)(it->lParam & 0xFFFFFFFFu));
         char label[32];
         if ((it->mask & W32_TCIF_TEXT) && it->pszText) {
             if (msg == W32_TCM_INSERTITEMW)
@@ -1997,7 +2068,19 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
     case W32_TCM_GETITEMW: {
         int i = (int)(int32_t)(uint32_t)wp;
         W32_TCITEMW *it = (W32_TCITEMW *)(uintptr_t)lp;
-        if (!it || i < 0 || i >= c->u.tc.n) return 0;
+        if (!it || i < 0 || i >= c->u.tc.n) {
+            /* WR-3 diagnosis (temporary): the index NPP asks for against the
+             * number of items we hold.  A miss here leaves the caller's
+             * lParam untouched -- Notepad++ then dereferences it. */
+            if (w32trc_line)
+                w32trc_line("[tab] getitem MISS i=%u n=%u\n",
+                            (unsigned long long)i, (unsigned long long)c->u.tc.n,
+                            0);
+            return 0;
+        }
+        if (w32trc_line)
+            w32trc_line("[tab] getitem i=%u n=%u\n",
+                        (unsigned long long)i, (unsigned long long)c->u.tc.n, 0);
         if ((it->mask & W32_TCIF_TEXT) && it->pszText && it->cchTextMax > 0) {
             if (msg == W32_TCM_GETITEMW)
                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax, c->u.tc.text[i]);
@@ -2516,8 +2599,16 @@ static W32_LRESULT ctl_header_proc(ctl_state_t *c, W32_HWND hwnd,
  * w32_gdi_icon_from_argb, Draw through a temp bitmap + BitBlt.
  */
 
-#define IL_MAX_LISTS 16
-#define IL_MAX_IMAGES 64
+/* WR-3: Notepad++ 8.8.9 keeps one image list per toolbar size and state
+ * (three sizes x three states), one for the tab bar, one for the document
+ * list and one per plugin that registers icons -- more than the 16 this
+ * table used to hold, and more than the 64 images a single toolbar strip
+ * needs (the 8.8.9 default toolbar alone carries ~60 buttons per state).
+ * Raised rather than left to fail cleanly: ImageList_Create returning NULL
+ * makes NPP's IconList::create throw during WM_CREATE, which is a fatal
+ * "Exception On WM_CREATE" box, not a missing icon. */
+#define IL_MAX_LISTS 64
+#define IL_MAX_IMAGES 256
 #define IL_POOL_U32 (256u * 1024u)
 
 static uint32_t il_pool[IL_POOL_U32];
@@ -2556,10 +2647,19 @@ static il_list_t *il_from_h(W32_HIMAGELIST himl) {
     return l;
 }
 
+/* WR-3 diagnosis (temporary): see the weak-reference note in kernel32.c. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+
 W32ABI W32_HIMAGELIST ImageList_Create(int32_t cx, int32_t cy, W32_UINT flags,
                                        int32_t initial, int32_t grow) {
     (void)flags; (void)initial; (void)grow;
     if (cx <= 0 || cy <= 0 || cx > 128 || cy > 128) {
+        if (w32trc_line)
+            w32trc_line("[il] ImageList_Create bad size cx=%d cy=%d\n",
+                        (unsigned long long)(int64_t)cx,
+                        (unsigned long long)(int64_t)cy, 0ull);
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
@@ -2864,9 +2964,34 @@ static sub_t   subs[SUB_MAX];
 static uint32_t sub_seq_next;
 static int     sub_depth = -1;    /* executing entry index, -1 none */
 
-/* One trampoline install per window (RemoveWindowSubclass keeps it:
- * with no entries left it forwards everything to DefWindowProcW). */
+/* One trampoline install per window (RemoveWindowSubclass keeps it).
+ *
+ * F29 (WR-3): the trampoline remembers the procedure IT displaced.  The
+ * stack does not end at DefWindowProc -- it ends at the window's OWN
+ * procedure, the class procedure (or an earlier SetWindowLongPtr
+ * subclass) that was on top when the trampoline was pushed.  Ending at
+ * DefWindowProc instead -- what this file did -- is invisible for a plain
+ * window and fatal for a common control: Notepad++ subclasses its
+ * SysTabControl32 through SetWindowSubclass, its proc forwards
+ * TCM_GETITEMW to DefSubclassProc, and DefWindowProc returned 0 without
+ * touching the TCITEM.  Notepad++ then dereferenced the -1 it had seeded
+ * the item's lParam with (0xC0000005 at notepad++.exe+0xdb7fe) and the
+ * editor died showing "An exception occurred. Notepad++ cannot recover".
+ * Every common control NPP subclassed was equally inert. */
 static W32_HWND sub_installed[32];
+static struct { W32_HWND hwnd; W32_WNDPROC orig; } sub_orig[32];
+static W32_WNDPROC sub_orig_of(W32_HWND hwnd) {
+    for (int i = 0; i < 32; i++)
+        if (sub_orig[i].hwnd == hwnd && sub_orig[i].orig)
+            return sub_orig[i].orig;
+    return 0;
+}
+static void sub_orig_put(W32_HWND hwnd, W32_WNDPROC orig) {
+    for (int i = 0; i < 32; i++) {
+        if (sub_orig[i].hwnd == hwnd) { sub_orig[i].orig = orig; return; }
+        if (!sub_orig[i].orig) { sub_orig[i].hwnd = hwnd; sub_orig[i].orig = orig; return; }
+    }
+}
 static int sub_is_installed(W32_HWND hwnd) {
     for (int i = 0; i < 32; i++)
         if (sub_installed[i] == hwnd) return 1;
@@ -2898,9 +3023,15 @@ static W32_LRESULT W32ABI sub_trampoline(W32_HWND hwnd, W32_UINT msg,
     int top = sub_newest(hwnd);
     int saved = sub_depth;
     sub_depth = top;
-    W32_LRESULT r = top >= 0
-        ? subs[top].proc(hwnd, msg, wp, lp, subs[top].id, subs[top].data)
-        : DefWindowProcW(hwnd, msg, wp, lp);
+    W32_LRESULT r;
+    if (top >= 0)
+        r = subs[top].proc(hwnd, msg, wp, lp, subs[top].id, subs[top].data);
+    else {
+        /* No live subclass entries: the window's OWN procedure gets the
+         * message (F29), DefWindowProc only if there is none. */
+        W32_WNDPROC orig = sub_orig_of(hwnd);
+        r = orig ? orig(hwnd, msg, wp, lp) : DefWindowProcW(hwnd, msg, wp, lp);
+    }
     sub_depth = saved;
     return r;
 }
@@ -2931,10 +3062,13 @@ W32ABI W32_BOOL SetWindowSubclass(W32_HWND hwnd, W32_SUBCLASSPROC proc,
     }
     subs[slot].proc = proc;
     subs[slot].data = data;
-    /* first subclass on this window: push the trampoline once */
+    /* first subclass on this window: push the trampoline once, and keep
+     * the procedure it displaced (F29) so the bottom of the stack is the
+     * window's own procedure rather than DefWindowProc. */
     if (!existed && !sub_is_installed(hwnd)) {
-        SetWindowLongPtrW(hwnd, W32_GWL_WNDPROC,
+        intptr_t displaced = SetWindowLongPtrW(hwnd, W32_GWL_WNDPROC,
                           (W32_LRESULT)(uintptr_t)sub_trampoline);
+        sub_orig_put(hwnd, (W32_WNDPROC)(uintptr_t)displaced);
         sub_mark_installed(hwnd);
     }
     return 1;
@@ -2948,8 +3082,8 @@ W32ABI W32_BOOL RemoveWindowSubclass(W32_HWND hwnd, uint64_t id) {
     }
     subs[slot].in_use = 0;
     /* the trampoline stays installed: with no entries left it forwards
-     * everything to DefWindowProcW, and a later SetWindowSubclass
-     * reuses it without pushing a second proc slot. */
+     * everything to the window's OWN procedure (F29), and a later
+     * SetWindowSubclass reuses it without pushing a second proc slot. */
     return 1;
 }
 
@@ -2973,7 +3107,14 @@ W32ABI W32_LRESULT DefSubclassProc(W32_HWND hwnd, W32_UINT msg,
     for (int i = 0; i < SUB_MAX; i++)
         if (subs[i].in_use && subs[i].hwnd == hwnd && subs[i].seq < cur &&
             (below < 0 || subs[i].seq > subs[below].seq)) below = i;
-    if (below < 0) return DefWindowProcW(hwnd, msg, wp, lp);
+    if (below < 0) {
+        /* Bottom of the subclass stack: the window's own procedure, the
+         * one the trampoline displaced (F29).  Returning DefWindowProcW
+         * here is what left Notepad++'s tab control silent. */
+        W32_WNDPROC orig = sub_orig_of(hwnd);
+        return orig ? orig(hwnd, msg, wp, lp)
+                    : DefWindowProcW(hwnd, msg, wp, lp);
+    }
     int saved = sub_depth;
     sub_depth = below;
     W32_LRESULT r = subs[below].proc(hwnd, msg, wp, lp,
@@ -3143,8 +3284,7 @@ static W32_LRESULT ps_notify(ps_sheet_t *s, int page, uint32_t code,
     pshn.hdr.hwndFrom = s->frame;
     pshn.hdr.idFrom   = 0;
     pshn.hdr.code     = code;
-    pshn.iPage        = page;
-    pshn.lParam       = lparam;
+    pshn.lParam       = lparam;   /* F30: PSHNOTIFY carries no page index */
     return SendMessageW(s->pages[page], W32_WM_NOTIFY,
                         (W32_WPARAM)0, (W32_LPARAM)(intptr_t)&pshn);
 }

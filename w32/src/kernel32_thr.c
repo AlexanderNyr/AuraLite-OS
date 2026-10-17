@@ -621,6 +621,62 @@ static void thr_checkpoint(void);
 static void thr_wait_dequeue(int n, W32_HANDLE *hs,
                              struct thr_waiter *wr);
 
+/* ---- the process PEB (WR-3) -------------------------------------------------
+ * One PEB for the process, published at TEB+0x60 of the main thread and of
+ * every worker.  Every field AuraLite does not implement stays zero and is
+ * named as such here, rather than being invented.
+ *
+ * ProcessHeap is the one exception to "zero means unimplemented": common
+ * "is this pointer on the process heap?" code dereferences it, so it points
+ * at a documented sentinel instead.  The only consumer of the sentinel's
+ * contents would be our own HeapAlloc, which ignores the field entirely.
+ */
+static struct w32_rtl_user_process_parameters g_peb_pp;
+static struct w32_peb g_peb;
+/* 64 bytes of never-used storage: the sentinel ProcessHeap points at. */
+static uint64_t g_peb_heap_sentinel[8];
+
+struct w32_peb *w32_peb_get(void) {
+    return &g_peb;
+}
+
+void w32_peb_publish_exe(void *image_base, uint32_t subsystem) {
+    if (image_base)
+        g_peb.image_base_address = image_base;
+    if (subsystem)
+        g_peb.image_subsystem = subsystem;
+}
+
+static void w32_peb_init(void) {
+    long n;
+
+    memset(&g_peb, 0, sizeof g_peb);
+    memset(&g_peb_pp, 0, sizeof g_peb_pp);
+    g_peb_pp.maximum_length = (uint32_t)sizeof g_peb_pp;
+    g_peb_pp.length = (uint32_t)sizeof g_peb_pp;
+    g_peb.process_parameters = &g_peb_pp;
+    g_peb.process_heap = (void *)g_peb_heap_sentinel;
+
+    n = sysconf(_SC_NPROCESSORS_ONLN);
+    g_peb.number_of_processors = (n > 0) ? (uint32_t)n : 1u;
+
+    /* What GetVersionEx already reports: Windows 10.0, build 19045,
+     * VER_PLATFORM_WIN32_NT.  Not invented per-app -- one answer for the
+     * personality, documented here. */
+    g_peb.os_major_version = 10;
+    g_peb.os_minor_version = 0;
+    g_peb.os_build_number = 19045;
+    g_peb.os_platform_id = 2;
+    g_peb.image_subsystem_major = 6;
+    g_peb.image_subsystem_minor = 0;
+    g_peb.session_id = 1;
+    /* Documented defaults, not measurements: the heap manager is ours. */
+    g_peb.heap_segment_reserve = 0x100000;
+    g_peb.heap_segment_commit = 0x2000;
+    g_peb.heap_decommit_total_free_threshold = 0x10000;
+    g_peb.heap_decommit_free_block_threshold = 0x1000;
+}
+
 /* ---- process init -------------------------------------------------------------- */
 
 void w32_thr_init(void) {
@@ -652,15 +708,17 @@ void w32_thr_init(void) {
 
     /* The main thread's TEB: one zeroed page, Self + ClientId filled,
      * installed via ARCH_SET_GS before anything else runs. */
-    teb = (struct w32_teb *)mmap(0, 4096, PROT_READ | PROT_WRITE,
+    teb = (struct w32_teb *)mmap(0, W32_TEB_SIZE, PROT_READ | PROT_WRITE,
                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (teb == MAP_FAILED)
         return;   /* preposterous; the process limps on with errno-only */
+    w32_peb_init();
     memset(teb, 0, sizeof(*teb));
     teb->self = (uint64_t)(uintptr_t)teb;
     teb->client_pid = thr_pid;
     teb->client_tid = thr_pid;
     teb->last_error = W32_ERROR_SUCCESS;
+    teb->peb = &g_peb;
     /* WR-3: the NT stack window.  Workers get theirs from the created
      * stack (below); the main TEB used to ship zeros here, and MSVC's
      * statically linked __CxxFrameHandler validates every establisher
@@ -677,7 +735,7 @@ void w32_thr_init(void) {
         teb->nt_stack_limit = teb->nt_stack_base - (8ull << 20);
     }
     if (thr_arch_prctl(THR_ARCH_SET_GS, (uint64_t)(uintptr_t)teb) != 0) {
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         return;
     }
 
@@ -685,7 +743,7 @@ void w32_thr_init(void) {
      * TEB), stackless (never freed), wordless (no handle waits on it). */
     main_thr = (struct w32_thread *)calloc(1, sizeof(*main_thr));
     if (!main_thr) {
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         return;
     }
     main_thr->tid = thr_pid;
@@ -697,7 +755,7 @@ void w32_thr_init(void) {
                                            sizeof(void *));
     if (!main_thr->tls_blocks) {
         free(main_thr);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         return;
     }
     /* W32A-4: the SEH dispatch frame (birth-allocated, never on the
@@ -706,7 +764,7 @@ void w32_thr_init(void) {
     if (!main_thr->seh_frame) {
         free(main_thr->tls_blocks);
         free(main_thr);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         return;
     }
     teb->thread_obj = main_thr;
@@ -879,12 +937,12 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
     stack_sz = (stack_sz + 4095u) & ~4095u;
 
     t = (struct w32_thread *)calloc(1, sizeof(*t));
-    teb = (struct w32_teb *)mmap(0, 4096, PROT_READ | PROT_WRITE,
+    teb = (struct w32_teb *)mmap(0, W32_TEB_SIZE, PROT_READ | PROT_WRITE,
                                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (!t || teb == MAP_FAILED) {
         free(t);
         if (teb != MAP_FAILED)
-            munmap(teb, 4096);
+            munmap(teb, W32_TEB_SIZE);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     }
@@ -892,14 +950,14 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
                  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (stack == MAP_FAILED) {
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     }
     t->tls_blocks = (void **)calloc(W32_TLS_MODULES_MAX, sizeof(void *));
     if (!t->tls_blocks) {
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -913,7 +971,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         thr_spin_unlock();
         free(t->tls_blocks);
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -924,7 +982,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
             free(t->tls_blocks[i]);
         free(t->tls_blocks);
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -936,6 +994,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
     teb->client_pid = thr_pid;
     teb->client_tid = 0;   /* trampoline fills it (getpid, race-free) */
     teb->last_error = W32_ERROR_SUCCESS;
+    teb->peb = &g_peb;     /* one PEB per process, shared by every thread */
     teb->thread_obj = t;
     teb->tls_storage_ptr = (uint64_t)(uintptr_t)t->tls_blocks;
     teb->nt_stack_base = (uint64_t)(uintptr_t)stack + stack_sz;
@@ -948,7 +1007,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
             free(t->tls_blocks[i]);
         free(t->tls_blocks);
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -1000,7 +1059,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         free(t->tls_blocks);
         w32_seh_frame_free(t->seh_frame);
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -1027,7 +1086,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         free(t->tls_blocks);
         w32_seh_frame_free(t->seh_frame);
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
@@ -1053,7 +1112,7 @@ W32ABI W32_HANDLE CreateThread(void *security, W32_SIZE_T stack_size,
         free(t->tls_blocks);
         w32_seh_frame_free(t->seh_frame);
         free(t);
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
         munmap(stack, (size_t)stack_sz);
         w32_set_last_error(W32_ERROR_TOO_MANY_OPEN_FILES);
         return 0;
@@ -1637,7 +1696,7 @@ void w32_thread_close(void *p) {
         t->seh_frame = 0;
     }
     if (teb)
-        munmap(teb, 4096);
+        munmap(teb, W32_TEB_SIZE);
     free(t);
 }
 

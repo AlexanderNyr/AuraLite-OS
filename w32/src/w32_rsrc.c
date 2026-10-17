@@ -33,6 +33,13 @@
 #include <string.h>
 #include <stdio.h>
 
+/* WR-3 diagnosis (temporary): weak *reference* (the pattern from kernel32.c)
+ * so this file links with or without w32_seh.c. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+extern void w32trc_str(const char *tag, const char *s) __attribute__((weak));
+
 /* --- per-handle cache -------------------------------------------------
  * Maps a small integer cookie to (module, rva, size).  Allocator wraps
  * after 64 entries -- resources are not reference-counted across calls
@@ -146,15 +153,136 @@ W32ABI int LoadStringA(void *m, W32_UINT id, char *buf, int cch) {
 }
 
 /* ---- LoadIcon/Cursor/Image -------------------------------------------- */
-static void *load_img(void *m, const uint16_t *name, uint32_t rt) {
+/* WR-3: an icon/cursor id names a *group*, not an image.
+ *
+ * A resource-script entry like `IDI_NEW ICON "new.ico"` produces one
+ * RT_GROUP_ICON entry carrying IDI_NEW plus one RT_ICON entry per image in
+ * the .ico (their ids are picked by the resource compiler, not by the
+ * author).  LoadIcon/LoadImage(IMAGE_ICON) therefore look the id up in
+ * RT_GROUP_ICON, pick an image out of the directory and then load *that*
+ * RT_ICON by its own id.  Reading RT_ICON with the group's id -- what this
+ * function used to do -- only ever works for a binary that stores bare
+ * images, and Notepad++ 8.8.9 (whose toolbar icons come from .ico files)
+ * gets NULL and asks the user whether to quit.
+ *
+ * want_cx/want_cy: the size LoadImage asked for.  0 means "the default",
+ * which on Windows is the largest image in the directory. */
+static void *load_group_image(void *m, uint32_t grt, uint32_t rt, uint32_t id,
+                              int want_cx, int want_cy) {
+    void *g = w32_FindResourceExW(m, (const uint16_t *)(uintptr_t)grt,
+                                     (const uint16_t *)(uintptr_t)id, 0);
+    if (!g) return 0;
+    const uint8_t *dir = (const uint8_t *)LockResource(g);
+    uint32_t dsz = SizeofResource(m, g);
+    if (!dir || dsz < 6 + 14) return 0;
+    uint32_t cnt = (uint32_t)(dir[4] | (dir[5] << 8));
+    if (cnt > (dsz - 6) / 14) cnt = (dsz - 6) / 14;
+    if (!cnt) return 0;
+
+    uint32_t best_id = 0;
+    long best_score = -1;
+    for (uint32_t i = 0; i < cnt; i++) {
+        const uint8_t *e = dir + 6 + i * 14;
+        /* bWidth/bHeight are 0 for a 256x256 image. */
+        uint32_t bw = e[0] ? e[0] : 256u;
+        uint32_t bh = e[1] ? e[1] : 256u;
+        uint32_t bits = (uint32_t)(e[10] | (e[11] << 8));
+        long score;
+        if (want_cx > 0) {
+            /* Closest width wins; ties break to the larger one. */
+            long d = (long)bw - want_cx;
+            if (d < 0) d = -d;
+            score = -d * 1000L + (long)(bits ? bits : 32);
+        } else {
+            score = (long)(bw * bh) * 100L + (long)(bits ? bits : 32);
+        }
+        if (score > best_score) {
+            best_score = score;
+            best_id = (uint32_t)(e[12] | (e[13] << 8));
+        }
+    }
+    (void)want_cy;
+    if (!best_id) return 0;
+    return w32_FindResourceExW(m, (const uint16_t *)(uintptr_t)rt,
+                                  (const uint16_t *)(uintptr_t)best_id, 0);
+}
+
+/* WR-3 diagnosis (temporary): a resource name that is not an id has no
+ * printable form here -- render the first words as hex. */
+static const char *w16_hex_dbg(const uint16_t *ws) {
+    static char buf[4][64];
+    static int turn = 0;
+    char *out = buf[turn++ & 3];
+    int k = 0;
+    if (!ws) { out[0] = '('; out[1] = '0'; out[2] = ')'; out[3] = 0; return out; }
+    for (int i = 0; i < 6 && ws[i] && k < 56; i++)
+        k += snprintf(out + k, (size_t)(56 - k), "%04x ", (unsigned)ws[i]);
+    out[k] = 0;
+    return out;
+}
+
+static void *load_img_ex(void *m, const uint16_t *name, uint32_t rt,
+                         int want_cx, int want_cy) {
+    /* F22 (WR-3): the predefined cursors.  LoadCursor(NULL, IDC_ARROW) and
+     * friends name ids in the system range 32512..32649 (OCR_* in the SDK).
+     * They belong to the window system, not to the executable: the measured
+     * Notepad++ start-up asked for 32512 (IDC_ARROW) and 32644/32645
+     * (IDC_SIZEWE / IDC_SIZENS, its splitter handles) and every lookup
+     * missed, because our loader looked for them in notepad++.exe.
+     * The compositor owns the one sprite, so -- as with SetCursor, which
+     * already only records intent -- the result is a token rather than a
+     * pointer into a real resource; the id rides in the low bits so the
+     * value round-trips through SetCursor/GetCursor. */
+    {
+        uint32_t pid = 0;
+        if (rt == W32_RT_CURSOR && name_to_id(name, &pid) == 0 &&
+            pid >= 32512u && pid <= 32649u)
+            return (void *)(uintptr_t)(0x43555200u + (pid - 32512u));
+    }
     void *r = FindResourceW(m, name, (const uint16_t *)(uintptr_t)rt);
-    if (!r) return 0;
+    if (!r) {
+        uint32_t grt = 0;
+        if (rt == W32_RT_ICON)        grt = W32_RT_GROUP_ICON;
+        else if (rt == W32_RT_CURSOR) grt = W32_RT_GROUP_CURSOR;
+        if (!grt) return 0;
+        uint32_t id = 0;
+        if (name_to_id(name, &id) != 0) {
+            /* string-named image: no id, so no group lookup either */
+            if (w32trc_line) {
+                w32trc_line("[iload] string name rt=%u\n",
+                            (unsigned long long)rt, 0, 0);
+                w32trc_str("[iload]   name=", w16_hex_dbg(name));
+            }
+            return 0;
+        }
+        r = load_group_image(m, grt, rt, id, want_cx, want_cy);
+        if (!r) {
+            /* WR-3 diagnosis (temporary): which icon group, and whether the
+             * directory or the RT_ICON lookup is what failed. */
+            if (w32trc_line)
+                w32trc_line("[iload] fail rt=%u grt=%u id=%u\n",
+                            (unsigned long long)rt, (unsigned long long)grt,
+                            (unsigned long long)id);
+            return 0;
+        }
+    }
     const uint8_t *blob = (const uint8_t *)LockResource(r);
+    if (!blob) {
+        uint32_t id = 0;
+        (void)name_to_id(name, &id);
+        if (w32trc_line)
+            w32trc_line("[iload] null blob rt=%u id=%u\n",
+                        (unsigned long long)rt, (unsigned long long)id, 0);
+        return 0;
+    }
     /* W32A-7: icons and cursors register here, where the size is known,
      * so DrawIconEx can decode them from the pointer alone. */
     if (rt == W32_RT_ICON || rt == W32_RT_CURSOR)
         w32_gdi_icon_cache_add(blob, SizeofResource(m, r));
     return (void *)blob;
+}
+static void *load_img(void *m, const uint16_t *name, uint32_t rt) {
+    return load_img_ex(m, name, rt, 0, 0);
 }
 W32ABI W32_HICON   LoadIconW(void *m, const uint16_t *n) { return (W32_HICON)load_img(m,n,W32_RT_ICON); }
 W32ABI W32_HICON   LoadIconA(void *m, const char *n)    { return (W32_HICON)load_img(m,(const uint16_t *)(uintptr_t)n,W32_RT_ICON); }
@@ -191,7 +319,8 @@ W32ABI void *LoadImageW(void *m, const uint16_t *n, W32_UINT t, int cx, int cy, 
      * pointer-cache contract DrawIconEx relies on. */
     if (rt == W32_RT_BITMAP)
         return (void *)LoadBitmapW(m, n);
-    return load_img(m, n, rt);
+    /* cx/cy select an image out of the group directory; 0 means "default". */
+    return load_img_ex(m, n, rt, cx, cy);
 }
 W32ABI void *LoadImageA(void *m, const char *n, W32_UINT t, int cx, int cy, W32_UINT fl) {
     return LoadImageW(m, (const uint16_t *)(uintptr_t)n, t, cx, cy, fl);

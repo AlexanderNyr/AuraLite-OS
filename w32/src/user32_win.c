@@ -167,6 +167,12 @@ void ag_alert(const char *, const char *);
 #include "auragui.h"
 #include "w32/shell32.h"
 #include <string.h>
+/* WR-3 diagnosis (temporary): snprintf in the w16_dbg trace helper below.
+ * Removed with the traces at landing; the host unit tests that amalgamate
+ * this file stub stdio themselves, hence the guard. */
+#ifndef AURALITE_W32_HOST_TEST
+#include <stdio.h>
+#endif
 typedef ag_theme_t ui_theme_t;
 typedef ag_event_t ui_event_t;
 _Static_assert(UI_EVT_MOUSE_DOWN == AG_EVT_MOUSE_DOWN, "ag_event_t drifted");
@@ -184,9 +190,32 @@ _Static_assert(AG_DROP_PATH_MAX == 256, "file-drop ABI drifted");
  * being compiled -- the guest build silently lost this one first time. */
 int w32_menu_bar_item(W32_HMENU, int, char *, size_t, uint32_t *);
 
-#define UI_MAX_CLASSES  32
+#define UI_MAX_CLASSES  64
 #define UI_CLASSLONG_SLOTS 4          /* W32A-14: cbClsExtra qword slots */
-#define UI_MAX_WINDOWS  32
+/* WR-3: cbWndExtra.  A class asks for N bytes of per-window memory at
+ * registration and addresses them with a non-negative Set/GetWindowLongPtr
+ * index (a byte offset, not a slot number).  Scintilla -- statically linked
+ * into Notepad++ 8.8.9 -- keeps its ScintillaWin* at offset 0; a window
+ * whose extra bytes are missing answers SCI_GETDIRECTFUNCTION with 0 and
+ * NPP reports "IconList"-style fatality: "ScintillaEditView::init :
+ * SCI_GETDIRECTFUNCTION message failed".  The store is a fixed array so no
+ * window needs a heap allocation; a class asking for more than the cap is
+ * served the cap and any access past it fails with
+ * ERROR_INVALID_PARAMETER rather than writing outside the array. */
+#define UI_WND_EXTRA_MAX  64
+/* WR-3: measured, not guessed.  Notepad++ 8.8.9's resources carry 69
+ * dialogs holding 937 controls between them, and its start-up path creates
+ * a large slice of them (every StaticDialog is built up front, whether or
+ * not it is ever shown) plus the docking frames, the two Scintilla views
+ * and the main window's own children.  32 slots ran out at the docking
+ * splitter -- "DockingSplitter::init : CreateWindowEx() function return
+ * null", with [cw] reporting "window table full for: nsdockspliter".
+ * Real Windows bounds windows by handle quota, not by a fixed table, so
+ * the cap here is a memory bound rather than a semantic one.  The measured
+ * high-water mark for 8.8.9 (see the [cw] high-water trace) is 45 live
+ * windows; 256 is that plus the largest dialog in the binary (70 controls)
+ * three times over, at 816 KB of BSS. */
+#define UI_MAX_WINDOWS  256
 #define UI_MENU_BAR_MAX 16       /* top-level menu items tracked for hit-testing */
 #define UI_MAX_QUEUES   16
 /* 256: a message queue must absorb a burst of creation traffic (every
@@ -213,10 +242,23 @@ int w32_menu_bar_item(W32_HMENU, int, char *, size_t, uint32_t *);
      W32_DS_MODALFRAME | W32_DS_SETFONT | W32_DS_CENTER | W32_DS_ABSALIGN | \
      W32_DS_SYSMODAL | W32_DS_3DLOOK | W32_DS_FIXEDSYS | W32_DS_NOFAILCREATE | \
      W32_DS_CONTROL | W32_DS_CENTERMOUSE | W32_DS_CONTEXTHELP)
+/* WR-3: "known" means "accepted and recorded", not "painted".  The added
+ * bits are the ones real windows ask for and a lite compositor has no
+ * surface for: the edge styles are 3D-decoration hints, CONTROLPARENT and
+ * NOPARENTNOTIFY are keyboard/notification routing, the RTL bits are
+ * mirroring, NOACTIVATE/COMPOSITED are activation and paint hints.  They
+ * round-trip through GetWindowLongPtr(GWL_EXSTYLE), which is what a window
+ * procedure that inspects its own style needs; refusing them broke
+ * Notepad++'s toolbar (WS_EX_PALETTEWINDOW carries WS_EX_WINDOWEDGE). */
 #define UI_EXSTYLE_KNOWN \
     (W32_WS_EX_TOPMOST | W32_WS_EX_TOOLWINDOW | W32_WS_EX_LAYERED | \
      W32_WS_EX_APPWINDOW | W32_WS_EX_CLIENTEDGE | W32_WS_EX_DLGMODALFRAME | \
-     W32_WS_EX_TRANSPARENT | W32_WS_EX_ACCEPTFILES)
+     W32_WS_EX_TRANSPARENT | W32_WS_EX_ACCEPTFILES | \
+     W32_WS_EX_NOPARENTNOTIFY | W32_WS_EX_WINDOWEDGE | W32_WS_EX_CONTEXTHELP |\
+     W32_WS_EX_RIGHT | W32_WS_EX_RTLREADING | W32_WS_EX_LEFTSCROLLBAR | \
+     W32_WS_EX_CONTROLPARENT | W32_WS_EX_STATICEDGE | W32_WS_EX_MDICHILD | \
+     W32_WS_EX_NOINHERITLAYOUT | W32_WS_EX_LAYOUTRTL | W32_WS_EX_COMPOSITED | \
+     W32_WS_EX_NOACTIVATE)
 
 struct ui_class {
     int       in_use;
@@ -231,6 +273,7 @@ struct ui_class {
     W32_HICON icon_sm;            /* W32A-14: GCLP_HICONSM (PuTTY stamps this) */
     W32_HCURSOR cursor;
     int       comctl;             /* W32A-8: a common-control class (WS_CHILD ok) */
+    int32_t   cb_wnd_extra;       /* WR-3: WNDCLASSEX.cbWndExtra, capped */
     /* WR-2: WNDCLASS.lpszMenuName.  Win32 keeps this in the class, not in the
      * window: a window created with hMenu == NULL gets the class menu.  Both
      * spellings have to survive -- a string name is copied (the class table
@@ -266,6 +309,9 @@ struct ui_window {
     W32_WNDPROC proc[UI_MAX_PROCS];   /* [0] class proc, [n] subclasses */
     int       proc_top;               /* index of the current top, >= 0 */
     void     *user_data;
+    /* WR-3: cbWndExtra bytes, zeroed at creation.  See UI_WND_EXTRA_MAX. */
+    uint8_t   wnd_extra[UI_WND_EXTRA_MAX];
+    int32_t   cb_wnd_extra;
     struct ui_prop   prop[UI_MAX_PROPS];
     struct ui_scroll scroll[2];       /* 0 = horz, 1 = vert */
     struct ui_inv    inv[UI_MAX_INV];
@@ -652,6 +698,9 @@ static W32_WORD ui_register_class(const W32_WNDCLASSEXW *c) {
         k->style  = c->style;
         k->icon   = c->hIcon;
         k->cursor = c->hCursor;
+        /* WR-3: cbWndExtra, capped at what the per-window store can back. */
+        k->cb_wnd_extra = (c->cbWndExtra > UI_WND_EXTRA_MAX)
+                        ? UI_WND_EXTRA_MAX : (int32_t)c->cbWndExtra;
         ui_class_set_menu(k, c->lpszMenuName);
         return (W32_WORD)(i + 1);            /* ATOM, non-zero */
     }
@@ -860,6 +909,54 @@ W32_WORD w32_user_register_dialog_class(void) {
     return a;
 }
 
+/* WR-3 diagnosis (temporary): weak *references* (the same pattern as in
+ * kernel32.c) -- the host unit tests amalgamate this file with and without
+ * w32_seh.c, so a definition here would collide and a hard reference would
+ * not link. */
+extern void w32trc_str(const char *tag, const char *s) __attribute__((weak));
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+
+/* WR-3 diagnosis (temporary): a class name may be UTF-16 and may be a
+ * MAKEINTRESOURCE id, or an ordinal (0xFFFF + id) out of a dialog template;
+ * render any of them into a static buffer for the trace. */
+static const char *w16_dbg(const uint16_t *ws) {
+    static char buf[4][128];
+    static int which = 0;
+    char *out = buf[which++ & 3];
+    uintptr_t v = (uintptr_t)ws;
+    if ((v >> 16) == 0) {
+        snprintf(out, 128, "#%u", (unsigned)(v & 0xFFFF));
+        return out;
+    }
+    w16_to_a(out, 128, ws);
+    if (!out[0]) {
+        /* Not printable ASCII: an ordinal class (0xFFFF + id, as a dialog
+         * template carries it) or an encoding we do not convert.  Hex is
+         * unambiguous, and 508 anonymous failures deserve a name. */
+        size_t k = 0;
+        for (int i = 0; i < 8 && ws[i]; i++)
+            k += (size_t)snprintf(out + k, 128 - k, "%s%04x",
+                                  i ? "," : "?", ws[i]);
+    }
+    return out;
+}
+
+/* F28 (WR-3): the smallest extent gui_create_window() accepts for a window
+ * carrying `flags`.  Mirrors the compositor's own guard -- a decorated
+ * window must be larger than its frame (2*border_w wide, titlebar_h +
+ * 2*border_w tall) -- so a zero-sized request is clamped to a size the
+ * compositor will actually take instead of being turned down. */
+static int32_t ui_min_extent(uint32_t flags, int vertical) {
+    ui_theme_t th;
+    if ((flags & (AG_WIN_NO_DECOR | AG_WIN_BORDERLESS)) ||
+        ag_theme_get(&th) != 0)
+        return 1;
+    return (int32_t)((vertical ? (uint32_t)th.titlebar_h + 2u * th.border_w
+                               : 2u * th.border_w) + 1u);
+}
+
 W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
                                 const uint16_t *title, W32_DWORD style,
                                 int32_t x, int32_t y, int32_t w, int32_t h,
@@ -867,6 +964,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
                                 W32_HINSTANCE inst, void *param) {
     struct ui_class *k = ui_find_class_w(clsname);
     if (!k) {
+        if (w32trc_str) { w32trc_str("[cw] no class", w16_dbg(clsname)); }
         w32_set_last_error(W32_ERROR_CLASS_DOES_NOT_EXIST);
         return 0;
     }
@@ -893,21 +991,48 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
      * zero, already inside UI_STYLE_KNOWN). */
     W32_DWORD style_std = k->comctl ? (style & 0xFFFF0000u) : style;
     if ((style_std & ~UI_STYLE_KNOWN) || (exstyle & ~UI_EXSTYLE_KNOWN)) {
+        if (w32trc_line) {
+            w32trc_str("[cw] rejected style of class", k->name_a);
+            w32trc_line("[cw]   bad=%x exbad=%x comctl=%d\n",
+                        (unsigned long long)(style_std & ~UI_STYLE_KNOWN),
+                        (unsigned long long)(exstyle & ~UI_EXSTYLE_KNOWN),
+                        (unsigned long long)k->comctl);
+        }
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
+    uint32_t flags = ui_style_to_flags(style);
+    if (exstyle & W32_WS_EX_TOPMOST)   flags |= AG_WIN_ALWAYS_TOP;
+    if (exstyle & W32_WS_EX_TOOLWINDOW) flags |= AG_WIN_TOOL_WINDOW;
+
     if (x == W32_CW_USEDEFAULT) x = 80;
     if (y == W32_CW_USEDEFAULT) y = 60;
-    if (w == W32_CW_USEDEFAULT || w <= 0) w = 900;
-    if (h == W32_CW_USEDEFAULT || h <= 0) h = 620;
+    /* F28 (WR-3): an explicit ZERO size is a request, not a default.  This
+     * line used to fold `<= 0` into the CW_USEDEFAULT fallback of 900x620,
+     * which is what made Notepad++ unreachable by mouse and keyboard:
+     * Notepad++ creates its ReBarWindow32 with an empty rect and lets the
+     * control size itself from its bands, so the fallback handed that
+     * zero-sized child a 900x620 rectangle -- the whole client area.  The
+     * compositor hit-tests its own geometry, so every click and every key
+     * landed on the rebar and none ever reached the Scintilla view.
+     * A zero-sized window still cannot be *created* -- gui_create_window()
+     * refuses 0, and refuses anything a decorated window's own frame does
+     * not leave room for -- so the request is clamped to the smallest
+     * extent the compositor accepts for this window style: 1x1 for a
+     * borderless/child window, decorations+1 for a framed one.  Notepad++
+     * creates its MAIN FRAME 0x0 and sizes it in WM_CREATE, so clamping to
+     * 1x1 here made CreateWindowEx return NULL and the editor abort with
+     * "Notepad_plus_Window::init : CreateWindowEx() function return null".
+     * The window is invisible at that size and is resized for real by the
+     * first MoveWindow/SetWindowPos the application makes. */
+    if (w == W32_CW_USEDEFAULT) w = 900;
+    else if (w <= 0)            w = ui_min_extent(flags, 0);
+    if (h == W32_CW_USEDEFAULT) h = 620;
+    else if (h <= 0)            h = ui_min_extent(flags, 1);
     if (w > 4096 || h > 4096) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return 0;
     }
-
-    uint32_t flags = ui_style_to_flags(style);
-    if (exstyle & W32_WS_EX_TOPMOST)   flags |= AG_WIN_ALWAYS_TOP;
-    if (exstyle & W32_WS_EX_TOOLWINDOW) flags |= AG_WIN_TOOL_WINDOW;
 
     char title_a[UI_TITLE_MAX * 3];
     w16_to_a(title_a, sizeof title_a, title);
@@ -919,8 +1044,21 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     }
     ui_unlock();
     if (slot < 0) {
+        if (w32trc_str) { w32trc_str("[cw] window table full for", k->name_a); }
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
+    }
+    /* WR-3 diagnosis (temporary): the high-water mark of the window table,
+     * so the cap above can be justified by a measurement instead of a
+     * guess.  One line per new high, at most a handful per run. */
+    {
+        static int ui_win_high = 0;
+        if (slot + 1 > ui_win_high) {
+            ui_win_high = slot + 1;
+            if (w32trc_line)
+                w32trc_line("[cw] high-water windows=%u\n",
+                            (unsigned long long)(slot + 1), 0, 0);
+        }
     }
 
     /* WR-2: a child is positioned in parent-client coordinates. */
@@ -930,6 +1068,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
 
     int ag_wid = ag_window_create(x, y_ag, (uint32_t)w, (uint32_t)h, title_a, flags);
     if (ag_wid < 0) {
+        if (w32trc_str) { w32trc_str("[cw] compositor refused", k->name_a); }
         w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     }
@@ -973,6 +1112,8 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
      * ShowWindow posts before WM_INITDIALOG, and its virtual call crashed
      * the extract thread (WR-2: seh fault at 7zFM+0xdcf9). */
     win->user_data = 0;
+    memset(win->wnd_extra, 0, sizeof win->wnd_extra);
+    win->cb_wnd_extra = k->cb_wnd_extra;
     win->proc[0] = k->proc;
     win->proc_top = 0;
     win->n_inv = 0;
@@ -1444,6 +1585,20 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
                    lp, e->x, e->y);
         break;
     case UI_EVT_KEY_DOWN: {
+        /* WR-3 diagnosis (temporary): which window the keyboard actually
+         * reaches.  Typing is the one leg a framebuffer cannot prove by
+         * itself -- a delta only says pixels moved, not that the editor got
+         * the character -- so the receiving window is named here. */
+        if (w32trc_line && w32trc_str) {
+            int ki = w32_win_index_from_hwnd(hwnd);
+            const char *kc = "?";
+            if (ki >= 0 && windows[ki].cls >= 0 &&
+                windows[ki].cls < UI_MAX_CLASSES)
+                kc = classes[windows[ki].cls].name_a;
+            w32trc_line("[key] vk=%u win=#%u\n",
+                        (unsigned long long)e->key, (unsigned long long)ki, 0);
+            w32trc_str("[key]   cls=", kc);
+        }
         /* One keystroke carries its scan code and its transition bits; the
          * thread's key-state array is fed here, which is what GetKeyState
          * reads back. */
@@ -2084,10 +2239,30 @@ W32ABI W32_HANDLE RemovePropW(W32_HWND hwnd, const uint16_t *key) {
 
 /* ---- subclassing and window words ---------------------------------------- */
 
-W32ABI intptr_t SetWindowLongPtrW(W32_HWND hwnd, int32_t idx, intptr_t v) {
+/* A non-negative index is a cbWndExtra byte offset; `size` is the width of
+ * the access (8 for the Ptr form, 4 for the Long form), exactly as Win32
+ * distinguishes SetWindowLongPtr from SetWindowLong at the same offset. */
+static int ui_wnd_extra_ok(const struct ui_window *w, int32_t idx, uint32_t size) {
+    if (idx < 0 || size > UI_WND_EXTRA_MAX) return 0;
+    if ((uint32_t)idx + size > (uint32_t)w->cb_wnd_extra) return 0;
+    return 1;
+}
+
+static intptr_t ui_set_window_long(W32_HWND hwnd, int32_t idx, intptr_t v,
+                                   uint32_t size) {
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
     struct ui_window *w = &windows[i];
+    if (idx >= 0) {
+        if (!ui_wnd_extra_ok(w, idx, size)) {
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        intptr_t old = 0;
+        memcpy(&old, w->wnd_extra + idx, size);
+        memcpy(w->wnd_extra + idx, &v, size);
+        return old;
+    }
     switch (idx) {
     case W32_GWL_WNDPROC: {
         W32_WNDPROC np = (W32_WNDPROC)v;
@@ -2133,10 +2308,19 @@ W32ABI intptr_t SetWindowLongPtrW(W32_HWND hwnd, int32_t idx, intptr_t v) {
     }
 }
 
-W32ABI intptr_t GetWindowLongPtrW(W32_HWND hwnd, int32_t idx) {
+static intptr_t ui_get_window_long(W32_HWND hwnd, int32_t idx, uint32_t size) {
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
     struct ui_window *w = &windows[i];
+    if (idx >= 0) {
+        if (!ui_wnd_extra_ok(w, idx, size)) {
+            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+            return 0;
+        }
+        intptr_t val = 0;
+        memcpy(&val, w->wnd_extra + idx, size);
+        return val;
+    }
     switch (idx) {
     case W32_GWL_WNDPROC:    return (intptr_t)(w->proc_top >= 0 ? w->proc[w->proc_top] : 0);
     case W32_GWL_USERDATA:   return (intptr_t)w->user_data;
@@ -2151,12 +2335,23 @@ W32ABI intptr_t GetWindowLongPtrW(W32_HWND hwnd, int32_t idx) {
     }
 }
 
+W32ABI intptr_t SetWindowLongPtrW(W32_HWND hwnd, int32_t idx, intptr_t v) {
+    return ui_set_window_long(hwnd, idx, v, sizeof(intptr_t));
+}
+W32ABI intptr_t GetWindowLongPtrW(W32_HWND hwnd, int32_t idx) {
+    return ui_get_window_long(hwnd, idx, sizeof(intptr_t));
+}
+/* The 32-bit spellings are a 4-byte access at the same offset: the value is
+ * truncated (write) or zero-extended (read) to intptr_t by the cast, which
+ * is what Win32 does for a 32-bit caller using the extra bytes. */
+W32ABI int32_t SetWindowLongW(W32_HWND h, int32_t i, int32_t v) {
+    return (int32_t)ui_set_window_long(h, i, (intptr_t)(int64_t)v, 4);
+}
+W32ABI int32_t GetWindowLongW(W32_HWND h, int32_t i) {
+    return (int32_t)ui_get_window_long(h, i, 4);
+}
 W32ABI intptr_t SetWindowLongPtrA(W32_HWND h, int32_t i, intptr_t v) { return SetWindowLongPtrW(h, i, v); }
 W32ABI intptr_t GetWindowLongPtrA(W32_HWND h, int32_t i) { return GetWindowLongPtrW(h, i); }
-W32ABI int32_t  GetWindowLongW(W32_HWND h, int32_t i) { return (int32_t)GetWindowLongPtrW(h, i); }
-W32ABI int32_t  SetWindowLongW(W32_HWND h, int32_t i, int32_t v) {
-    return (int32_t)SetWindowLongPtrW(h, i, (intptr_t)v);
-}
 
 W32ABI int32_t GetDlgCtrlID(W32_HWND hwnd) {
     int i = w32_win_index_from_hwnd(hwnd);
@@ -2475,6 +2670,36 @@ W32ABI W32_HWND FindWindowA(const char *cls, const char *title) {
 
 /* ---- show, placement, Z-order -------------------------------------------- */
 
+/* WR-3: the live window tree, dumped to /fat/w32trace.txt the first time a
+ * top-level window is shown.  A framebuffer proves pixels moved; it cannot
+ * say WHICH window they belong to, so the WR-3 gate (and every later
+ * diagnosis) needs the tree behind them: class, title, rectangle, parent
+ * and visibility for every live window. */
+static void w32_dump_windows(void) {
+    if (!w32trc_line) return;
+    for (int i = 0; i < UI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use) continue;
+        const char *cls = "-";
+        if (windows[i].cls >= 0 && windows[i].cls < UI_MAX_CLASSES)
+            cls = classes[windows[i].cls].name_a;
+        /* w32trc_line carries three arguments; strings go through
+         * w32trc_str, and every specifier in a format has an argument. */
+        w32trc_line("[wlist] #%u vis=%u parent=%u\n",
+                    (unsigned long long)i,
+                    (unsigned long long)(windows[i].visible ? 1 : 0),
+                    (unsigned long long)(windows[i].parent < 0 ? 999u
+                                         : (unsigned)windows[i].parent));
+        w32trc_line("[wlist]   rect=%ux%u\n",
+                    (unsigned long long)windows[i].w,
+                    (unsigned long long)windows[i].h, 0);
+        w32trc_line("[wlist]   at=%d,%d\n",
+                    (unsigned long long)(int64_t)windows[i].x,
+                    (unsigned long long)(int64_t)windows[i].y, 0);
+        w32trc_str("[wlist]   cls=", cls);
+        w32trc_str("[wlist]   title=", windows[i].title_a);
+    }
+}
+
 W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
@@ -2506,6 +2731,12 @@ W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
     default:
         ag_window_restore(w->ag_wid);
         ag_window_show(w->ag_wid);
+        /* WR-3: one dump, at the first top-level ShowWindow -- Notepad++
+         * shows its frame exactly once. */
+        if (w->parent < 0) {
+            static int dumped = 0;
+            if (!dumped) { dumped = 1; w32_dump_windows(); }
+        }
         w->minimized = 0;
         w->maximized = 0;
         w->visible = 1;
@@ -3588,6 +3819,56 @@ W32ABI W32_BOOL TrackMouseEvent(void *tev) {
     return W32_TRUE;
 }
 
+/* MessageBox button sets and the answer each button stands for.
+ *
+ * The lite alert has one button, so an unattended run cannot press "No":
+ * what the personality answers is the id Windows would have returned had the
+ * user accepted the DEFAULT button, which is what an unattended run means.
+ * Notepad++ 8.8.9 asks "Ignore the error?  Yes / No / Cancel" and abandons
+ * start-up unless the answer is IDYES or IDCANCEL, so answering IDOK to a
+ * YESNOCANCEL box is not a cosmetic difference -- it is the difference
+ * between NPP running and NPP quitting.  MB_DEFBUTTON2/3 move the default. */
+#define W32_MB_OK                 0x00000000u
+#define W32_MB_OKCANCEL           0x00000001u
+#define W32_MB_ABORTRETRYIGNORE   0x00000002u
+#define W32_MB_YESNOCANCEL        0x00000003u
+#define W32_MB_YESNO              0x00000004u
+#define W32_MB_RETRYCANCEL        0x00000005u
+#define W32_MB_CANCELTRYCONTINUE  0x00000006u
+#define W32_IDOK        1
+#define W32_IDCANCEL    2
+#define W32_IDABORT     3
+#define W32_IDRETRY     4
+#define W32_IDIGNORE    5
+#define W32_IDYES       6
+#define W32_IDNO        7
+#define W32_IDTRYAGAIN 10
+#define W32_IDCONTINUE 11
+
+static int ui_msgbox_answer(W32_UINT type) {
+    static const int answers[7][3] = {
+        /* MB_OK                */ { W32_IDOK,     0,            0 },
+        /* MB_OKCANCEL          */ { W32_IDOK,     W32_IDCANCEL, 0 },
+        /* MB_ABORTRETRYIGNORE  */ { W32_IDABORT,  W32_IDRETRY,  W32_IDIGNORE },
+        /* MB_YESNOCANCEL       */ { W32_IDYES,    W32_IDNO,     W32_IDCANCEL },
+        /* MB_YESNO             */ { W32_IDYES,    W32_IDNO,     0 },
+        /* MB_RETRYCANCEL       */ { W32_IDRETRY,  W32_IDCANCEL, 0 },
+        /* MB_CANCELTRYCONTINUE */ { W32_IDCANCEL, W32_IDTRYAGAIN, W32_IDCONTINUE },
+    };
+    uint32_t set = type & 0x0000000Fu;
+    if (set > W32_MB_CANCELTRYCONTINUE) return W32_IDOK;
+    uint32_t def = (type >> 8) & 0x0000000Fu;      /* MB_DEFBUTTON1..4 */
+    int idx = (def >= 2 && def <= 3) ? (int)(def - 1) : 0;
+    if (idx > 2) idx = 0;
+    return answers[set][idx] ? answers[set][idx] : answers[set][0];
+}
+
+/* WR-3 diagnosis (temporary): a weak *reference* (the same pattern as in
+ * kernel32.c) -- the host unit tests amalgamate this file with and without
+ * w32_seh.c, so a definition here would collide and a hard reference would
+ * not link. */
+extern void w32trc_str(const char *tag, const char *s) __attribute__((weak));
+
 W32ABI W32_LRESULT MessageBoxW(W32_HWND owner, const uint16_t *text,
                                const uint16_t *caption, W32_UINT type) {
     (void)owner; (void)type;
@@ -3595,14 +3876,18 @@ W32ABI W32_LRESULT MessageBoxW(W32_HWND owner, const uint16_t *text,
     w16_to_a(t, sizeof t, text);
     w16_to_a(c, sizeof c, caption);
     ag_alert(c[0] ? c : "Message", t);
-    return 1;                                   /* IDOK */
+    return ui_msgbox_answer(type);
 }
 
 W32ABI int32_t MessageBoxA(W32_HWND owner, const char *text,
                            const char *caption, W32_UINT type) {
     (void)owner; (void)type;
+    if (w32trc_str) {                           /* see MessageBoxW */
+        w32trc_str("[msgbox] caption", caption ? caption : "Message");
+        w32trc_str("[msgbox] text", text ? text : "");
+    }
     ag_alert(caption ? caption : "Message", text ? text : "");
-    return 1;
+    return ui_msgbox_answer(type);
 }
 
 W32ABI int32_t MessageBoxIndirectW(const W32_MSGBOXPARAMSW *params) {

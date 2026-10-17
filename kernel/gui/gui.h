@@ -23,7 +23,15 @@
  */
 
 /* ---- Limits ---- */
-#define GUI_MAX_WINDOWS       64
+/* WR-3: measured against Notepad++ 8.8.9 -- see UI_MAX_WINDOWS in
+ * w32/src/user32_win.c.  A Win32 process creates one compositor window per
+ * CreateWindowExW, hidden ones included, and Notepad++ builds the controls
+ * of every dialog it instantiates at start-up; 64 slots were exhausted
+ * before the docking splitter was created.  256 compositor windows is the
+ * measured per-process high (45) plus margin for every w32 process on the
+ * desktop at once; the table is kmalloc'd in gui_init(), not BSS, because
+ * at ~4.8 KB a slot the static image cannot hold it. */
+#define GUI_MAX_WINDOWS       256
 #define GUI_TITLE_MAX         64
 #define GUI_EVT_RING_SIZE     128
 #define GUI_MAX_ICONS         32

@@ -283,6 +283,24 @@ void w32_user32_init(void);
 #define W32_WS_EX_APPWINDOW   0x00040000u
 #define W32_WS_EX_CLIENTEDGE  0x00000200u
 #define W32_WS_EX_DLGMODALFRAME 0x00000001u
+/* WR-3: the rest of the extended set.  Notepad++ 8.8.9 creates its toolbar
+ * with WS_EX_PALETTEWINDOW (WINDOWEDGE|TOOLWINDOW|TOPMOST) and WINDOWEDGE
+ * was missing here, which made CreateWindowExW refuse the window with
+ * ERROR_INVALID_PARAMETER and NPP's ToolBar::reset raise
+ * "CreateWindowEx() function return null". */
+#define W32_WS_EX_NOPARENTNOTIFY 0x00000004u
+#define W32_WS_EX_WINDOWEDGE     0x00000100u
+#define W32_WS_EX_CONTEXTHELP    0x00000400u
+#define W32_WS_EX_RIGHT          0x00001000u
+#define W32_WS_EX_RTLREADING     0x00002000u
+#define W32_WS_EX_LEFTSCROLLBAR  0x00004000u
+#define W32_WS_EX_CONTROLPARENT  0x00010000u
+#define W32_WS_EX_STATICEDGE     0x00020000u
+#define W32_WS_EX_MDICHILD       0x00000040u
+#define W32_WS_EX_NOINHERITLAYOUT 0x00100000u
+#define W32_WS_EX_LAYOUTRTL      0x00400000u
+#define W32_WS_EX_COMPOSITED     0x02000000u
+#define W32_WS_EX_NOACTIVATE     0x08000000u
 
 /* ---- ShowWindow -------------------------------------------------------- */
 #define W32_SW_MINIMIZE      6

@@ -47,6 +47,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+
+/* WR-3 diagnosis (temporary): weak *reference* so this file links with or
+ * without w32_seh.c.  Above CreateFileW, which traces through them. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+extern void w32trc_str(const char *tag, const char *s) __attribute__((weak));
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
@@ -2960,6 +2967,14 @@ W32ABI W32_HANDLE CreateFileW(W32_LPCWSTR path, W32_DWORD access,
     if (!utf8)
         return W32_INVALID_HANDLE_VALUE;
     h = w32_fs_create(utf8, access, share, disposition, flags, tmpl);
+    /* WR-3 diagnosis (temporary): Notepad++ opened with a file argument
+     * faulted at 0xdb7fe on a NULL it got back from a getter; the first
+     * question is whether the file itself opened.  One line per call. */
+    if (w32trc_str && w32trc_line) {
+        w32trc_str("[cf] open ", utf8 ? utf8 : "(null)");
+        w32trc_str("[cf]   -> ", h == W32_INVALID_HANDLE_VALUE
+                                  ? "INVALID_HANDLE_VALUE" : "ok");
+    }
     free(utf8);
     return h;
 }

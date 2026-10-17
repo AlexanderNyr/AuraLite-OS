@@ -34,7 +34,30 @@
 
 /* --- process -------------------------------------------------------------- */
 
+/* WR-3 diagnosis (temporary): file-backed trace, see w32_seh.c W32TRC.
+ * A WEAK *reference*, not a definition: the host unit tests amalgamate
+ * kernel32.c both with and without w32_seh.c, so this TU cannot provide a
+ * definition (duplicate symbol) and cannot depend on one being linked
+ * (undefined symbol).  Weak + a NULL test satisfies both. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+
 W32ABI void ExitProcess(unsigned int code) {
+    if (w32trc_line) {
+        uint64_t sp;
+        __asm__ volatile ("mov %%rsp, %0" : "=r"(sp));
+        w32trc_line("[ep] ExitProcess code=%x ra=%llx\n",
+                    (unsigned long long)code,
+                    (unsigned long long)(uintptr_t)__builtin_return_address(0),
+                    (unsigned long long)sp);
+        for (int i = 0; i < 512; i++) {
+            uint64_t v = ((const uint64_t *)sp)[i];
+            if (v >= 0x400000000000ull && v < 0x400001000000ull)
+                w32trc_line("[ep]   +%x %llx\n", (unsigned long long)(i * 8),
+                            (unsigned long long)v, 0ull);
+        }
+    }
     /* W32A-3: workers die first (Windows order: threads, then DLLs, then
      * the process).  Without this a live worker survives _exit (which is
      * per-thread) and the process never goes away. */

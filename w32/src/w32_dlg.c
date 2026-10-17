@@ -165,19 +165,74 @@ static const uint16_t *dlg_skip_z_or_id(const uint16_t *p) {
     while (*p) p++;
     return p + 1;
 }
-static const uint16_t *dlg_parse_header(const W32_DLGTEMPLATE *tmpl) {
-    const uint16_t *p = (const uint16_t *)((const uint8_t *)tmpl + sizeof(W32_DLGTEMPLATE));
+/* WR-3: the extended dialog template (DIALOGEX).
+ *
+ * A resource compiler emits DLGTEMPLATEEX for every modern dialog, and
+ * every one of Notepad++ 8.8.9's 69 dialogs is one.  Its first two WORDs
+ * are dlgVer (1) then signature (0xFFFF) -- which the classic
+ * W32_DLGTEMPLATE reads as style 0xFFFF0001: DS_* bits that cannot co-exist,
+ * a cdit that swallows x, and a cx/cy pair two bytes skewed.  The engine
+ * then walked a garbage item list (512 "create a window of class ''" calls
+ * in the measured run) and, once the skewed cx/cy produced a frame wider
+ * than CreateWindowExW accepts, CreateDialogParam returned NULL with
+ * ERROR_INVALID_PARAMETER -- NPP's "In StaticDialog::create()" box.
+ *
+ * The two shapes differ in field ORDER, not only in the extra fields:
+ *   classic: style, exStyle, cdit(WORD), x/y/cx/cy, menu, class, title, font
+ *   extended: dlgVer, signature, helpID, exStyle, style, cdit(WORD), x/y/cx/cy,
+ *             menu, class, title, font
+ *   classic item: style, exStyle, x/y/cx/cy, id(WORD), class, title, cdlen
+ *   extended item: helpID, exStyle, style, x/y/cx/cy, id(DWORD), class, title,
+ *                  extraCount
+ * so both are parsed into one neutral header below. */
+typedef struct {
+    uint32_t style, exstyle;
+    uint16_t cdit;
+    int16_t  x, y, cx, cy;
+    const uint16_t *items;      /* first DLGITEMTEMPLATE(EX), DWORD-aligned */
+    const uint16_t *wndclass;   /* the template's class field, 0 when default */
+    int ex;                     /* 1 = DLGTEMPLATEEX */
+} dlg_hdr_t;
+
+static int dlg_is_ex(const W32_DLGTEMPLATE *t) {
+    const uint16_t *w = (const uint16_t *)t;
+    return w[0] == 1u && w[1] == 0xFFFFu;
+}
+
+static void dlg_parse(const W32_DLGTEMPLATE *tmpl, dlg_hdr_t *h) {
+    const uint8_t *b = (const uint8_t *)tmpl;
+    const uint16_t *p;
+
+    memset(h, 0, sizeof *h);
+    h->ex = dlg_is_ex(tmpl);
+    if (h->ex) {
+        b += 4;                             /* dlgVer, signature */
+        b += 4;                             /* helpID */
+        h->exstyle = *(const uint32_t *)b; b += 4;
+        h->style   = *(const uint32_t *)b; b += 4;
+        h->cdit    = *(const uint16_t *)b; b += 2;
+    } else {
+        h->style   = *(const uint32_t *)b; b += 4;
+        h->exstyle = *(const uint32_t *)b; b += 4;
+        h->cdit    = *(const uint16_t *)b; b += 2;
+    }
+    h->x  = *(const int16_t *)b; b += 2;
+    h->y  = *(const int16_t *)b; b += 2;
+    h->cx = *(const int16_t *)b; b += 2;
+    h->cy = *(const int16_t *)b; b += 2;
+    p = (const uint16_t *)b;
     p = dlg_skip_z_or_id(p);                /* menu */
+    h->wndclass = (p && p[0] != 0xFFFFu && p[0] != 0u) ? p : 0;
     p = dlg_skip_z_or_id(p);                /* class */
     p = dlg_skip_z_or_id(p);                /* title */
-    if (tmpl->style & W32_DS_SETFONT) {
+    if (h->style & W32_DS_SETFONT) {
         p++;                                /* ptsize */
         p++;                                /* weight */
         p++;                                /* italic + charset packed as one WORD */
         p = dlg_skip_z_or_id(p);            /* typeface */
     }
     while (((uintptr_t)p) & 2) p++;         /* align to DWORD */
-    return p;
+    h->items = p;
 }
 
 /* WR-2: walk the cdit DLGITEMTEMPLATE records after the header and create
@@ -186,22 +241,32 @@ static const uint16_t *dlg_parse_header(const W32_DLGTEMPLATE *tmpl) {
  * class/title as ordinals (0xFFFF + atom/id) or strings, then a WORD
  * creation-data length.  Dialog units map at 2 px/unit here, the same
  * factor the frame itself uses (cx*8/4, cy*16/8). */
-static void dlg_create_items(W32_HWND hw, const W32_DLGTEMPLATE *tmpl,
+static void dlg_create_items(W32_HWND hw, const dlg_hdr_t *h,
                              W32_HINSTANCE inst) {
     extern const uint16_t w32_cls_Button_w[],  w32_cls_Edit_w[],
                           w32_cls_Static_w[],  w32_cls_ListBox_w[],
                           w32_cls_ScrollBar_w[], w32_cls_ComboBox_w[];
-    const uint16_t *p = dlg_parse_header(tmpl);
+    const uint8_t *p = (const uint8_t *)h->items;
     if (!p) return;
-    for (unsigned k = 0; k < tmpl->cdit && k < 256; k++) {
-        const uint8_t *bp = (const uint8_t *)p;
-        uint32_t style   = *(const uint32_t *)bp; bp += 4;
-        uint32_t exStyle = *(const uint32_t *)bp; bp += 4;
-        int32_t  x = *(const int16_t *)bp; bp += 2;
-        int32_t  y = *(const int16_t *)bp; bp += 2;
-        int32_t  cx = *(const int16_t *)bp; bp += 2;
-        int32_t  cy = *(const int16_t *)bp; bp += 2;
-        uint16_t id = *(const uint16_t *)bp; bp += 2;
+    for (unsigned k = 0; k < h->cdit && k < 256; k++) {
+        const uint8_t *bp = p;
+        uint32_t style, exStyle;
+        int32_t  x, y, cx, cy;
+        uint32_t id;
+        if (h->ex) bp += 4;                 /* helpID */
+        if (h->ex) {
+            exStyle = *(const uint32_t *)bp; bp += 4;
+            style   = *(const uint32_t *)bp; bp += 4;
+        } else {
+            style   = *(const uint32_t *)bp; bp += 4;
+            exStyle = *(const uint32_t *)bp; bp += 4;
+        }
+        x  = *(const int16_t *)bp; bp += 2;
+        y  = *(const int16_t *)bp; bp += 2;
+        cx = *(const int16_t *)bp; bp += 2;
+        cy = *(const int16_t *)bp; bp += 2;
+        if (h->ex) { id = *(const uint32_t *)bp; bp += 4; }
+        else       { id = *(const uint16_t *)bp; bp += 2; }
         const uint16_t *cls   = (const uint16_t *)bp;
         const uint16_t *title = dlg_skip_z_or_id(cls);
         if (!title) return;
@@ -235,18 +300,19 @@ static void dlg_create_items(W32_HWND hw, const W32_DLGTEMPLATE *tmpl,
                             x * 2, y * 2, cx * 2, cy * 2, hw,
                             (W32_HMENU)(uintptr_t)id, inst, 0);
         }
-        p = (const uint16_t *)next;
+        p = next;
         if ((uintptr_t)p <= (uintptr_t)cdp) break;     /* corrupt: stop */
     }
 }
 
 W32ABI W32_INT_PTR DialogBoxIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMPLATE *tmpl,
                                            W32_HWND owner, void *proc, W32_LPARAM init) {
+    dlg_hdr_t hdr;
     if (!tmpl || !proc) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return -1; }
-    (void)dlg_parse_header(tmpl);
+    dlg_parse(tmpl, &hdr);
 
-    int32_t w = (int32_t)(tmpl->cx * 8 / 4);
-    int32_t h = (int32_t)(tmpl->cy * 16 / 8);
+    int32_t w = (int32_t)(hdr.cx * 8 / 4);
+    int32_t h = (int32_t)(hdr.cy * 16 / 8);
     if (w < 100) w = 240;
     if (h < 50) h = 160;
     /* Pass only the WS_* window-style bits to CreateWindowExW; DS_* dialog
@@ -254,15 +320,25 @@ W32ABI W32_INT_PTR DialogBoxIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMP
      * CreateWindow style flags. */
     uint32_t ws = W32_WS_POPUP | W32_WS_CAPTION | W32_WS_SYSMENU |
                   W32_WS_VISIBLE | W32_WS_DLGFRAME;
-    if (tmpl->style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
+    if (hdr.style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
+    if (hdr.style & W32_WS_VISIBLE)    ws |= W32_WS_VISIBLE;
     {
         extern W32_WORD w32_user_register_dialog_class(void);
         w32_user_register_dialog_class();
     }
-    W32_HWND hw = CreateWindowExW(tmpl->exStyle & 0x00040000u, dlg_cls_w, (const uint16_t*)0,
-                                  ws, tmpl->x, tmpl->y, w, h, owner, 0, inst, 0);
+    W32_HWND hw = CreateWindowExW(hdr.exstyle,
+                                  hdr.wndclass ? hdr.wndclass : dlg_cls_w,
+                                  (const uint16_t*)0,
+                                  ws, hdr.x, hdr.y, w, h, owner, 0, inst, 0);
+    if (!hw)
+        /* An extended style the compositor cannot express must not cost the
+         * whole dialog: retry with the one bit the engine used to honour. */
+        hw = CreateWindowExW(hdr.exstyle & 0x00040000u,
+                             hdr.wndclass ? hdr.wndclass : dlg_cls_w,
+                             (const uint16_t*)0,
+                             ws, hdr.x, hdr.y, w, h, owner, 0, inst, 0);
     if (!hw) return -1;
-    dlg_create_items(hw, tmpl, inst);
+    dlg_create_items(hw, &hdr, inst);
 
     w32_dlg_t *d = dlg_alloc();
     if (!d) { DestroyWindow(hw); return -1; }
@@ -319,24 +395,32 @@ W32ABI W32_INT_PTR DialogBoxA(W32_HINSTANCE i,const char*n,W32_HWND o,void*p){re
  * slot is reclaimed in dlg_frameproc's WM_DESTROY path. */
 W32ABI W32_HWND CreateDialogIndirectParamW(W32_HINSTANCE inst, const W32_DLGTEMPLATE *tmpl,
                                            W32_HWND owner, void *proc, W32_LPARAM init) {
+    dlg_hdr_t hdr;
     if (!tmpl || !proc) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
-    (void)dlg_parse_header(tmpl);
+    dlg_parse(tmpl, &hdr);
 
-    int32_t w = (int32_t)(tmpl->cx * 8 / 4);
-    int32_t h = (int32_t)(tmpl->cy * 16 / 8);
+    int32_t w = (int32_t)(hdr.cx * 8 / 4);
+    int32_t h = (int32_t)(hdr.cy * 16 / 8);
     if (w < 100) w = 240;
     if (h < 50) h = 160;
     uint32_t ws = W32_WS_POPUP | W32_WS_CAPTION | W32_WS_SYSMENU | W32_WS_DLGFRAME;
-    if (tmpl->style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
-    if (tmpl->style & W32_WS_VISIBLE) ws |= W32_WS_VISIBLE;
+    if (hdr.style & W32_DS_MODALFRAME) ws |= W32_WS_DLGFRAME;
+    if (hdr.style & W32_WS_VISIBLE) ws |= W32_WS_VISIBLE;
     {
         extern W32_WORD w32_user_register_dialog_class(void);
         w32_user_register_dialog_class();
     }
-    W32_HWND hw = CreateWindowExW(tmpl->exStyle & 0x00040000u, dlg_cls_w, (const uint16_t*)0,
-                                  ws, tmpl->x, tmpl->y, w, h, owner, 0, inst, 0);
+    W32_HWND hw = CreateWindowExW(hdr.exstyle,
+                                  hdr.wndclass ? hdr.wndclass : dlg_cls_w,
+                                  (const uint16_t*)0,
+                                  ws, hdr.x, hdr.y, w, h, owner, 0, inst, 0);
+    if (!hw)
+        hw = CreateWindowExW(hdr.exstyle & 0x00040000u,
+                             hdr.wndclass ? hdr.wndclass : dlg_cls_w,
+                             (const uint16_t*)0,
+                             ws, hdr.x, hdr.y, w, h, owner, 0, inst, 0);
     if (!hw) return 0;
-    dlg_create_items(hw, tmpl, inst);
+    dlg_create_items(hw, &hdr, inst);
 
     w32_dlg_t *d = dlg_alloc();
     if (!d) { DestroyWindow(hw); return 0; }

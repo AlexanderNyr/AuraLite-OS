@@ -161,7 +161,12 @@ typedef struct gui_win {
     volatile int updating;
 } gui_win_t;
 
-static gui_win_t windows[GUI_MAX_WINDOWS];
+/* WR-3: heap-allocated, not a static array.  At 256 slots this table is
+ * ~1.2 MB; as BSS it pushed the kernel image past the region the EFI
+ * bootloader maps and the first write faulted at 0xFFFFFFFF80600000 during
+ * gui_init().  kmalloc serves it in 2 MiB pages after boot, so the table
+ * costs nothing until the GUI starts and the kernel image stays small. */
+static gui_win_t *windows;
 static spinlock_t gui_lock;
 /* Event rings and pathname slots share this lock. Always acquire gui_lock
  * before gui_evt_lock if both are needed (destroy/send). */
@@ -379,7 +384,16 @@ static void mark_window_dirty(const gui_win_t *w) {
  * =================================================================== */
 
 void gui_init(void) {
-    memset(windows, 0, sizeof(windows));
+    if (!windows) {
+        windows = (gui_win_t *)kmalloc((uint64_t)GUI_MAX_WINDOWS *
+                                       sizeof(gui_win_t));
+        if (!windows) {
+            kprintf("[gui] window table: kmalloc of %u slots failed\n",
+                    (unsigned)GUI_MAX_WINDOWS);
+            for (;;) __asm__ volatile("hlt");   /* no table: no GUI at all */
+        }
+    }
+    memset(windows, 0, (size_t)GUI_MAX_WINDOWS * sizeof(gui_win_t));
     memset(drop_epoch, 0, sizeof(drop_epoch));
     memset(window_epoch, 0, sizeof(window_epoch));
     memset(icons, 0, sizeof(icons));

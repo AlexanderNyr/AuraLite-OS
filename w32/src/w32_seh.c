@@ -54,6 +54,15 @@ void w32trc_line(const char *fmt, unsigned long long a,
     FILE *tf = w32trc_fp();
     if (tf) { fprintf(tf, fmt, a, b, c); fflush(tf); }
 }
+
+/* WR-3 diagnosis (temporary): the string form, for a MessageBox body.  The
+ * serial console cannot be relied on from inside a modal alert (the box is
+ * painted by the same thread that would have to flush it), so the text goes
+ * to the same /fat/w32trace.txt the rest of the dispatch trace uses. */
+void w32trc_str(const char *tag, const char *s) {
+    FILE *tf = w32trc_fp();
+    if (tf) { fprintf(tf, "%s: %s\n", tag, s ? s : "(null)"); fflush(tf); }
+}
 #include <stdlib.h>
 #include <string.h>
 
@@ -924,6 +933,20 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
     void *hdata = NULL;
     int saw_machframe = 0;
     uint64_t pre_rsp = context->rsp;
+    /* F31 (WR-3): the frame's OWN rsp, captured before any unwind code has
+     * touched the context.  This is what EstablisherFrame means on x64 --
+     * the frame's own RSP (the low end of its allocation), not the address
+     * its return address sits at -- and __GSHandlerCheck proves it: the
+     * handler reads the /GS cookie at [EstablisherFrame + cookie_offset]
+     * with cookie_offset taken from the handler data, and MSVC places that
+     * cookie immediately BELOW the frame's return address.  Notepad++
+     * 8.8.9's frame at npp+0xb871 allocates 0x5f8 and stores its cookie at
+     * +0x5c0, so with this value the read lands inside the frame; handing
+     * the handler the post-codes RSP instead -- what this function used to
+     * do -- made every /GS frame read 8 bytes of never-written stack above
+     * itself (all zeros), declare the stack smashed, and take the process
+     * down through __report_gsfailure + TerminateProcess(0xc0000409). */
+    uint64_t frame_rsp = pre_rsp;
 
     (void)handler_type;     /* both passes fetch handlers identically */
     (void)context_pointers; /* nonvolatile-pointer tracking: not kept */
@@ -987,7 +1010,13 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
         if (!p)
             return language_handler;
         codes = (const w32_unwind_code_t *)(p + sizeof(w32_unwind_info_t));
-        prolog_off = pc_rva - begin;
+        /* WR-3: range-safe.  For a chained hop the PC may sit outside this
+         * range entirely (see the CHAININFO note below); "the whole prologue
+         * has run" is the right reading there, where pc_rva - begin would
+         * underflow and skip every unwind code that should have applied. */
+        prolog_off = (pc_rva >= begin && pc_rva < end)
+                   ? (uint32_t)(pc_rva - begin)
+                   : (uint32_t)(end - begin);
 
         if (seh_apply_codes(context, image, span, codes, count,
                             prolog_off, fpreg, fpoff,
@@ -1004,8 +1033,20 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
             begin = e->begin_address;
             end = e->end_address;
             unwind_rva = e->unwind_data;
-            if (begin >= end || pc_rva < begin || pc_rva >= end)
+            /* WR-3: the PC is NOT required to lie inside the parent.
+             * UNW_FLAG_CHAININFO is how the compiler describes separated
+             * code -- a cold block or a funclet that shares a prologue
+             * living in a *different* range -- so requiring
+             * begin <= pc < end here rejects legal entries and makes the
+             * first pass stop in silence: Notepad++ 8.8.9's npp+0x1a12c9
+             * chains to 0x1a0840-0x1a088e and sits outside it by design.
+             * What still has to hold is that the parent entry is a real
+             * range; the bounds, version and handler checks at the top of
+             * the next iteration reject a hostile one. */
+            if (begin >= end)
                 return language_handler;
+            W32TRC("[vu]   chain -> parent %x-%x xdata=%x\n", begin, end,
+                   unwind_rva);
             continue;
         }
         if (flags & (W32_UNW_FLAG_EHANDLER | W32_UNW_FLAG_UHANDLER)) {
@@ -1028,7 +1069,7 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
      * pre-level RSP when a MACHFRAME consumed the stack (pointing at the
      * trap frame).  Then the normal epilogue pops the return address --
      * unless a MACHFRAME already set RIP/RSP final. */
-    *establisher_frame = saw_machframe ? pre_rsp : context->rsp;
+    *establisher_frame = saw_machframe ? pre_rsp : frame_rsp;
     if (!saw_machframe) {
         context->rip = *(volatile uint64_t *)(uintptr_t)context->rsp;
         context->rsp += 8;
@@ -1264,6 +1305,9 @@ static void seh_unwind_to(struct w32_seh_dispatch *f,
  * The walk cap bounds hostile stacks; exceeding it looks like bottom. */
 static int seh_first_pass(struct w32_seh_dispatch *f,
                           w32_exception_record_t *rec, w32_context_t *ctx) {
+    W32TRC("[d0] first-pass code=%x pc=%llx rsp=%llx\n",
+           rec->code, (unsigned long long)ctx->rip,
+           (unsigned long long)ctx->rsp);
     uint64_t walked = 0;
     for (;;) {
         uint64_t base = 0;
@@ -1454,6 +1498,26 @@ static void seh_unwind_to(struct w32_seh_dispatch *f, uint64_t target_frame,
     if (had_target) {
         f->resume = f->live;
         f->resume.rip = target_ip;
+        /* F32 (WR-3): STATUS_UNWIND_CONSOLIDATE (0x80000029) does not resume
+         * at TargetIp.  Its ExceptionInformation[0] is a consolidation
+         * callback, and the RIP to resume at is whatever it returns when it
+         * is called with the record -- Windows does this inside
+         * RtlRestoreContext, after the walk has reached the target frame.
+         * Resuming at target_ip instead re-entered the faulting instruction
+         * of Notepad++'s frame at npp+0xb870 over and over (2587 unwinds,
+         * each one re-faulting) because that pc is the handler's own pc,
+         * not a landing pad. */
+        if (rec->code == 0x80000029u && rec->num_params >= 1 &&
+            rec->params[0] != 0) {
+            /* F33 (WR-3): the callback is guest code, so it is an MS-ABI
+             * function (rcx = record).  Calling it through a plain C
+             * pointer passed the record in rdi (SysV) and the guest read
+             * garbage from rcx -- its first load faulted at npp+0x3ddf60. */
+            typedef void *(W32ABI *w32_consolidate_fn)(w32_exception_record_t *);
+            w32_consolidate_fn cfn =
+                (w32_consolidate_fn)(uintptr_t)rec->params[0];
+            f->resume.rip = (uint64_t)(uintptr_t)cfn(rec);
+        }
         /* RESIDUE2 fix (W32A-4 runtime): a FUNCLET transfer (target_ip != 0)
          * resumes with RSP = the establisher frame, per the documented x64
          * funclet-entry convention this image set was written against (see

@@ -471,19 +471,22 @@ typedef struct {
 #define W32_TVM_GETVISIBLECOUNT (W32_TVM_FIRST + 16)
 
 /* TVITEMW (x64): pointers force padding after mask/state/stateMask. */
+/* F30 (WR-3): no hand-placed padding after stateMask / cChildren.  The
+ * compiler already aligns pszText and lParam to 8; an explicit pad put
+ * them 8 bytes too far, so a TVITEM written by this layer landed past the
+ * caller's buffer.  Only the pad that the ABI really has (after the 4-byte
+ * mask, before the 8-byte hItem) is spelled out. */
 typedef struct {
     uint32_t     mask;         /* W32_TVIF_*                    */
-    uint32_t     _pad0;
+    uint32_t     _pad0;        /* hItem is 8-aligned: 0x08      */
     W32_HWND     hItem;        /* HTREEITEM (an opaque handle)  */
     uint32_t     state;        /* W32_TVIS_*                    */
     uint32_t     stateMask;
-    uint32_t     _pad1;
     uint16_t    *pszText;      /* in: text; out: buffer         */
     int32_t      cchTextMax;
     int32_t      iImage;
     int32_t      iSelectedImage;
     int32_t      cChildren;
-    uint32_t     _pad2;
     int64_t      lParam;
 } W32_TVITEMW;
 
@@ -579,15 +582,20 @@ typedef struct {
 #define W32_TCM_SETCURFOCUS  (W32_TCM_FIRST + 48)
 #define W32_TCM_ADJUSTRECT   (W32_TCM_FIRST + 40)
 
+/* F30 (WR-3): lParam sits at 0x20 -- iImage ends there and lParam is
+ * 8-byte aligned, so there is no padding in front of it.  An explicit
+ * pad put it at 0x28, which made every TCM_GETITEMW write 8 bytes past
+ * the caller's TCITEM: Notepad++ keeps that struct on the stack, so the
+ * write destroyed its /GS cookie and the editor died with 0xC0000409
+ * (STATUS_STACK_BUFFER_OVERRUN) immediately after the first tab insert. */
 typedef struct {
     uint32_t     mask;         /* W32_TCIF_*                    */
     uint32_t     dwState;      /* in/out (reserved 0 here)      */
     uint32_t     dwStateMask;
-    uint32_t     _pad0;
+    uint32_t     _pad0;        /* pszText is 8-aligned: 0x10    */
     uint16_t    *pszText;
     int32_t      cchTextMax;
     int32_t      iImage;
-    uint32_t     _pad1;
     int64_t      lParam;
 } W32_TCITEMW;
 
@@ -633,10 +641,11 @@ typedef struct {
 #define W32_TTM_WINDOWFROMPOINT   (W32_WM_USER + 16)
 
 /* TOOLINFOW (x64): rect is inline; the pointer fields align to 8. */
+/* F30 (WR-3): hwnd is at 0x08, straight after uFlags -- there is no
+ * padding between two 4-byte fields and an 8-aligned handle. */
 typedef struct {
     uint32_t     cbSize;
     uint32_t     uFlags;       /* W32_TTF_*                     */
-    uint32_t     _pad0;
     W32_HWND     hwnd;         /* the tool window               */
     uint64_t     uId;          /* tool id (or hwnd if IDISHWND) */
     W32_RECT     rect;         /* tool rect in hwnd coords      */
@@ -687,15 +696,15 @@ typedef struct {
 #define W32_HDM_GETITEMRECT  (W32_HDM_FIRST + 7)
 
 /* HDITEMW (x64). */
+/* F30 (WR-3): pszText at 0x08 and lParam at 0x20 -- both already
+ * 8-aligned, so neither padding was real. */
 typedef struct {
     uint32_t     mask;         /* W32_HDI_*                     */
     int32_t      cxy;          /* column width                  */
-    uint32_t     _pad0;
     uint16_t    *pszText;
     W32_HBITMAP  hbm;
     int32_t      cchTextMax;
     int32_t      fmt;          /* W32_HDF_*                     */
-    uint32_t     _pad1;
     int64_t      lParam;
     int32_t      iImage;
     int32_t      iOrder;
@@ -796,10 +805,11 @@ W32ABI W32_BOOL _TrackMouseEvent(W32_TRACKMOUSEEVENT *evt);
 typedef W32_INT_PTR (W32ABI *W32_DLGPROCP)(W32_HWND, W32_UINT, W32_WPARAM,
                                            W32_LPARAM);
 
+/* F30 (WR-3): hwndParent is at 0x08 (no pad after two DWORDs); the pad
+ * before ppsp IS real -- nPages ends at 0x2c and the union is 8-aligned. */
 typedef struct {
     uint32_t     dwSize;
     uint32_t     dwFlags;      /* W32_PSH_*                     */
-    uint32_t     _pad0;
     W32_HWND     hwndParent;
     W32_HINSTANCE hInstance;
     const uint16_t *pszIcon;   /* union with hIcon              */
@@ -812,10 +822,10 @@ typedef struct {
     void        *pfnCallback;  /* optional; ignored (documented) */
 } W32_PROPSHEETHEADERW;
 
+/* F30 (WR-3): hInstance is at 0x08, not 0x10. */
 typedef struct {
     uint32_t     dwSize;
     uint32_t     dwFlags;      /* W32_PSP_*                     */
-    uint32_t     _pad0;
     W32_HINSTANCE hInstance;
     const void  *pResource;    /* in-memory DLGTEMPLATE (indirect) */
     const uint16_t *pszIcon;
@@ -845,10 +855,13 @@ typedef struct {
 #define W32_PSBTN_MAX       6u
 
 /* Page notifications (WM_NOTIFY from the sheet; PSHNOTIFY at lParam). */
+/* F30 (WR-3): PSHNOTIFY is exactly NMHDR + LPARAM -- lParam is at 0x18,
+ * the first 8-aligned offset after the 24-byte NMHDR.  A page index was
+ * squeezed in ahead of it, so a page reading pshn->lParam got the index
+ * and never saw PSN_APPLY's TRUE/FALSE (OK/Close vs Apply).  The sheet
+ * sends the notification to one page window, so no index is carried. */
 typedef struct {
     W32_NMHDR hdr;             /* hwndFrom = the SHEET          */
-    int32_t   iPage;
-    uint32_t  _pad;
     int64_t   lParam;          /* PSN_APPLY: TRUE=OK/Close, FALSE=Apply */
 } W32_PSHNOTIFY;
 
