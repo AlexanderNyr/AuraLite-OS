@@ -41,19 +41,20 @@
 #include "w32/w32_errno.h"
 #include "w32/w32_utf.h"
 
+/* WR-3 diagnosis (temporary): weak *reference* so this file links with or
+ * without w32_seh.c.  Above CreateFileW, which traces through them.
+ * Declared unconditionally so the host-test build sees them too. */
+extern void w32trc_line(const char *fmt, unsigned long long a,
+                        unsigned long long b, unsigned long long c)
+    __attribute__((weak));
+extern void w32trc_str(const char *tag, const char *s) __attribute__((weak));
+
 #ifndef AURALITE_W32_HOST_TEST
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-/* WR-3 diagnosis (temporary): weak *reference* so this file links with or
- * without w32_seh.c.  Above CreateFileW, which traces through them. */
-extern void w32trc_line(const char *fmt, unsigned long long a,
-                        unsigned long long b, unsigned long long c)
-    __attribute__((weak));
-extern void w32trc_str(const char *tag, const char *s) __attribute__((weak));
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>

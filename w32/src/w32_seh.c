@@ -126,13 +126,14 @@ struct w32_seh_dispatch {
 #endif
     w32_context_t resume;       /* filled by RtlUnwind / ContinueExecution */
     int resume_valid;
-    /* Set only by OUR __C_specific_handler, immediately before it asks for a
-     * transfer to an MSVC __except funclet.  It selects the funclet-entry RSP
-     * convention in seh_unwind_to(); a FOREIGN personality's target (libgcc's
-     * _GCC_specific_handler reaching a GCC landing pad) must not get it.
-     * Cleared the moment it is consumed, so it can never leak into the next
-     * unwind on the same frame. */
-    int target_msvc_funclet;
+    /* (The "MSVC funclet entry RSP" flag that used to live here is gone.
+     * the documented x64 contract resumes at TargetIp on the target frame's OWN
+     * context -- its establisher RSP, the point its callee was entered at
+     * -- and that is what every real MSVC __except body expects: the body
+     * undoes the prolog itself (`add rsp, N; ret`).  The old dual
+     * convention (resume ON the return-address slot for "MSVC funclets")
+     * was written to fit hand-made fixture bodies and mis-shaped every
+     * real inline __except body; see seh_unwind_to().) */
     /* RtlUnwind's cursor.  Set to the FAULT context at entry; the first
      * pass never touches it.  RtlUnwind starts the second pass here --
      * from the fault, not from the personality's frame -- so cleanups
@@ -721,6 +722,54 @@ static uint64_t seh_frame_reg(const w32_context_t *ctx, unsigned reg) {
     }
 }
 
+/* The EstablisherFrame for one unwind-info level, computed from the context
+ * as it stood BEFORE any unwind code ran, per the documented x64 semantics
+ * (MSDN's RtlVirtualUnwind2 "EstablisherFrame" contract, the same rule the
+ * MSVC code generator bakes its handler data against):
+ *
+ *   no frame register            -> Context->Rsp (the frame's own RSP: the
+ *                                   low end of its allocation; this is what
+ *                                   __GSHandlerCheck reads the /GS cookie
+ *                                   against, and what MSVC's _local_unwind
+ *                                   passes as its frame argument -- "the
+ *                                   established RSP" saved in the prolog);
+ *   frame register, in the body  -> FrameRegister - FrameOffset*16;
+ *   frame register, mid-prolog   -> the frame pointer value once UWOP_SET_
+ *                                   FPREG has executed at this prolog
+ *                                   offset, else Context->Rsp;
+ *   frame register + CHAININFO   -> the frame pointer value.
+ *
+ * ("In the Prolog Establisher Frame is the same as the Stack Pointer up to
+ * the point where a Frame Pointer is defined, after which it remains
+ * constant -- if one is never defined, Establisher Frame continues to shadow
+ * the Stack Pointer all the way to the body of the function.")  The post-code
+ * RSP (the slot holding the return address) is NOT the establisher on
+ * x64 -- handing that to handlers made every /GS frame in a real MSVC app
+ * read its cookie 8 bytes above the return address and die in
+ * __report_gsfailure. */
+static uint64_t seh_establisher(const w32_context_t *ctx,
+                                const w32_unwind_code_t *codes, unsigned count,
+                                uint32_t prolog_off, unsigned fpreg,
+                                unsigned fpoff, unsigned flags) {
+    unsigned i;
+    uint64_t frame;
+    if (fpreg == 0 || fpreg == 4 || fpreg > 15)
+        return ctx->rsp;            /* "the contents of the stack pointer" */
+    frame = seh_frame_reg(ctx, fpreg) - fpoff;
+    if ((flags & 4) /* CHAININFO */)
+        return frame;               /* chained info -> the frame pointer */
+    /* In the prolog: the frame register defines the establisher only from
+     * the UWOP_SET_FPREG code onward (unwind codes are emitted in prolog
+     * order, so the first SET_FPREG found is the answer). */
+    for (i = 0; i < count; i++) {
+        if ((codes[i].op_info_op & 0x0f) == 3 /* UWOP_SET_FPREG */)
+            return (codes[i].code_offset <= prolog_off) ? frame : ctx->rsp;
+    }
+    /* A frame register with no SET_FPREG code is not a well-formed frame;
+     * shadow the RSP rather than guess. */
+    return ctx->rsp;
+}
+
 /* Apply one frame's unwind codes to @ctx.  @image/@span bound every read;
  * @codes/@count is the code array (already validated); @prolog_off is
  * ControlPc - BeginAddress (codes past it are skipped: the fault struck
@@ -932,21 +981,8 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
     void *language_handler = NULL;
     void *hdata = NULL;
     int saw_machframe = 0;
-    uint64_t pre_rsp = context->rsp;
-    /* F31 (WR-3): the frame's OWN rsp, captured before any unwind code has
-     * touched the context.  This is what EstablisherFrame means on x64 --
-     * the frame's own RSP (the low end of its allocation), not the address
-     * its return address sits at -- and __GSHandlerCheck proves it: the
-     * handler reads the /GS cookie at [EstablisherFrame + cookie_offset]
-     * with cookie_offset taken from the handler data, and MSVC places that
-     * cookie immediately BELOW the frame's return address.  Notepad++
-     * 8.8.9's frame at npp+0xb871 allocates 0x5f8 and stores its cookie at
-     * +0x5c0, so with this value the read lands inside the frame; handing
-     * the handler the post-codes RSP instead -- what this function used to
-     * do -- made every /GS frame read 8 bytes of never-written stack above
-     * itself (all zeros), declare the stack smashed, and take the process
-     * down through __report_gsfailure + TerminateProcess(0xc0000409). */
-    uint64_t frame_rsp = pre_rsp;
+    uint64_t est = 0;
+    int est_set = 0;
 
     (void)handler_type;     /* both passes fetch handlers identically */
     (void)context_pointers; /* nonvolatile-pointer tracking: not kept */
@@ -978,7 +1014,6 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
         size_t hdr;
         uint32_t prolog_off;
 
-        pre_rsp = context->rsp;
         if (unwind_rva & W32_RUNTIME_FUNCTION_INDIRECT) {
             const w32_runtime_function_t *e;
             unwind_rva &= ~W32_RUNTIME_FUNCTION_INDIRECT;
@@ -1017,6 +1052,15 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
         prolog_off = (pc_rva >= begin && pc_rva < end)
                    ? (uint32_t)(pc_rva - begin)
                    : (uint32_t)(end - begin);
+
+        /* The establisher comes from the entry's OWN unwind info and the
+         * pre-unwind context (it is defined before any code runs;
+         * chained hops below only add the parent's codes). */
+        if (!est_set) {
+            est = seh_establisher(context, codes, count, prolog_off,
+                                  fpreg, fpoff, flags);
+            est_set = 1;
+        }
 
         if (seh_apply_codes(context, image, span, codes, count,
                             prolog_off, fpreg, fpoff,
@@ -1065,11 +1109,12 @@ void *W32ABI RtlVirtualUnwind(uint32_t handler_type,
         break;
     }
 
-    /* Establisher = RSP now (pointing at the return address), or the
-     * pre-level RSP when a MACHFRAME consumed the stack (pointing at the
-     * trap frame).  Then the normal epilogue pops the return address --
-     * unless a MACHFRAME already set RIP/RSP final. */
-    *establisher_frame = saw_machframe ? pre_rsp : frame_rsp;
+    /* The establisher (the documented values: the frame's own RSP, or the frame
+     * pointer value -- NEVER the slot holding the return address).  Then
+     * the normal epilogue pops the return address -- unless a MACHFRAME
+     * already set RIP/RSP final (its establisher is the trap-frame RSP,
+     * which is what the pre-unwind context's Rsp already holds). */
+    *establisher_frame = est_set ? est : context->rsp;
     if (!saw_machframe) {
         context->rip = *(volatile uint64_t *)(uintptr_t)context->rsp;
         context->rsp += 8;
@@ -1394,7 +1439,6 @@ static int seh_first_pass(struct w32_seh_dispatch *f,
                      * certificate probe as ordinary control flow).
                      * The unwind longjmps out of this walk. */
                     if (dc.target_ip != 0) {
-                        f->target_msvc_funclet = 1;
                         seh_unwind_to(f, establisher, dc.target_ip, rec,
                                       0, 0);
                         /* NOTREACHED */
@@ -1518,39 +1562,21 @@ static void seh_unwind_to(struct w32_seh_dispatch *f, uint64_t target_frame,
                 (w32_consolidate_fn)(uintptr_t)rec->params[0];
             f->resume.rip = (uint64_t)(uintptr_t)cfn(rec);
         }
-        /* RESIDUE2 fix (W32A-4 runtime): a FUNCLET transfer (target_ip != 0)
-         * resumes with RSP = the establisher frame, per the documented x64
-         * funclet-entry convention this image set was written against (see
-         * w32a4_try.asm's header): the faulted frame's return address sits
-         * at [RSP], RSP%16 == 8 like any post-call entry, the funclet's own
-         * `ret` returns straight into the target frame's caller, and parent
-         * locals are reached through the establisher value the personality
-         * passes as an argument -- never through the raw RSP.  Resuming with
-         * the live (mid-frame) RSP instead -- what this code used to do,
-         * rationalised by a comment about libgcc cleanup pads -- put the
-         * funclet 8 bytes out of ABI alignment: its call chain reached
-         * WriteFile with RSP%16 == 0 and the callee-saved xmm spill
-         * (`movaps`) #GP'd before the handler could print a single receipt
-         * (that was the w32a4_try/crash/filter gui-shard failure).  The
-         * libgcc paths are untouched by construction: their cleanup sweeps
-         * run with target_ip == 0 (RtlUnwindEx returns to _Unwind_Resume),
-         * and the sweep-to-bottom has no target at all. */
-        /* ...but ONLY for an MSVC funclet, which is the single shape that
-         * convention describes.  GCC's SEH landing pads are emitted INSIDE
-         * the parent function, not as funclets: they expect the frame's
-         * own mid-function RSP -- exactly what the walk above left in
-         * f->live when it stopped at the target frame.  The claim in the
-         * note above that "the libgcc paths are untouched, their cleanup
-         * sweeps run with target_ip == 0" is not true of the CLEANUP
-         * PHASE: _GCC_specific_handler calls RtlUnwindEx with the landing
-         * pad as target_ip, so it took the funclet path and resumed 8
-         * bytes out of alignment.  The first thing a C++ destructor did
-         * was call WriteFile, whose MS-ABI prologue spills xmm6 with
-         * `movaps` -- #GP, and w32a4_cxx.exe died with status 139 before
-         * printing a single W32A4-CXX-DTOR line. */
-        if (target_ip != 0 && f->target_msvc_funclet)
-            f->resume.rsp = target_frame;
-        f->target_msvc_funclet = 0;
+        /* RESIDUE2/68929e3 residue, resolved against the documented contract:
+         * RtlUnwindEx resumes at TargetIp ON THE TARGET FRAME'S OWN
+         * CONTEXT -- its establisher RSP (the point its callee was entered
+         * at), which is exactly what f->live already holds here because the
+         * walk stops BEFORE virtually unwinding the target.  Real MSVC
+         * __except bodies are shaped for that entry (`add rsp, N; ret`:
+         * the body undoes the prolog and returns to the frame's caller),
+         * and libgcc's in-function landing pads want the same live RSP --
+         * so there is ONE convention now, not two.  The old
+         * `resume.rsp = target_frame` override ("an MSVC funclet is
+         * entered ON the establisher frame == the return-address slot")
+         * was written to fit hand-made fixture bodies whose `ret`
+         * expected the slot on top; it mis-shaped every real inline
+         * __except body (which then `add rsp, N`-overshot and popped
+         * garbage).  See test_w32_a4.c and the w32a4_*.asm fixtures. */
         if (ret_value)
             f->resume.rax = ret_value;
         f->resume_valid = 1;
@@ -1732,11 +1758,6 @@ int32_t W32ABI __C_specific_handler(w32_exception_record_t *record,
                                                              establisher_frame);
             if (v == 1 /* EXCEPTION_EXECUTE_HANDLER */) {
                 dispatch->scope_index = i;
-                {   /* This target IS an MSVC funclet: ask for the
-                     * funclet-entry RSP convention (see the field's note). */
-                    struct w32_seh_dispatch *df = seh_current_frame();
-                    if (df) df->target_msvc_funclet = 1;
-                }
                 RtlUnwind((void *)(uintptr_t)establisher_frame,
                           (void *)(uintptr_t)(image_base + s->jump_target),
                           record, NULL);
@@ -1892,6 +1913,16 @@ static void seh_raise_core(struct w32_seh_dispatch *f,
                                         W32_SEH_ST_RAISE);
             return;
         }
+        /* An uncaught MSVC-shaped C++ throw sweeps every frame's cleanup
+         * scopes first (innermost-first), and only then dies by name --
+         * the "sweep-to-bottom-and-die" D7 shape that predates the
+         * typed-catch raise above (WR-3 dropped the sweep when the raise
+         * grew a first pass: w32a4_cxthrow's finallys went silent and
+         * only the named death printed).  The sweep is resume-driven to
+         * bottom: it runs the cleanups and returns here spent, straight
+         * into the unhandled path below. */
+        if (rec->code == W32_CODE_MSCXX)
+            seh_unwind_to(f, 0, 0, rec, 1, 0);
         {
             int k;
             w32_context_t uctx = f->live;

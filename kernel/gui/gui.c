@@ -275,7 +275,7 @@ static int start_menu_open = 0;
  * =================================================================== */
 
 static int win_alive(int wid) {
-    return wid >= 0 && wid < GUI_MAX_WINDOWS && windows[wid].in_use;
+    return windows && wid >= 0 && wid < GUI_MAX_WINDOWS && windows[wid].in_use;
 }
 
 static int32_t abs_diff(int32_t a, int32_t b) { return a > b ? a - b : b - a; }
@@ -385,7 +385,7 @@ static void mark_window_dirty(const gui_win_t *w) {
 
 void gui_init(void) {
     if (!windows) {
-        windows = (gui_win_t *)kmalloc((uint64_t)GUI_MAX_WINDOWS *
+        windows = (gui_win_t *)kmalloc((size_t)GUI_MAX_WINDOWS *
                                        sizeof(gui_win_t));
         if (!windows) {
             kprintf("[gui] window table: kmalloc of %u slots failed\n",
@@ -775,6 +775,7 @@ uint64_t gui_window_owner(int wid) {
  */
 int gui_pid_has_windows(uint64_t owner_pid) {
     if (owner_pid == 0) return 0;
+    if (!windows) return 0;   /* before gui_init(): nobody owns windows */
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         if (gui_window_owned_by(i, owner_pid))
             return 1;
@@ -784,6 +785,12 @@ int gui_pid_has_windows(uint64_t owner_pid) {
 
 void gui_cleanup_process(uint64_t owner_pid) {
     if (owner_pid == 0) return;
+    /* The window table is heap-allocated in gui_init(); thread teardown
+     * runs this for EVERY exiting thread -- including early self-test
+     * threads that die before the GUI exists.  Walking the NULL table
+     * from those exits faulted inside the frame of whatever the boot
+     * happened to be doing and hung the SMP bringup dead. */
+    if (!windows) return;
     int cleaned = 0;
     spinlock_acquire(&gui_lock);
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {

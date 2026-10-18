@@ -322,16 +322,20 @@ static void test_unwind_push_alloc(void) {
     /* [saved rbp][ret], rsp 0x28 below the saved rbp. */
     st[10] = 0x1122334455667788ull;     /* saved rbp */
     st[11] = base + CODE_RVA + 0x100;   /* return address */
+    uint64_t body_rsp = (uint64_t)(uintptr_t)&st[10] - 0x28;
     memset(&ctx, 0, sizeof(ctx));
     ctx.rip = base + CODE_RVA + 8;
-    ctx.rsp = (uint64_t)(uintptr_t)&st[10] - 0x28;
+    ctx.rsp = body_rsp;
     ctx.rbp = 0xdead;
 
     e = RtlLookupFunctionEntry(ctx.rip, &base, NULL);
     CHECK(e != NULL);
     h = RtlVirtualUnwind(0, base, ctx.rip, e, &ctx, &hd, &est, NULL);
     CHECK(h == NULL && hd == NULL);
-    CHECK_EQ(est, (uint64_t)(uintptr_t)&st[11]);
+    /* MSDN's EstablisherFrame contract: with no frame register it SHADOWS the
+     * stack pointer -- the frame's own RSP (the low end of its 0x28
+     * allocation), not the slot holding the return address. */
+    CHECK_EQ(est, body_rsp);
     CHECK_EQ(ctx.rbp, 0x1122334455667788ull);
     CHECK_EQ(ctx.rip, (uint64_t)(uintptr_t)b + CODE_RVA + 0x100);
     CHECK_EQ(ctx.rsp, (uint64_t)(uintptr_t)&st[12]);
@@ -366,7 +370,10 @@ static void test_unwind_prolog_skip(void) {
     e = RtlLookupFunctionEntry(ctx.rip, &base, NULL);
     CHECK(e != NULL);
     (void)RtlVirtualUnwind(0, base, ctx.rip, e, &ctx, &hd, &est, NULL);
-    CHECK_EQ(est, (uint64_t)(uintptr_t)&st[11]);
+    /* Mid-prolog the establisher still shadows the RSP (MSDN: "This may not
+     * actually be the real establisher frame if control left the function
+     * from within the prologue" -- it is what the handler gets). */
+    CHECK_EQ(est, (uint64_t)(uintptr_t)&st[10]);
     CHECK_EQ(ctx.rbp, 0x8877665544332211ull);
     CHECK_EQ(ctx.rip, base + CODE_RVA + 0x100);
     CHECK_EQ(ctx.rsp, (uint64_t)(uintptr_t)&st[12]);
@@ -402,8 +409,11 @@ static void test_unwind_set_fpreg(void) {
     CHECK(e != NULL);
     (void)RtlVirtualUnwind(0, base, ctx.rip, e, &ctx, NULL, &est, NULL);
     /* ALLOC: rsp+=0x20; SET_FPREG: rsp=rbp; PUSH: rbp=[rsp], rsp+=8;
-     * epilogue: rip=[rsp], rsp+=8. */
-    CHECK_EQ(est, (uint64_t)(uintptr_t)&st[11]);
+     * epilogue: rip=[rsp], rsp+=8.  With a frame register defined (the
+     * SET_FPREG code has run at this prolog offset) the establisher is the
+     * FRAME POINTER VALUE minus FrameOffset*16 -- rbp itself here -- and
+     * NOT the RSP and not the return-address slot (MSDN). */
+    CHECK_EQ(est, (uint64_t)(uintptr_t)&st[10]);
     CHECK_EQ(ctx.rbp, (uint64_t)(uintptr_t)&st[20]);
     CHECK_EQ(ctx.rsp, (uint64_t)(uintptr_t)&st[12]);
     free(st);
@@ -502,14 +512,18 @@ static void test_unwind_alloc_large(void) {
     w32_seh_test_add_image(base, IMG_SIZE);
 
     st[40] = base + CODE_RVA + 0x100;   /* ret */
+    {
+    uint64_t body_rsp = (uint64_t)(uintptr_t)&st[40] - 0x120;
     memset(&ctx, 0, sizeof(ctx));
     ctx.rip = base + CODE_RVA + 8;
-    ctx.rsp = (uint64_t)(uintptr_t)&st[40] - 0x120;
+    ctx.rsp = body_rsp;
     e = RtlLookupFunctionEntry(ctx.rip, &base, NULL);
     CHECK(e != NULL);
     (void)RtlVirtualUnwind(0, base, ctx.rip, e, &ctx, NULL, &est, NULL);
-    CHECK_EQ(est, (uint64_t)(uintptr_t)&st[40]);
+    /* est shadows the frame's own RSP, not the ret slot (MSDN). */
+    CHECK_EQ(est, body_rsp);
     CHECK_EQ(ctx.rsp, (uint64_t)(uintptr_t)&st[41]);
+    }
     free(st);
     free(b);
 }
@@ -801,8 +815,11 @@ static void test_dispatch_exec(void) {
     st[22] = base + out + 4;        /* mid ret -> out */
     st[23] = 0xccccccccccccccccull; /* out saved rbp */
     st[24] = base + 0xe00;          /* out ret (in-image leaf pc) */
-    mid_est = (uint64_t)(uintptr_t)&st[22];
-    out_est = (uint64_t)(uintptr_t)&st[24];
+    /* Establishers (the frame's own RSP -- mid/out each did one
+     * `push rbp` after entry, so their body RSP is one slot below the
+     * saved rbp). */
+    mid_est = (uint64_t)(uintptr_t)&st[21];
+    out_est = (uint64_t)(uintptr_t)&st[23];
 
     f = (struct w32_seh_dispatch *)w32_seh_frame_new();
     w32_seh_test_set_frame(f);
@@ -831,14 +848,13 @@ static void test_dispatch_exec(void) {
         /* Resumed at JumpTarget with the outer frame intact. */
         CHECK_EQ(f->resume_valid, 1);
         CHECK_EQ(f->resume.rip, base + CODE_RVA + 0x300);
-        /* A funclet transfer (target_ip != 0) resumes ON the establisher
-         * frame, not on the live mid-frame RSP -- the x64 funclet-entry
-         * convention 68929e3 ("Bugfix update") pinned in w32_seh.c, where
-         * the live RSP left the funclet's call chain 8 bytes out of ABI
-         * alignment and the callee's movaps #GP'd before a receipt could
-         * print.  out_est IS that establisher frame: the slot holding
-         * out's return address, with out's locals reached through the
-         * establisher value, never through the raw RSP. */
+        /* The transfer resumes ON the establisher frame: the documented
+         * RtlUnwindEx stops AT the target and restores its own context --
+         * RIP = TargetIp, RSP = the frame's own RSP, which for a
+         * frame-register-less frame IS its establisher.  out_est is that
+         * value (out's body RSP), not the slot holding out's return
+         * address; a real MSVC __except body entered here undoes out's
+         * prolog itself (`add rsp, N; ret`). */
         CHECK_EQ(f->resume.rsp, out_est);
         CHECK_EQ(filt_calls, 1);
         CHECK_EQ(pers_calls, 2);    /* mid: first pass + unwind pass */
@@ -855,9 +871,11 @@ static void test_dispatch_exec(void) {
 }
 
 /* RtlUnwindEx to a mid-stack target: stops AT the target (its handler
- * does not run), resumes at TargetIp ON the target's establisher frame
- * (the x64 funclet-entry convention 68929e3 pinned in w32_seh.c; the
- * live mid-frame RSP is what the pre-fix code installed). */
+ * does not run), resumes at TargetIp ON the target's establisher frame --
+ * the documented x64 contract restores the target's own context (RIP = TargetIp,
+ * RSP = the frame's own RSP = its establisher, since this frame has no
+ * frame register).  EndFrame is that establisher, as MSVC's
+ * _local_unwind/C_specific_handler pass it. */
 static void test_unwind_with_cleanup(void) {
     uint8_t *b = make_image();
     uint64_t base = (uint64_t)(uintptr_t)b;
@@ -892,22 +910,18 @@ static void test_unwind_with_cleanup(void) {
     f->live.rsp = (uint64_t)(uintptr_t)&st[30];
     f->live_valid = 1;
     f->state = W32_SEH_ST_ACTIVE;
-    /* The MSVC shape: our own __C_specific_handler sets this flag before it
-     * asks for a transfer to an __except FUNCLET, and a funclet is entered
-     * with RSP = the establisher frame. */
-    f->target_msvc_funclet = 1;
     if (setjmp(f->jb) == 0) {
-        /* Unwind to mid's establisher (= &st[33]) with a target ip. */
-        RtlUnwindEx((void *)(uintptr_t)&st[33],
+        /* Unwind to mid's establisher (its body RSP = &st[32]) with a
+         * target ip. */
+        RtlUnwindEx((void *)(uintptr_t)&st[32],
                     (void *)(uintptr_t)(base + 0x700),
                     &rec, NULL, NULL, NULL);
         CHECK(0);   /* NOTREACHED */
     } else {
         CHECK_EQ(f->resume_valid, 1);
         CHECK_EQ(f->resume.rip, base + 0x700);
-        CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[33]); /* mid establisher */
-        /* and the flag is spent, so it cannot leak into the next unwind */
-        CHECK_EQ(f->target_msvc_funclet, 0);
+        /* Resumes with the target's own RSP == its establisher. */
+        CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[32]);
     }
     w32_seh_test_set_frame(NULL);
     w32_seh_frame_free(f);
@@ -915,18 +929,16 @@ static void test_unwind_with_cleanup(void) {
     free(b);
 }
 
-/* The OTHER half of the same contract: a target that did NOT come from our
- * __C_specific_handler.
- *
- * libgcc's _GCC_specific_handler also calls RtlUnwindEx with a target_ip --
- * the GCC landing pad -- during its cleanup phase.  A GCC landing pad is NOT
- * an MSVC funclet: it is emitted INSIDE the parent function and expects that
- * frame's own RSP, exactly as the walk left it when it stopped at the target.
- * Resuming it with the establisher instead put it 8 bytes out of ABI
- * alignment, and the first MS-ABI callee (WriteFile, whose prologue spills
- * xmm6 with `movaps`) #GP'd -- w32a4_cxx.exe died with status 139 before
- * printing one destructor line.  Pinned here so the distinction cannot be
- * flattened again by a change that only looks at the MSVC case. */
+/* The same contract reached from a FOREIGN personality: libgcc's
+ * _GCC_specific_handler calls RtlUnwindEx with a target_ip -- its GCC
+ * landing pad -- during its cleanup phase.  A GCC landing pad is emitted
+ * INSIDE the parent function and expects that frame's own RSP, exactly as
+ * the walk left it when it stopped at the target (the single resume
+ * convention: RIP = TargetIp, RSP = the target frame's own RSP = its
+ * establisher).  This is the same value an MSVC __except body gets -- one
+ * convention now, not two; w32a4_cxx.exe's destructors #GP'd on the
+ * return-address-slot variant (its call chain reached WriteFile with
+ * RSP%16 == 0 and the callee's `movaps` spilled unaligned). */
 static void test_unwind_foreign_landing_pad(void) {
     uint8_t *b = make_image();
     uint64_t base = (uint64_t)(uintptr_t)b;
@@ -960,16 +972,17 @@ static void test_unwind_foreign_landing_pad(void) {
     f->live.rsp = (uint64_t)(uintptr_t)&st[30];
     f->live_valid = 1;
     f->state = W32_SEH_ST_ACTIVE;
-    /* NO target_msvc_funclet: this is a foreign personality's target. */
+    /* NO special-casing: a foreign personality's target gets the same
+     * resume convention as everything else. */
     if (setjmp(f->jb) == 0) {
-        RtlUnwindEx((void *)(uintptr_t)&st[33],
+        RtlUnwindEx((void *)(uintptr_t)&st[32],
                     (void *)(uintptr_t)(base + 0x700),
                     &rec, NULL, NULL, NULL);
         CHECK(0);   /* NOTREACHED */
     } else {
         CHECK_EQ(f->resume_valid, 1);
         CHECK_EQ(f->resume.rip, base + 0x700);
-        /* the target frame's OWN rsp, not its establisher */
+        /* the target frame's OWN rsp == its establisher */
         CHECK_EQ(f->resume.rsp, (uint64_t)(uintptr_t)&st[32]);
     }
     w32_seh_test_set_frame(NULL);

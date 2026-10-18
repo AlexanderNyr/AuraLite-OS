@@ -76,6 +76,7 @@ def parse_dump(text):
         d["xdata"] = int(d["xdata"], 16)
         if "chained" in d:
             d["chained"] = tuple(int(x, 16) for x in d["chained"].split(","))
+        d.setdefault("chained", None)
         funcs.append(d)
     return funcs
 
@@ -132,12 +133,13 @@ def parse_readobj(text, base):
     funcs = []
     cur = None
     in_codes = False
+    in_chained = False
     for line in text.splitlines():
         s = line.strip()
         if s == "RuntimeFunction {":
             cur = {"codes_list": []}
-        elif s == "}" and cur is not None and not in_codes and "end" in cur \
-                and "ver" in cur:
+        elif s == "}" and cur is not None and not in_codes and not in_chained \
+                and "end" in cur and "ver" in cur:
             # End of UnwindInfo: materialise.
             codes = b"".join(cur["codes_list"])
             cur["codes"] = codes
@@ -150,6 +152,26 @@ def parse_readobj(text, base):
             in_codes = True
         elif s == "]":
             in_codes = False
+        elif s == "Chained {":
+            in_chained = True
+        elif s == "}" and in_chained:
+            in_chained = False
+            cur["chained"] = (cur.pop("chained_begin"),
+                              cur.pop("chained_end"),
+                              cur.pop("chained_xdata"))
+        elif in_chained:
+            m = re.match(r"StartAddress: .*\(0x([0-9a-fA-F]+)\)", s)
+            if m:
+                cur["chained_begin"] = int(m.group(1), 16) - base
+                continue
+            m = re.match(r"EndAddress: .*\(0x([0-9a-fA-F]+)\)", s)
+            if m:
+                cur["chained_end"] = int(m.group(1), 16) - base
+                continue
+            m = re.match(r"UnwindInfoAddress: .*\(0x([0-9a-fA-F]+)\)", s)
+            if m:
+                cur["chained_xdata"] = int(m.group(1), 16) - base
+                continue
         elif in_codes:
             m = re.match(r"0x([0-9a-fA-F]+): (\w+)(.*)", s)
             assert m, "unparsed code line: %r" % s
@@ -193,8 +215,6 @@ def parse_readobj(text, base):
             m = re.match(r"Flags \[ \(0x([0-9a-fA-F]+)\)", s)
             if m:
                 cur["flags"] = int(m.group(1), 16)
-                if cur["flags"] & 0x04:
-                    raise AssertionError("chained info (extend the decoder)")
                 continue
             m = re.match(r"PrologSize: (\d+)", s)
             if m:
@@ -218,6 +238,7 @@ def parse_readobj(text, base):
                 continue
     for c in funcs:
         c.setdefault("handler", None)
+        c.setdefault("chained", None)
     return funcs
 
 
@@ -259,7 +280,7 @@ def check_one(readobj, path):
     fails = 0
     for i, (x, y) in enumerate(zip(a, b)):
         for k in ("begin", "end", "xdata", "ver", "flags", "prolog",
-                  "freg", "fpoff", "handler"):
+                  "freg", "fpoff", "handler", "chained"):
             if x[k] != y[k]:
                 print("  FAIL %s func %d field %s: ours=%r readobj=%r" %
                       (name, i, k, x[k], y[k]))

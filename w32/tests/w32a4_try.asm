@@ -15,10 +15,16 @@
 ; .xdata can only name RVAs, never imports, and this is the shape real
 ; compiled code takes (a direct import reference would not link).
 ;
-; Funclet-entry convention (what the unwinder guarantees): an except body
-; starts with RSP == establisher (the faulted frame's return address on
-; top).  It prints, then returns straight out of the faulted function --
-; from the establisher, the epilogue is just `ret`.
+; Funclet-entry convention (what the unwinder guarantees, = the documented
+; x64 contract that real MSVC __except bodies are compiled against): the
+; transfer to a JumpTarget resumes ON THE TARGET FRAME'S OWN RSP -- the
+; point its callee was entered at, i.e. the frame's establisher -- with the
+; frame's prolog still applied.  A body therefore undoes that prolog itself
+; and returns straight out of the faulted function: `add rsp, N; ret` (the
+; shape real inline __except bodies have).  Each except_* below carries its
+; own scratch allocation (home space + rsp%16 == 0 at its call) and chains
+; to its catcher's unwind info, so a fault INSIDE the body still unwinds the
+; catcher's frame correctly.
 
 bits 64
 default rel
@@ -102,13 +108,14 @@ filter_div0:                    ; (EXCEPTION_POINTERS*, establisher)
     xor  eax, eax
     ret
 
-except_div0:                    ; rsp == establisher
-    sub  rsp, 40
+except_div0:                    ; entered on case_div0's own body RSP
+    sub  rsp, 20h               ; own scratch / home space (rsp%16 == 0)
     lea  rsi, [msg_div0]
     mov  edi, msg_div0_l
     call puts_raw
-    add  rsp, 40
-    ret
+    add  rsp, 20h
+    add  rsp, 8                 ; undo case_div0's `push rbp`
+    ret                         ; pops case_div0's return address
 except_div0_end:
 
 ; --- case 2: a second fault, proving the mask came back --------------------
@@ -134,12 +141,13 @@ filter_second:
     xor  eax, eax
     ret
 
-except_second:
-    sub  rsp, 40
+except_second:                  ; entered on case_second's body RSP
+    sub  rsp, 20h
     lea  rsi, [msg_second]
     mov  edi, msg_second_l
     call puts_raw
-    add  rsp, 40
+    add  rsp, 20h
+    add  rsp, 8                 ; undo case_second's `push rbp`
     ret
 except_second_end:
 
@@ -164,12 +172,13 @@ filter_av:
     xor  eax, eax
     ret
 
-except_av:
-    sub  rsp, 40
+except_av:                      ; entered on case_av's body RSP
+    sub  rsp, 20h
     lea  rsi, [msg_av]
     mov  edi, msg_av_l
     call puts_raw
-    add  rsp, 40
+    add  rsp, 20h
+    add  rsp, 8                 ; undo case_av's `push rbp`
     ret
 except_av_end:
 
@@ -198,12 +207,13 @@ filter_inner:
     xor  eax, eax
     ret
 
-except_inner:
-    sub  rsp, 40
+except_inner:                   ; entered on inner's body RSP
+    sub  rsp, 20h
     lea  rsi, [msg_inner]
     mov  edi, msg_inner_l
     call puts_raw
-    add  rsp, 40
+    add  rsp, 20h
+    add  rsp, 28h               ; undo inner's `push rbp; sub rsp,20h`
     ret
 except_inner_end:
 
@@ -256,12 +266,13 @@ filter_mid:
     ret
 filter_mid_end:
 
-except_mid:
-    sub  rsp, 40
+except_mid:                     ; entered on mid's body RSP
+    sub  rsp, 20h
     lea  rsi, [msg_mid]
     mov  edi, msg_mid_l
     call puts_raw
-    add  rsp, 40
+    add  rsp, 20h
+    add  rsp, 28h               ; undo mid's `push rbp; sub rsp,20h`
     ret
 except_mid_end:
 
@@ -357,10 +368,11 @@ case_div0_xdata:                ; push rbp
     dd case_div0.case_try_begin, case_div0.case_try_end
     dd filter_div0, except_div0
 
-except_div0_xdata:              ; sub rsp,40
-    db 0x01, 4, 1, 0x00
-    db 4, 0x42                  ; ALLOC_SMALL(4)
+except_div0_xdata:              ; own `sub rsp,20h`; chain: case_div0's prolog
+    db 0x21, 4, 1, 0x00         ; ver1|CHAININFO, prolog 4, count 1
+    db 4, 0x32                  ; ALLOC_SMALL(3) = 20h
     db 0, 0
+    dd case_div0, case_div0_end, case_div0_xdata
 
 case_second_xdata:
     db 0x09, 1, 1, 0x00
@@ -371,10 +383,11 @@ case_second_xdata:
     dd case_second.case_try_begin, case_second.case_try_end
     dd filter_second, except_second
 
-except_second_xdata:
-    db 0x01, 4, 1, 0x00
-    db 4, 0x42
+except_second_xdata:            ; own `sub rsp,20h`; chain: case_second
+    db 0x21, 4, 1, 0x00
+    db 4, 0x32
     db 0, 0
+    dd case_second, case_second_end, case_second_xdata
 
 case_av_xdata:
     db 0x09, 1, 1, 0x00
@@ -385,10 +398,11 @@ case_av_xdata:
     dd case_av.case_try_begin, case_av.case_try_end
     dd filter_av, except_av
 
-except_av_xdata:
-    db 0x01, 4, 1, 0x00
-    db 4, 0x42
+except_av_xdata:                ; own `sub rsp,20h`; chain: case_av
+    db 0x21, 4, 1, 0x00
+    db 4, 0x32
     db 0, 0
+    dd case_av, case_av_end, case_av_xdata
 
 inner_xdata:                    ; push rbp; sub rsp,0x20
     db 0x09, 5, 2, 0x00
@@ -399,10 +413,11 @@ inner_xdata:                    ; push rbp; sub rsp,0x20
     dd inner.try_begin, inner.try_end
     dd filter_inner, except_inner
 
-except_inner_xdata:
-    db 0x01, 4, 1, 0x00
-    db 4, 0x42
+except_inner_xdata:             ; own `sub rsp,20h`; chain: inner
+    db 0x21, 4, 1, 0x00
+    db 4, 0x32
     db 0, 0
+    dd inner, inner_end, inner_xdata
 
 mid_xdata:
     db 0x09, 5, 2, 0x00
@@ -420,10 +435,11 @@ filter_mid_xdata:               ; push rbp; sub rsp,0x20 (no handler)
     db 2, 0x60
     db 1, 0x50
 
-except_mid_xdata:
-    db 0x01, 4, 1, 0x00
-    db 4, 0x42
+except_mid_xdata:               ; own `sub rsp,20h`; chain: mid
+    db 0x21, 4, 1, 0x00
+    db 4, 0x32
     db 0, 0
+    dd mid, mid_end, mid_xdata
 
 outer_xdata:
     db 0x09, 5, 2, 0x00
