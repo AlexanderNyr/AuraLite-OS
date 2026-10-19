@@ -85,6 +85,17 @@ enum {
      * x/y become parent-relative and the compositor clips/stacks it inside
      * the parent. */
     GUI_OP_SET_PARENT,
+    /* ---- WR-3: see-through window region ----
+     * a2=owned wid, a3=l|t<<32, a4=r|b<<32, all in window-buffer pixels.
+     * The compositor skips the rectangle when drawing this window and the
+     * hit test falls through it to whatever is below, so a window can
+     * leave part of itself transparent the way Win32's direct-draw painter
+     * does by simply never painting there.  An empty rect (r<=l or b<=t)
+     * clears the hole.  The first client is the tab control: Notepad++
+     * sizes it to the full view by design and parks the editor in its
+     * display area, which a buffered compositor would otherwise cover
+     * with the tab's own background. */
+    GUI_OP_SET_HOLE,
 };
 
 /* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.

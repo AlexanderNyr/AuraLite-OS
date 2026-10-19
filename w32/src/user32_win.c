@@ -273,6 +273,10 @@ struct ui_class {
     W32_HICON icon_sm;            /* W32A-14: GCLP_HICONSM (PuTTY stamps this) */
     W32_HCURSOR cursor;
     int       comctl;             /* W32A-8: a common-control class (WS_CHILD ok) */
+    int       stdctl;             /* WR-3: a Win32 standard control (Button, Edit,
+                                   * Static, ListBox, ScrollBar, ComboBox): the
+                                   * style low word is class-defined, so only the
+                                   * high word faces the known-style check. */
     int32_t   cb_wnd_extra;       /* WR-3: WNDCLASSEX.cbWndExtra, capped */
     /* WR-2: WNDCLASS.lpszMenuName.  Win32 keeps this in the class, not in the
      * window: a window created with hMenu == NULL gets the class menu.  Both
@@ -319,6 +323,7 @@ struct ui_window {
     int       painting;
     W32_HWND  lock_owner;             /* LockWindowUpdate */
     int       tracking_leave;
+    int       ever_shown;              /* WM_SIZE fired on the first show */
     int32_t   last_mx, last_my;
     W32_DWORD layered_key, layered_flags;
     uint8_t   layered_alpha;
@@ -904,7 +909,13 @@ W32_WORD w32_user_register_dialog_class(void) {
         if (ui_find_class_w(std[i].name)) continue;
         c.lpfnWndProc = std[i].proc;
         c.lpszClassName = std[i].name;
-        ui_register_class(&c);
+        if (ui_register_class(&c)) {
+            /* WR-3: mark the predefined control so CreateWindowExW checks
+             * the high style word only (LBS_x/CBS_x/BS_x live in the low
+             * word by documented Win32 design). */
+            struct ui_class *k = ui_find_class_w(std[i].name);
+            if (k) k->stdctl = 1;
+        }
     }
     return a;
 }
@@ -987,9 +998,12 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
      * ES_*, BS_* ...), interpreted by the control's own WndProc -- user32 must
      * not validate them as WS_* styles. Only the high word carries the standard
      * WS_ bits. For a common-control class we therefore check the high word
-     * only; standard windows keep the full check (their low word is DS_ or
+     * only, and WR-3 extends that to the six standard controls (an app's
+     * ListBox popup carries e.g. LBS_NOINTEGRALHEIGHT in the low word, and
+     * refusing it handed Notepad++ a NULL handle it terminated on);
+     * ordinary windows keep the full check (their low word is DS_ or
      * zero, already inside UI_STYLE_KNOWN). */
-    W32_DWORD style_std = k->comctl ? (style & 0xFFFF0000u) : style;
+    W32_DWORD style_std = (k->comctl || k->stdctl) ? (style & 0xFFFF0000u) : style;
     if ((style_std & ~UI_STYLE_KNOWN) || (exstyle & ~UI_EXSTYLE_KNOWN)) {
         if (w32trc_line) {
             w32trc_str("[cw] rejected style of class", k->name_a);
@@ -1118,6 +1132,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
     win->proc_top = 0;
     win->n_inv = 0;
     win->tracking_leave = 0;
+    win->ever_shown = 0;
     win->layered_key = 0; win->layered_alpha = 255; win->layered_flags = 0;
     win->mb_n = 0;
     ui_unlock();
@@ -1459,6 +1474,21 @@ static int ui_q_pop(struct ui_queue *q, W32_MSG *out, W32_HWND filter,
         q->last_time = m->time;
         q->last_px = m->px;
         q->last_py = m->py;
+        /* WR-3 live fix: the thread key-state array is fed by DELIVERED key
+         * messages.  The pump used to feed it while translating, which let a
+         * whole burst (shift-down, letter, shift-up) collapse before the
+         * program read its first message -- GetKeyState(VK_SHIFT) was already
+         * clear when TranslateMessage ran ToAscii on the letter, and every
+         * shifted character lost its shift.  Win32 defines the state as of
+         * the last message retrieved; feeding here, on removal, is that. */
+        if (remove &&
+            (out->message == W32_WM_KEYDOWN || out->message == W32_WM_KEYUP) &&
+            out->wParam < 256) {
+            if (out->message == W32_WM_KEYDOWN)
+                q->keystate[out->wParam] |= 0x80;
+            else
+                q->keystate[out->wParam] &= (uint8_t)~0x80;
+        }
         if (remove) ui_q_remove_at(q, i);
         return 1;
     }
@@ -1471,6 +1501,86 @@ static int ui_q_pop(struct ui_queue *q, W32_MSG *out, W32_HWND filter,
  * event -> Win32 message, button state -> MK_* flags, key -> lParam bits. */
 static W32_LPARAM ui_pt_lparam(int32_t x, int32_t y) {
     return (W32_LPARAM)(((uint32_t)(uint16_t)y << 16) | (uint16_t)x);
+}
+
+/* WR-3 live fix: the compositor speaks COOKED key codes -- printable ASCII
+ * plus the KB_KEY_* specials at 0x100+ (drivers/keyboard/keyboard.h; kept in
+ * step by hand, same as the event numbers above) -- while Win32 wants
+ * VIRTUAL keys.  Posting the cooked code as the VK made TranslateMessage
+ * produce nothing: lowercase 'a' is not VK_A, and 0x120 (shift) sailed past
+ * the <256 keystate feed entirely.  Map at the edge, into the documented
+ * virtual-key codes.  Returns 0 for keys with no Win32 VK (drop, not invent).
+ */
+static W32_DWORD ui_kb_to_vk(uint32_t code) {
+    if (code < 0x100) {
+        if (code >= 'a' && code <= 'z') return (W32_DWORD)(code - ('a' - 'A'));
+        if (code >= 0x01 && code <= 0x1A) return (W32_DWORD)(code + 0x40); /* ctrl+letter */
+        if (code == (uint32_t)'\n') return W32_VK_RETURN;
+        if (code == (uint32_t)'\b') return W32_VK_BACK;
+        if (code == (uint32_t)'\t') return W32_VK_TAB;
+        if (code == 0x1B) return W32_VK_ESCAPE;
+        if (code == 0x7F) return W32_VK_DELETE;
+        if (code < 0x20) return 0;
+        /* The kernel cooks WITH shift ('!' for shift+1), while ToAscii
+         * wants the BASE key and re-applies shift itself -- so shifted
+         * symbols land on their base position, and punctuation lands on
+         * the documented OEM virtual keys (ToAscii's table holds base
+         * keys only; posting '!' or '-' verbatim translates to nothing). */
+        switch (code) {
+        case '!': return '1'; case '@': return '2'; case '#': return '3';
+        case '$': return '4'; case '%': return '5'; case '^': return '6';
+        case '&': return '7'; case '*': return '8'; case '(': return '9';
+        case ')': return '0';
+        case '-': case '_': return 0xBD; /* VK_OEM_MINUS */
+        case '=': case '+': return 0xBB; /* VK_OEM_PLUS */
+        case '[': case '{': return 0xDB; /* VK_OEM_4 */
+        case ']': case '}': return 0xDD; /* VK_OEM_6 */
+        case '\\': case '|': return 0xDC; /* VK_OEM_5 */
+        case ';': case ':': return 0xBA; /* VK_OEM_1 */
+        case '\'': case '"': return 0xDE; /* VK_OEM_7 */
+        case ',': case '<': return 0xBC; /* VK_OEM_COMMA */
+        case '.': case '>': return 0xBE; /* VK_OEM_PERIOD */
+        case '/': case '?': return 0xBF; /* VK_OEM_2 */
+        case '`': case '~': return 0xC0; /* VK_OEM_3 */
+        default: break;
+        }
+        return (W32_DWORD)code; /* digits, uppercase, space: VK == ASCII */
+    }
+    switch (code) {
+    case 0x100: return W32_VK_LEFT;
+    case 0x101: return W32_VK_RIGHT;
+    case 0x102: return W32_VK_UP;
+    case 0x103: return W32_VK_DOWN;
+    case 0x104: return W32_VK_HOME;
+    case 0x105: return W32_VK_END;
+    case 0x106: return W32_VK_PRIOR;
+    case 0x107: return W32_VK_NEXT;
+    case 0x108: return W32_VK_INSERT;
+    case 0x109: return W32_VK_DELETE;
+    case 0x120: case 0x121: return W32_VK_SHIFT;
+    case 0x122: case 0x125: return W32_VK_CONTROL;
+    case 0x123: case 0x126: return W32_VK_MENU;
+    default: break;
+    }
+    if (code >= 0x110 && code <= 0x11B) return (W32_DWORD)(0x70 + code - 0x110); /* F1-F12 */
+    if (code == 0x11C) return 0x2C; /* VK_SNAPSHOT */
+    if (code == 0x11D) return 0x13; /* VK_PAUSE */
+    if (code == 0x124) return 0x14; /* VK_CAPITAL */
+    if (code == 0x127) return 0x5B; /* VK_LWIN */
+    if (code == 0x128) return 0x5C; /* VK_RWIN */
+    if (code == 0x129) return 0x5D; /* VK_APPS */
+    if (code == 0x12A) return 0x90; /* VK_NUMLOCK */
+    if (code == 0x12B) return 0x91; /* VK_SCROLL */
+    if (code >= 0x130 && code <= 0x139) return (W32_DWORD)(0x60 + code - 0x130); /* numpad 0-9 */
+    if (code == 0x13A) return 0x6E; /* VK_DECIMAL */
+    if (code == 0x13B) return 0x6F; /* VK_DIVIDE */
+    if (code == 0x13C) return 0x6A; /* VK_MULTIPLY */
+    if (code == 0x13D) return 0x6D; /* VK_SUBTRACT */
+    if (code == 0x13E) return 0x6B; /* VK_ADD */
+    if (code == 0x13F) return W32_VK_RETURN;
+    if (code == 0x140) return 0x6C; /* VK_SEPARATOR */
+    if (code >= 0x150 && code <= 0x15B) return (W32_DWORD)(0x7C + code - 0x150); /* F13-F24 */
+    return 0;
 }
 
 static W32_WPARAM ui_mk_state(uint8_t buttons, uint8_t mods) {
@@ -1596,28 +1706,29 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
                 windows[ki].cls < UI_MAX_CLASSES)
                 kc = classes[windows[ki].cls].name_a;
             w32trc_line("[key] vk=%u win=#%u\n",
-                        (unsigned long long)e->key, (unsigned long long)ki, 0);
+                        (unsigned long long)ui_kb_to_vk(e->key),
+                        (unsigned long long)ki, 0);
             w32trc_str("[key]   cls=", kc);
         }
-        /* One keystroke carries its scan code and its transition bits; the
-         * thread's key-state array is fed here, which is what GetKeyState
-         * reads back. */
-        if (e->key < 256) {
-            struct ui_queue *q = ui_queue_for(w->tid ? w->tid : GetCurrentThreadId(), 1);
-            if (q) q->keystate[e->key] |= 0x80;
+        /* WR-3: the cooked kernel code becomes a virtual key at the edge
+         * (see ui_kb_to_vk), and the thread's key-state array is fed at
+         * DELIVERY (ui_q_pop), not here: feeding at pump time collapsed
+         * whole sendkey bursts before the program read its first message. */
+        {
+            W32_DWORD vk = ui_kb_to_vk(e->key);
+            if (vk)
+                ui_post_to(hwnd, W32_WM_KEYDOWN, vk,
+                           (W32_LPARAM)(1 | ((uint32_t)e->data << 16)), e->x, e->y);
         }
-        ui_post_to(hwnd, W32_WM_KEYDOWN, e->key,
-                   (W32_LPARAM)(1 | ((uint32_t)e->data << 16)), e->x, e->y);
         break;
     }
-    case UI_EVT_KEY_UP:
-        if (e->key < 256) {
-            struct ui_queue *q = ui_queue_for(w->tid ? w->tid : GetCurrentThreadId(), 1);
-            if (q) q->keystate[e->key] &= (uint8_t)~0x80;
-        }
-        ui_post_to(hwnd, W32_WM_KEYUP, e->key,
-                   (W32_LPARAM)(int32_t)0xC0000001u, e->x, e->y);
+    case UI_EVT_KEY_UP: {
+        W32_DWORD vk = ui_kb_to_vk(e->key);
+        if (vk)
+            ui_post_to(hwnd, W32_WM_KEYUP, vk,
+                       (W32_LPARAM)(int32_t)0xC0000001u, e->x, e->y);
         break;
+    }
     case UI_EVT_FOCUS:
         ui_post_to(hwnd, W32_WM_SETFOCUS, 0, 0, e->x, e->y);
         break;
@@ -2705,6 +2816,7 @@ W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
     struct ui_window *w = &windows[i];
     W32_BOOL was_visible = w->visible ? W32_TRUE : W32_FALSE;
+    int was_min = w->minimized, was_max = w->maximized;
 
     switch (cmd) {
     case W32_SW_HIDE:
@@ -2741,11 +2853,22 @@ W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
         w->maximized = 0;
         w->visible = 1;
         ui_refresh_geom(w);
-        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
         if (cmd != W32_SW_SHOWNOACTIVATE) ag_window_focus(w->ag_wid);
         InvalidateRect(hwnd, 0, W32_TRUE);
         break;
     }
+    /* WM_SIZE follows a change of the SIZE STATE -- maximize, minimize,
+     * restore, or the first transition to visible (the initial layout) --
+     * never a plain re-show of an already-visible window.  Posting WM_SIZE
+     * unconditionally turned every layout pass that re-stated a window's
+     * visibility into a WM_SIZE storm: Notepad++'s re-layout answers each
+     * WM_SIZE with the same show/hide sequence, which posted another
+     * WM_SIZE, and startup never finished. */
+    int size_state_changed = (w->minimized != was_min) || (w->maximized != was_max);
+    int first_show = !was_visible && w->visible && !w->ever_shown;
+    if (w->visible) w->ever_shown = 1;
+    if (size_state_changed || first_show)
+        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
     return was_visible;
 }
 
@@ -2781,6 +2904,8 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
     int i = w32_win_index_from_hwnd(hwnd);
     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
     struct ui_window *w = &windows[i];
+    int32_t pos_x0 = w->x, pos_y0 = w->y;
+    uint32_t size_w0 = w->w, size_h0 = w->h;
 
     if (!(flags & W32_SWP_NOZORDER)) {
         if (after == W32_HWND_TOP || after == W32_HWND_TOPMOST)
@@ -2810,10 +2935,20 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
     if (flags & W32_SWP_SHOWWINDOW) { ag_window_show(w->ag_wid); w->visible = 1; }
     if (flags & W32_SWP_HIDEWINDOW) { ag_window_hide(w->ag_wid); w->visible = 0; }
 
-    /* The compositor moved content: tell the window, then repaint.  Win32
-     * sends WM_WINDOWPOSCHANGED/WM_SIZE through the same path. */
+    /* WM_WINDOWPOSCHANGED always; WM_MOVE/WM_SIZE only where the geometry
+     * actually changed.  Posting WM_SIZE on every call -- even SWP_NOSIZE
+     * with an unchanged size -- fed Notepad++'s layout loop: each pass
+     * re-stated its children's geometry, each re-statement posted WM_SIZE,
+     * and the handler that answers WM_SIZE with a re-layout never drained
+     * its queue. */
     PostMessageW(hwnd, W32_WM_WINDOWPOSCHANGED, 0, 0);
-    PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
+    if (!(flags & W32_SWP_NOMOVE) && (w->x != pos_x0 || w->y != pos_y0))
+        PostMessageW(hwnd, W32_WM_MOVE, 0,
+                     (W32_LPARAM)(((uint32_t)(uint16_t)(int16_t)(w->y & 0xFFFF)) << 16 |
+                                  (uint32_t)(uint16_t)(int16_t)(w->x & 0xFFFF)));
+    if (!(flags & W32_SWP_NOSIZE) &&
+        (w->w != size_w0 || w->h != size_h0))
+        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
     if (!(flags & W32_SWP_NOREDRAW)) InvalidateRect(hwnd, 0, W32_TRUE);
     return W32_TRUE;
 }
@@ -3496,40 +3631,68 @@ W32ABI int32_t GetKeyboardType(int32_t type) {
 
 #define UI_MONITOR_HANDLE ((W32_HMONITOR)(uintptr_t)0x5000)
 
-static void ui_monitor_info(W32_MONITORINFOEXW *mi) {
+static void ui_monitor_info_base(W32_MONITORINFO *m) {
     ui_theme_t t;
     uint32_t sw = 0, sh = 0;
     ag_screen_size(&sw, &sh);
     uint32_t taskbar = (ag_theme_get(&t) == 0) ? t.taskbar_h : 0;
-    mi->mi.rcMonitor.left = 0; mi->mi.rcMonitor.top = 0;
-    mi->mi.rcMonitor.right = (int32_t)sw; mi->mi.rcMonitor.bottom = (int32_t)sh;
-    mi->mi.rcWork.left = 0; mi->mi.rcWork.top = 0;
-    mi->mi.rcWork.right = (int32_t)sw;
-    mi->mi.rcWork.bottom = (int32_t)(sh - taskbar);
-    mi->mi.dwFlags = 1;                        /* MONITORINFOF_PRIMARY */
+    m->rcMonitor.left = 0; m->rcMonitor.top = 0;
+    m->rcMonitor.right = (int32_t)sw; m->rcMonitor.bottom = (int32_t)sh;
+    m->rcWork.left = 0; m->rcWork.top = 0;
+    m->rcWork.right = (int32_t)sw;
+    m->rcWork.bottom = (int32_t)(sh - taskbar);
+    m->dwFlags = 1;                            /* MONITORINFOF_PRIMARY */
+}
+
+static void ui_monitor_info(W32_MONITORINFOEXW *mi) {
+    ui_monitor_info_base(&mi->mi);
     const uint16_t dev[] = { 'A','u','r','a','L','i','t','e',0 };
     w16_copy(mi->szDevice, dev, 32);
 }
 
+/* WR-3 live fix: the caller sizes its own struct through cbSize (40 for a
+ * plain MONITORINFO, 104/72 for the EXW/EXA forms), and NPP passes a 40-byte
+ * MONITORINFO on the stack, directly under its /GS cookie, when it positions
+ * the autocomplete popup.  Filling the EX tail unconditionally overwrote the
+ * cookie and the abort that followed (0xc0000409 at npp+0x3d9289, shared
+ * with the Find path) looked like a deliberate suicide.  Honour cbSize. */
 W32ABI W32_BOOL GetMonitorInfoW(W32_HMONITOR mon, W32_MONITORINFOEXW *mi) {
     if (mon != UI_MONITOR_HANDLE || !mi) {
         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
         return W32_FALSE;
     }
-    ui_monitor_info(mi);
+    if (mi->mi.cbSize < sizeof(W32_MONITORINFO)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+        return W32_FALSE;
+    }
+    ui_monitor_info_base(&mi->mi);
+    if (mi->mi.cbSize >= sizeof(W32_MONITORINFOEXW)) {
+        const uint16_t dev[] = { 'A','u','r','a','L','i','t','e',0 };
+        w16_copy(mi->szDevice, dev, 32);
+    }
     return W32_TRUE;
 }
 
 W32ABI W32_BOOL GetMonitorInfoA(W32_HMONITOR mon, void *out) {
     if (!out) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
+    W32_MONITORINFO *m = (W32_MONITORINFO *)out;
+    if (m->cbSize < sizeof(W32_MONITORINFO)) {
+        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+        return W32_FALSE;
+    }
+    uint32_t size = m->cbSize;   /* input: the caller's struct size */
     W32_MONITORINFOEXW mi;
+    mi.mi.cbSize = (uint32_t)sizeof mi;
     if (!GetMonitorInfoW(mon, &mi)) return W32_FALSE;
-    /* The A form: same struct with a single-byte device name. */
-    struct { W32_MONITORINFO mi; char dev[32]; } *a = out;
-    a->mi = mi.mi;
-    int n = 0;
-    while (n < 31 && mi.szDevice[n]) { a->dev[n] = (char)mi.szDevice[n]; n++; }
-    a->dev[n] = 0;
+    /* The A form: same base with a single-byte device name. */
+    *m = mi.mi;
+    m->cbSize = size;           /* cbSize is input, preserved */
+    if (size >= sizeof(W32_MONITORINFO) + 32) {
+        char *dev = (char *)out + sizeof(W32_MONITORINFO);
+        int n = 0;
+        while (n < 31 && mi.szDevice[n]) { dev[n] = (char)mi.szDevice[n]; n++; }
+        dev[n] = 0;
+    }
     return W32_TRUE;
 }
 
@@ -3663,9 +3826,10 @@ W32ABI int16_t GetKeyState(int32_t vk) {
     if (vk < 0 || vk > 255) return 0;
     struct ui_queue *q = ui_queue_for(GetCurrentThreadId(), 0);
     if (!q) return 0;
-    /* The array is fed by delivered key messages (see ui_translate), so the
-     * state a program reads is the state its own loop has seen -- not a
-     * second copy of the keyboard driver's idea. */
+    /* The array is fed by delivered key messages (see ui_q_pop: Win32 state
+     * is as of the last message retrieved), so the state a program reads is
+     * the state its own loop has seen -- not a second copy of the keyboard
+     * driver's idea. */
     uint8_t s = q->keystate[vk];
     return (int16_t)(((s & 0x80) ? 0x8000 : 0) | ((s & 0x01) ? 0x0001 : 0));
 }

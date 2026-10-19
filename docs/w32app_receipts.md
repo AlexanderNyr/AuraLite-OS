@@ -738,6 +738,25 @@ above by the fixture twin and the host unit test.
 
 Closing patch: `patches/W32A16_npp.patch`.
 
+**WR-3 live run (2026-10-19) — the window, the typing, the save.** The pinned
+`notepad++.exe` now runs past bind on real pixels, gated by
+`tests/integration/cases/test_wr3_npp_live.sh` (OVMF, 1280x800): it binds
+590/590, resolves both delay-load api-set probes, opens its real `new 1`
+frame (blue title bar, white Scintilla client), paints the opened fixture
+line as dark glyphs, lands typed text byte-exact (lowercase, shifted
+uppercase, digits, symbols — `abc XYZ 123! -_ end` verified on pixels),
+and round-trips a save through the VFS: fixture (29 B, `c5e474fd…`) +
+` WR3GATE` edit via Ctrl+S reads back as exactly 37 B (`a829ed05…`), with
+no user #PF, no fatal signal and no panic anywhere in the run. Named gaps,
+not faked: the File > Open dialog (NPP uses
+`CoCreateInstance(CLSID_FileOpenDialog)`; the COM class table is a committed
+zero rows, so the call fails `REGDB_E_CLASSNOTREG`), Find (Ctrl+F builds the
+dialog, then NPP suicides via `TerminateProcess(…, 0xc0000409)` just after
+`[cw] no class: msctls_trackbar32` — trigger under investigation), plugins
+(no DLL staged), tray (minimise-to-tray never driven), and a transient
+open-path paint smear (a 4-char ghost at the line start until the next line
+repaint erases it). Closing patch: `patches/WR3_npp_live.patch`.
+
 ## W32A-17 — App horizon: Audacity — PHASE CLOSED (2026-09-29), OUTCOME B (does not run)
 
 The horizon phase. Modelled on W32-7 ("`LoadLibrary`, or a documented refusal"),

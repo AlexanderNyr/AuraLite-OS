@@ -36,6 +36,8 @@ enum {
     GUI_OP_SEND_DROP, GUI_OP_TAKE_DROP,
     /* CW: compositor child windows. */
     GUI_OP_SET_PARENT,
+    /* WR-3: see-through window region. */
+    GUI_OP_SET_HOLE,
 };
 
 #define SYS_GUI_CALL_NUM    200
@@ -66,6 +68,10 @@ int ag_window_move(int wid, int32_t x, int32_t y) {
 int ag_window_set_parent(int wid, int parent_wid) {
     return (int)gui_call(GUI_OP_SET_PARENT, (uint64_t)(uint32_t)wid,
                          (uint64_t)(int64_t)parent_wid, 0, 0);
+}
+int ag_window_set_hole(int wid, int32_t l, int32_t t, int32_t r, int32_t b) {
+    return (int)gui_call(GUI_OP_SET_HOLE, (uint64_t)(uint32_t)wid,
+                         pack2(l, t), pack2(r, b), 0);
 }
 int ag_window_resize(int wid, uint32_t w, uint32_t h) {
     return (int)gui_call(GUI_OP_RESIZE, wid, pack2((int32_t)w, (int32_t)h), 0, 0);

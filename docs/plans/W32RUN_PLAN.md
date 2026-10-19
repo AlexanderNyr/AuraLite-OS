@@ -1,13 +1,13 @@
 # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
 
-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3…WR-5 planned.
+## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3 PARTIAL 2026-10-19 (frame, byte-exact typing, save round-trip gated 17/17; Find/open-dialog/plugin/tray named gaps); WR-4…WR-5 planned.
 
 | Phase | State |
 |---|---|
 | WR-0 The live-GUI lane and its oracles (OVMF + screendump + input harness) | ✅ done (2026-09-29) |
 | WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ✅ done (2026-09-29) |
 | WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | PARTIAL (2026-10-09): gate 22/22 — panel, navigate delta, byte-exact extract; named gaps: clean extract ("Progress Error"), navigate back, Options (no menu subsystem); drag-drop deferred |
-| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | ⬜ planned |
+| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | 🟨 PARTIAL 2026-10-19 |
 | WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | ⬜ planned |
 | WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ⬜ planned |
 
@@ -495,7 +495,10 @@ the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-
       the helper receiving NULL.  `GetSystemTimePreciseAsFileTime` aliases
       `GetSystemTimeAsFileTime` so the UCRT feature probe stores a real
       pointer (removes the guest/Windows divergence at npp+0x3d8890).
-- [ ] **CRT walk-order blocker (step3, open):** NPP faults at
+- [x] **CRT walk-order blocker (step3, RESOLVED 2026-10-19):** NPP ran past
+      CRT init once the heap/stdio-init races were fixed — the walk-order
+      theory is retired (the UCRT never reached its heap because of file/heap
+      races, not table order; see docs/WR3_WORKLOG.md fix 4).  NPP faults at
       npp+0x402d19 (CR2=0x18) — the reader of the 512-entry lock table
       indexes `npp+0x54ddb0` while it is still NULL and `npp+0x54dda8` is 0.
       Isolated with `tools/npp_rsp_probe.py` (raw-RSP Z1 breakpoint at the
@@ -506,28 +509,36 @@ the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-
       allocator entry (npp+0x4304f8+0x18) has run; `__acrt_heap`
       (npp+0x54e930) is NULL at the fault, i.e. the UCRT tables are being
       dispatched out of order, not via a missing KERNEL32 export.
-- [ ] **Live-frame gate**: `window_present` on the Notepad++ frame; the
-      Scintilla client region is non-empty; the tab bar (COMCTL32) is present.
-- [ ] Type + render: inject text via `gui_input type`, assert a content delta
-      in the Scintilla region (the caret advanced, glyphs painted) — the
-      GDI text-paint fidelity check.
-- [ ] Open/Save: open a committed fixture file from `/fat`, edit, save,
-      `sha256` the saved bytes against expected — headless open/save proof.
-- [ ] Find: open the Find dialog (`DialogBox`, REAL), search a known string,
-      assert the match-count status / selection delta.
+- [x] **Live-frame gate** (2026-10-19): `window_present` on the Notepad++
+      frame (blue title bar oracle); the Scintilla client paints the opened
+      fixture line; the tab bar is present (TCM_GETROWCOUNT=1 + SET_HOLE).
+      Gated: `test_wr3_npp_live.sh`.
+- [x] Type + render (2026-10-19): `abc XYZ 123! -_ end` lands byte-exact
+      (cooked-keys→VK map + delivery-time keystate); the gate types ` WR3GATE`
+      and asserts the editor delta PLUS post-type window liveness (a dead
+      window also moves pixels).
+- [x] Open/Save (2026-10-19): fixture opened off argv (`C:/fat/WR3FIX.TXT`,
+      29 B); edit + Ctrl+S reads back as exactly 37 B, sha256 `a829ed05…` —
+      headless open/save proof, gated.
+- [ ] Find (NAMED GAP 2026-10-19): the dialog builds, then NPP suicides via
+      `TerminateProcess(GetCurrentProcess, 0xc0000409)` — same abort address
+      as the autocomplete-ListBox kill (see docs/WR3_WORKLOG.md); a separate
+      session, not this phase.
 - [ ] Plugins: `LoadLibraryW` a pinned NPP plugin DLL (delivered on `/fat`),
       assert it appears in the Plugins menu (menu-item oracle) or document
       the exact failure if a plugin needs an unbuilt surface.
 - [ ] Tray: `Shell_NotifyIconW` places an icon; assert the taskbar/tray
       region delta (or name it human-run if the tray is off-frame).
-- [ ] Receipt `#notepad++` in `docs/w32app_receipts.md` updated to the
-      live-frame gate; measured-not-run items named honestly.
+- [x] Receipt `#notepad++` in `docs/w32app_receipts.md` updated to the
+      live-frame gate (2026-10-19); measured-not-run items named honestly.
 
 #### Test gate
 
-- `test_wr3_npp_live.sh` green: editor window present, Scintilla paints typed
-  text, fixture file open/save byte-exact, Find match, plugin loaded (or named
-  gap). Receipt + frame digest committed.
+- `test_wr3_npp_live.sh` green (2026-10-19, 17/17 + 5 SKIP): editor window
+  present, Scintilla paints typed text, fixture open/save byte-exact, no
+  user #PF / fatal signal / panic.  Find + plugin + tray + File-Open stay
+  named gaps.  Patch: `patches/WR3_npp_live.patch`.  Receipt + frame digest
+  committed.
 
 **Deliverable:** `tests/integration/cases/test_wr3_npp_live.sh`, fixture
 file + pinned-plugin delivery, receipt edits, `patches/WR3_npp_live.patch`.

@@ -364,6 +364,10 @@ int gui_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
 int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
                    const uint32_t *src, uint32_t src_stride);
 
+/* WR-3: see-through region (GUI_OP_SET_HOLE).  Coordinates are window-buffer
+ * pixels; an empty rect clears the hole. */
+void gui_window_set_hole(int wid, int32_t l, int32_t t, int32_t r, int32_t b);
+
 /* Convenience: re-render everything right now. */
 void gui_render_now(void);
 

@@ -366,11 +366,11 @@ int pclose(FILE *stream) {
     return status;
 }
 
-/* Q2.7 — Locking stubs (thread-safety deferred to Q6) */
-
-void flockfile(FILE *f)     { (void)f; }
-void funlockfile(FILE *f)   { (void)f; }
-int  ftrylockfile(FILE *f)  { (void)f; return 0; }
+/* Q2.7 fulfilled in libc.c: flockfile/funlockfile/ftrylockfile are the real
+ * stdio lock now (process-global granularity, see the lock note there).
+ * The *_unlocked aliases below intentionally keep routing through the
+ * locked entries: they stay correct everywhere and merely forgo the
+ * per-call fast path POSIX allows but does not require. */
 int  getc_unlocked(FILE *f)      { return fgetc(f); }
 int  putc_unlocked(int c, FILE *f) { return fputc(c, f); }
 int  fgetc_unlocked(FILE *f)     { return fgetc(f); }
@@ -394,7 +394,7 @@ int  fgetc_unlocked(FILE *f)     { return fgetc(f); }
  *     wherever the stream used to be.
  */
 
-int fseek(FILE *f, long offset, int whence) {
+static int fseek_impl(FILE *f, long offset, int whence) {
     if (!f) { errno = EINVAL; return -1; }
 
     /* A pending write must reach the fd before the offset moves. */
@@ -426,7 +426,7 @@ int fseek(FILE *f, long offset, int whence) {
     return 0;
 }
 
-long ftell(FILE *f) {
+static long ftell_impl(FILE *f) {
     if (!f) { errno = EINVAL; return -1; }
 
     int64_t pos = lseek(f->fd, 0, SEEK_CUR);
@@ -444,13 +444,13 @@ long ftell(FILE *f) {
     return (long)pos;
 }
 
-void rewind(FILE *f) {
+static void rewind_impl(FILE *f) {
     if (!f) return;
     (void)fseek(f, 0, SEEK_SET);
     f->flags &= ~(FILE_EOF | FILE_ERR);   /* rewind also clears the error */
 }
 
-int fgetpos(FILE *f, fpos_t *pos) {
+static int fgetpos_impl(FILE *f, fpos_t *pos) {
     if (!f || !pos) { errno = EINVAL; return -1; }
     long p = ftell(f);
     if (p < 0) return -1;
@@ -458,7 +458,29 @@ int fgetpos(FILE *f, fpos_t *pos) {
     return 0;
 }
 
-int fsetpos(FILE *f, const fpos_t *pos) {
+static int fsetpos_impl(FILE *f, const fpos_t *pos) {
     if (!f || !pos) { errno = EINVAL; return -1; }
     return fseek(f, (long)*pos, SEEK_SET);
+}
+
+/* ---- locked positioning entries (libc.c's stdio lock, by its POSIX
+ * names; the bodies above still call the public names and recurse). */
+int fseek(FILE *f, long offset, int whence) {
+    flockfile(f); int r = fseek_impl(f, offset, whence); funlockfile(f);
+    return r;
+}
+long ftell(FILE *f) {
+    flockfile(f); long r = ftell_impl(f); funlockfile(f);
+    return r;
+}
+void rewind(FILE *f) {
+    flockfile(f); rewind_impl(f); funlockfile(f);
+}
+int fgetpos(FILE *f, fpos_t *pos) {
+    flockfile(f); int r = fgetpos_impl(f, pos); funlockfile(f);
+    return r;
+}
+int fsetpos(FILE *f, const fpos_t *pos) {
+    flockfile(f); int r = fsetpos_impl(f, pos); funlockfile(f);
+    return r;
 }

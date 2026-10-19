@@ -2007,22 +2007,88 @@ int snprintf(char *str, size_t size, const char *fmt, ...) {
 
 int putchar(int c) { return fputc(c, stdout); }
 
-int puts(const char *s) {
+static int puts_impl(const char *s) {
     fputs(s, stdout);
     fputc('\n', stdout);
     return 0;
 }
 
-int printf(const char *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    int n = vfprintf(stdout, fmt, ap);
-    va_end(ap);
-    return n;
-}
+/* (printf's body lives in its locked wrapper below: a wrapper cannot
+ * re-spread "..." into an _impl, so it forwards its own va_list.) */
 
 /* ==================================================================== */
 /* FILE* stdio streams                                                   */
 /* ==================================================================== */
+
+/* WR-3: the stdio lock.  Every public entry below funnels through it, so a
+ * multithreaded program (Notepad++ runs its loader, its UI and worker
+ * threads at once) cannot tear a stream: before this lock two threads in
+ * fputc_buffered raced bufpos past the end of the 1 KB internal buffer and
+ * corrupted whatever the FILE sat next to (the next static stream, or heap
+ * metadata after a fopen'd FILE), and two threads in vfprintf spliced each
+ * other's bytes across streams through the shared s_vf_target.  The victim
+ * died later, pages away, inside memcpy/snprintf -- the intermittent typing
+ * crash that looked like application stack damage.
+ *
+ * The lock is RECURSIVE (owner TCB + depth): the entries call each other
+ * (puts->fputs, printf->vfprintf, fflush(NULL)->fflush, fclose->fflush), a
+ * signal handler may run stdio on a thread parked mid-stdio, and a plain
+ * spin would self-deadlock all of those.  ptls_self() is one instruction
+ * (%fs:0) and valid on every thread including main, so the fast path is a
+ * single atomic load.  flockfile() is this lock by its POSIX name; the
+ * granularity is process-global rather than per-stream (documented, not
+ * hidden: coarser than POSIX, correct all the same).
+ *
+ * Lock order: stdio -> heap (fopen/fdopen allocate).  Nothing under the
+ * heap lock takes this one -- malloc's own diagnosis writes with a raw
+ * write(), never stdio -- so the order is acyclic.  A fork child that goes
+ * on to exec never notices the lock; a fork child that keeps running after
+ * a fork taken while a *sibling* thread held it would spin, which is the
+ * same accepted fork-in-MT caveat the heap lock already carries. */
+static volatile uintptr_t stdio_owner;   /* 0 = free, else the owning TCB */
+static volatile unsigned  stdio_depth;
+
+static void stdio_lock(void) {
+    uintptr_t me = (uintptr_t)ptls_self();
+    if (__atomic_load_n(&stdio_owner, __ATOMIC_ACQUIRE) == me) {
+        stdio_depth++;               /* same thread: signals, nesting */
+        return;
+    }
+    uintptr_t expect;
+    do {
+        while (__atomic_load_n(&stdio_owner, __ATOMIC_RELAXED) != 0)
+            __asm__ volatile ("pause");
+        expect = 0;
+    } while (!__atomic_compare_exchange_n(&stdio_owner, &expect, me, 0,
+                                          __ATOMIC_ACQUIRE, __ATOMIC_RELAXED));
+    stdio_depth = 1;
+}
+
+static void stdio_unlock(void) {
+    if (--stdio_depth == 0)
+        __atomic_store_n(&stdio_owner, 0, __ATOMIC_RELEASE);
+}
+
+/* Q2.7 fulfilled: real locking (see above), not the stubs stdio_extra.c
+ * used to carry.  The FILE* argument only selects the API; the lock is
+ * global, so locking any stream locks them all. */
+void flockfile(FILE *f)   { (void)f; stdio_lock(); }
+void funlockfile(FILE *f) { (void)f; stdio_unlock(); }
+int ftrylockfile(FILE *f) {
+    (void)f;
+    uintptr_t me = (uintptr_t)ptls_self();
+    if (__atomic_load_n(&stdio_owner, __ATOMIC_ACQUIRE) == me) {
+        stdio_depth++;
+        return 0;
+    }
+    uintptr_t expect = 0;
+    if (__atomic_compare_exchange_n(&stdio_owner, &expect, me, 0,
+                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+        stdio_depth = 1;
+        return 0;
+    }
+    return EBUSY;
+}
 
 static FILE s_stdin  = { 0, 0, _IOLBF, 0, 0, 0, 0, 0, 0, -1, {0} };
 static FILE s_stdout = { 1, 0, _IOLBF, 0, 0, 0, 0, 0, 0, -1, {0} };
@@ -2068,7 +2134,7 @@ static void stream_unregister(FILE *f) {
 }
 
 /* Flush buffered write data to the fd. */
-int fflush(FILE *f) {
+static int fflush_impl(FILE *f) {
     stdio_init_once();
     if (f == 0) {
         /* fflush(NULL): flush all output streams. */
@@ -2103,7 +2169,7 @@ static void fputc_buffered(FILE *f, char c) {
     else if (f->bufmode == _IOLBF && c == '\n') fflush(f);
 }
 
-int fputc(int c, FILE *f) {
+static int fputc_impl(int c, FILE *f) {
     stdio_init_once();
     fputc_buffered(f, (char)c);
     if (f->flags & FILE_ERR) return EOF;
@@ -2111,13 +2177,13 @@ int fputc(int c, FILE *f) {
 }
 int putc(int c, FILE *f) { return fputc(c, f); }
 
-int fputs(const char *s, FILE *f) {
+static int fputs_impl(const char *s, FILE *f) {
     stdio_init_once();
     while (*s) { fputc_buffered(f, *s++); }
     return (f->flags & FILE_ERR) ? EOF : 0;
 }
 
-size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f) {
+static size_t fwrite_impl(const void *ptr, size_t size, size_t nmemb, FILE *f) {
     stdio_init_once();
     if (size == 0 || nmemb == 0) return 0;
     const char *p = (const char *)ptr;
@@ -2140,7 +2206,7 @@ static int stream_fill(FILE *f) {
     return (int)n;
 }
 
-int fgetc(FILE *f) {
+static int fgetc_impl(FILE *f) {
     stdio_init_once();
     if (f->ungot != -1) { int c = f->ungot; f->ungot = -1; return c; }
     if (f->readpos >= f->bufcap) {
@@ -2151,14 +2217,14 @@ int fgetc(FILE *f) {
 int getc(FILE *f) { return fgetc(f); }
 int getchar(void) { return fgetc(stdin); }
 
-int ungetc(int c, FILE *f) {
+static int ungetc_impl(int c, FILE *f) {
     if (c == EOF) return EOF;
     f->ungot = (unsigned char)c;
     f->flags &= ~FILE_EOF;     /* ungetc clears the EOF indicator */
     return (unsigned char)c;
 }
 
-char *fgets(char *s, int size, FILE *f) {
+static char *fgets_impl(char *s, int size, FILE *f) {
     stdio_init_once();
     if (size <= 0) return 0;
     int i = 0;
@@ -2173,7 +2239,7 @@ char *fgets(char *s, int size, FILE *f) {
     return s;
 }
 
-size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
+static size_t fread_impl(void *ptr, size_t size, size_t nmemb, FILE *f) {
     stdio_init_once();
     if (size == 0 || nmemb == 0) return 0;
     char *p = (char *)ptr;
@@ -2244,7 +2310,7 @@ static void sink_file_emit(struct fmt_sink *s, char c) {
     s->count++;
 }
 
-int vfprintf(FILE *f, const char *fmt, va_list ap) {
+static int vfprintf_impl(FILE *f, const char *fmt, va_list ap) {
     stdio_init_once();
     struct fmt_sink s;
     s.emit = sink_file_emit; s.count = 0; s.out = 0; s.cap = 0; s.len = 0;
@@ -2252,12 +2318,7 @@ int vfprintf(FILE *f, const char *fmt, va_list ap) {
     return format_to_sink(&s, fmt, ap);
 }
 
-int fprintf(FILE *f, const char *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
-    int n = vfprintf(f, fmt, ap);
-    va_end(ap);
-    return n;
-}
+/* (fprintf's body lives in its locked wrapper below, same reason.) */
 
 static int parse_mode(const char *mode, int *o_flags) {
     /* Returns 0 on success, fills O_* flags. */
@@ -2276,7 +2337,7 @@ static int parse_mode(const char *mode, int *o_flags) {
     return 0;
 }
 
-FILE *fdopen(int fd, const char *mode) {
+static FILE *fdopen_impl(int fd, const char *mode) {
     stdio_init_once();
     (void)mode;
     FILE *f = (FILE *)malloc(sizeof(FILE));
@@ -2290,7 +2351,7 @@ FILE *fdopen(int fd, const char *mode) {
     return f;
 }
 
-FILE *fopen(const char *path, const char *mode) {
+static FILE *fopen_impl(const char *path, const char *mode) {
     int oflags;
     if (parse_mode(mode, &oflags) != 0) { errno = EINVAL; return 0; }
     int fd = open(path, oflags, 0644);
@@ -2301,7 +2362,7 @@ FILE *fopen(const char *path, const char *mode) {
     return f;
 }
 
-int fclose(FILE *f) {
+static int fclose_impl(FILE *f) {
     if (!f) return EOF;
     fflush(f);
     int fd = f->fd;
@@ -2313,10 +2374,10 @@ int fclose(FILE *f) {
 
 int feof(FILE *f) { return (f->flags & FILE_EOF) ? 1 : 0; }
 int ferror(FILE *f) { return (f->flags & FILE_ERR) ? 1 : 0; }
-void clearerr(FILE *f) { f->flags &= ~(FILE_EOF | FILE_ERR); }
+void clearerr(FILE *f) { flockfile(f); f->flags &= ~(FILE_EOF | FILE_ERR); funlockfile(f); }
 int fileno(FILE *f) { return f->fd; }
 
-int setvbuf(FILE *f, char *buf, int mode, size_t size) {
+static int setvbuf_impl(FILE *f, char *buf, int mode, size_t size) {
     stdio_init_once();
     f->bufmode = mode;
     if (buf && size > 0) { f->buf = buf; f->bufsz = (int)size; f->bufpos = 0; }
@@ -2329,6 +2390,84 @@ void __stdio_cleanup(void) {
         FILE *s = s_open_streams[i];
         if (s) fflush(s);
     }
+}
+
+/* ---- locked public entries (the stdio lock note above applies) ----
+ * One shape each: take the lock, run the original body (now *_impl),
+ * release.  Bodies still call the PUBLIC names internally (puts->fputs/
+ * fputc, fgets->fgetc, fclose/fflush(NULL)->fflush, fopen->fdopen); the
+ * lock's recursion absorbs that, so no body was touched.  The two
+ * varargs entries forward their own va_lists straight into
+ * vfprintf_impl instead (a wrapper cannot re-spread "..."). */
+int puts(const char *s) {
+    stdio_lock(); int r = puts_impl(s); stdio_unlock(); return r;
+}
+int printf(const char *fmt, ...) {
+    stdio_lock();
+    va_list ap; va_start(ap, fmt);
+    int r = vfprintf_impl(stdout, fmt, ap);
+    va_end(ap);
+    stdio_unlock();
+    return r;
+}
+int fflush(FILE *f) {
+    stdio_lock(); int r = fflush_impl(f); stdio_unlock(); return r;
+}
+int fputc(int c, FILE *f) {
+    stdio_lock(); int r = fputc_impl(c, f); stdio_unlock(); return r;
+}
+int fputs(const char *s, FILE *f) {
+    stdio_lock(); int r = fputs_impl(s, f); stdio_unlock(); return r;
+}
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f) {
+    stdio_lock();
+    size_t r = fwrite_impl(ptr, size, nmemb, f);
+    stdio_unlock();
+    return r;
+}
+int fgetc(FILE *f) {
+    stdio_lock(); int r = fgetc_impl(f); stdio_unlock(); return r;
+}
+int ungetc(int c, FILE *f) {
+    stdio_lock(); int r = ungetc_impl(c, f); stdio_unlock(); return r;
+}
+char *fgets(char *s, int size, FILE *f) {
+    stdio_lock(); char *r = fgets_impl(s, size, f); stdio_unlock(); return r;
+}
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
+    stdio_lock();
+    size_t r = fread_impl(ptr, size, nmemb, f);
+    stdio_unlock();
+    return r;
+}
+int vfprintf(FILE *f, const char *fmt, va_list ap) {
+    stdio_lock(); int r = vfprintf_impl(f, fmt, ap); stdio_unlock(); return r;
+}
+int fprintf(FILE *f, const char *fmt, ...) {
+    stdio_lock();
+    va_list ap; va_start(ap, fmt);
+    int r = vfprintf_impl(f, fmt, ap);
+    va_end(ap);
+    stdio_unlock();
+    return r;
+}
+FILE *fdopen(int fd, const char *mode) {
+    stdio_lock(); FILE *r = fdopen_impl(fd, mode); stdio_unlock(); return r;
+}
+FILE *fopen(const char *path, const char *mode) {
+    stdio_lock();
+    FILE *r = fopen_impl(path, mode);
+    stdio_unlock();
+    return r;
+}
+int fclose(FILE *f) {
+    stdio_lock(); int r = fclose_impl(f); stdio_unlock(); return r;
+}
+int setvbuf(FILE *f, char *buf, int mode, size_t size) {
+    stdio_lock();
+    int r = setvbuf_impl(f, buf, mode, size);
+    stdio_unlock();
+    return r;
 }
 
 /* getentropy(2) — wrapper for syscall 318 */

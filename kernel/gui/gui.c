@@ -159,6 +159,14 @@ typedef struct gui_win {
      * and swapping them, not gating on a flag. */
     uint32_t *front;
     volatile int updating;
+    /* WR-3: see-through hole in window-buffer pixels (GUI_OP_SET_HOLE).
+     * Empty (r<=l or b<=t) means none; slots start zeroed, so windows are
+     * born opaque.  The compositor skips these pixels and the hit test
+     * falls through them, which is how a full-size tab control leaves its
+     * display area to the editor living in it -- Win32 paints that region
+     * by never painting it, an option a buffered compositor does not
+     * have without an explicit hole. */
+    int32_t hole_l, hole_t, hole_r, hole_b;
 } gui_win_t;
 
 /* WR-3: heap-allocated, not a static array.  At 256 slots this table is
@@ -1417,6 +1425,26 @@ int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
     return 0;
 }
 
+/* WR-3: store (or clear) the see-through hole.  The rect is clamped into
+ * the live buffer so a stale oversized hole cannot outlive a shrink, and
+ * the window is dirtied: pixels that used to show must be recomposited
+ * away (or back) on the next tick. */
+void gui_window_set_hole(int wid, int32_t l, int32_t t, int32_t r, int32_t b) {
+    if (!win_alive(wid)) return;
+    gui_win_t *w = &windows[wid];
+    if (r > l && b > t) {
+        if (l < 0) l = 0;
+        if (t < 0) t = 0;
+        if (r > (int32_t)w->back_w) r = (int32_t)w->back_w;
+        if (b > (int32_t)w->back_h) b = (int32_t)w->back_h;
+    }
+    if (w->hole_l == l && w->hole_t == t && w->hole_r == r && w->hole_b == b)
+        return;
+    w->hole_l = l; w->hole_t = t; w->hole_r = r; w->hole_b = b;
+    w->content_dirty = 1;
+    mark_window_dirty(w);
+}
+
 /* ===================================================================
  * Event ring
  * =================================================================== */
@@ -1610,10 +1638,18 @@ static void blit_window_content(const gui_win_t *win) {
     if (copy_w > (uint32_t)(fw - dst_x)) copy_w = (uint32_t)(fw - dst_x);
     if (copy_w == 0 || copy_h == 0) return;
 
+    /* WR-3: the hole test runs in buffer pixels (what src_x/src_y index),
+     * and hoisting the empty check keeps the common no-hole path to one
+     * predictable branch per window. */
+    int has_hole = (win->hole_r > win->hole_l) && (win->hole_b > win->hole_t);
     for (uint32_t row = 0; row < copy_h; row++) {
+        int32_t by = src_y + (int32_t)row;
+        int row_in_hole = has_hole && by >= win->hole_t && by < win->hole_b;
         for (uint32_t col = 0; col < copy_w; col++) {
-            uint32_t pixel = pixels[(src_y + (int32_t)row) * win->back_w +
-                                    (src_x + (int32_t)col)];
+            int32_t bx = src_x + (int32_t)col;
+            if (row_in_hole && bx >= win->hole_l && bx < win->hole_r)
+                continue;
+            uint32_t pixel = pixels[by * win->back_w + bx];
             gfx_putpixel((uint32_t)(dst_x + (int32_t)col),
                          (uint32_t)(dst_y + (int32_t)row), pixel);
         }
@@ -2305,6 +2341,17 @@ static int hit_child(int pidx, int32_t mx, int32_t my) {
         int32_t ax = win_abs_x(c), ay = win_abs_y(c);
         if (mx >= ax && mx < ax + (int32_t)c->w &&
             my >= ay && my < ay + (int32_t)c->h) {
+            /* WR-3: clicks fall through the see-through hole exactly like
+             * pixels do, or the tab would swallow the editor's mouse.  The
+             * hole lives in buffer pixels, whose origin is the content
+             * origin (identical to the window origin for a borderless
+             * child, but spelled out for a decorated one). */
+            if (c->hole_r > c->hole_l && c->hole_b > c->hole_t) {
+                int32_t lx = mx - content_x(c), ly = my - content_y(c);
+                if (lx >= c->hole_l && lx < c->hole_r &&
+                    ly >= c->hole_t && ly < c->hole_b)
+                    continue;
+            }
             if (c->z >= bestz) { bestz = c->z; best = i; }
         }
     }

@@ -199,6 +199,17 @@ static void a_to_w16_buf(uint16_t *dst, size_t cap, const char *src) {
     dst[n] = 0;
 }
 
+/* WR-3: the ANSI twin.  The A-form GETITEM handlers copied strlen+1 bytes
+ * ignoring cchTextMax (a heap overrun into the caller), and the listview
+ * wrote wide units into ANSI buffers.  All four funnel through here now:
+ * at most cap-1 bytes plus the NUL, always NUL-terminated. */
+static void a_to_a_buf(char *dst, size_t cap, const char *src) {
+    size_t n = 0;
+    if (!dst || !cap) return;
+    while (src && src[n] && n + 1 < cap) { dst[n] = src[n]; n++; }
+    dst[n] = 0;
+}
+
 /* The control id a window carries (mirrors GWLP_ID; windows created
  * with a menu handle hold it there). */
 int32_t w32_comctl_ctrl_id(W32_HWND hwnd) {
@@ -416,6 +427,10 @@ static int ctl_surf_dispatch(ctl_surface_t *s, int type, int32_t x, int32_t y) {
 #define CTL_KIND_PSPAGE   9     /* internal: PropertySheet page host */
 #define CTL_KIND_REBAR    10    /* WR-2: 7-Zip FM's address-bar band host */
 #define CTL_KIND_COMBOEX  11    /* WR-2: 7-Zip FM's address-bar path combo */
+
+/* The tab strip stands 22px tall (TCM_GETITEMRECT's bottom, above); the
+ * window below that line is display area the application owns. */
+#define CTL_TAB_STRIP_H 22
 
 /* WR-3 diagnosis (temporary): weak *reference* (the pattern from
  * kernel32.c) so this file links with or without w32_seh.c.  Declared here,
@@ -1177,11 +1192,16 @@ static void lv_splice(ctl_state_t *c, int at, int del, const char *with_text,
     if (sel >= 0) ctl_surf_set_sel(&c->surf, sel);
 }
 
-static void lv_fill_item_out(ctl_state_t *c, W32_LVITEMW *it) {
+static void lv_fill_item_out(ctl_state_t *c, W32_LVITEMW *it, int wide) {
     if (it->mask & W32_LVIF_TEXT) {
-        if (it->pszText && it->cchTextMax > 0)
-            a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax,
-                         c->u.lv.text[it->iItem]);
+        if (it->pszText && it->cchTextMax > 0) {
+            if (wide)
+                a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax,
+                             c->u.lv.text[it->iItem]);
+            else
+                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
+                           c->u.lv.text[it->iItem]);
+        }
     }
     if (it->mask & W32_LVIF_STATE)
         it->state = c->u.lv.state[it->iItem];
@@ -1366,7 +1386,7 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
     case W32_LVM_GETITEMW: {
         W32_LVITEMW *it = (W32_LVITEMW *)(uintptr_t)lp;
         if (!it || it->iItem < 0 || it->iItem >= c->u.lv.n_items) return 0;
-        lv_fill_item_out(c, it);
+        lv_fill_item_out(c, it, msg == W32_LVM_GETITEMW);
         return 1;
     }
     case W32_LVM_GETITEMTEXTA:
@@ -1374,7 +1394,7 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
         W32_LVITEMW *it = (W32_LVITEMW *)(uintptr_t)lp;
         if (!it || it->iItem < 0 || it->iItem >= c->u.lv.n_items) return 0;
         it->mask |= W32_LVIF_TEXT;
-        lv_fill_item_out(c, it);
+        lv_fill_item_out(c, it, msg == W32_LVM_GETITEMTEXTW);
         return 1;
     }
     case W32_LVM_SETITEMA:
@@ -1812,8 +1832,8 @@ static W32_LRESULT ctl_treeview_proc(ctl_state_t *c, W32_HWND hwnd,
                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax,
                              c->u.tv.text[idx]);
             else
-                memcpy((void *)it->pszText, c->u.tv.text[idx],
-                       strlen(c->u.tv.text[idx]) + 1);
+                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
+                           c->u.tv.text[idx]);
         }
         if (it->mask & W32_TVIF_PARAM) it->lParam = c->u.tv.lparam[idx];
         if (it->mask & W32_TVIF_STATE) {
@@ -2085,8 +2105,8 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
             if (msg == W32_TCM_GETITEMW)
                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax, c->u.tc.text[i]);
             else
-                memcpy((void *)it->pszText, c->u.tc.text[i],
-                       strlen(c->u.tc.text[i]) + 1);
+                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
+                           c->u.tc.text[i]);
         }
         if (it->mask & W32_TCIF_PARAM) it->lParam = c->u.tc.lparam[i];
         return 1;
@@ -2137,6 +2157,34 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
         r->left = i * 90; r->top = 0;
         r->right = r->left + 90; r->bottom = 22;
         return 1;
+    }
+    case W32_TCM_GETROWCOUNT:
+        /* Single-row by construction (fixed 90x22 items, no wrapping), so
+         * the strip always stands one row tall -- including empty, the way
+         * the system control reports it.  Returning 0 here made
+         * Notepad++'s TabBar::reSizeTo compute a NEGATIVE tab height
+         * (0 rows * 22px - 6 + edge), so the editor was parked on top of
+         * the tab strip instead of below it. */
+        return 1;
+    case W32_WM_SIZE: {
+        /* WR-3: punch the display area out of the compositor image.  The
+         * application sizes this window to the whole view BY DESIGN and
+         * parks the editor in the display area below the strip; Win32
+         * shows the editor there because direct-draw painters simply
+         * never paint the area, while a buffered compositor would cover
+         * it with this window's own background.  The hole carries the
+         * same see-through contract, and clicks fall through it too. */
+#ifndef AURALITE_W32_HOST_TEST
+        {
+            int wid = w32_win_cls_ag_wid(hwnd);
+            uint32_t cw = (uint32_t)lp & 0xFFFFu;
+            uint32_t ch = ((uint32_t)lp >> 16) & 0xFFFFu;
+            if (wid >= 0)
+                ag_window_set_hole(wid, 0, CTL_TAB_STRIP_H,
+                                   (int32_t)cw, (int32_t)ch);
+        }
+#endif
+        return 0;
     }
     case W32_WM_LBUTTONDOWN:
     case W32_WM_LBUTTONDBLCLK: {
@@ -2513,8 +2561,8 @@ static W32_LRESULT ctl_header_proc(ctl_state_t *c, W32_HWND hwnd,
             if (msg == W32_HDM_GETITEMW)
                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax, c->u.hd.text[i]);
             else
-                memcpy((void *)it->pszText, c->u.hd.text[i],
-                       strlen(c->u.hd.text[i]) + 1);
+                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
+                           c->u.hd.text[i]);
         }
         if (it->mask & W32_HDI_WIDTH)  it->cxy = c->u.hd.cx[i];
         if (it->mask & W32_HDI_FORMAT) it->fmt = (uint32_t)c->u.hd.fmt[i];

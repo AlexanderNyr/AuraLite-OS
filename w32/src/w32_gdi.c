@@ -203,17 +203,25 @@ static gdi_obj_t *obj_from_h(void *h, int type) {
     return &gobjs[i];
 }
 
+/* The GDI lock lives with the pool below; the table claims it too. */
+static void gdi_take(void);
+static void gdi_drop(void);
+
 static void *gdi_alloc_obj(int type, gdi_obj_t **out) {
+    void *h = 0;
+    gdi_take();
     for (int i = 0; i < GDI_OBJ_MAX; i++) {
         if (!gobjs[i].used) {
             memset(&gobjs[i], 0, sizeof gobjs[i]);
             gobjs[i].used = 1;
             gobjs[i].type = type;
             if (out) *out = &gobjs[i];
-            return (void *)(uintptr_t)h_from_idx(i);
+            h = (void *)(uintptr_t)h_from_idx(i);
+            break;
         }
     }
-    return 0;
+    gdi_drop();
+    return h;
 }
 
 static void *handle_of_obj(gdi_obj_t *o) {
@@ -230,18 +238,44 @@ static void *handle_of_obj(gdi_obj_t *o) {
 static uint8_t  gdi_pool[GDI_POOL_SIZE] __attribute__((aligned(16)));
 static size_t   gdi_pool_used;
 
+/* WR-3: the GDI lock.  The pool's bump pointer and the object table's
+ * used flags are check-then-act shared state, and Notepad++ calls GDI
+ * from more than one thread: unlocked, two allocations could check out
+ * the same pool region (or the same table slot), and a lost bump update
+ * could walk gdi_pool_used straight past the arena into the adjacent
+ * gobjs table -- after which a bitmap's alloc/bits read corrupt and the
+ * next CreateBitmap memcpy faults pages away from any real bug.  The
+ * three primitives below are self-locking and never nest (DeleteObject
+ * takes the lock only for the table half, around nothing that locks),
+ * so the order is flat.  Handle lookups stay lock-free: a handle only
+ * becomes known after its slot is claimed, so a racing reader meets at
+ * worst a stale-but-bounded entry, never a torn one. */
+static volatile unsigned char gdi_lock;
+
+static void gdi_take(void) {
+    while (__atomic_test_and_set(&gdi_lock, __ATOMIC_ACQUIRE))
+        __asm__ volatile ("pause");
+}
+static void gdi_drop(void) { __atomic_clear(&gdi_lock, __ATOMIC_RELEASE); }
+
 static void *pool_alloc(size_t n) {
     n = (n + 15u) & ~(size_t)15u;
     if (n == 0) n = 16;
-    if (gdi_pool_used + n > GDI_POOL_SIZE) return 0;
-    void *p = &gdi_pool[gdi_pool_used];
-    gdi_pool_used += n;
+    gdi_take();
+    void *p = 0;
+    if (gdi_pool_used + n <= GDI_POOL_SIZE) {
+        p = &gdi_pool[gdi_pool_used];
+        gdi_pool_used += n;
+    }
+    gdi_drop();
     return p;
 }
 static void pool_free(void *p, size_t n) {
     if (!p) return;
     n = (n + 15u) & ~(size_t)15u;
+    gdi_take();
     if ((uint8_t *)p + n == &gdi_pool[gdi_pool_used]) gdi_pool_used -= n;
+    gdi_drop();
 }
 
 /* ===================================================================== *
@@ -505,6 +539,22 @@ static int surf_of_dc(gdi_dc_t *d, surf_t *s) {
 
 /* Window-DC rendering: raster into an ARGB temp, then one blit. */
 typedef void (*surf_draw_fn)(surf_t *s, void *user);
+
+/* MM_TEXT maps logical to device as device = logical - window_org.  Every
+ * drawing coordinate enters here in the application's logical space; the
+ * rasterers index device pixels.  SetWindowOrgEx/OffsetWindowOrgEx move
+ * the origin Scintilla-style (each sub-surface re-anchors its draws), so
+ * skipping this subtraction lands every glyph and fill at the unshifted
+ * position -- text disappears past the clip while its opaque background
+ * rectangles pile up somewhere else. */
+static void dc_log_to_dev(const gdi_dc_t *d, int32_t *x, int32_t *y) {
+    *x -= d->worg_x;
+    *y -= d->worg_y;
+}
+static void dc_rect_to_dev(const gdi_dc_t *d, W32_RECT *r) {
+    r->left -= d->worg_x;  r->right -= d->worg_x;
+    r->top  -= d->worg_y;  r->bottom -= d->worg_y;
+}
 
 /* WR-2: a top-level window with a menu has its client origin that many rows
  * below the top of the compositor's content area.  Defined in user32_win.c.
@@ -1051,7 +1101,9 @@ W32ABI W32_BOOL DeleteObject(W32_HGDIOBJ obj) {
     default:
         break;
     }
+    gdi_take();
     gobjs[i].used = 0;
+    gdi_drop();
     return W32_TRUE;
 }
 
@@ -1372,6 +1424,8 @@ W32ABI W32_BOOL BitBlt(W32_HDC dd, int32_t x, int32_t y, int32_t w, int32_t h,
     }
     gdi_dc_t *ddc = dc_from_h(dd), *sdc = dc_from_h(sd);
     if (!ddc || !sdc) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
+    dc_log_to_dev(ddc, &x, &y);
+    dc_log_to_dev(sdc, &sx, &sy);
     W32_RECT r = { x, y, x + w, y + h };
     if (!clip_intersects(ddc, &r)) return 1;
     blit_ctx_t c;
@@ -1425,6 +1479,7 @@ W32ABI W32_BOOL PatBlt(W32_HDC hdc, int32_t x, int32_t y, int32_t w, int32_t h,
     }
     gdi_dc_t *d = dc_from_h(hdc);
     if (!d) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
+    dc_log_to_dev(d, &x, &y);
     blit_ctx_t c;
     memset(&c, 0, sizeof c);
     c.rop = rop2 ? rop2 : W32_PATCOPY;
@@ -1621,8 +1676,13 @@ W32ABI W32_HBITMAP CreateBitmap(int32_t w, int32_t h, W32_UINT planes,
     gdi_bitmap_t *b = bmp_create_internal(w, h, (int)bpp, 0, 0, 0, 0);
     if (!b) { w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return 0; }
     if (bits) {
-        /* CreateBitmap rows are DWORD-aligned, top-down, no colour table. */
-        uint32_t src_stride = ((uint32_t)w * bpp + 31u) / 32u * 4u;
+        /* DDB initial bits are WORD-aligned per row (MSDN's CreateBitmap
+         * contract -- "each scan line must be word aligned"), top-down,
+         * no colour table.  That is NOT the DIB DWORD rule: Scintilla's
+         * 1x16 caret hands 2 bytes/row (32 bytes), and a DWORD stride
+         * reads twice past the buffer end -- harmless heap slop on
+         * Windows, a fault here when the tail crosses off the break. */
+        uint32_t src_stride = ((uint32_t)w * (uint32_t)bpp + 15u) / 16u * 2u;
         size_t n = (size_t)src_stride * (size_t)h;
         if (n <= b->alloc) memcpy(b->bits, bits, n);
     }
@@ -2179,7 +2239,11 @@ W32ABI int32_t IntersectClipRect(W32_HDC hdc, int32_t l, int32_t t, int32_t r, i
 W32ABI W32_BOOL RectVisible(W32_HDC hdc, const W32_RECT *r) {
     gdi_dc_t *d = dc_from_h(hdc);
     if (!d || !r) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
-    return clip_intersects(d, r) ? 1 : 0;
+    /* The query rect arrives in logical units but the region MSDN keeps in
+     * device units, so cross the same bridge the rasterers do. */
+    W32_RECT rr = *r;
+    dc_rect_to_dev(d, &rr);
+    return clip_intersects(d, &rr) ? 1 : 0;
 }
 
 /* ===================================================================== *
@@ -2246,6 +2310,7 @@ static void shape_bounds(const shape_ctx_t *c, int32_t *bx, int32_t *by,
 W32ABI W32_BOOL Rectangle(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t b) {
     surf_t s;
     if (shapes_prep(hdc, &s) < 0) return 0;
+    { gdi_dc_t *d = dc_from_h(hdc); if (d) { dc_log_to_dev(d, &l, &t); dc_log_to_dev(d, &r, &b); } }
     shape_ctx_t c = { l, t, r, b, 0, 0, 0, 0, SHAPE_RECT };
     int32_t bx, by, bw, bh;
     shape_bounds(&c, &bx, &by, &bw, &bh);
@@ -2256,6 +2321,7 @@ W32ABI W32_BOOL Rectangle(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t 
 W32ABI W32_BOOL Ellipse(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t b) {
     surf_t s;
     if (shapes_prep(hdc, &s) < 0) return 0;
+    { gdi_dc_t *d = dc_from_h(hdc); if (d) { dc_log_to_dev(d, &l, &t); dc_log_to_dev(d, &r, &b); } }
     shape_ctx_t c = { l, t, r, b, 0, 0, 0, 0, SHAPE_ELLIPSE };
     int32_t bx, by, bw, bh;
     shape_bounds(&c, &bx, &by, &bw, &bh);
@@ -2267,6 +2333,7 @@ W32ABI W32_BOOL RoundRect(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t 
                           int32_t ew, int32_t eh) {
     surf_t s;
     if (shapes_prep(hdc, &s) < 0) return 0;
+    { gdi_dc_t *d = dc_from_h(hdc); if (d) { dc_log_to_dev(d, &l, &t); dc_log_to_dev(d, &r, &b); } }
     shape_ctx_t c = { l, t, r, b, ew, eh, 0, 0, SHAPE_ROUNDRECT };
     int32_t bx, by, bw, bh;
     shape_bounds(&c, &bx, &by, &bw, &bh);
@@ -2335,7 +2402,9 @@ W32ABI int32_t FrameRect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
         br = &frameb;
     }
     frame_ctx_t c;
-    c.l = r->left; c.t = r->top; c.r = r->right; c.b = r->bottom;
+    W32_RECT rr = *r;
+    dc_rect_to_dev(d, &rr);
+    c.l = rr.left; c.t = rr.top; c.r = rr.right; c.b = rr.bottom;
     c.br = br;
     if (d->kind == 1) {
         surf_t s;
@@ -2343,8 +2412,8 @@ W32ABI int32_t FrameRect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
         frame_body(&s, &c);
         return 1;
     }
-    return win_raster_blit(d, r->left, r->top,
-                           r->right - r->left, r->bottom - r->top,
+    return win_raster_blit(d, rr.left, rr.top,
+                           rr.right - rr.left, rr.bottom - rr.top,
                            frame_body, &c) ? 1 : 0;
 }
 
@@ -2532,6 +2601,9 @@ W32ABI W32_BOOL ExtTextOutW(W32_HDC hdc, int32_t x, int32_t y, W32_UINT flags,
     gdi_dc_t *d = dc_from_h(hdc);
     if (!d) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
     if (!s) return 1;
+    W32_RECT rr;
+    if (r) { rr = *r; dc_rect_to_dev(d, &rr); r = &rr; }
+    dc_log_to_dev(d, &x, &y);
     const W32_RECT *clip = (flags & W32_ETO_CLIPPED) ? r : 0;
     const gdi_font_face_t *f = gdi_face();
     if ((flags & W32_ETO_OPAQUE) && r && f) {
@@ -3329,11 +3401,11 @@ W32ABI W32_BOOL MoveToEx(W32_HDC hdc, int32_t x, int32_t y, W32_POINT *old) {
     return W32_TRUE;
 }
 
-typedef struct { int32_t x1, y1; } line_ctx_t;
+typedef struct { int32_t x0, y0, x1, y1; } line_ctx_t;
 
 static void line_body(surf_t *s, void *user) {
     line_ctx_t *c = (line_ctx_t *)user;
-    surf_line_pen(s, s->dc->cur_x, s->dc->cur_y, c->x1, c->y1);
+    surf_line_pen(s, c->x0, c->y0, c->x1, c->y1);
 }
 
 W32ABI W32_BOOL LineTo(W32_HDC hdc, int32_t x, int32_t y) {
@@ -3342,9 +3414,12 @@ W32ABI W32_BOOL LineTo(W32_HDC hdc, int32_t x, int32_t y) {
     gdi_pen_t *p = dc_pen(d);
     int w = p->width > 0 ? p->width : 1;
     int32_t x0 = d->cur_x, y0 = d->cur_y;
+    int32_t lx = x, ly = y;          /* keep the logical cursor point */
+    dc_log_to_dev(d, &x0, &y0);
+    dc_log_to_dev(d, &x, &y);
     int32_t minx = x0 < x ? x0 : x, maxx = x0 > x ? x0 : x;
     int32_t miny = y0 < y ? y0 : y, maxy = y0 > y ? y0 : y;
-    line_ctx_t c = { x, y };
+    line_ctx_t c = { x0, y0, x, y };
     int ok;
     if (d->kind == 1) {
         surf_t s;
@@ -3356,7 +3431,7 @@ W32ABI W32_BOOL LineTo(W32_HDC hdc, int32_t x, int32_t y) {
                              (maxx - minx) + 2 * w + 1,
                              (maxy - miny) + 2 * w + 1, line_body, &c);
     }
-    d->cur_x = x; d->cur_y = y;
+    d->cur_x = lx; d->cur_y = ly;
     return ok;
 }
 
@@ -3388,7 +3463,9 @@ W32_BOOL w32_gdi_fill_rect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
         br = &legacy;
     }
     fill_ctx_t c;
-    c.l = r->left; c.t = r->top; c.r = r->right; c.b = r->bottom;
+    W32_RECT rr = *r;
+    dc_rect_to_dev(d, &rr);
+    c.l = rr.left; c.t = rr.top; c.r = rr.right; c.b = rr.bottom;
     c.br = br;
     if (d->kind == 1) {
         surf_t s;
@@ -3396,8 +3473,8 @@ W32_BOOL w32_gdi_fill_rect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
         fill_body(&s, &c);
         return 1;
     }
-    return win_raster_blit(d, r->left, r->top,
-                           r->right - r->left, r->bottom - r->top,
+    return win_raster_blit(d, rr.left, rr.top,
+                           rr.right - rr.left, rr.bottom - rr.top,
                            fill_body, &c);
 }
 

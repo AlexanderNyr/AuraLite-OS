@@ -157,6 +157,10 @@ int      ag_window_minimize(int wid);
 int      ag_window_maximize(int wid);
 int      ag_window_restore(int wid);
 int      ag_window_lower(int wid);
+/* WR-3: see-through hole in window-buffer pixels; empty clears.  Pixels in
+ * the hole are skipped at composite time and clicks fall through them. */
+int      ag_window_set_hole(int wid, int32_t l, int32_t t,
+                            int32_t r, int32_t b);
 int      ag_window_set_flags(int wid, uint32_t flags);
 uint32_t ag_window_get_flags(int wid);        /* -1 (as uint32 -1) if gone */
 int      ag_window_get_z(int wid);

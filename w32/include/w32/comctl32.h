@@ -581,6 +581,7 @@ typedef struct {
 #define W32_TCM_GETCURFOCUS  (W32_TCM_FIRST + 47)
 #define W32_TCM_SETCURFOCUS  (W32_TCM_FIRST + 48)
 #define W32_TCM_ADJUSTRECT   (W32_TCM_FIRST + 40)
+#define W32_TCM_GETROWCOUNT  (W32_TCM_FIRST + 44)
 
 /* F30 (WR-3): lParam sits at 0x20 -- iImage ends there and lParam is
  * 8-byte aligned, so there is no padding in front of it.  An explicit

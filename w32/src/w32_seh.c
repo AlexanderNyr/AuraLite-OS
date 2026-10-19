@@ -35,24 +35,64 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 /* WR-3 diagnosis (temporary): the serial line drops single printf lines
  * under the kernel writeback flood, so the SEH dispatch trace goes to a
  * file on the /fat delivery disk instead; the poll harness cats it back
- * before poweroff. */
-static FILE *w32trc_fp(void) {
-    static FILE *fp = (FILE *)-1;
-    if (fp == (FILE *)-1)
-        fp = fopen("/fat/w32trace.txt", "w");
-    return fp;
+ * before poweroff.
+ *
+ * The sink is a RAW FD, deliberately not a FILE*: NPP writes these traces
+ * from several threads at once (UI input, cross-thread sends, and the
+ * fault dispatcher itself, which runs in signal context), and sharing one
+ * buffered FILE* across them raced bufpos past the buffer end and
+ * corrupted the heap -- the intermittent typing crash inside memcpy/
+ * snprintf that looked like application stack damage.  O_APPEND keeps
+ * every write() at the true end of file so concurrent writers only
+ * interleave whole lines, and snprintf formats on the stack, so no
+ * shared state is touched at all. */
+static int w32trc_fd(void) {
+    static volatile int fd = -2;   /* -2 = not opened yet */
+    int cur = __atomic_load_n(&fd, __ATOMIC_ACQUIRE);
+    if (cur == -2) {
+        int nfd = open("/fat/w32trace.txt",
+                       O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
+        if (nfd < 0) nfd = -1;
+        if (!__atomic_compare_exchange_n(&fd, &cur, nfd, 0,
+                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            if (nfd >= 0) close(nfd);   /* lost the open race */
+        } else {
+            cur = nfd;
+        }
+    }
+    return cur;
 }
-#define W32TRC(...) do { FILE *tf_ = w32trc_fp();            \
-        if (tf_) { fprintf(tf_, __VA_ARGS__); fflush(tf_); } } while (0)
+
+static void w32trc_emit(int fd, const char *p, size_t n) {
+    while (n > 0) {
+        ssize_t w = write(fd, p, n);
+        if (w <= 0) return;
+        p += w;
+        n -= (size_t)w;
+    }
+}
+#define W32TRC(...) do { int tf_ = w32trc_fd();                  \
+        if (tf_ >= 0) { char tb_[512];                           \
+            int tn_ = snprintf(tb_, sizeof tb_, __VA_ARGS__);    \
+            if (tn_ > 0)                                         \
+                w32trc_emit(tf_, tb_, (size_t)tn_ < sizeof tb_ ? \
+                            (size_t)tn_ : sizeof tb_); } } while (0)
 
 void w32trc_line(const char *fmt, unsigned long long a,
                  unsigned long long b, unsigned long long c) {
-    FILE *tf = w32trc_fp();
-    if (tf) { fprintf(tf, fmt, a, b, c); fflush(tf); }
+    int tf = w32trc_fd();
+    if (tf < 0) return;
+    char tb[512];
+    int n = snprintf(tb, sizeof tb, fmt, a, b, c);
+    if (n > 0)
+        w32trc_emit(tf, tb, (size_t)n < sizeof tb ? (size_t)n : sizeof tb);
 }
 
 /* WR-3 diagnosis (temporary): the string form, for a MessageBox body.  The
@@ -60,11 +100,15 @@ void w32trc_line(const char *fmt, unsigned long long a,
  * painted by the same thread that would have to flush it), so the text goes
  * to the same /fat/w32trace.txt the rest of the dispatch trace uses. */
 void w32trc_str(const char *tag, const char *s) {
-    FILE *tf = w32trc_fp();
-    if (tf) { fprintf(tf, "%s: %s\n", tag, s ? s : "(null)"); fflush(tf); }
+    int tf = w32trc_fd();
+    if (tf < 0) return;
+    if (!s) s = "(null)";
+    w32trc_emit(tf, tag, strlen(tag));
+    w32trc_emit(tf, ": ", 2);
+    w32trc_emit(tf, s, strlen(s));
+    w32trc_emit(tf, "\n", 1);
 }
 #include <stdlib.h>
-#include <string.h>
 
 #include "w32/w32_abi.h"
 #include "w32/w32_seh.h"

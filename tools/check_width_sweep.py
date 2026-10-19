@@ -59,7 +59,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 401   # was 397; the SH8 spawn-buffer fix added 4 in
+BASELINE_UINT64_CASTS = 402   # was 401; W32RUN_PLAN.md WR-3 added 1 in
+                              # kernel/gui/gui_syscalls.c -- the GUI_OP_
+                              # SET_HOLE arm's require_owner refusal
+                              # returning (uint64_t)-1.  Identical idiom,
+                              # identical file and identical justification
+                              # to the CW-1/W32A-7 moves recorded below: a
+                              # syscall ABI word, not an address.  Pin
+                              # moves, code stays.
+                              # was 397; the SH8 spawn-buffer fix added 4 in
                               # kernel/proc/process.c.  process_spawn() used
                               # to kmalloc a fixed 16 MiB and compare against
                               # the SPAWN_MAX_IMAGE macro; it now sizes the

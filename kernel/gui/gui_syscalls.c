@@ -367,6 +367,12 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
         if (parent >= 0 && !require_owner(parent)) return (uint64_t)-1;
         return (uint64_t)gui_set_parent((int)a2, parent);
     }
+    case GUI_OP_SET_HOLE:
+        /* WR-3: a2=wid, a3=l|t<<32, a4=r|b<<32.  Owner-only like every
+         * other window mutation. */
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        gui_window_set_hole((int)a2, lo32(a3), hi32(a3), lo32(a4), hi32(a4));
+        return 0;
     case GUI_OP_GET_PIXEL: {
         /* W32A-7: one content pixel back.  Out-of-range coordinates are
          * an error, not pixel 0 -- the caller distinguishes them. */

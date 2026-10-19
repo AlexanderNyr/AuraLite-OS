@@ -602,6 +602,24 @@ int main(void) {
            "a style bit with no compositor meaning is refused");
     }
     {
+        /* WR-3: the style low word is class-defined for the six standard
+         * controls -- NPP's autocomplete ListBox popup carries
+         * LBS_NOINTEGRALHEIGHT (0x100), and refusing it handed NPP a NULL
+         * handle it suicided on (0xc0000409). */
+        static const uint16_t LB[8] = { 'L','i','s','t','B','o','x', 0 };
+        w32_user_register_dialog_class();
+        W32_HWND lb = CreateWindowExW(0, LB, TITLE,
+                                      W32_WS_CHILD | W32_WS_VISIBLE | 0x100u,
+                                      0, 0, 100, 60, h1, 0, 0, 0);
+        ok(lb != 0, "a ListBox with LBS_NOINTEGRALHEIGHT is created, not refused");
+        if (lb) DestroyWindow(lb);
+        W32_HWND bad = CreateWindowExW(0, CLS, TITLE,
+                                       W32_WS_POPUP | 0x100u, 0, 0, 10, 10,
+                                       0, 0, 0, 0);
+        ok(bad == 0 && GetLastError() == W32_ERROR_INVALID_PARAMETER,
+           "the low-word check still holds for app classes");
+    }
+    {
         const uint16_t nope[5] = { 'n','o','p','e', 0 };
         W32_HWND bad = CreateWindowExW(0, nope, TITLE, W32_WS_POPUP, 0, 0, 10, 10,
                                        0, 0, 0, 0);
@@ -870,11 +888,29 @@ int main(void) {
     {
         W32_MONITORINFOEXW mi;
         memset(&mi, 0, sizeof mi);
+        mi.mi.cbSize = (uint32_t)sizeof mi;
         W32_HMONITOR mon = MonitorFromWindow(h1, W32_MONITOR_DEFAULTTONEAREST);
         ok(mon != 0 && GetMonitorInfoW(mon, &mi) == W32_TRUE &&
            mi.mi.rcMonitor.right == 1280 && mi.mi.rcWork.bottom == 760,
            "GetMonitorInfoW describes the framebuffer minus the taskbar");
         ok(mi.mi.dwFlags == 1u, "the only monitor is the primary one");
+        /* WR-3: the caller sizes its struct via cbSize.  A 40-byte
+         * MONITORINFO must not receive the EX tail -- NPP parks one on
+         * the stack under its /GS cookie when it positions the
+         * autocomplete popup, and the overrun aborted it (0xc0000409). */
+        {
+            struct { W32_MONITORINFO m; uint64_t canary; } s;
+            memset(&s, 0, sizeof s);
+            s.m.cbSize = (uint32_t)sizeof s.m;
+            s.canary = 0xC0FFEE1122334455ull;
+            ok(GetMonitorInfoW(mon, (W32_MONITORINFOEXW *)&s) == W32_TRUE &&
+               s.m.rcMonitor.right == 1280 &&
+               s.canary == 0xC0FFEE1122334455ull,
+               "a 40-byte MONITORINFO gets the base, and the tail stops");
+            memset(&s, 0, sizeof s);
+            ok(GetMonitorInfoW(mon, (W32_MONITORINFOEXW *)&s) == W32_FALSE,
+               "cbSize 0 is refused, not trusted");
+        }
         ok(EnumDisplayMonitors(0, 0, 0, 0) == W32_FALSE,
            "EnumDisplayMonitors refuses a null callback");
     }
@@ -912,6 +948,55 @@ int main(void) {
         fake_event(1, 11 /* UI_EVT_KEY_UP */, 0, 0, 'A', 0, 0, 0x1E);
         PeekMessageW(&m, 0, 0, 0, 1);
         ok((GetKeyState('A') & 0x8000) == 0, "and the key up clears it");
+        /* WR-3: the compositor speaks cooked codes ('e' vs 'E', 0x120 for
+         * shift); Win32 wants virtual keys, mapped at the edge. */
+        fake_event(1, 10 /* UI_EVT_KEY_DOWN */, 0, 0, 'e', 0, 0, 0x12);
+        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE &&
+           m.message == W32_WM_KEYDOWN && m.wParam == 'E',
+           "a cooked lowercase letter arrives as its uppercase VK");
+        fake_event(1, 11 /* UI_EVT_KEY_UP */, 0, 0, 'e', 0, 0, 0x12);
+        PeekMessageW(&m, 0, 0, 0, 1);
+        fake_event(1, 10, 0, 0, 0x120, 0, 0, 0);
+        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE &&
+           m.message == W32_WM_KEYDOWN && m.wParam == W32_VK_SHIFT &&
+           (GetKeyState(W32_VK_SHIFT) & 0x8000) != 0,
+           "the 0x120 shift code arrives as VK_SHIFT, down");
+        fake_event(1, 11, 0, 0, 0x120, 0, 0, 0);
+        PeekMessageW(&m, 0, 0, 0, 1);
+        /* WR-3: shift is state, not a character -- with shift held, the
+         * cooked 'X' must translate shifted. */
+        fake_event(1, 10, 0, 0, 0x120, 0, 0, 0);
+        fake_event(1, 10, 0, 0, 'X', 0, 0, 0x2D);
+        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == W32_VK_SHIFT &&
+           PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == 'X' &&
+           (GetKeyState(W32_VK_SHIFT) & 0x8000) != 0,
+           "shift is still down when the shifted letter is retrieved");
+        ok(TranslateMessage(&m) == W32_TRUE &&
+           PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.message == W32_WM_CHAR &&
+           m.wParam == 'X',
+           "TranslateMessage renders the shifted letter");
+        fake_event(1, 11, 0, 0, 'X', 0, 0, 0x2D);
+        fake_event(1, 11, 0, 0, 0x120, 0, 0, 0);
+        PeekMessageW(&m, 0, 0, 0, 1);
+        PeekMessageW(&m, 0, 0, 0, 1);
+        /* WR-3: the chord burst -- shift-down, key-down, key-up, shift-up
+         * posted before the first read must still show shift down at the
+         * letter.  Feeding keystate at pump time collapsed this and every
+         * fast shifted character arrived unshifted. */
+        fake_event(1, 10, 0, 0, 0x120, 0, 0, 0);
+        fake_event(1, 10, 0, 0, '!', 0, 0, 0x02);
+        fake_event(1, 11, 0, 0, '!', 0, 0, 0x02);
+        fake_event(1, 11, 0, 0, 0x120, 0, 0, 0);
+        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == W32_VK_SHIFT,
+           "burst: shift-down arrives first");
+        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == '1' &&
+           (GetKeyState(W32_VK_SHIFT) & 0x8000) != 0,
+           "burst: base key with shift down at retrieval");
+        ok(TranslateMessage(&m) == W32_TRUE &&
+           PeekMessageW(&m, 0, W32_WM_CHAR, W32_WM_CHAR, 1) == W32_TRUE &&
+           m.wParam == '!',
+           "burst: '!' survives the chord");
+        drain();
         W32_POINT pt;
         ok(GetCursorPos(&pt) == W32_TRUE && pt.x == 100 && pt.y == 100,
            "GetCursorPos asks the compositor");

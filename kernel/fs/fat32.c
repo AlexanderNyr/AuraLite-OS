@@ -819,26 +819,41 @@ static int find_free_run(uint32_t dir_cluster, int count, uint32_t *out_off) {
     int run = 0;
     uint32_t scanned = 0;
     uint32_t bytes = dir_chain_bytes(dir_cluster);
+    /* Offset of the first 0x00 slot, or UINT32_MAX when the directory has
+     * no end marker.  A directory scan stops at that slot (FAT: 0x00 ends
+     * the directory), so any entry placed AFTER it is unreachable: create
+     * must not report success for a file lookup can never find. */
+    uint32_t barrier = 0xFFFFFFFFu;
 
     while (scanned < bytes) {
         uint8_t e[32];
         if (dir_read_entry(dir_cluster, off, e) != 0) return -EIO;
+        if (e[0] == 0x00 && barrier == 0xFFFFFFFFu)
+            barrier = off;
         if (e[0] == 0x00 || e[0] == 0xE5) {
             if (run == 0) run_start = off;
             run++;
-            if (run >= count) { *out_off = run_start; return 0; }
+            if (run >= count && run_start <= barrier) {
+                *out_off = run_start;
+                return 0;
+            }
         } else {
             run = 0;
         }
         off += 32;
         scanned += 32;
     }
-    /* Need to grow the dir chain by one cluster. */
-    uint32_t old_clusters = bytes / fs.bytes_per_clus;
-    if (ensure_chain(dir_cluster, old_clusters + 1) == 0) return -ENOSPC;
-    /* The new cluster is all-zero (zero_cluster was called) → all 32-byte
-     * slots are free.  Use the start of the new cluster. */
-    *out_off = old_clusters * fs.bytes_per_clus;
+    /* No reachable run inside the chain: the span must begin at the
+     * end-marker (overwriting it extends the directory) — or at the chain
+     * end when there is no marker at all — and may continue into clusters
+     * we allocate now. */
+    uint32_t start = (barrier != 0xFFFFFFFFu) ? barrier : bytes;
+    uint32_t need = start + (uint32_t)count * 32u;
+    uint32_t need_clusters =
+        (need + fs.bytes_per_clus - 1u) / fs.bytes_per_clus;
+    if (need_clusters == 0) need_clusters = 1;
+    if (ensure_chain(dir_cluster, need_clusters) == 0) return -ENOSPC;
+    *out_off = start;
     return 0;
 }
 
@@ -1776,6 +1791,46 @@ void fat32_self_test(void) {
     if (fat32_unlink_op(NULL, "RENAMED.TXT") != 0) {
         kprintf("[fat32] FAIL: unlink\n"); return;
     }
+
+    /* 5. LFN create when the trailing free run is shorter than the entry
+     * count.  The name needs two 32-byte slots (LFN + short entry); with
+     * only one slot left after the directory's 0x00 end-marker the entries
+     * must land AT the marker (and, past the cluster end, into a cluster
+     * the chain grows to), where a scan can still see them.  A regression
+     * placed them after the marker: create reported success and every
+     * lookup/readdir missed the file. */
+    fat32_unlink_op(NULL, "GROWTEST/long.txt");
+    for (int i = 0; i < 64; i++) {
+        char pn[32];
+        ksnprintf(pn, sizeof(pn), "GROWTEST/F%03d", i);
+        fat32_unlink_op(NULL, pn);
+    }
+    fat32_rmdir_op(NULL, "GROWTEST");
+    if (fat32_mkdir_op(NULL, "GROWTEST") != 0) {
+        kprintf("[fat32] FAIL: mkdir GROWTEST\n"); return;
+    }
+    {
+        int slots = (int)(fs.bytes_per_clus / 32u);
+        for (int i = 0; i < slots - 1; i++) {
+            char pn[32], fn[16];
+            ksnprintf(fn, sizeof(fn), "F%03d", i);
+            ksnprintf(pn, sizeof(pn), "GROWTEST/F%03d", i);
+            if (!fat32_create(NULL, pn)) {
+                kprintf("[fat32] FAIL: fill GROWTEST/%s\n", fn); return;
+            }
+        }
+        /* Sanity: the fillers must be findable (1 slot each). */
+        if (!fat32_lookup(NULL, "GROWTEST/F000")) {
+            kprintf("[fat32] FAIL: filler not visible\n"); return;
+        }
+    }
+    if (!fat32_create(NULL, "GROWTEST/long.txt")) {
+        kprintf("[fat32] FAIL: create GROWTEST/long.txt\n"); return;
+    }
+    if (!fat32_lookup(NULL, "GROWTEST/long.txt")) {
+        kprintf("[fat32] FAIL: LFN create at end-marker not visible\n"); return;
+    }
+    fat32_unlink_op(NULL, "GROWTEST/long.txt");
 
     kprintf("[fat32] PASS: FAT32 read/write and log sink ready\n");
 }

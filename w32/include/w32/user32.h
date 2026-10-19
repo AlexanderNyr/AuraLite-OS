@@ -537,6 +537,8 @@ typedef struct {
 } W32_NMHDR;
 
 typedef struct {
+    uint32_t cbSize;               /* WR-3: the caller sizes its own struct
+                                    * (40 = MONITORINFO, 104/72 = EXW/EXA) */
     W32_RECT rcMonitor;
     W32_RECT rcWork;
     uint32_t dwFlags;

@@ -45,6 +45,24 @@ static block_meta *find_free_block(block_meta **last, size_t size) {
 
 static volatile unsigned char rs_lock;
 
+/* WR-3: the heap lock.  request_space() above serialises growth, but the
+ * free-list half -- find_free_block() plus the free=0 mark in malloc(),
+ * and the zero+free=1 in free() -- ran unlocked: two threads could check
+ * out the same base block together, and one thread's free() then zeroed
+ * live bytes out from under the other.  Under Notepad++'s allocator
+ * chatter that mis-share was a matter of time, and the victim surfaced
+ * anywhere (a wild memcpy length, a torn snprintf) far from the cause.
+ * The lock nests heap -> growth only (request_space takes rs_lock, never
+ * this one back), and malloc never takes the stdio lock -- its diagnosis
+ * below writes with a raw write() -- so the global order stays acyclic. */
+static volatile unsigned char heap_lock;
+
+static void heap_take(void) {
+    while (__atomic_test_and_set(&heap_lock, __ATOMIC_ACQUIRE))
+        __asm__ volatile ("pause");
+}
+static void heap_drop(void) { __atomic_clear(&heap_lock, __ATOMIC_RELEASE); }
+
 static block_meta *request_space(block_meta* last, size_t size) {
     static unsigned char *cur = NULL, *end = NULL;
     size_t need = (size + META_SIZE + 15u) & ~(size_t)15u;
@@ -115,8 +133,11 @@ void *malloc(size_t size) {
                         b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
                       } }
                     b[n++] = '\n';
-                    fwrite(b, 1, (unsigned long)n, stdout);
-                    fflush(stdout);
+                    /* Raw write, never stdio: this runs inside malloc(),
+                     * where taking the stdio lock would invert the global
+                     * stdio -> heap order (fopen allocates), and where a
+                     * FILE race would corrupt the very heap being built. */
+                    (void)write(1, b, (size_t)n);
                 }
             }
         }
@@ -142,8 +163,7 @@ void *malloc(size_t size) {
                 b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
               } }
             b[n++] = '\n';
-            fwrite(b, 1, (unsigned long)n, stdout);
-            fflush(stdout);
+            (void)write(1, b, (size_t)n);   /* raw: see the MID site above */
             }
         }
     }
@@ -152,29 +172,37 @@ void *malloc(size_t size) {
     // align size
     size = (size + 7) & ~7;
     
-    if (!base) {
-        block = request_space(NULL, size);
-        if (!block) return NULL;
-        base = block;
-    } else {
+    heap_take();
+    if (base) {
         block_meta *last = base;
         block = find_free_block(&last, size);
-        if (!block) {
-            block = request_space(last, size);
-            if (!block) return NULL;
-        } else {
+        if (block) {
             block->free = 0;
+            heap_drop();
+            return (block + 1);
         }
     }
-    
+    heap_drop();
+    /* Miss (or first call): grow outside the heap lock.  request_space()
+     * carries its own lock and hands back a detached block, so no shared
+     * list state is touched here; only the base publication below needs
+     * the lock again. */
+    block = request_space(NULL, size);
+    if (!block) return NULL;
+    heap_take();
+    if (!base) base = block;
+    heap_drop();
+
     return (block + 1);
 }
 
 void free(void *ptr) {
     if (!ptr) return;
     block_meta *block_ptr = ((block_meta*)ptr) - 1;
+    heap_take();
     memset(ptr, 0, block_ptr->size);
     block_ptr->free = 1;
+    heap_drop();
 }
 
 void *calloc(size_t nmemb, size_t size) {
