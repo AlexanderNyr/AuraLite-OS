@@ -189,13 +189,14 @@ static void ws2_pump(void) {
             long fire = r & e->async_mask & ~e->async_seen;
             static const int bits[] = { WS2_FD_READ, WS2_FD_WRITE,
                 WS2_FD_ACCEPT, WS2_FD_CONNECT, WS2_FD_CLOSE };
-            static const int idx[]  = { WS2_FD_READ_BIT, WS2_FD_WRITE_BIT,
-                WS2_FD_ACCEPT_BIT, WS2_FD_CONNECT_BIT, WS2_FD_CLOSE_BIT };
             for (unsigned i = 0; i < sizeof bits / sizeof bits[0]; i++) {
                 if (fire & bits[i]) {
+                    /* WR-4 FIX30c: LOWORD carries the FD_* bitmask
+                     * (FD_READ=0x01, ...), not the bit index -- the old
+                     * index made FD_READ arrive as lParam 0 (ignored). */
                     PostMessageW(e->async_hwnd, e->async_msg,
                                  (uint64_t)(unsigned)fd,
-                                 W32_MAKELONG(idx[i], 0));
+                                 W32_MAKELONG(bits[i], 0));
                     e->async_seen |= bits[i];
                 }
             }
@@ -444,6 +445,16 @@ W32ABI int w32_ws2_recv(W32_SOCKET s, char *buf, int len, int flags) {
     }
     int r = recv(fd, buf, (uint32_t)len);
     if (r < 0) { ws2_fail(); return W32_SOCKET_ERROR; }
+    /* WR-4 FIX30f (4450da7 port): the app took bytes, so re-arm the
+     * FD_READ edge.  The pump's `seen &= r` re-arm can only clear
+     * READ once the level is fully drained, but one recv syscall
+     * returns at most SYSCALL_IO_CHUNK bytes while Winsock apps read
+     * once per FD_READ -- without this, the tail of any >256B
+     * segment stranded with no second fire and the peer stalled.
+     * An app that never recvs never clears, so an ignored FD_READ
+     * still fires exactly once (no message storm). */
+    if (r > 0 && fd >= 0 && fd < WS2_MAXFD)
+        ws2_ep[fd].async_seen &= ~WS2_FD_READ;
     return r;
 }
 

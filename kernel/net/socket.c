@@ -67,7 +67,11 @@ static socket_t *get_owned_socket(int sid) {
 int64_t socket_create(int domain, int type, int protocol) {
     if (domain != AURA_AF_INET && domain != AURA_AF_INET6) return -EAFNOSUPPORT;
     if (type != AURA_SOCK_STREAM && type != AURA_SOCK_DGRAM) return -EINVAL;
-    for (int i = 0; i < SOCKET_MAX; i++) {
+    /* WR-4 FIX30d: never hand out 0/1/2 as a socket id.  Winsock apps
+     * treat a 0 wParam as "no socket" and drop the message (PuTTY's
+     * select_result returns early on wParam==0), so every WM_NETEVENT
+     * for sid 0 was silently ignored.  Slots 0-2 stay FREE forever. */
+    for (int i = 3; i < SOCKET_MAX; i++) {
         if (sockets[i].state == SOCK_SLOT_FREE) {
             memset(&sockets[i], 0, sizeof(sockets[i]));
             sockets[i].state = SOCK_SLOT_OPEN;
@@ -85,7 +89,10 @@ int64_t socket_create(int domain, int type, int protocol) {
 int64_t socket_connect(int sid, uint32_t ip, uint16_t port) {
     socket_t *s = get_owned_socket(sid);
     if (!s) return -EBADF;
-    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
+    /* WR-4: a bound socket connects fine (PuTTY binds outgoing
+     * sockets to INADDR_ANY:0 first); only unusable states fail. */
+    if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND)
+        return -EINVAL;
     if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
     int h = tcp_open(ip, port);
     if (h < 0) return h;   /* -ECONNREFUSED / -EHOSTUNREACH / -ETIMEDOUT / -EMFILE */
@@ -101,7 +108,8 @@ int64_t socket_connect6(int sid, const uint8_t addr[16], uint16_t port) {
     netl3_addr_t dst;
     int h;
     if (!s) return -EBADF;
-    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
+    if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND)
+        return -EINVAL;
     if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
     if (!addr) return -EFAULT;
     if (s->domain != AURA_AF_INET6 && s->domain != AURA_AF_INET)
@@ -177,7 +185,7 @@ int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port) {
     int new_h = tcp_accept(s->tcp_handle, &peer_ip, &peer_port);
     if (new_h < 0) return new_h;   /* -EBADF / -ETIMEDOUT / -EMFILE */
 
-    for (int i = 0; i < SOCKET_MAX; i++) {
+    for (int i = 3; i < SOCKET_MAX; i++) {   /* WR-4 FIX30d: see socket_create */
         if (sockets[i].state == SOCK_SLOT_FREE) {
             memset(&sockets[i], 0, sizeof(sockets[i]));
             sockets[i].state = SOCK_SLOT_CONNECTED;

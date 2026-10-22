@@ -167,6 +167,15 @@ static int is_api_set_name(const char *name) {
  * interchangeably.  Compare ignoring case and an optional .dll suffix, or
  * half of those spellings fail to find a module that is loaded. */
 static int module_name_matches(const char *have, const char *want) {
+    /* A caller may pass a qualified path (PuTTY: GetSystemDirectory +
+     * "\\ws2_32.dll"); built-ins match by basename, like KnownDLLs. */
+    const char *b = want;
+    const char *p = want;
+    while (*p) {
+        if (*p == '\\' || *p == '/' || *p == ':') b = p + 1;
+        p++;
+    }
+    want = b;
     if (ieq(have, want)) return 1;
 
     char trimmed[W32_MODULE_NAME_MAX];
@@ -261,6 +270,18 @@ static w32_module_t *find_by_name(const char *name) {
     for (i = 0; i < W32_MODULE_MAX; i++) {
         if (!modules[i].used || modules[i].loading) continue;
         if (module_name_matches(modules[i].name, name)) return &modules[i];
+        /* WR-4 fix #1: a builtin personality has no file behind it, so it
+         * answers a path-bearing load by its basename -- PuTTY builds
+         * "C:\win\sys\ws2_32.dll" via GetSystemDirectoryA and expects
+         * the system module, not MOD_NOT_FOUND.  File rows keep the
+         * exact match (two files in different dirs stay distinct). */
+        if (modules[i].builtin) {
+            const char *base = name, *p;
+            for (p = name; *p; p++)
+                if (*p == '\\' || *p == '/') base = p + 1;
+            if (base != name && module_name_matches(modules[i].name, base))
+                return &modules[i];
+        }
     }
     return NULL;
 }

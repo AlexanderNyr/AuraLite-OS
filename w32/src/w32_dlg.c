@@ -456,8 +456,10 @@ W32ABI W32_HWND CreateDialogParamA(W32_HINSTANCE inst, const char *name,
  * resolves, and reports unhandled exactly like Windows for messages it
  * does not process.  No message is swallowed here. */
 W32ABI W32_LRESULT DefDlgProcW(W32_HWND dlg, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
-    (void)dlg; (void)msg; (void)wp; (void)lp;
-    return 0;
+    /* WR-4 fix #2: like the real DefDlgProc, forward unhandled messages to
+     * DefWindowProc -- a blanket 0 refused WM_NCCREATE and killed PuTTY's
+     * PuTTYConfigBox frame at creation. */
+    return DefWindowProcW(dlg, msg, wp, lp);
 }
 W32ABI W32_LRESULT DefDlgProcA(W32_HWND dlg, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
     return DefDlgProcW(dlg, msg, wp, lp);
@@ -467,18 +469,59 @@ W32ABI W32_BOOL EndDialog(W32_HWND hw, W32_INT_PTR result) {
     w32_dlg_t *d = dlg_by_hwnd(hw);
     if (!d) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
     d->result = result; d->ended = 1;
-    PostQuitMessage(0);
     return 1;
 }
-W32ABI W32_BOOL IsDialogMessageW(W32_HWND dlg, W32_MSG *msg) { (void)dlg; (void)msg; return 0; }
+W32ABI W32_BOOL IsDialogMessageW(W32_HWND dlg, W32_MSG *msg) {
+    (void)dlg;
+    if (!msg) return 0;
+    /* WR-4: keyboard translation lives here, not (only) in the app loop.
+     * PuTTY's config loop never calls TranslateMessage, yet typing works
+     * on Windows: the dialog manager asks the focused control what it
+     * wants (WM_GETDLGCODE) and turns character keys into WM_CHAR itself,
+     * consuming the KEYDOWN so a loop-level TranslateMessage (the usual
+     * pattern, and ours) does not produce a second copy. */
+    if (msg->message == W32_WM_KEYDOWN) {
+        W32_UINT vk = (W32_UINT)(uintptr_t)msg->wParam;
+        /* WR-4 FIX31b: Enter activates the default (IDOK) button and Esc
+         * the Cancel (IDCANCEL) button, consumed here so the focused
+         * control never sees them.  (No DLGC_WANTALLKEYS exemption yet:
+         * single-line config edits are the only callers in the lane.) */
+        if (vk == 0x0Du || vk == 0x1Bu) {
+            int32_t bid = (vk == 0x1Bu) ? W32_IDCANCEL : W32_IDOK;
+            W32_HWND btn = dlg ? GetDlgItem(dlg, bid) : 0;
+            if (dlg)
+                SendMessageW(dlg, W32_WM_COMMAND,
+                             (W32_WPARAM)(uint32_t)(bid & 0xFFFF),
+                             (W32_LPARAM)btn);
+            return 1;
+        }
+        /* Tab stays on the dispatch path (no dialog nav yet). */
+        if (vk == 0x09u) return 0;
+        W32_HWND target = msg->hwnd;
+        if (!target) return 0;
+        W32_LRESULT code = SendMessageW(target, 0x0087u /*WM_GETDLGCODE*/,
+                                        0, 0);
+        if (code & (0x0080u | 0x0004u) /*WANTCHARS|WANTALLKEYS*/) {
+            /* Consume only when a character was produced: arrows and
+             * friends still dispatch to the control. */
+            return TranslateMessage(msg);
+        }
+        return 0;
+    }
+    return 0;
+}
 W32ABI W32_BOOL IsDialogMessageA(W32_HWND dlg, W32_MSG *msg) { return IsDialogMessageW(dlg, msg); }
 W32ABI W32_BOOL MapDialogRect(W32_HWND dlg, W32_RECT *r) {
     (void)dlg;
     if (!r) return 0;
-    int32_t rw = r->right - r->left;
-    int32_t rh = r->bottom - r->top;
-    r->right  = r->left + rw * 8 / 4;
-    r->bottom = r->top  + rh * 16 / 8;
+    /* WR-4 fix #4: honest dialog-unit contract -- every member is a
+     * coordinate scaled by the base units (PuTTY stores width/height in
+     * right/bottom and relies on linearity; the delta form made heights
+     * negative). */
+    r->left   = r->left   * 8 / 4;
+    r->top    = r->top    * 16 / 8;
+    r->right  = r->right  * 8 / 4;
+    r->bottom = r->bottom * 16 / 8;
     return 1;
 }
 W32ABI W32_DWORD GetDialogBaseUnits(void) { return (16u << 16) | 8u; }
@@ -680,20 +723,19 @@ static W32_LRESULT W32ABI w32_popup_proc(W32_HWND h, W32_UINT m,
     case W32_WM_LBUTTONUP: {
         int32_t x = (int16_t)(lp & 0xFFFF), y = (int16_t)(lp >> 16);
         if (x < 0 || y < 0 || x >= PP.width || y >= PP.height) {
-            PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); return 0;
+            PP.done = 1; PP.chosen_id = (uint32_t)-1; return 0;
         }
         int pos = (y - 2) / PP.row_h;
-        if (pos < 0 || pos >= PP.n) { PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); return 0; }
+        if (pos < 0 || pos >= PP.n) { PP.done = 1; PP.chosen_id = (uint32_t)-1; return 0; }
         int kind = w32_menu_kind(PP.menu, pos, 0);
         if (kind == 1) return 0;
         PP.hover = pos; PP.done = 1;
         if (kind == 2) { PP.sub = w32_menu_sub(PP.menu, pos); PP.chosen_pos = pos; }
         else { PP.sub = 0; w32_menu_kind(PP.menu, pos, &PP.chosen_id); }
-        PostQuitMessage(0);
         return 0;
     }
     case W32_WM_KEYDOWN:
-        if (wp == W32_VK_ESCAPE) { PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); }
+        if (wp == W32_VK_ESCAPE) { PP.done = 1; PP.chosen_id = (uint32_t)-1; }
         return 0;
     }
     return DefWindowProcW(h, m, wp, lp);

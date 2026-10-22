@@ -310,6 +310,9 @@ struct ui_window {
     int32_t   normal_x, normal_y;     /* placement: restored geometry */
     uint32_t  normal_w, normal_h;
     int32_t   ctrl_id;
+    int       check_state;          /* WR-4: BM_GETCHECK/BM_SETCHECK */
+    int32_t   edit_caret;           /* WR-4: caret char index */
+    int       edit_focus;           /* WR-4: nonzero while focused */
     W32_WNDPROC proc[UI_MAX_PROCS];   /* [0] class proc, [n] subclasses */
     int       proc_top;               /* index of the current top, >= 0 */
     void     *user_data;
@@ -406,6 +409,21 @@ static void w16_copy(uint16_t *dst, const uint16_t *src, size_t max) {
 static int w16_eq(const uint16_t *a, const uint16_t *b) {
     if (!a || !b) return 0;
     while (*a && *b) { if (*a != *b) return 0; a++; b++; }
+    return *a == 0 && *b == 0;
+}
+
+/* WR-4 fix #3: window-class names compare case-insensitively (PuTTY creates
+ * BUTTON/STATIC/EDIT while the predefined classes register as
+ * Button/Static/Edit); the exact match refused every panel child. */
+static int w16_ieq(const uint16_t *a, const uint16_t *b) {
+    if (!a || !b) return 0;
+    while (*a && *b) {
+        uint16_t ca = *a, cb = *b;
+        if (ca >= (uint16_t)'a' && ca <= (uint16_t)'z') ca -= (uint16_t)('a' - 'A');
+        if (cb >= (uint16_t)'a' && cb <= (uint16_t)'z') cb -= (uint16_t)('a' - 'A');
+        if (ca != cb) return 0;
+        a++; b++;
+    }
     return *a == 0 && *b == 0;
 }
 
@@ -604,6 +622,34 @@ static int32_t ui_parent_client_dy(const struct ui_window *w) {
     return ui_parent_client_dy_idx(w->parent);
 }
 
+/* WR-4: the compositor position of a child is parent-surface-relative
+ * (SetWindowPos stores logical + menu strip there), while the rect/point
+ * APIs speak screen coordinates (MSDN GetWindowRect).  A top level's
+ * compositor position IS screen (its outer origin -- SetWindowPos moves
+ * it there directly), so accumulate ancestor surface origins up the
+ * parent chain; a top level's own path contributes nothing.  Nested
+ * children carry no decor and no menu strip (ui_decor / ui_menu_h
+ * exclude WS_CHILD), so only the top ancestor adds decoration. */
+static void ui_ancestor_screen_offset(int i, int32_t *dx, int32_t *dy) {
+    int32_t x = 0, y = 0;
+    int p = (i >= 0 && i < UI_MAX_WINDOWS) ? windows[i].parent : -1;
+    while (p >= 0 && p < UI_MAX_WINDOWS && windows[p].in_use) {
+        int32_t px = 0, py = 0;
+        ag_window_get_pos(windows[p].ag_wid, &px, &py);
+        if (windows[p].parent < 0) {
+            uint32_t bw = 0, th = 0;
+            ui_decor(&windows[p], &bw, &th);
+            x += px + (int32_t)bw;
+            y += py + (int32_t)(th + bw);
+        } else {
+            x += px;
+            y += py;
+        }
+        p = windows[p].parent;
+    }
+    *dx = x; *dy = y;
+}
+
 static void ui_refresh_geom(struct ui_window *w) {
     if (w->ag_wid < 0) return;
     ag_window_get_pos(w->ag_wid, &w->x, &w->y);
@@ -648,7 +694,7 @@ int w32_win_cls_ag_wid(W32_HWND hwnd) {
 static struct ui_class *ui_find_class_w(const uint16_t *name) {
     if (!name) return 0;
     for (int i = 0; i < UI_MAX_CLASSES; i++)
-        if (classes[i].in_use && w16_eq(classes[i].name_w, name)) return &classes[i];
+        if (classes[i].in_use && w16_ieq(classes[i].name_w, name)) return &classes[i];
     return 0;
 }
 
@@ -724,7 +770,7 @@ W32_WORD w32_win_register_comctl_class(const W32_WNDCLASSEXW *c) {
     W32_WORD atom = ui_register_class(c);
     if (!atom) return 0;
     for (int i = 0; i < UI_MAX_CLASSES; i++) {
-        if (classes[i].in_use && w16_eq(classes[i].name_w, c->lpszClassName)) {
+        if (classes[i].in_use && w16_ieq(classes[i].name_w, c->lpszClassName)) {
             classes[i].comctl = 1;
             break;
         }
@@ -866,12 +912,500 @@ const uint16_t w32_cls_ListBox_w[] = {'L','i','s','t','B','o','x',0};
 const uint16_t w32_cls_ScrollBar_w[] = {'S','c','r','o','l','l','B','a','r',0};
 const uint16_t w32_cls_ComboBox_w[] = {'C','o','m','b','o','B','o','x',0};
 
+/* ---- WR-4: standard control painters --------------------------------------
+ * Button and Static were DefWindowProc personalities (erase, no content), so
+ * a dialog made of standard controls -- PuTTY's config panel is nothing
+ * else -- stayed blank.  They paint here.  Colours are the Win32
+ * dialog-classic COLORREFs (MSDN "GetSysColor" defaults); control *content*
+ * stays readable on any desktop, exactly as on Windows where dialogs ignore
+ * the wallpaper.  Style numbers are the MSDN "Button Styles" / "Static
+ * Control Styles" values; no W32_ constants exist for them yet, so they are
+ * spelled out once, here. */
+
+/* Button type: the style's low nibble. */
+#define WR4_BS_PUSHBUTTON      0u
+#define WR4_BS_DEFPUSHBUTTON   1u
+#define WR4_BS_CHECKBOX        2u
+#define WR4_BS_AUTOCHECKBOX    3u
+#define WR4_BS_RADIOBUTTON     4u
+#define WR4_BS_GROUPBOX        7u
+#define WR4_BS_AUTORADIOBUTTON 9u
+/* Static text kinds: the style's low nibble. */
+#define WR4_SS_LEFT   0u
+#define WR4_SS_CENTER  1u
+#define WR4_SS_RIGHT   2u
+#define WR4_SS_SIMPLE  11u
+#define WR4_SS_NOWRAP 12u
+/* Button messages / check states (MSDN "BM_GETCHECK"). */
+#define WR4_BM_GETCHECK 0xF0u
+#define WR4_BM_SETCHECK 0xF1u
+#define WR4_BST_CHECKED 1
+
+#define WR4_C_FACE   ((W32_DWORD)0x00C8D0D4u)   /* D4D0C8 dialog face */
+#define WR4_C_SHADOW ((W32_DWORD)0x00808080u)
+#define WR4_C_HILITE ((W32_DWORD)0x00FFFFFFu)
+#define WR4_C_TEXT   ((W32_DWORD)0x00000000u)
+
+/* Copy a control caption, collapsing the mnemonic marker: a lone '&' marks
+ * the mnemonic and is not drawn, '&&' draws one (MSDN "Buttons": the
+ * ampersand prefix).  Returns the stored length. */
+static int32_t w32_ctl_stripped(const uint16_t *src, uint16_t *dst,
+                                int32_t cap) {
+    int32_t n = 0, i = 0;
+    if (!src || !dst || cap <= 1) return 0;
+    while (src[i] && n < cap - 1) {
+        if (src[i] == '&') {
+            if (src[i + 1] == '&') { dst[n++] = '&'; i++; }
+            /* else: mnemonic marker, dropped */
+        } else dst[n++] = src[i];
+        i++;
+    }
+    dst[n] = 0;
+    return n;
+}
+
+/* Edit styles/messages (MSDN "Edit Control Styles", "EM_GETSEL"). */
+#define WR4_ES_MULTILINE 0x4u
+#define WR4_ES_PASSWORD  0x20u
+#define WR4_ES_READONLY  0x800u
+#define WR4_EX_CLIENTEDGE 0x200u
+#define WR4_EN_CHANGE 0x300u
+#define WR4_EM_GETSEL 0xB0u
+#define WR4_EM_SETSEL 0xB1u
+
+static int32_t w32_edit_len(int i) {
+    int32_t n = 0;
+    while (n < UI_TITLE_MAX && windows[i].title[n]) n++;
+    return n;
+}
+
+static W32_LRESULT W32ABI w32_edit_proc(W32_HWND hw, W32_UINT msg,
+                                        W32_WPARAM wp, W32_LPARAM lp) {
+    if (msg == W32_WM_PAINT) {
+        int i = w32_win_index_from_hwnd(hw);
+        if (i < 0) return 0;
+        W32_PAINTSTRUCT ps;
+        W32_HDC hdc = BeginPaint(hw, &ps);
+        if (hdc) {
+            W32_RECT rc, e;
+            uint16_t buf[UI_TITLE_MAX];
+            int32_t n = 0, k;
+            int32_t ytxt;
+            W32_SIZE sz;
+            GetClientRect(hw, &rc);
+            FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+            if (windows[i].exstyle & WR4_EX_CLIENTEDGE) {
+                e = rc; e.bottom = e.top + 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
+                e = rc; e.right = e.left + 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
+                e = rc; e.top = e.bottom - 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                e = rc; e.left = e.right - 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+            }
+            /* Visible text: the caption (v1: first line; a multiline box
+             * keeps the rest for WM_GETTEXT).  A password shows stars. */
+            for (k = 0; k < UI_TITLE_MAX - 1 && windows[i].title[k]; k++) {
+                uint16_t c = windows[i].title[k];
+                if (c == '\r' || c == '\n') break;
+                buf[n++] = (windows[i].style & WR4_ES_PASSWORD) ? '*' : c;
+            }
+            buf[n] = 0;
+            ytxt = rc.top + 2;
+            sz.cx = 0; sz.cy = 14;
+            if (GetTextExtentPoint32W(hdc, buf, n, &sz) && sz.cy > 0)
+                ytxt = rc.top + ((rc.bottom - rc.top) - sz.cy) / 2;
+            if (ytxt < rc.top) ytxt = rc.top;
+            if (n > 0) {
+                SetBkMode(hdc, W32_TRANSPARENT);
+                SetTextColor(hdc, WR4_C_TEXT);
+                TextOutW(hdc, rc.left + 3, ytxt, buf, n);
+            }
+            if (windows[i].edit_focus) {
+                /* Caret: a 2px bar after the caret char. */
+                int32_t ci = windows[i].edit_caret;
+                int32_t cxp = rc.left + 3;
+                W32_SIZE pre;
+                if (ci > n) ci = n;
+                if (ci > 0 && GetTextExtentPoint32W(hdc, buf, ci, &pre))
+                    cxp += pre.cx;
+                e.left = cxp; e.top = ytxt;
+                e.right = cxp + 2; e.bottom = ytxt + sz.cy;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_TEXT);
+            }
+            EndPaint(hw, &ps);
+        }
+        return 0;
+    }
+    if (msg == W32_WM_SETFOCUS || msg == W32_WM_KILLFOCUS) {
+        int fi = w32_win_index_from_hwnd(hw);
+        if (fi >= 0) {
+            windows[fi].edit_focus = (msg == W32_WM_SETFOCUS) ? 1 : 0;
+            InvalidateRect(hw, 0, W32_TRUE);
+        }
+        return 0;
+    }
+    if (msg == 0x0087u /*WM_GETDLGCODE*/) {
+        /* DLGC_WANTCHARS|DLGC_HASSETSEL|DLGC_WANTARROWS: an edit owns
+         * character keys, arrows and the selection, so IsDialogMessage
+         * translates KEYDOWN into WM_CHAR for it. */
+        return (W32_LRESULT)(0x0080u | 0x0008u | 0x0001u);
+    }
+    if (msg == W32_WM_CHAR) {
+        int ci = w32_win_index_from_hwnd(hw);
+        if (ci >= 0 && !(windows[ci].style & WR4_ES_READONLY)) {
+            int32_t len = w32_edit_len(ci);
+            int32_t at = windows[ci].edit_caret;
+            int changed = 0;
+            if (at < 0) at = 0;
+            if (at > len) at = len;
+            if (wp == 0x08) {                       /* backspace */
+                if (at > 0) {
+                    memmove(&windows[ci].title[at - 1],
+                            &windows[ci].title[at],
+                            (size_t)(len - at + 1) * sizeof(uint16_t));
+                    at--;
+                    changed = 1;
+                }
+            } else if (wp >= 0x20 && wp < 0x10000 && len < UI_TITLE_MAX - 1) {
+                memmove(&windows[ci].title[at + 1], &windows[ci].title[at],
+                        (size_t)(len - at + 1) * sizeof(uint16_t));
+                windows[ci].title[at] = (uint16_t)wp;
+                at++;
+                changed = 1;
+            }
+            if (changed) {
+                windows[ci].edit_caret = at;
+                w16_to_a(windows[ci].title_a, sizeof windows[ci].title_a,
+                         windows[ci].title);
+                InvalidateRect(hw, 0, W32_TRUE);
+                {
+                    W32_HWND parent = GetParent(hw);
+                    if (parent)
+                        PostMessageW(parent, W32_WM_COMMAND,
+                                     (W32_WPARAM)(((uint32_t)WR4_EN_CHANGE << 16) |
+                                                  ((uint32_t)(unsigned)windows[ci].ctrl_id & 0xFFFFu)),
+                                     (W32_LPARAM)hw);
+                }
+            }
+        }
+        return 0;
+    }
+    if (msg == W32_WM_KEYDOWN) {
+        int ki = w32_win_index_from_hwnd(hw);
+        if (ki >= 0) {
+            int32_t len = w32_edit_len(ki);
+            int32_t at = windows[ki].edit_caret;
+            int moved = 1;
+            switch ((uint32_t)wp) {
+            case W32_VK_LEFT:  if (at > 0) at--; break;
+            case W32_VK_RIGHT: if (at < len) at++; break;
+            case W32_VK_HOME:  at = 0; break;
+            case W32_VK_END:   at = len; break;
+            case W32_VK_DELETE:
+                if (at < len) {
+                    memmove(&windows[ki].title[at],
+                            &windows[ki].title[at + 1],
+                            (size_t)(len - at) * sizeof(uint16_t));
+                    w16_to_a(windows[ki].title_a,
+                             sizeof windows[ki].title_a, windows[ki].title);
+                    InvalidateRect(hw, 0, W32_TRUE);
+                }
+                break;
+            default: moved = 0; break;
+            }
+            if (moved) {
+                windows[ki].edit_caret = at;
+                InvalidateRect(hw, 0, W32_TRUE);
+            }
+        }
+        return 0;
+    }
+    if (msg == WR4_EM_GETSEL) {
+        int gi = w32_win_index_from_hwnd(hw);
+        int32_t at = (gi >= 0) ? windows[gi].edit_caret : 0;
+        if (wp) *(W32_DWORD *)(uintptr_t)wp = (W32_DWORD)at;
+        if (lp) *(W32_DWORD *)(uintptr_t)lp = (W32_DWORD)at;
+        return (W32_LRESULT)(((uint32_t)at << 16) | (uint32_t)at);
+    }
+    if (msg == WR4_EM_SETSEL) {
+        int si = w32_win_index_from_hwnd(hw);
+        if (si >= 0) {
+            int32_t len = w32_edit_len(si);
+            int32_t at = (int32_t)(lp == (W32_LPARAM)(int32_t)-1 ? len
+                                                                 : (int32_t)lp);
+            if (at < 0) at = 0;
+            if (at > len) at = len;
+            windows[si].edit_caret = at;
+            InvalidateRect(hw, 0, W32_TRUE);
+        }
+        return 0;
+    }
+    if (msg == W32_WM_SETTEXT) {
+        W32_LRESULT r = DefWindowProcW(hw, msg, wp, lp);
+        int ti = w32_win_index_from_hwnd(hw);
+        if (ti >= 0) {
+            windows[ti].edit_caret = w32_edit_len(ti);
+            InvalidateRect(hw, 0, W32_TRUE);
+        }
+        return r;
+    }
+    return DefWindowProcW(hw, msg, wp, lp);
+}
+
+static W32_LRESULT W32ABI w32_static_proc(W32_HWND hw, W32_UINT msg,
+                                          W32_WPARAM wp, W32_LPARAM lp) {
+    if (msg == W32_WM_PAINT) {
+        int i = w32_win_index_from_hwnd(hw);
+        if (i < 0) return 0;
+        W32_UINT type = windows[i].style & 0xFu;
+        W32_PAINTSTRUCT ps;
+        W32_HDC hdc = BeginPaint(hw, &ps);
+        if (hdc) {
+            if (type == WR4_SS_LEFT || type == WR4_SS_CENTER ||
+                type == WR4_SS_RIGHT || type == WR4_SS_SIMPLE ||
+                type == WR4_SS_NOWRAP || type == 0xDu) {
+                W32_RECT rc;
+                GetClientRect(hw, &rc);
+                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                uint16_t buf[UI_TITLE_MAX];
+                int32_t n = w32_ctl_stripped(windows[i].title, buf,
+                                             UI_TITLE_MAX);
+                if (n > 0) {
+                    int32_t x = rc.left;
+                    if (type == WR4_SS_CENTER || type == WR4_SS_RIGHT) {
+                        W32_SIZE sz;
+                        if (GetTextExtentPoint32W(hdc, buf, n, &sz)) {
+                            if (type == WR4_SS_CENTER)
+                                x = rc.left +
+                                    ((rc.right - rc.left) - sz.cx) / 2;
+                            else
+                                x = rc.right - sz.cx;
+                            if (x < rc.left) x = rc.left;
+                        }
+                    }
+                    SetBkMode(hdc, W32_TRANSPARENT);
+                    SetTextColor(hdc, WR4_C_TEXT);
+                    TextOutW(hdc, x, rc.top, buf, n);
+                }
+            }
+            /* Icon/bitmap/rect/frame kinds keep the BeginPaint erase. */
+            EndPaint(hw, &ps);
+        }
+        return 0;
+    }
+    if (msg == W32_WM_SETTEXT) {
+        W32_LRESULT r = DefWindowProcW(hw, msg, wp, lp);
+        InvalidateRect(hw, 0, W32_TRUE);
+        return r;
+    }
+    return DefWindowProcW(hw, msg, wp, lp);
+}
+
+/* One-pixel 3D edge: highlight top/left, shadow bottom/right. */
+static void w32_btn_edge(W32_HDC hdc, const W32_RECT *rc) {
+    W32_RECT e;
+    e = *rc; e.bottom = e.top + 1;
+    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+    e = *rc; e.right = e.left + 1;
+    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+    e = *rc; e.top = e.bottom - 1;
+    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
+    e = *rc; e.left = e.right - 1;
+    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
+}
+
+/* Centered caption inside (cx0,cy0)-(cx1,cy1). */
+static void w32_btn_text(W32_HDC hdc, int i, int32_t cx0, int32_t cy0,
+                         int32_t cx1, int32_t cy1) {
+    uint16_t buf[UI_TITLE_MAX];
+    int32_t n = w32_ctl_stripped(windows[i].title, buf, UI_TITLE_MAX);
+    if (n <= 0) return;
+    W32_SIZE sz;
+    int32_t x = cx0, y = cy0;
+    if (GetTextExtentPoint32W(hdc, buf, n, &sz)) {
+        x = cx0 + ((cx1 - cx0) - sz.cx) / 2;
+        y = cy0 + ((cy1 - cy0) - sz.cy) / 2;
+        if (x < cx0) x = cx0;
+        if (y < cy0) y = cy0;
+    }
+    SetBkMode(hdc, W32_TRANSPARENT);
+    SetTextColor(hdc, WR4_C_TEXT);
+    TextOutW(hdc, x, y, buf, n);
+}
+
+/* Left-aligned caption at x0, vertically centred in (cy0, cy1). */
+static void w32_btn_ltext(W32_HDC hdc, int i, int32_t x0, int32_t cy0,
+                          int32_t cy1) {
+    uint16_t buf[UI_TITLE_MAX];
+    int32_t n = w32_ctl_stripped(windows[i].title, buf, UI_TITLE_MAX);
+    if (n <= 0) return;
+    W32_SIZE sz;
+    int32_t y = cy0;
+    if (GetTextExtentPoint32W(hdc, buf, n, &sz)) {
+        y = cy0 + ((cy1 - cy0) - sz.cy) / 2;
+        if (y < cy0) y = cy0;
+    }
+    SetBkMode(hdc, W32_TRANSPARENT);
+    SetTextColor(hdc, WR4_C_TEXT);
+    TextOutW(hdc, x0, y, buf, n);
+}
+
 /* The predefined Button personality: a click is a WM_COMMAND to the parent
  * with the control's id and BN_CLICKED.  That is all a default button has
- * to do for a WinMain dialog to work (7-Zip's IDD_COPY OK/Cancel). */
+ * to do for a WinMain dialog to work (7-Zip's IDD_COPY OK/Cancel).
+ * WR-4: push/radio/check/group paint, BM_GETCHECK/BM_SETCHECK storage, and
+ * the AUTO toggle, so a config panel reads as a config panel. */
 static W32_LRESULT W32ABI w32_btn_defproc(W32_HWND hw, W32_UINT msg,
                                           W32_WPARAM wp, W32_LPARAM lp) {
+    if (msg == WR4_BM_GETCHECK) {
+        int gi = w32_win_index_from_hwnd(hw);
+        return gi < 0 ? 0 : (W32_LRESULT)windows[gi].check_state;
+    }
+    if (msg == WR4_BM_SETCHECK) {
+        int si = w32_win_index_from_hwnd(hw);
+        if (si >= 0) {
+            windows[si].check_state = (wp != 0) ? WR4_BST_CHECKED : 0;
+            InvalidateRect(hw, 0, W32_TRUE);
+        }
+        return 0;
+    }
+    if (msg == W32_WM_SETTEXT) {
+        W32_LRESULT r = DefWindowProcW(hw, msg, wp, lp);
+        InvalidateRect(hw, 0, W32_TRUE);
+        return r;
+    }
+    if (msg == W32_WM_PAINT) {
+        int i = w32_win_index_from_hwnd(hw);
+        if (i < 0) return 0;
+        W32_UINT type = windows[i].style & 0xFu;
+        int checked = (windows[i].check_state == WR4_BST_CHECKED);
+        W32_PAINTSTRUCT ps;
+        W32_HDC hdc = BeginPaint(hw, &ps);
+        if (hdc) {
+            W32_RECT rc;
+            GetClientRect(hw, &rc);
+            switch (type) {
+            case WR4_BS_PUSHBUTTON:
+            case WR4_BS_DEFPUSHBUTTON:
+                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                w32_btn_edge(hdc, &rc);
+                if (type == WR4_BS_DEFPUSHBUTTON)
+                    FrameRect(hdc, &rc, GetStockObject(W32_BLACK_BRUSH));
+                w32_btn_text(hdc, i, rc.left + 3, rc.top + 3,
+                             rc.right - 3, rc.bottom - 3);
+                break;
+            case WR4_BS_RADIOBUTTON:
+            case WR4_BS_AUTORADIOBUTTON: {
+                int32_t d = 12;
+                int32_t cy = (rc.top + rc.bottom - d) / 2;
+                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                SelectObject(hdc, GetStockObject(W32_WHITE_BRUSH));
+                SelectObject(hdc, GetStockObject(W32_BLACK_PEN));
+                Ellipse(hdc, rc.left + 1, cy, rc.left + 1 + d, cy + d);
+                if (checked) {
+                    SelectObject(hdc, GetStockObject(W32_BLACK_BRUSH));
+                    SelectObject(hdc, GetStockObject(W32_NULL_PEN));
+                    Ellipse(hdc, rc.left + 4, cy + 3,
+                            rc.left + 10, cy + 9);
+                }
+                w32_btn_ltext(hdc, i, rc.left + 16, rc.top, rc.bottom);
+                break;
+            }
+            case WR4_BS_CHECKBOX:
+            case WR4_BS_AUTOCHECKBOX: {
+                int32_t d = 11;
+                int32_t cy = (rc.top + rc.bottom - d) / 2;
+                W32_RECT b;
+                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                b.left = rc.left + 1; b.top = cy;
+                b.right = b.left + d; b.bottom = cy + d;
+                FillRect(hdc, &b, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+                FrameRect(hdc, &b, GetStockObject(W32_BLACK_BRUSH));
+                if (checked) {
+                    SelectObject(hdc, GetStockObject(W32_BLACK_PEN));
+                    MoveToEx(hdc, b.left + 2, b.top + 2, 0);
+                    LineTo(hdc, b.right - 2, b.bottom - 2);
+                    MoveToEx(hdc, b.right - 2, b.top + 2, 0);
+                    LineTo(hdc, b.left + 2, b.bottom - 2);
+                }
+                w32_btn_ltext(hdc, i, rc.left + 16, rc.top, rc.bottom);
+                break;
+            }
+            case WR4_BS_GROUPBOX: {
+                /* The group sits BELOW its siblings (lowered at
+                 * creation), so the middle fills dialog-face; only
+                 * the margins show, around the sibling controls. */
+                FillRect(hdc, &rc,
+                         (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                W32_RECT e;
+                uint16_t buf[UI_TITLE_MAX];
+                int32_t n = w32_ctl_stripped(windows[i].title, buf,
+                                             UI_TITLE_MAX);
+                W32_SIZE sz;
+                sz.cx = 0; sz.cy = 12;
+                if (n > 0)
+                    GetTextExtentPoint32W(hdc, buf, n, &sz);
+                e.left = rc.left; e.top = rc.top + 8;
+                e.right = rc.right; e.bottom = e.top + 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
+                e.top++; e.bottom++;
+                if (n <= 0 || e.right > rc.left + 10 + sz.cx + 4)
+                    FillRect(hdc, &e,
+                             (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+                e = rc; e.top = rc.top + 8; e.right = e.left + 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
+                e = rc; e.top = rc.bottom - 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+                e = rc; e.left = e.right - 1;
+                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
+                if (n > 0) {
+                    W32_RECT pad;
+                    pad.left = rc.left + 8; pad.top = rc.top;
+                    pad.right = pad.left + sz.cx + 4;
+                    pad.bottom = pad.top + sz.cy;
+                    FillRect(hdc, &pad,
+                             (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                    SetBkMode(hdc, W32_TRANSPARENT);
+                    SetTextColor(hdc, WR4_C_TEXT);
+                    TextOutW(hdc, rc.left + 10, rc.top, buf, n);
+                }
+                break;
+            }
+            default:
+                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
+                w32_btn_text(hdc, i, rc.left + 3, rc.top + 3,
+                             rc.right - 3, rc.bottom - 3);
+                break;
+            }
+            EndPaint(hw, &ps);
+        }
+        return 0;
+    }
     if (msg == W32_WM_LBUTTONUP) {
+        int ci = w32_win_index_from_hwnd(hw);
+        if (ci >= 0) {
+            W32_UINT ctype = windows[ci].style & 0xFu;
+            if (ctype == WR4_BS_AUTOCHECKBOX) {
+                windows[ci].check_state ^= 1;
+                InvalidateRect(hw, 0, W32_TRUE);
+            } else if (ctype == WR4_BS_AUTORADIOBUTTON) {
+                int pi = windows[ci].parent;
+                for (int j = 0; j < UI_MAX_WINDOWS; j++) {
+                    if (!windows[j].in_use || windows[j].parent != pi)
+                        continue;
+                    if (((windows[j].style & 0xFu) ==
+                         WR4_BS_AUTORADIOBUTTON) &&
+                        windows[j].check_state) {
+                        windows[j].check_state = 0;
+                        InvalidateRect(idx_to_hwnd(j), 0, W32_TRUE);
+                    }
+                }
+                windows[ci].check_state = WR4_BST_CHECKED;
+                InvalidateRect(hw, 0, W32_TRUE);
+            }
+        }
         W32_HWND parent = GetParent(hw);
         int i = w32_win_index_from_hwnd(hw);
         if (parent && i >= 0) {
@@ -899,8 +1433,8 @@ W32_WORD w32_user_register_dialog_class(void) {
      * never replaced (ui_register_class refuses duplicates). */
     static const struct { const uint16_t *name; W32_WNDPROC proc; } std[] = {
         { w32_cls_Button_w,   w32_btn_defproc },
-        { w32_cls_Edit_w,     DefWindowProcW },
-        { w32_cls_Static_w,   DefWindowProcW },
+        { w32_cls_Edit_w,     w32_edit_proc },
+        { w32_cls_Static_w,   w32_static_proc },
         { w32_cls_ListBox_w,  DefWindowProcW },
         { w32_cls_ScrollBar_w,DefWindowProcW },
         { w32_cls_ComboBox_w, DefWindowProcW },
@@ -1193,11 +1727,33 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
         return 0;
     }
 
+    /* WR-4: a CBS_DROPDOWN/DROPDOWNLIST combo's created height is the
+     * dropped-list extent; the window itself shrinks to the edit
+     * height (MSDN "Combo Box Styles": the height sets the list
+     * size).  Without the shrink GetWindowRect reports the list
+     * extent and PuTTY's align_next_to centres the neighbouring
+     * radios on the list (dy=+40), not on the edit.  24px matches
+     * PuTTY's own single-line edits. */
+    if (strcmp(k->name_a, "ComboBox") == 0 &&
+        (style & 0xFu) >= 2u && (style & 0xFu) <= 3u) {
+        ag_window_resize(ag_wid, (uint32_t)w, 24u);
+        win->h = 24u;
+        win->normal_h = 24u;
+        h = 24;
+    }
     if (win->visible) {
         ag_window_show(ag_wid);
         ui_refresh_geom(win);
         PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(win));
         InvalidateRect(hwnd, 0, W32_TRUE);
+    }
+    /* WR-4: a GROUPBOX paints frame+caption only; its opaque surface
+     * must not cover the siblings that live inside it, so it goes
+     * below them (Win32 groups are transparent: same pixels).  After
+     * the show: show raises, which would undo an earlier lower. */
+    if (strcmp(k->name_a, "Button") == 0 &&
+        (style & 0xFu) == 7u) {
+        ag_window_lower(ag_wid);
     }
     /* WR-2: draw the bar here rather than waiting for WM_PAINT -- a frame
      * whose client is covered by child panes never gets one. */
@@ -2052,6 +2608,8 @@ W32ABI W32_LRESULT DefWindowProcW(W32_HWND hwnd, W32_UINT msg,
         /* The default handler is what actually changes the caption; a
          * subclass that swallows WM_SETTEXT therefore wins, as on Windows. */
         if (i >= 0) ui_set_text(&windows[i], (const uint16_t *)(uintptr_t)lp);
+        /* WR-4: a new caption repaints, as on Windows. */
+        if (i >= 0) InvalidateRect(hwnd, 0, W32_TRUE);
         return W32_TRUE;
     }
     case W32_WM_GETTEXTLENGTH:
@@ -2509,8 +3067,11 @@ W32ABI W32_BOOL GetWindowRect(W32_HWND hwnd, W32_RECT *r) {
     }
     int32_t x = 0, y = 0;
     uint32_t w = 0, h = 0;
+    int32_t aox = 0, aoy = 0;
     ag_window_get_pos(windows[i].ag_wid, &x, &y);
     ag_window_get_size(windows[i].ag_wid, &w, &h);
+    ui_ancestor_screen_offset(i, &aox, &aoy);  /* WR-4: screen, not parent */
+    x += aox; y += aoy;
     uint32_t bw = 0, th = 0;
     ui_decor(&windows[i], &bw, &th);
     r->left = x;
@@ -2543,6 +3104,11 @@ W32ABI W32_BOOL ClientToScreen(W32_HWND hwnd, W32_POINT *pt) {
     ui_decor(&windows[i], &bw, &th);
     pt->x += x + (int32_t)bw;
     pt->y += y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
+    {   /* WR-4: screen, not parent */
+        int32_t aox = 0, aoy = 0;
+        ui_ancestor_screen_offset(i, &aox, &aoy);
+        pt->x += aox; pt->y += aoy;
+    }
     return W32_TRUE;
 }
 
@@ -2555,6 +3121,11 @@ W32ABI W32_BOOL ScreenToClient(W32_HWND hwnd, W32_POINT *pt) {
     ui_decor(&windows[i], &bw, &th);
     pt->x -= x + (int32_t)bw;
     pt->y -= y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
+    {   /* WR-4: screen, not parent */
+        int32_t aox = 0, aoy = 0;
+        ui_ancestor_screen_offset(i, &aox, &aoy);
+        pt->x -= aox; pt->y -= aoy;
+    }
     return W32_TRUE;
 }
 

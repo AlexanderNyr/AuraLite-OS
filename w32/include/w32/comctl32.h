@@ -522,10 +522,12 @@ typedef struct {
 #define W32_TVIS_EXPANDEDONCE  0x0040u
 
 /* HTREEITEM sentinels (documented). */
-#define W32_TVI_ROOT   ((W32_HWND)(uintptr_t)0xFFFF0000ull)
-#define W32_TVI_FIRST  ((W32_HWND)(uintptr_t)0xFFFF0001ull)
-#define W32_TVI_LAST   ((W32_HWND)(uintptr_t)0xFFFF0002ull)
-#define W32_TVI_SORT   ((W32_HWND)(uintptr_t)0xFFFF0003ull)
+/* WR-4 fix #6: the sentinels are negative HTREEITEMs (commctrl.h), not
+ * bare 32-bit tags -- the truncated ROOT missed PuTTY's first insert. */
+#define W32_TVI_ROOT   ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0000ull)
+#define W32_TVI_FIRST  ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0001ull)
+#define W32_TVI_LAST   ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0002ull)
+#define W32_TVI_SORT   ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0003ull)
 
 /* TVM_EXPAND wParam. */
 #define W32_TVE_COLLAPSE 0x0001u

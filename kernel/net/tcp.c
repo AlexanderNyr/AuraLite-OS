@@ -292,10 +292,33 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
                                     uint64_t timeout_ticks) {
     uint8_t buf[2048];
     uint64_t deadline = timer_get_ticks() + timeout_ticks;
-    while (timer_get_ticks() < deadline) {
-        uint64_t now = timer_get_ticks();
-        uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
-        int n = netdev_recv_wait(buf, sizeof(buf), remaining);
+    /* WR-4 FIX30b: timeout_ticks==0 is a pure non-blocking poll (the
+     * WSAAsyncSelect pump depends on it).  The old `while (now<deadline)`
+     * never executed the body for 0, so zero-tick recv saw nothing and
+     * inbound never arrived.  Poll once per pass via the non-blocking
+     * entry; never sleep.  (recv_wait(0) blocks -- it is the drivers'
+     * blocking entry -- so it must not be used here.) */
+    int zero_poll = (timeout_ticks == 0);
+    int zero_cap = 32;
+    int first_pass = 1;
+    for (;;) {
+        if (!first_pass) {
+            if (zero_poll) {
+                if (zero_cap <= 0) break;
+            } else if (timer_get_ticks() >= deadline) {
+                break;
+            }
+        }
+        first_pass = 0;
+        int n;
+        if (zero_poll) {
+            zero_cap--;
+            n = netdev_recv(buf, sizeof(buf));
+        } else {
+            uint64_t now = timer_get_ticks();
+            uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
+            n = netdev_recv_wait(buf, sizeof(buf), remaining);
+        }
         if (n < 0) return -1;
         if (n == 0) break;
         /* Y3 CATCH: while TCP owns the NIC, SLIRP's NS for our

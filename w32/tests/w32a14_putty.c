@@ -244,6 +244,22 @@ void __stdcall winstart(void) {
         }
     }
 
+    /* ---- WR-4 fix #1 twin: PuTTY builds the system-dir path itself ---- */
+    {
+        char sysdir[260];
+        char path[300];
+        UINT n = GetSystemDirectoryA(sysdir, (UINT)sizeof sysdir);
+        CHECK(n > 0 && n < sizeof sysdir, "sysdir-for-ws2_32");
+        if (n > 0 && n < sizeof sysdir) {
+            size_t i = 0, j = 0;
+            const char *tail = "\\ws2_32.dll";
+            while (sysdir[i] && i + 1 < sizeof path) { path[i] = sysdir[i]; i++; }
+            while (tail[j] && i + 1 < sizeof path) { path[i] = tail[j]; i++; j++; }
+            path[i] = 0;
+            CHECK(LoadLibraryA(path) != NULL, "loadlibrary-ws2_32-sysdir-path");
+        }
+    }
+
     if (fails == 0) {
         say("W32A14-PUTTY-OK\r\n");
         ExitProcess(78);

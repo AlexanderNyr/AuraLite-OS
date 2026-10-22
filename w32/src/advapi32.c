@@ -541,6 +541,11 @@ static void hive_load(void) {
 }
 
 static int fsync_noted;
+/* FIX32b (WR-4): defer persistence to flush/close; per-value saves
+ * turned one PuTTY Save click (~200 registry ops) into ~200 full
+ * 16 KiB file rewrites and wedged the pump behind minutes of I/O. */
+static int hive_dirty = 0;
+
 static int hive_save(void) {
     buf_t b = {0};
     buf_u32(&b, 2);
@@ -894,7 +899,7 @@ static W32_LONG reg_create_common(W32_HKEY key, const uint16_t *subkey,
     int err = 0;
     reg_key_t *k = resolve_for_write(root, c, n, 1, &err);
     if (!k) return err ? (W32_LONG)err : (W32_LONG)W32_ERROR_NOT_ENOUGH_MEMORY;
-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+    hive_dirty = 1;  /* FIX32b: persist on flush/close */
 
     W32_HKEY h = handle_alloc(root, joined, (size_t)jn);
     if (!h) return W32_ERROR_NOT_ENOUGH_MEMORY;
@@ -931,6 +936,11 @@ W32_LONG W32ABI RegCloseKey(W32_HKEY key) {
     for (int i = 0; i < REG_KEY_HANDLES; i++) {
         if (reg_handles[i].used && (W32_HKEY)(uintptr_t)&reg_handles[i] == key) {
             reg_handles[i].used = 0;
+            /* FIX32b: last writer out persists (PuTTY closes its session key). */
+            if (hive_dirty) {
+                if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+                hive_dirty = 0;
+            }
             return W32_ERROR_SUCCESS;
         }
     }
@@ -1061,7 +1071,7 @@ static W32_LONG reg_set_common(W32_HKEY key, const uint16_t *name,
 
     if (key_set_value(k, vn, vnl, type, data, len) != 0)
         return W32_ERROR_NOT_ENOUGH_MEMORY;
-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+    hive_dirty = 1;  /* FIX32b: persist on flush/close */
     return W32_ERROR_SUCCESS;
 }
 
@@ -1130,7 +1140,7 @@ W32_LONG W32ABI RegDeleteValueW(W32_HKEY key, const uint16_t *name) {
     reg_value_t *v = key_find_value(k, name, vnl);
     if (!v) return W32_ERROR_FILE_NOT_FOUND;
     key_delete_value(k, v);
-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+    hive_dirty = 1;  /* FIX32b: persist on flush/close */
     return W32_ERROR_SUCCESS;
 }
 
@@ -1170,7 +1180,7 @@ static W32_LONG reg_delete_common(W32_HKEY key, const uint16_t *subkey,
     if (!child) return W32_ERROR_FILE_NOT_FOUND;
     if (refuse_nonempty && child->nsubs) return W32_ERROR_ACCESS_DENIED;
     key_remove_child(parent, child);
-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+    hive_dirty = 1;  /* FIX32b: persist on flush/close */
     return W32_ERROR_SUCCESS;
 }
 
@@ -1451,7 +1461,10 @@ W32_LONG W32ABI RegFlushKey(W32_HKEY key) {
     (void)key;                    /* flush is whole-hive, not per-key */
     hive_ensure_loaded();
     if (hive_corrupt) return W32_ERROR_FILE_CORRUPT;
-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+    if (hive_dirty) {
+        if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
+        hive_dirty = 0;
+    }
     return W32_ERROR_SUCCESS;
 }
 

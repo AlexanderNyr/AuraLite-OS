@@ -17,12 +17,17 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
+#include "kernel/mm/kheap.h"      /* FIX32: heap file buffer */
 
 #define DISKFS_MAGIC 0x41554653u /* AUFS */
 #define DISKFS_VERSION 2
 #define DISKFS_MAX_FILES 8
 #define DISKFS_NAME_MAX 48
-#define DISKFS_FILE_SECTORS 8
+/* FIX32 (WR-4): 16 KiB files; a real PuTTY session hive is ~4.5 KiB
+ * and legitimately overflows the old 4 KiB cap (EFBIG broke registry
+ * saves and wedged the app in an error modal).  Layout stride grows with
+ * it (fresh lab disks; no on-disk compat needed). */
+#define DISKFS_FILE_SECTORS 32
 #define DISKFS_MAX_FILE_SIZE (DISKFS_FILE_SECTORS * BLKDEV_SECTOR_SIZE)
 #define DISKFS_SUPER_LBA 2
 #define DISKFS_TABLE_LBA 3
@@ -230,11 +235,13 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
     if (!e || pos >= e->size) return 0;
     if (pos + count > e->size) count = e->size - pos;
 
-    uint8_t tmp[DISKFS_MAX_FILE_SIZE];
+    uint8_t *tmp = kmalloc(DISKFS_MAX_FILE_SIZE);
+    if (!tmp) return -ENOMEM;
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -EIO;
+        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) { kfree(tmp); return -EIO; }
     }
     memcpy(buf, tmp + pos, (size_t)count);
+    kfree(tmp);
     e->atime = vfs_now();
     sync_table();
     rebuild_vnodes();
@@ -247,8 +254,9 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     if (!e) return -EBADF;
     if (pos + count > DISKFS_MAX_FILE_SIZE || pos + count < pos) return -EFBIG;
 
-    uint8_t tmp[DISKFS_MAX_FILE_SIZE];
-    memset(tmp, 0, sizeof(tmp));
+    uint8_t *tmp = kmalloc(DISKFS_MAX_FILE_SIZE);
+    if (!tmp) return -ENOMEM;
+    memset(tmp, 0, DISKFS_MAX_FILE_SIZE);
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
         (void)read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE);
     }
@@ -258,8 +266,9 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
     e->mtime = e->ctime = vfs_now();
 
     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
-        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -EIO;
+        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) { kfree(tmp); return -EIO; }
     }
+    kfree(tmp);
     sync_table();
     rebuild_vnodes();
     return (int64_t)count;

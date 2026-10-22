@@ -492,6 +492,21 @@ int gui_focus_window(int wid) {
      * level and the child's control would still not see WM_KEYDOWN. */
     if (win_has_parent(&windows[wid]) || (windows[wid].flags & GUI_WIN_NO_DECOR)) {
         gui_event_t fe = { GUI_EVT_FOCUS, 0,0,0,0,0,0 };
+        /* WR-4 F24 (4450da7 port): a top-level popup (the PuTTY config
+         * box is parent-less and NO_DECOR) must not steal keyboard
+         * focus from a live visible descendant that already holds it.
+         * Without this, focusing the popup orphaned the focused edit
+         * and typed keys went nowhere (4450da7's win_has_parent
+         * takes a window pointer, not an id). */
+        if (!win_has_parent(&windows[wid])) {
+            int kf = key_focus;
+            if (kf >= 0 && kf < GUI_MAX_WINDOWS &&
+                windows[kf].in_use && windows[kf].parent == wid &&
+                windows[kf].visible && !windows[kf].minimized) {
+                gui_post_event(wid, &fe);
+                return 0;
+            }
+        }
         key_focus = wid;
         gui_post_event(wid, &fe);
         return 0;

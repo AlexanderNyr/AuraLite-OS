@@ -26,13 +26,30 @@ static char gui_kernel_clipboard[GUI_USER_TEXT_MAX] = {0};
 static inline int32_t  lo32(uint64_t v) { return (int32_t)(v & 0xFFFFFFFFu); }
 static inline int32_t  hi32(uint64_t v) { return (int32_t)(v >> 32); }
 
+/* WR-4 fix #5: a window title longer than the kernel buffer truncates
+ * instead of failing the create.  copy_string_from_user reports -1 when no
+ * NUL fits in the limit, which turned a 99-character PuTTY hint static into
+ * GUI_OP_CREATE => -1 (lasterr=8); the create path (gui_create_window) only
+ * ever keeps the first bytes anyway, so truncate here and fail solely on
+ * an unreadable first byte. */
 static int copy_gui_title(char *dst, uint64_t user_title) {
+    uint64_t i;
     if (!user_title) {
         dst[0] = 0;
         return 0;
     }
-    return copy_string_from_user(dst, (const char *)(uintptr_t)user_title,
-                                 GUI_TITLE_MAX);
+    for (i = 0; i < (uint64_t)(GUI_TITLE_MAX - 1); i++) {
+        char c;
+        if (copy_from_user(&c, (const void *)(uintptr_t)(user_title + i), 1) != 0)
+            break;
+        dst[i] = c;
+        if (!c)
+            return 0;
+    }
+    if (i == 0)
+        return -1;
+    dst[i] = 0;
+    return 0;
 }
 
 static uint64_t current_pid(void) {
