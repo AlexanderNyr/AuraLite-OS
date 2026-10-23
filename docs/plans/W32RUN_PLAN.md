@@ -1,15 +1,15 @@
 # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
 
-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3 PARTIAL 2026-10-19 (frame, byte-exact typing, save round-trip gated 17/17; Find/open-dialog/plugin/tray named gaps); WR-4…WR-5 planned.
+## Status: COMPLETE (2026-10-23) — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3 PARTIAL 2026-10-19 (frame, byte-exact typing, save round-trip gated 17/17; Find/open-dialog/plugin/tray named gaps); WR-4 🟨 PARTIAL 2026-10-22 (PuTTY dialog + Raw + SSH gated 14/14 over two OVMF boots; Telnet, the Load button, font/colour, clipboard and serial stay open; one-live-TCP envelope; orphan-on-close lifecycle named); WR-5 ✅ done 2026-10-23 (the honest live matrix: `docs/win32_run.md` generated, `docs/gui_receipts.md` finalised, the checker extended). The ladder is complete: WR-0/WR-1/WR-5 ✅, WR-2/WR-3/WR-4 PARTIAL with named gaps.
 
 | Phase | State |
 |---|---|
 | WR-0 The live-GUI lane and its oracles (OVMF + screendump + input harness) | ✅ done (2026-09-29) |
 | WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ✅ done (2026-09-29) |
-| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | PARTIAL (2026-10-09): gate 22/22 — panel, navigate delta, byte-exact extract; named gaps: clean extract ("Progress Error"), navigate back, Options (no menu subsystem); drag-drop deferred |
-| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | 🟨 PARTIAL 2026-10-19 |
-| WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | ⬜ planned |
-| WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ⬜ planned |
+| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | 🟨 PARTIAL (2026-10-10): gate 24/24 — panel, navigate delta, **navigate back**, byte-exact extract; named gaps: clean extract ("Progress Error"), Tools > Options popup (bar drawn, popup unpainted); drag-drop deferred |
+| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | 🟨 PARTIAL (2026-10-19): gate 17/17 + 5 SKIP — frame, byte-exact typing, save round-trip; named gaps: Find, File > Open, plugins, tray; no frame digest recorded |
+| WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | 🟨 PARTIAL (2026-10-22): gate 14/14 — dialog, session Save round-trip, Raw echo painted, SSH output painted; open: Telnet, Load button, serial re-assert; receipt + frame digest in `docs/gui_receipts.md` §WR-4 |
+| WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ✅ done (2026-10-23): `docs/win32_run.md` generated, `docs/gui_receipts.md` finalised, checker extended; WR-4 corrected to PARTIAL |
 
 This document answers one question:
 
@@ -108,6 +108,8 @@ fact `docs/win32.md` already records. No shell32 implementation is consulted.
 The 7-Zip row is a *measured* live boot; the other two rows are the
 fixture/binding state from `W32APP_PLAN.md`, not yet exercised on the OVMF
 framebuffer. WR-0 exists to turn every `—` above into a ✅/❌ with a pixel.
+WR-5 (2026-10-23) collected the verdicts into `docs/win32_run.md`, which
+supersedes this table; the rows above stay as the 2026-09-29 snapshot.
 
 ### 2.2 The SHELL32 §7 gap, by measurement
 
@@ -537,8 +539,10 @@ the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-
 - `test_wr3_npp_live.sh` green (2026-10-19, 17/17 + 5 SKIP): editor window
   present, Scintilla paints typed text, fixture open/save byte-exact, no
   user #PF / fatal signal / panic.  Find + plugin + tray + File-Open stay
-  named gaps.  Patch: `patches/WR3_npp_live.patch`.  Receipt + frame digest
-  committed.
+  named gaps.  Patch: `patches/WR3_npp_live.patch`.  Receipt committed (the
+  `docs/w32app_receipts.md` addendum); no frame digest was recorded (named
+  gap — the "digest" half of this line as written 2026-10-19 was an
+  overclaim, corrected by WR-5).
 
 **Deliverable:** `tests/integration/cases/test_wr3_npp_live.sh`, fixture
 file + pinned-plugin delivery, receipt edits, `patches/WR3_npp_live.patch`.
@@ -555,31 +559,53 @@ a server the WR-0 lane provisions over QEMU user-net SLIRP — every W32A-14
 
 #### Tasks
 
-- [ ] Live launch: `gui_run putty.exe` reaches the config dialog; the
-      dialog tree renders (`window_present` + control-region oracle).
-- [ ] Session UI round-trip: type a host/port in the dialog, `Save`, close,
-      reopen, `Load`, assert the fields repopulate (pixel + registry, the
-      W32A-14 headless half now joined to its UI half).
-- [ ] Terminal render: connect Raw/Telnet to an **in-lane echo/telnet server**
-      (spawned by `gui_lane.sh` on the SLIRP host side, reachable at
-      `10.0.2.2`), type a line, assert the echoed text paints in the terminal
-      grid (GDI text delta). First headless PuTTY net+render proof.
-- [ ] SSH: connect to an in-lane SSH server, complete auth (password or the
-      pinned test key), run a command, assert its output paints. If the crypto
-      surface (`CryptoAPI`/`bcrypt`) has a gap PuTTY's SSH needs, name the
-      exact symbol and its status — do not fake a pass.
-- [ ] Font/colour choosers + clipboard: exercise the COMDLG32 six and `gclip`
-      round-trip via injected input, or name the residual human-run item.
-- [ ] Serial backend stays fail-clean (COMM set FALSE + `ERROR_INVALID_FUNCTION`,
-      already proven) — re-assert from the live process.
-- [ ] Receipt `#putty` in `docs/w32app_receipts.md` updated to the live-frame
-      + live-net gate; the auth-fallback / crypto items named honestly.
+- [x] Live launch (2026-10-22): `w32run /fat/putty.exe` reaches the real
+      config dialog; the dialog tree renders (dialog-region delta oracle).
+- [~] Session UI round-trip (2026-10-22): a typed host lands in the edit
+      (pixels), `Save` persists it byte-exact into `/disk/w32hive`,
+      `Cancel` + relaunch repopulates the edit (the W32A-14 headless half
+      joined to its UI half). The dialog `Load` button is untested (open —
+      Default-Settings auto-load is what the gate proves).
+- [~] Terminal render (2026-10-22): `-raw` against the in-lane echo server
+      (`tests/integration/wr4_echo_server.py`, reachable in-guest at
+      `10.0.2.2` via SLIRP): guest bytes arrive server-side and the `ECHO:`
+      reply paints in the terminal grid — the first live PuTTY net+render
+      proof. Telnet untested (open).
+- [x] SSH (2026-10-22): `-ssh` against the in-lane paramiko server
+      (`tests/integration/wr4_ssh_server.py`, key
+      `tests/integration/wr4_ssh_host_rsa.key`): kex+auth+channel complete
+      server-side and the command output paints. No crypto gap was hit (no
+      missing `CryptoAPI`/`bcrypt` symbol); the `SECUR32`/`GSSAPI64`
+      auth-fallback surface is unexercised (password auth succeeded
+      outright — named, not faked).
+- [x] Font/colour choosers + clipboard: named residual human-run items (not
+      driven — the task's or-branch).
+- [ ] Serial backend live re-assert (open): the fail-clean COMM behaviour
+      itself was proven in W32A-14; re-driving it from the live process
+      never happened.
+- [x] Receipt `#putty` in `docs/w32app_receipts.md` updated to the live-frame
+      + live-net gate (2026-10-22 addendum); the auth-fallback / crypto
+      items named honestly.
 
 #### Test gate
 
-- `test_wr4_putty_live.sh` green: config dialog present, session UI round-trip,
-  Telnet/Raw echo painted, SSH command output painted (or a named crypto gap).
-  Receipt + frame digest committed.
+- `test_wr4_putty_live.sh` green (2026-10-22, 14/14 over two OVMF boots —
+  dialog + raw, then ssh): config dialog present, session Save round-trip,
+  Raw echo painted, SSH command output painted, no panic. Telnet, the Load
+  button and the serial re-assert stay open; one-live-TCP envelope;
+  orphan-on-close lifecycle follow-up. Patch:
+  `patches/WR4_putty_live.patch`. Receipt + frame digest committed
+  (`docs/gui_receipts.md` §WR-4).
+
+**Verdict (WR-5 audit, 2026-10-23): 🟨 PARTIAL.** The gate is fully green
+(14/14) and every driven flow is clean — but three task items stay open
+(the Load button, Telnet, the serial re-assert), so by the WR-2/WR-3
+convention (named gaps → PARTIAL) this phase is PARTIAL. The ✅ recorded
+at the end of the WR-4 turn is corrected here, with the reason attached:
+a phase whose task list has open boxes is not done, however green its
+gate. The run matrix (`docs/win32_run.md`) is unaffected — its PuTTY
+cells claim only what the gate proves, and the open items ride in the
+evidence column as named gaps.
 
 **Deliverable:** `tests/integration/cases/test_wr4_putty_live.sh`, the in-lane
 server provisioning, receipt edits, `patches/WR4_putty_live.patch`.
@@ -594,17 +620,22 @@ matrix.
 
 #### Tasks
 
-- [ ] `docs/win32_run.md` (generated, like `docs/win32.md`): per app, the
-      run-state matrix — *binds / enters / draws / main UI / core task /
-      live net* — each cell backed by a gate name or a named human-run reason.
-- [ ] `docs/gui_receipts.md` finalised: the screendump protocol, the frame
-      digests, the sha256 pins, one section per app.
-- [ ] `README.md` + `docs/status.md` updated: the "runs, measured on pixels"
-      claim replaces the "binds" claim, with the gate names as evidence.
-- [ ] `tools/check_w32app_claims.py` (or a sibling) extended: a WR phase
-      section, a run-matrix consistency check (no cell claims a state its
-      gate does not prove), a REFUSE-guard for faked live passes.
-- [ ] The plan's own status table (top) flipped to ✅ with dates and receipts.
+- [x] `docs/win32_run.md` (generated, like `docs/win32.md`):
+      `tools/gen_w32_run_matrix.py` renders per app the run-state matrix —
+      *binds / enters / draws / main UI / core task / live net* — each cell
+      backed by a gate name or a named human-run reason.
+- [x] `docs/gui_receipts.md` finalised: the screendump protocol, the frame
+      digests, the sha256 pins, one section per app (§WR-2/WR-3/WR-4).
+- [x] `README.md` + `docs/status.md` updated: the "runs, measured on
+      pixels" claim replaces the "binds" claim, with the gate names as
+      evidence.
+- [x] `tools/check_w32app_claims.py` extended: a WR phase section (done-ness
+      read from the status table), a run-matrix consistency check (no cell
+      claims a state its gate does not prove), a REFUSE-guard for faked
+      live passes.
+- [x] The plan's own status table (top) flipped to terminal states with
+      dates and receipts (WR-4 corrected to PARTIAL — see the §WR-4 verdict
+      note — so "flipped to ✅" reads "flipped, honestly").
 
 #### Test gate
 
@@ -615,6 +646,35 @@ matrix.
 
 **Deliverable:** `docs/win32_run.md`, `docs/gui_receipts.md`, checker edits,
 doc edits, `patches/WR5_live_matrix.patch`.
+
+**Result (2026-10-23, ✅ done).** One table tells the truth about *running*:
+
+- **`docs/win32_run.md` — the honest live matrix.** 4 apps × 6 run states,
+  generated by `tools/gen_w32_run_matrix.py` (sdk-check pattern:
+  `--write` twice is a no-op, `--check` is wired into `make test-unit`
+  next to `gen_w32_api_table.py --check`). The generator refuses to
+  render a row whose gate cites do not resolve in the tree.
+- **`docs/gui_receipts.md` finalised.** §WR-2/WR-3/WR-4 carry the pinned
+  sha256, the live gate + recorded result, and the frame digest where one
+  exists (PuTTY's ten-frame digest, byte-identical to the receipt
+  addendum) — or the named gap where none was recorded (7-Zip's short
+  prefix only; Notepad++'s missing digest).
+- **Checker extended.** `tools/check_w32app_claims.py` gains the WR
+  section: claimed phases backed by gate artefacts + greppable results +
+  gui-receipt pins, the run matrix resolved cell by cell (fixed app set,
+  gates exist, every N/N appears in this plan, no reason-less crosses),
+  and `--selftest` plants a lying W32RUN ladder next to the lying W32APP
+  one. `--check` and `--selftest` green.
+- **The audit corrected three verdicts.** WR-4 ✅ → 🟨 PARTIAL (three
+  task boxes open — see the §WR-4 verdict note); the WR-3 Test-gate
+  "frame digest committed" → "no frame digest was recorded"; the WR-2
+  table row 22/22 → 24/24 (2026-10-10, navigate-back closed).
+- **Selective run recorded.** `check_w32app_claims.py --check/--selftest`,
+  `gen_w32_api_table.py --check` and `gen_w32_run_matrix.py --check` are
+  green on this tree (2026-10-23). The OVMF lanes were not re-run here
+  (no OVMF/firmware in this environment): the matrix resolves to the
+  recorded greens — 9/9 (2026-09-29), 24/24 (2026-10-10), 17/17 + 5 SKIP
+  (2026-10-19), 14/14 (2026-10-22) — each dated and receipted above.
 
 ---
 

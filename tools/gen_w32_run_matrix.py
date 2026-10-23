@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""gen_w32_run_matrix.py -- W32RUN_PLAN.md WR-5.
+
+Generates the run-state matrix in docs/win32_run.md: per app, the six run
+states (binds / enters / draws / main UI / core task / live net) -- the
+live counterpart to W32APP_PLAN.md W32A-18's binding matrix.
+
+Honesty model (two layers, same as docs/win32.md's sdk-check pattern):
+
+  1. This generator renders REVIEWED data (the ROWS table below).  It
+     refuses to generate a matrix whose gate cites do not resolve: every
+     `tests/...` / `docs/...` / `w32/...` cite in an evidence cell must
+     exist under the tree, or generation fails loud.  A hand-edited
+     matrix that outruns its gates cannot be regenerated.
+  2. tools/check_w32app_claims.py (the WR section) resolves every cell at
+     check time: each row's app set is fixed, every file cite must
+     resolve, every N/N result must appear in W32RUN_PLAN.md, and every
+     non-green cell must carry a reason.  Deleting a gate after the doc
+     was generated fails `make test-unit`.
+
+Two modes:
+  --write   rewrite the matrix in docs/win32_run.md between its markers
+  --check   exit 1 if the file is out of date (used by make test-unit)
+"""
+import os
+import re
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DOC = os.path.join(ROOT, "docs", "win32_run.md")
+BEGIN = "<!-- BEGIN GENERATED: w32 run matrix -->"
+END = "<!-- END GENERATED: w32 run matrix -->"
+
+COLUMNS = ["binds", "enters", "draws", "main UI", "core task", "live net"]
+
+# Cell glyphs: OK (green, gate-backed), NO (blocked, reason attached),
+# NA (the app has no such surface -- offline by design, not untested).
+OK, NO, NA = "OK", "NO", "NA"
+GLYPH = {OK: "\u2705", NO: "\u274c", NA: "N/A"}
+
+# app label, [(state, reason-or-None)], evidence markdown.  Reasons on NO/NA
+# cells are mandatory -- a bare cross explains nothing.  Evidence cites the
+# gate file (which must exist), the recorded N/N result (which must appear
+# in W32RUN_PLAN.md) and the receipt anchor; named gaps ride along so no
+# green cell hides one.
+ROWS = [
+    ("PuTTY 0.85",
+     [OK, OK, OK, OK, OK, OK],
+     "`tests/integration/cases/test_wr4_putty_live.sh` 14/14 (2026-10-22, "
+     "two OVMF boots: dialog + raw, then ssh); binds the 348-import "
+     "ledger; receipt `docs/w32app_receipts.md` WR-4 addendum incl. the "
+     "ten-frame digest; lane servers "
+     "`tests/integration/wr4_echo_server.py` + "
+     "`tests/integration/wr4_ssh_server.py`. Named gaps: Telnet untested, "
+     "Load button untested, font/colour/ clipboard/serial human-run, the "
+     "one-live-TCP envelope, orphan-on-close lifecycle (see receipt)."),
+    ("7-Zip FM 24.09",
+     [OK, OK, OK, OK, OK, (NA, "offline app")],
+     "`tests/integration/cases/test_wr2_7zip_live.sh` 24/24 (2026-10-10); "
+     "binds 292 imports; the panel lists /fat, navigate + navigate-back, "
+     "byte-exact extract; receipt `docs/w32app_receipts.md` WR-2 section; "
+     "reference frame `d5a96b225a8e0541...` (2026-09-30, short prefix "
+     "only -- the full digest was never committed). Named gaps: clean "
+     "extract (Progress Error), Tools > Options popup, drag-drop."),
+    ("Notepad++ 8.8.9",
+     [OK, OK, OK, OK, OK, (NA, "offline app")],
+     "`tests/integration/cases/test_wr3_npp_live.sh` 17/17 + 5 SKIP "
+     "(2026-10-19); binds 590/590; frame, byte-exact typing, save "
+     "round-trip (`a829ed05...`, 37 B); receipt "
+     "`docs/w32app_receipts.md` addendum + `docs/WR3_WORKLOG.md`. No "
+     "frame digest was recorded (named gap). Named gaps: Find (UCRT "
+     "stack-cookie abort), File > Open (`REGDB_E_CLASSNOTREG`), "
+     "plugins, tray, open-path paint smear."),
+    ("Audacity 3.7.5",
+     [(NO, "never binds"), (NO, "never binds"), (NO, "never binds"),
+      (NO, "never binds"), (NO, "never binds"), (NO, "never binds")],
+     "Outcome B (`W32A-17`): 19 modules / 419 symbols unmet, "
+     "`w32/app_ledger/audacity-3.7.5.gap`; never binds, so no "
+     "downstream state is reachable."),
+]
+
+FILE_CITE = re.compile(r"`((?:tests|docs|w32)/[^`]+)`")
+
+
+def collect():
+    """Return ROWS after proving every file cite resolves.
+
+    A matrix row that cites a gate which is not in the tree is a claim
+    without evidence -- refuse to render it.
+    """
+    for app, cells, evidence in ROWS:
+        if len(cells) != len(COLUMNS):
+            raise SystemExit(
+                "gen_w32_run_matrix: %s has %d cells, want %d"
+                % (app, len(cells), len(COLUMNS)))
+        for cite in FILE_CITE.findall(evidence):
+            if not os.path.isfile(os.path.join(ROOT, cite)):
+                raise SystemExit(
+                    "gen_w32_run_matrix: %s cites %s, which is not in "
+                    "the tree -- refusing to render a cell its gate "
+                    "cannot back" % (app, cite))
+    return ROWS
+
+
+def render(rows):
+    out = [BEGIN,
+           "",
+           "*4 apps x 6 run states. This matrix is generated by*",
+           "*`tools/gen_w32_run_matrix.py`; edit the ROWS table there, not "
+           "this list. Every green cell resolves to a live gate (file + "
+           "recorded result); every other cell carries its reason, and the "
+           "evidence column names the gaps the green does not cover.*",
+           "",
+           "| App | binds | enters | draws | main UI | core task | "
+           "live net | evidence |",
+           "|---|---|---|---|---|---|---|---|"]
+    for app, cells, evidence in ROWS:
+        rendered = []
+        for cell in cells:
+            if isinstance(cell, tuple):
+                kind, reason = cell
+                rendered.append("%s %s" % (GLYPH[kind], reason))
+            else:
+                rendered.append(GLYPH[cell])
+        out.append("| %s | %s | %s |" % (app, " | ".join(rendered), evidence))
+    out.append(END)
+    return "\n".join(out)
+
+
+def main():
+    mode = sys.argv[1] if len(sys.argv) > 1 else "--check"
+    rows = collect()
+    new_block = render(rows)
+
+    if not os.path.isfile(DOC):
+        print("gen_w32_run_matrix: %s does not exist" % DOC, file=sys.stderr)
+        return 2
+    doc = open(DOC).read()
+
+    if BEGIN not in doc or END not in doc:
+        print("gen_w32_run_matrix: markers not found in %s" % DOC,
+              file=sys.stderr)
+        return 2
+
+    pre = doc.split(BEGIN, 1)[0]
+    post = doc.split(END, 1)[1]
+    updated = pre + new_block + post
+
+    if mode == "--write":
+        if updated != doc:
+            open(DOC, "w").write(updated)
+            print("  [w32] %s run matrix regenerated (%d apps x %d states)"
+                  % (DOC, len(rows), len(COLUMNS)))
+        else:
+            print("  [w32] %s already up to date" % DOC)
+        return 0
+
+    if updated != doc:
+        print("FAIL: %s is out of date with tools/gen_w32_run_matrix.py."
+              % DOC, file=sys.stderr)
+        print("      Run: python3 tools/gen_w32_run_matrix.py --write",
+              file=sys.stderr)
+        return 1
+    print("  PASS: %s matches the run-matrix data (%d apps x %d states)"
+          % (DOC, len(rows), len(COLUMNS)))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

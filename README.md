@@ -868,7 +868,7 @@ Start here:
   usefully, the list of behaviours that are approximations.
 - [`docs/plans/W32APP_PLAN.md`](docs/plans/W32APP_PLAN.md) — the Win32 *application*
   ladder that grows that personality to real software (**complete**, W32A-0 –
-  W32A-18). It lands 935 functions across 21 modules — registry, incremental
+  W32A-18). It lands 939 functions across 21 modules — registry, incremental
   COM/IME/themes, WinSock, the msvcrt surface and real `.pdata`/`.xdata` SEH —
   each with a per-function D9 class (`REAL`/`FAIL-CLEAN`/`REFUSE`) generated into
   [`docs/win32.md`](docs/win32.md) so the docs cannot drift from the code. Three
@@ -877,6 +877,15 @@ Start here:
   **Outcome B — it does not run**, and the 19-module gap is the committed
   artefact (`w32/app_ledger/audacity-3.7.5.gap`). Every `✅` phase is pinned to
   the tree by `tools/check_w32app_claims.py`, wired into `make test-unit`.
+- [`docs/plans/W32RUN_PLAN.md`](docs/plans/W32RUN_PLAN.md) — the Win32
+  *live-run* ladder that turns "binds" into "runs" (**complete**, WR-0 –
+  WR-5): the three applications above drive their real windows on the OVMF
+  framebuffer — PuTTY's config dialog + Raw/SSH sessions (14/14), 7-Zip's
+  panel + navigate + byte-exact extract (24/24), Notepad++'s frame + typing
+  + save (17/17) — every pixel asserted by a live-frame gate. The per-app
+  run state is the generated matrix in
+  [`docs/win32_run.md`](docs/win32_run.md); the three app phases stay
+  PARTIAL with named gaps (Telnet, Find, the Options popup, …).
 
   **Disclaimer.** This is an independent reimplementation of a published
   interface. It ships no Microsoft code, is not endorsed by or affiliated

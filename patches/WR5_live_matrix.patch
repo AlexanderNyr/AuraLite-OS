@@ -1,0 +1,863 @@
+diff --git a/docs/plans/W32RUN_PLAN.md b/docs/plans/W32RUN_PLAN.md
+--- a/docs/plans/W32RUN_PLAN.md
++++ b/docs/plans/W32RUN_PLAN.md
+@@ -1,15 +1,15 @@
+ # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
+ 
+-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3 PARTIAL 2026-10-19 (frame, byte-exact typing, save round-trip gated 17/17; Find/open-dialog/plugin/tray named gaps); WR-4…WR-5 planned.
++## Status: COMPLETE (2026-10-23) — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3 PARTIAL 2026-10-19 (frame, byte-exact typing, save round-trip gated 17/17; Find/open-dialog/plugin/tray named gaps); WR-4 🟨 PARTIAL 2026-10-22 (PuTTY dialog + Raw + SSH gated 14/14 over two OVMF boots; Telnet, the Load button, font/colour, clipboard and serial stay open; one-live-TCP envelope; orphan-on-close lifecycle named); WR-5 ✅ done 2026-10-23 (the honest live matrix: `docs/win32_run.md` generated, `docs/gui_receipts.md` finalised, the checker extended). The ladder is complete: WR-0/WR-1/WR-5 ✅, WR-2/WR-3/WR-4 PARTIAL with named gaps.
+ 
+ | Phase | State |
+ |---|---|
+ | WR-0 The live-GUI lane and its oracles (OVMF + screendump + input harness) | ✅ done (2026-09-29) |
+ | WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ✅ done (2026-09-29) |
+-| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | PARTIAL (2026-10-09): gate 22/22 — panel, navigate delta, byte-exact extract; named gaps: clean extract ("Progress Error"), navigate back, Options (no menu subsystem); drag-drop deferred |
+-| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | 🟨 PARTIAL 2026-10-19 |
+-| WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | ⬜ planned |
+-| WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ⬜ planned |
++| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | 🟨 PARTIAL (2026-10-10): gate 24/24 — panel, navigate delta, **navigate back**, byte-exact extract; named gaps: clean extract ("Progress Error"), Tools > Options popup (bar drawn, popup unpainted); drag-drop deferred |
++| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | 🟨 PARTIAL (2026-10-19): gate 17/17 + 5 SKIP — frame, byte-exact typing, save round-trip; named gaps: Find, File > Open, plugins, tray; no frame digest recorded |
++| WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | 🟨 PARTIAL (2026-10-22): gate 14/14 — dialog, session Save round-trip, Raw echo painted, SSH output painted; open: Telnet, Load button, serial re-assert; receipt + frame digest in `docs/gui_receipts.md` §WR-4 |
++| WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ✅ done (2026-10-23): `docs/win32_run.md` generated, `docs/gui_receipts.md` finalised, checker extended; WR-4 corrected to PARTIAL |
+ 
+ This document answers one question:
+ 
+@@ -108,6 +108,8 @@
+ The 7-Zip row is a *measured* live boot; the other two rows are the
+ fixture/binding state from `W32APP_PLAN.md`, not yet exercised on the OVMF
+ framebuffer. WR-0 exists to turn every `—` above into a ✅/❌ with a pixel.
++WR-5 (2026-10-23) collected the verdicts into `docs/win32_run.md`, which
++supersedes this table; the rows above stay as the 2026-09-29 snapshot.
+ 
+ ### 2.2 The SHELL32 §7 gap, by measurement
+ 
+@@ -537,8 +539,10 @@
+ - `test_wr3_npp_live.sh` green (2026-10-19, 17/17 + 5 SKIP): editor window
+   present, Scintilla paints typed text, fixture open/save byte-exact, no
+   user #PF / fatal signal / panic.  Find + plugin + tray + File-Open stay
+-  named gaps.  Patch: `patches/WR3_npp_live.patch`.  Receipt + frame digest
+-  committed.
++  named gaps.  Patch: `patches/WR3_npp_live.patch`.  Receipt committed (the
++  `docs/w32app_receipts.md` addendum); no frame digest was recorded (named
++  gap — the "digest" half of this line as written 2026-10-19 was an
++  overclaim, corrected by WR-5).
+ 
+ **Deliverable:** `tests/integration/cases/test_wr3_npp_live.sh`, fixture
+ file + pinned-plugin delivery, receipt edits, `patches/WR3_npp_live.patch`.
+@@ -555,31 +559,53 @@
+ 
+ #### Tasks
+ 
+-- [ ] Live launch: `gui_run putty.exe` reaches the config dialog; the
+-      dialog tree renders (`window_present` + control-region oracle).
+-- [ ] Session UI round-trip: type a host/port in the dialog, `Save`, close,
+-      reopen, `Load`, assert the fields repopulate (pixel + registry, the
+-      W32A-14 headless half now joined to its UI half).
+-- [ ] Terminal render: connect Raw/Telnet to an **in-lane echo/telnet server**
+-      (spawned by `gui_lane.sh` on the SLIRP host side, reachable at
+-      `10.0.2.2`), type a line, assert the echoed text paints in the terminal
+-      grid (GDI text delta). First headless PuTTY net+render proof.
+-- [ ] SSH: connect to an in-lane SSH server, complete auth (password or the
+-      pinned test key), run a command, assert its output paints. If the crypto
+-      surface (`CryptoAPI`/`bcrypt`) has a gap PuTTY's SSH needs, name the
+-      exact symbol and its status — do not fake a pass.
+-- [ ] Font/colour choosers + clipboard: exercise the COMDLG32 six and `gclip`
+-      round-trip via injected input, or name the residual human-run item.
+-- [ ] Serial backend stays fail-clean (COMM set FALSE + `ERROR_INVALID_FUNCTION`,
+-      already proven) — re-assert from the live process.
+-- [ ] Receipt `#putty` in `docs/w32app_receipts.md` updated to the live-frame
+-      + live-net gate; the auth-fallback / crypto items named honestly.
++- [x] Live launch (2026-10-22): `w32run /fat/putty.exe` reaches the real
++      config dialog; the dialog tree renders (dialog-region delta oracle).
++- [~] Session UI round-trip (2026-10-22): a typed host lands in the edit
++      (pixels), `Save` persists it byte-exact into `/disk/w32hive`,
++      `Cancel` + relaunch repopulates the edit (the W32A-14 headless half
++      joined to its UI half). The dialog `Load` button is untested (open —
++      Default-Settings auto-load is what the gate proves).
++- [~] Terminal render (2026-10-22): `-raw` against the in-lane echo server
++      (`tests/integration/wr4_echo_server.py`, reachable in-guest at
++      `10.0.2.2` via SLIRP): guest bytes arrive server-side and the `ECHO:`
++      reply paints in the terminal grid — the first live PuTTY net+render
++      proof. Telnet untested (open).
++- [x] SSH (2026-10-22): `-ssh` against the in-lane paramiko server
++      (`tests/integration/wr4_ssh_server.py`, key
++      `tests/integration/wr4_ssh_host_rsa.key`): kex+auth+channel complete
++      server-side and the command output paints. No crypto gap was hit (no
++      missing `CryptoAPI`/`bcrypt` symbol); the `SECUR32`/`GSSAPI64`
++      auth-fallback surface is unexercised (password auth succeeded
++      outright — named, not faked).
++- [x] Font/colour choosers + clipboard: named residual human-run items (not
++      driven — the task's or-branch).
++- [ ] Serial backend live re-assert (open): the fail-clean COMM behaviour
++      itself was proven in W32A-14; re-driving it from the live process
++      never happened.
++- [x] Receipt `#putty` in `docs/w32app_receipts.md` updated to the live-frame
++      + live-net gate (2026-10-22 addendum); the auth-fallback / crypto
++      items named honestly.
+ 
+ #### Test gate
+ 
+-- `test_wr4_putty_live.sh` green: config dialog present, session UI round-trip,
+-  Telnet/Raw echo painted, SSH command output painted (or a named crypto gap).
+-  Receipt + frame digest committed.
++- `test_wr4_putty_live.sh` green (2026-10-22, 14/14 over two OVMF boots —
++  dialog + raw, then ssh): config dialog present, session Save round-trip,
++  Raw echo painted, SSH command output painted, no panic. Telnet, the Load
++  button and the serial re-assert stay open; one-live-TCP envelope;
++  orphan-on-close lifecycle follow-up. Patch:
++  `patches/WR4_putty_live.patch`. Receipt + frame digest committed
++  (`docs/gui_receipts.md` §WR-4).
++
++**Verdict (WR-5 audit, 2026-10-23): 🟨 PARTIAL.** The gate is fully green
++(14/14) and every driven flow is clean — but three task items stay open
++(the Load button, Telnet, the serial re-assert), so by the WR-2/WR-3
++convention (named gaps → PARTIAL) this phase is PARTIAL. The ✅ recorded
++at the end of the WR-4 turn is corrected here, with the reason attached:
++a phase whose task list has open boxes is not done, however green its
++gate. The run matrix (`docs/win32_run.md`) is unaffected — its PuTTY
++cells claim only what the gate proves, and the open items ride in the
++evidence column as named gaps.
+ 
+ **Deliverable:** `tests/integration/cases/test_wr4_putty_live.sh`, the in-lane
+ server provisioning, receipt edits, `patches/WR4_putty_live.patch`.
+@@ -594,17 +620,22 @@
+ 
+ #### Tasks
+ 
+-- [ ] `docs/win32_run.md` (generated, like `docs/win32.md`): per app, the
+-      run-state matrix — *binds / enters / draws / main UI / core task /
+-      live net* — each cell backed by a gate name or a named human-run reason.
+-- [ ] `docs/gui_receipts.md` finalised: the screendump protocol, the frame
+-      digests, the sha256 pins, one section per app.
+-- [ ] `README.md` + `docs/status.md` updated: the "runs, measured on pixels"
+-      claim replaces the "binds" claim, with the gate names as evidence.
+-- [ ] `tools/check_w32app_claims.py` (or a sibling) extended: a WR phase
+-      section, a run-matrix consistency check (no cell claims a state its
+-      gate does not prove), a REFUSE-guard for faked live passes.
+-- [ ] The plan's own status table (top) flipped to ✅ with dates and receipts.
++- [x] `docs/win32_run.md` (generated, like `docs/win32.md`):
++      `tools/gen_w32_run_matrix.py` renders per app the run-state matrix —
++      *binds / enters / draws / main UI / core task / live net* — each cell
++      backed by a gate name or a named human-run reason.
++- [x] `docs/gui_receipts.md` finalised: the screendump protocol, the frame
++      digests, the sha256 pins, one section per app (§WR-2/WR-3/WR-4).
++- [x] `README.md` + `docs/status.md` updated: the "runs, measured on
++      pixels" claim replaces the "binds" claim, with the gate names as
++      evidence.
++- [x] `tools/check_w32app_claims.py` extended: a WR phase section (done-ness
++      read from the status table), a run-matrix consistency check (no cell
++      claims a state its gate does not prove), a REFUSE-guard for faked
++      live passes.
++- [x] The plan's own status table (top) flipped to terminal states with
++      dates and receipts (WR-4 corrected to PARTIAL — see the §WR-4 verdict
++      note — so "flipped to ✅" reads "flipped, honestly").
+ 
+ #### Test gate
+ 
+@@ -616,6 +647,35 @@
+ **Deliverable:** `docs/win32_run.md`, `docs/gui_receipts.md`, checker edits,
+ doc edits, `patches/WR5_live_matrix.patch`.
+ 
++**Result (2026-10-23, ✅ done).** One table tells the truth about *running*:
++
++- **`docs/win32_run.md` — the honest live matrix.** 4 apps × 6 run states,
++  generated by `tools/gen_w32_run_matrix.py` (sdk-check pattern:
++  `--write` twice is a no-op, `--check` is wired into `make test-unit`
++  next to `gen_w32_api_table.py --check`). The generator refuses to
++  render a row whose gate cites do not resolve in the tree.
++- **`docs/gui_receipts.md` finalised.** §WR-2/WR-3/WR-4 carry the pinned
++  sha256, the live gate + recorded result, and the frame digest where one
++  exists (PuTTY's ten-frame digest, byte-identical to the receipt
++  addendum) — or the named gap where none was recorded (7-Zip's short
++  prefix only; Notepad++'s missing digest).
++- **Checker extended.** `tools/check_w32app_claims.py` gains the WR
++  section: claimed phases backed by gate artefacts + greppable results +
++  gui-receipt pins, the run matrix resolved cell by cell (fixed app set,
++  gates exist, every N/N appears in this plan, no reason-less crosses),
++  and `--selftest` plants a lying W32RUN ladder next to the lying W32APP
++  one. `--check` and `--selftest` green.
++- **The audit corrected three verdicts.** WR-4 ✅ → 🟨 PARTIAL (three
++  task boxes open — see the §WR-4 verdict note); the WR-3 Test-gate
++  "frame digest committed" → "no frame digest was recorded"; the WR-2
++  table row 22/22 → 24/24 (2026-10-10, navigate-back closed).
++- **Selective run recorded.** `check_w32app_claims.py --check/--selftest`,
++  `gen_w32_api_table.py --check` and `gen_w32_run_matrix.py --check` are
++  green on this tree (2026-10-23). The OVMF lanes were not re-run here
++  (no OVMF/firmware in this environment): the matrix resolves to the
++  recorded greens — 9/9 (2026-09-29), 24/24 (2026-10-10), 17/17 + 5 SKIP
++  (2026-10-19), 14/14 (2026-10-22) — each dated and receipted above.
++
+ ---
+ 
+ ## 5. Decisions
+diff --git a/docs/gui_receipts.md b/docs/gui_receipts.md
+--- a/docs/gui_receipts.md
++++ b/docs/gui_receipts.md
+@@ -82,9 +82,121 @@
+ `OVMF_VARS_4M.fd` (override with `OVMF_CODE=` / `OVMF_VARS=`); with no OVMF it
+ loud-SKIPs and exits 0, the `test_gui_dirty_uefi.sh` convention.
+ 
+-## WR-1 … WR-5
++## WR-1 — SHELL32 namespace (no live frames, by design)
+ 
+-Reserved. Each app phase records here: the pinned sha256 (already in
+-`docs/w32app_receipts.md`), the live gate name, and the frame digest for the
+-main-window / listing / terminal / editor capture. WR-5 collects them into the
+-run/no-run matrix (`docs/win32_run.md`).
++WR-1 is headless COM (`IShellFolder`/PIDL, `docs/plans/W32RUN_PLAN.md`
++§WR-1): no window, no pixels, no frame receipt. Its evidence is the host
++unit test (`tests/unit/test_shell_ns.c`, 45 checks, ASan/UBSan) and the
++fixture twin (`tests/integration/cases/test_wr1_shell_namespace.sh`).
++
++## WR-2 — 7-Zip File Manager, live on the framebuffer
++
++Pinned subject (full pins in `docs/w32app_receipts.md` §1; binaries reach
++the guest on `/fat`, never the tree):
++
++| binary | sha256 | size |
++|---|---|---:|
++| 7zFM.exe (7-Zip 24.09) | `dc4fdcd96efe7b41e123c4cba19059162b08449627d908570b534e7d6ec7bf58` | 990720 |
++| 7z.dll (7-Zip 24.09) | `882063948d675ee41b5ae68db3e84879350ec81cf88d15b9babf2fa08e332863` | 1907712 |
++
++Live gate: `tests/integration/cases/test_wr2_7zip_live.sh`, **24/24**
++(measured 2026-10-10, OVMF/TCG): launch with 292 imports bound and no
++`E_FAIL`, the main window with CW-1 clipped panes, `/fat` rows drawn by
++the panel, double-click navigate into `SUBDIR`, Backspace navigate-back
++to exactly the `C:\fat` root rows, and byte-exact extract (217 B, md5
++`3b44a2fc…`) in a second window. Receipt:
++`docs/w32app_receipts.md` §WR-2.
++
++Frame digest: the 2026-09-30 reference frame recorded only a short
++prefix — `d5a96b225a8e0541…` (`wr2_7zip_live.png`) — and the full digest
++was never committed (named gap: no later gate run re-recorded it). No
++oracle values were pasted back for the panel asserts (named gap).
++
++Named gaps (SKIP lines, not passes): the clean extract (blank copy
++dialog, then "Progress Error" although the bytes are correct), Tools >
++Options (the menu *bar* is drawn; the *popup* is not painted, so no
++mouse path reaches it), drag-drop (human-run).
++
++## WR-3 — Notepad++, live on the framebuffer
++
++Pinned subject:
++
++| binary | sha256 | size |
++|---|---|---:|
++| notepad++.exe (8.8.9) | `a470014bb7f6d8587d3a4b9ddc3bab0a356a945e8f63b8067834805d3082472d` | 8365216 |
++
++Live gate: `tests/integration/cases/test_wr3_npp_live.sh`, **17/17 + 5
++SKIP** (measured 2026-10-19, OVMF 1280x800): binds 590/590, resolves
++both delay-load api-set probes, opens the real `new 1` frame, paints
++typed text byte-exact (`abc XYZ 123! -_ end` on pixels), and round-trips
++a save through the VFS (29 B fixture `c5e474fd…` + ` WR3GATE` edit reads
++back as exactly 37 B, `a829ed05…`), with no user #PF, no fatal signal
++and no panic. Receipt: the `docs/w32app_receipts.md` addendum +
++`docs/WR3_WORKLOG.md` (13 fixes, the stand recipe, exact diagnoses).
++
++Frame digest: none was recorded (named gap — the WR-3 Test-gate line
++that said "frame digest committed" is corrected by WR-5; the recorded
++pixel facts are the gate's oracles and the diagnosis screenshots, not a
++committed digest).
++
++Named gaps (SKIP lines, not passes): Find (the dialog builds, then NPP
++dies in UCRT `__report_gsfailure` — a second stack-cookie smash, separate
++session), File > Open (`CoCreateInstance(CLSID_FileOpenDialog)` →
++`REGDB_E_CLASSNOTREG`: the COM class table is committed zero rows), no
++plugin DLL staged, tray never driven, and a transient open-path paint
++smear (a 4-char ghost until the next line repaint).
++
++## WR-4 — PuTTY, live on the framebuffer + live network
++
++Pinned subject:
++
++| binary | sha256 | size |
++|---|---|---:|
++| putty.exe (0.85) | `d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87` | 1706136 |
++
++Live gate: `tests/integration/cases/test_wr4_putty_live.sh`, **14/14**
++(measured 2026-10-22, two OVMF boots — dialog + raw, then ssh — each leg
++with a single live TCP connection): the real config dialog paints, a
++typed host lands in the edit, `Save` persists byte-exact into
++`/disk/w32hive`, `Cancel` + relaunch repopulates the edit, `-raw`
++against the in-lane echo server paints the `ECHO:` reply in the terminal
++grid, the terminal closes via X + Exit Confirmation OK, and `-ssh`
++against the in-lane paramiko server completes kex+auth+channel with the
++command output painted. No panic. Lane servers (committed, host side):
++`tests/integration/wr4_echo_server.py` (`:2323`) and
++`tests/integration/wr4_ssh_server.py` (`:2222`, `wr4`/`wr4pass`), key
++`tests/integration/wr4_ssh_host_rsa.key`. Receipt: the
++`docs/w32app_receipts.md` WR-4 addendum.
++
++Frame digest (our own pixels — the ten gate shots, `wr4_frames.sha256`
++from the green run):
++
++```
++a35c844b46b0704cd85827d859812f1fb8e71c123bb838e23c10475a5c91bb4d  wr4_pre.png
++e40926859908a42c3670b1b388b0aecb9be788be8e75225abd58d8d5677d47a7  wr4_dlg0.png
++55e244f9e379a0b7199dd0da5029940015eba0f4fcfcbe0cf9d53cc6dca847ad  wr4_typed.png
++54059370108d8114d03a4465a1d59bcbcd3788a5ac00e67674cf201a4b233ae4  wr4_closed.png
++49ca65c48584da8f817fdf2a16ee650b5e83e487330549b4963f207493b2b2b7  wr4_dlg1.png
++1843c4769288797d085223cb7e8a9a5594dff8ed0b053c0095579354357e2749  wr4_term0.png
++4c41ce12efafbbeec517195aa331b95d98de9e528021fe3449254b5380acfd73  wr4_term1.png
++49ee7f6724578768729d187778be421a8c14595e0da0a4dbdf126e4704c2de8a  wr4_rawclosed.png
++0e0093d271b7f313a6633cf47220b4867180199e28c42f254f19114293298bc3  wr4_ssh0.png
++a2b3543233455f32cbc03439129c7f388204ab165960c0762ef0e8e217b18237  wr4_ssh1.png
++```
++
++Named gaps (not faked, not greened): Telnet untested (Raw only), the
++dialog `Load` button untested (Default-Settings auto-load is what the
++gate proves), font/colour choosers + clipboard + live-process serial
++re-assert human-run, the concurrent-TCP envelope is one live connection
++(two corrupt each other — shared NIC queue vs the ws2 readiness pump),
++closing the raw window orphans its connection process-side and the
++process never quits (lifecycle follow-up), `SECUR32`/`GSSAPI64`
++auth-fallback unexercised (password auth succeeded outright).
++
++## WR-5 — the run matrix
++
++`docs/win32_run.md`, generated by `tools/gen_w32_run_matrix.py` from the
++gates and receipts above: per app, binds / enters / draws / main UI /
++core task / live net. Every green cell resolves to a gate file + a
++recorded result; `tools/check_w32app_claims.py` (WR section) enforces
++the resolution in `make test-unit`.
+diff --git a/tools/check_w32app_claims.py b/tools/check_w32app_claims.py
+--- a/tools/check_w32app_claims.py
++++ b/tools/check_w32app_claims.py
+@@ -32,6 +32,16 @@
+     run (W32A-17, Audacity) has no .imports ledger and no REFUSE machinery;
+     its gate is green only while its .gap ledger enumerates at least one
+     unmet module and its receipt section is filled, never AWAITING.
++  - the W32RUN ladder (WR-0..WR-5) is tied the same way: every claimed
++    phase has a plan section, and a phase the status table marks done or
++    PARTIAL is backed by its gate artefacts, its greppable result receipt
++    and -- for the three live apps -- its gui_receipts.md section with
++    the pinned hash.  The run matrix (docs/win32_run.md, generated by
++    tools/gen_w32_run_matrix.py) resolves cell by cell: the app set is
++    fixed, every green cell's gate file must exist, every N/N result must
++    appear in W32RUN_PLAN.md, and every non-green cell must carry its
++    reason.  A WR phase cannot claim green while its gate is missing --
++    the live-pass REFUSE-guard.
+ 
+ Deliberately NOT asserted: existence of `patches/*.patch` receipts (a
+ patch file on disk is evidence a FILE EXISTS, not that code works; the
+@@ -254,6 +264,71 @@
+     "W32A-17": "audacity-3.7.5.gap",
+ }
+ 
++# W32RUN_PLAN.md WR-0..WR-5: the live-run ladder.  Done-ness is read from
++# the status table (a row saying done/PARTIAL claims completion; a planned
++# row claims nothing), because -- unlike W32APP -- the WR headings carry
++# no DONE flag.  WR_ARTEFACTS are existence checks, WR_RECEIPTS are
++# greppable result lines in the phase section, and WR_GUI_PINS tie the
++# three live apps to their gui_receipts.md section + pinned hash.
++WR_PHASES = ["WR-%d" % n for n in range(0, 6)]
++
++WR_ARTEFACTS = {
++    "WR-0": ["tests/integration/lib/gui_lane.sh",
++             "tools/fb_oracle.py",
++             "tools/gui_input.py",
++             "tests/integration/cases/test_gui_lane_smoke.sh",
++             "docs/gui_receipts.md"],
++    "WR-1": ["w32/src/shell32_ns.c",
++             "tests/unit/test_shell_ns.c",
++             "tests/integration/cases/test_wr1_shell_namespace.sh"],
++    "WR-2": ["tests/integration/cases/test_wr2_7zip_live.sh",
++             "tools/wr2_make_fixture.py"],
++    "WR-3": ["tests/integration/cases/test_wr3_npp_live.sh",
++             "docs/WR3_WORKLOG.md"],
++    "WR-4": ["tests/integration/cases/test_wr4_putty_live.sh",
++             "tests/integration/wr4_echo_server.py",
++             "tests/integration/wr4_ssh_server.py",
++             "tests/integration/wr4_ssh_host_rsa.key"],
++    "WR-5": ["docs/win32_run.md",
++             "tools/gen_w32_run_matrix.py",
++             "tools/check_w32app_claims.py",
++             "docs/gui_receipts.md"],
++}
++
++WR_RECEIPTS = {
++    "WR-0": ["9/9",
++             "test_gui_lane_smoke",
++             "gui_receipts.md"],
++    "WR-1": ["45 checks",
++             "test_wr1_shell_namespace",
++             "patches/WR1_shell_namespace.patch"],
++    "WR-2": ["24/24",
++             "test_wr2_7zip_live",
++             "Named gaps"],
++    "WR-3": ["17/17",
++             "test_wr3_npp_live",
++             "patches/WR3_npp_live.patch"],
++    "WR-4": ["14/14",
++             "test_wr4_putty_live",
++             "patches/WR4_putty_live.patch"],
++    "WR-5": ["win32_run.md",
++             "gen_w32_run_matrix",
++             "patches/WR5_live_matrix.patch"],
++}
++
++# phase -> (gui_receipts.md heading anchor, pinned-hash substring).
++WR_GUI_PINS = {
++    "WR-2": ("## WR-2", "dc4fdcd9"),
++    "WR-3": ("## WR-3", "a470014b"),
++    "WR-4": ("## WR-4", "d01fdb5a"),
++}
++
++# The run matrix covers exactly these apps -- no silent row drops.
++RUN_MATRIX_APPS = ["PuTTY 0.85",
++                   "7-Zip FM 24.09",
++                   "Notepad++ 8.8.9",
++                   "Audacity 3.7.5"]
++
+ 
+ def phase_section(plan_text, phase):
+     """Return the markdown of one phase section, or None."""
+@@ -266,6 +341,97 @@
+     return None
+ 
+ 
++def wr_section(plan_text, phase):
++    """Return the markdown of one WR phase section, or None.
++
++    WR-1..WR-5 have standard `### Phase WR-N` headings; WR-0 (the lane) is
++    the `#### WR-0 Tasks` span up to `## 4. Phases`.
++    """
++    if phase == "WR-0":
++        a = plan_text.find("#### WR-0 Tasks")
++        b = plan_text.find("## 4. Phases")
++        if a < 0 or b < 0 or b < a:
++            return None
++        return plan_text[a:b]
++    heads = [(m.start(), m.group(1))
++             for m in re.finditer(r"^### Phase (WR-\d+)\b", plan_text, re.M)]
++    for i, (pos, name) in enumerate(heads):
++        if name == phase:
++            end = heads[i + 1][0] if i + 1 < len(heads) else len(plan_text)
++            return plan_text[pos:end]
++    return None
++
++
++def wr_claimed(plan_text, phase):
++    """True when the status table marks the phase done or PARTIAL."""
++    for ln in plan_text.splitlines():
++        cells = [c.strip() for c in ln.split("|")]
++        if len(cells) == 4 and cells[1].startswith(phase + " "):
++            state = cells[2]
++            return ("DONE" in state or "done" in state or
++                    "PARTIAL" in state or "\u2705" in state or "\U0001f7e8" in state)
++    return False
++
++
++def check_run_matrix(root, run_plan_text, bad):
++    """Resolve every docs/win32_run.md cell against the tree + the plan.
++
++    The app set is fixed (no silent row drops); every tests/docs/w32 cite
++    must resolve to a file; every N/N result must appear in W32RUN_PLAN.md
++    (the three-way tie: matrix <-> plan <-> gate); green rows must name
++    their gate; non-green cells must carry a reason.
++    """
++    mp = os.path.join(root, "docs", "win32_run.md")
++    if not os.path.isfile(mp):
++        bad("WR-5 is claimed but docs/win32_run.md is missing")
++        return
++    text = open(mp).read()
++    begin = "<!-- BEGIN GENERATED: w32 run matrix -->"
++    end = "<!-- END GENERATED: w32 run matrix -->"
++    if begin not in text or end not in text:
++        bad("docs/win32_run.md lacks its generated-matrix markers")
++        return
++    block = text.split(begin, 1)[1].split(end, 1)[0]
++    rows = [ln for ln in block.splitlines()
++            if ln.startswith("|") and "---" not in ln][1:]
++    apps = []
++    for ln in rows:
++        cells = [c.strip() for c in ln.strip().strip("|").split("|")]
++        if len(cells) != 8:
++            bad("run-matrix row has %d cells, want 8: %r" % (len(cells), ln))
++            continue
++        apps.append(cells[0])
++        states, evidence = cells[1:7], cells[7]
++        green = False
++        for cell in states:
++            if "\u2705" in cell:
++                green = True
++            elif "\u274c" in cell:
++                if cell.replace("\u274c", "").strip() == "":
++                    bad("run-matrix %s has a reason-less cross" % cells[0])
++            elif cell.startswith("N/A"):
++                if cell[3:].strip() == "":
++                    bad("run-matrix %s has a reason-less N/A" % cells[0])
++            else:
++                bad("run-matrix %s cell claims no state: %r" % (cells[0], cell))
++        if green:
++            gates = [c for c in re.findall(r"`([^`]+)`", evidence)
++                     if c.endswith(".sh")]
++            if not gates:
++                bad("run-matrix %s is green but names no gate" % cells[0])
++        for cite in re.findall(r"`((?:tests|docs|w32)/[^`]+)`", evidence):
++            if not os.path.isfile(os.path.join(root, cite)):
++                bad("run-matrix %s cites %s, which is not in the tree"
++                    % (cells[0], cite))
++        for score in re.findall(r"\d{1,4}/\d{1,4}", evidence):
++            if score not in run_plan_text:
++                bad("run-matrix %s cites %s, which W32RUN_PLAN.md never "
++                    "records" % (cells[0], score))
++    if sorted(apps) != sorted(RUN_MATRIX_APPS):
++        bad("run-matrix apps are %s, want %s" % (sorted(apps),
++                                                 sorted(RUN_MATRIX_APPS)))
++
++
+ def run_check(root=ROOT):
+     fails = []
+ 
+@@ -385,12 +551,55 @@
+         if m is None or "AWAITING" in rect[m.start():m.start() + 400]:
+             bad("%s is DONE but its receipt section is AWAITING" % phase)
+ 
++    # The W32RUN ladder: a phase the status table marks done or PARTIAL is
++    # backed by its gate artefacts and its greppable result receipt -- the
++    # live-pass REFUSE-guard: no green claim while the gate is missing.
++    run_path = os.path.join(root, "docs", "plans", "W32RUN_PLAN.md")
++    if not os.path.isfile(run_path):
++        bad("missing docs/plans/W32RUN_PLAN.md")
++    else:
++        run = open(run_path).read()
++        for phase in WR_PHASES:
++            if not wr_claimed(run, phase):
++                continue
++            sec = wr_section(run, phase)
++            if sec is None:
++                bad("plan has no WR section for claimed phase %s" % phase)
++                continue
++            for rel in WR_ARTEFACTS.get(phase, []):
++                if not os.path.isfile(os.path.join(root, rel)):
++                    bad("%s is claimed but %s is missing" % (phase, rel))
++            for pat in WR_RECEIPTS.get(phase, []):
++                if pat not in sec:
++                    bad("%s is claimed but its section never says %r"
++                        % (phase, pat))
++        # gui_receipts.md pins the three live apps to section + hash.
++        gui = os.path.join(root, "docs", "gui_receipts.md")
++        guit = open(gui).read() if os.path.isfile(gui) else ""
++        if not os.path.isfile(gui):
++            bad("docs/gui_receipts.md is missing")
++        for phase in sorted(WR_GUI_PINS):
++            if not wr_claimed(run, phase):
++                continue
++            heading, pin = WR_GUI_PINS[phase]
++            if heading not in guit:
++                bad("%s is claimed but docs/gui_receipts.md has no %r "
++                    "section" % (phase, heading))
++            if pin not in guit:
++                bad("%s is claimed but docs/gui_receipts.md never pins %r"
++                    % (phase, pin))
++        # The run matrix resolves cell by cell -- WR-5's deliverable, only
++        # required once WR-5 itself is claimed.
++        if wr_claimed(run, "WR-5"):
++            check_run_matrix(root, run, bad)
++
+     return fails
+ 
+ 
+ def main(argv):
+     if len(argv) == 2 and argv[1] == "--check":
+-        print("[w32app-claims] checking W32APP_PLAN.md against the tree ...")
++        print("[w32app-claims] checking W32APP_PLAN.md + W32RUN_PLAN.md "
++              "against the tree ...")
+         fails = run_check()
+         if fails:
+             print("[w32app-claims] FAIL: %d problem(s)" % len(fails))
+@@ -408,9 +617,17 @@
+             open(os.path.join(tmp, "docs", "plans", "W32APP_PLAN.md"),
+                  "w").write("### Phase W32A-0 \u2705 DONE\nno receipts here\n"
+                             "### Phase W32A-4 \u2705 DONE\nno receipt\n")
++            # A lying W32RUN ladder: WR-4 claimed done, no gate, no matrix.
++            open(os.path.join(tmp, "docs", "plans", "W32RUN_PLAN.md"),
++                 "w").write("| WR-4 App run III | done (2026-10-22) |\n"
++                            "### Phase WR-4 -- x\nno receipts here\n")
+             print("[w32app-claims] self-test: planting a DONE claim "
+                   "with no artefacts ...")
+             fails = run_check(root=tmp)
++            if not any("WR-4" in f for f in fails):
++                print("[w32app-claims] SELF-TEST FAILED: checker missed "
++                      "the unbacked WR-4 claim")
++                return 1
+             if not fails:
+                 print("[w32app-claims] SELF-TEST FAILED: checker accepted "
+                       "an unbacked DONE claim")
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -868,7 +868,7 @@
+   usefully, the list of behaviours that are approximations.
+ - [`docs/plans/W32APP_PLAN.md`](docs/plans/W32APP_PLAN.md) — the Win32 *application*
+   ladder that grows that personality to real software (**complete**, W32A-0 –
+-  W32A-18). It lands 935 functions across 21 modules — registry, incremental
++  W32A-18). It lands 939 functions across 21 modules — registry, incremental
+   COM/IME/themes, WinSock, the msvcrt surface and real `.pdata`/`.xdata` SEH —
+   each with a per-function D9 class (`REAL`/`FAIL-CLEAN`/`REFUSE`) generated into
+   [`docs/win32.md`](docs/win32.md) so the docs cannot drift from the code. Three
+@@ -877,6 +877,15 @@
+   **Outcome B — it does not run**, and the 19-module gap is the committed
+   artefact (`w32/app_ledger/audacity-3.7.5.gap`). Every `✅` phase is pinned to
+   the tree by `tools/check_w32app_claims.py`, wired into `make test-unit`.
++- [`docs/plans/W32RUN_PLAN.md`](docs/plans/W32RUN_PLAN.md) — the Win32
++  *live-run* ladder that turns "binds" into "runs" (**complete**, WR-0 –
++  WR-5): the three applications above drive their real windows on the OVMF
++  framebuffer — PuTTY's config dialog + Raw/SSH sessions (14/14), 7-Zip's
++  panel + navigate + byte-exact extract (24/24), Notepad++'s frame + typing
++  + save (17/17) — every pixel asserted by a live-frame gate. The per-app
++  run state is the generated matrix in
++  [`docs/win32_run.md`](docs/win32_run.md); the three app phases stay
++  PARTIAL with named gaps (Telnet, Find, the Options popup, …).
+ 
+   **Disclaimer.** This is an independent reimplementation of a published
+   interface. It ships no Microsoft code, is not endorsed by or affiliated
+diff --git a/docs/status.md b/docs/status.md
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -53,7 +53,7 @@
+ | TSS | ✅ | RSP0 works and is per-CPU.  IST1 is PMM-backed, guard-paged and ARMED on #DF (`idt_set_ist(8, 1)`, FIX_R1) with a live gate: `test_ist_double_fault.sh` proves the survival lane AND the A/B negative (`-DAURALITE_UNARM_IST` reproduces the pre-fix triple fault).  This row said "allocated but unused" long after FIX_R1 landed — corrected by the residue ledger's R1 pass (RES-05: the debt was in the DOC, not the tree). |
+ | Fatal STOP screen | ✅ | A kernel-mode fault paints a blue screen with a named STOP (`0x0000000E` `PAGE_FAULT`, `0x00000008` `DOUBLE_FAULT`, software `0x00001xxx`). The lock-free serial dump still goes first (`[diag]` then `[bsod] STOP=`). User-mode faults stay POSIX signals. Table and meanings: [`bsod.md`](bsod.md). Host `test_bsod`; QEMU greps on `test_panic_diag.sh` / `test_ist_double_fault.sh`. |
+ | SYSCALL/SYSRET | ✅ | Linux-like register ABI, custom syscall table. |
+-| Win32 personality (`w32`) | 🧪 | WIN32_PLAN W32-0 – W32-8 **and** W32APP_PLAN W32A-0 – W32A-18. A mingw-w64-built PE32+ `.exe` runs unmodified: the kernel loads PE by magic, the shell routes an importing binary through `/apps/w32run`, which binds imports and runs the CRT startup. **935 functions across 21 modules** (KERNEL32/USER32/GDI32/COMCTL32/ADVAPI32/OLE32/OLEAUT32/SHELL32/SHLWAPI/UXTHEME/IMM32/COMDLG32/CRYPT32/WS2_32/VERSION/msvcrt/…), each with a per-function D9 class (900 REAL, 35 FAIL-CLEAN) generated into [`win32.md`](win32.md) from `w32/src/w32_bind.c` + the app ledgers. SEH now unwinds `.pdata`/`.xdata` for real (typed C++ `catch` is the named residue); registry (`W32HIVE1`), incremental COM/IME/themes, WinSock and the msvcrt surface are landed; CryptoAPI is hash-only (FAIL-CLEAN). Three real apps (PuTTY, 7-Zip File Manager, Notepad++) pass their **CI-provable** gate (import ledger + fixtures); a fourth (Audacity) is a deliberate **Outcome B — does not run** (19-module/419-symbol gap, see `w32/app_ledger/audacity-3.7.5.gap`). **Stays 🧪**: the human-run in-guest launch receipts are still `AWAITING` in [`w32app_receipts.md`](w32app_receipts.md). Gates: `make test-unit` runs `check_w32app_claims.py --check/--selftest`, `gen_w32_api_table.py --check`, `check_provenance.sh`, and the W32A per-phase unit + integration cases. |
++| Win32 personality (`w32`) | 🧪 | WIN32_PLAN W32-0 – W32-8 **and** W32APP_PLAN W32A-0 – W32A-18. A mingw-w64-built PE32+ `.exe` runs unmodified: the kernel loads PE by magic, the shell routes an importing binary through `/apps/w32run`, which binds imports and runs the CRT startup. **939 functions across 21 modules** (KERNEL32/USER32/GDI32/COMCTL32/ADVAPI32/OLE32/OLEAUT32/SHELL32/SHLWAPI/UXTHEME/IMM32/COMDLG32/CRYPT32/WS2_32/VERSION/msvcrt/…), each with a per-function D9 class (904 REAL, 35 FAIL-CLEAN) generated into [`win32.md`](win32.md) from `w32/src/w32_bind.c` + the app ledgers. SEH now unwinds `.pdata`/`.xdata` for real (typed C++ `catch` is the named residue); registry (`W32HIVE1`), incremental COM/IME/themes, WinSock and the msvcrt surface are landed; CryptoAPI is hash-only (FAIL-CLEAN). Three real apps (PuTTY, 7-Zip File Manager, Notepad++) **run, measured on pixels** (W32RUN_PLAN WR-0 – WR-5: live-frame gates 14/14, 24/24, 17/17 — the per-app run state is [`win32_run.md`](win32_run.md)); a fourth (Audacity) is a deliberate **Outcome B — does not run** (19-module/419-symbol gap, see `w32/app_ledger/audacity-3.7.5.gap`). **Stays 🧪**: the three app runs stay PARTIAL with named gaps (Telnet/Load/serial, Find/File-Open, the Options popup). Gates: `make test-unit` runs `check_w32app_claims.py --check/--selftest`, `gen_w32_api_table.py --check`, `gen_w32_run_matrix.py --check`, `check_provenance.sh`, and the W32A per-phase unit + integration cases. |
+ | Linux personality (`lx`) | 🧪 | LX_COMPAT_PLAN L0–L5 complete: existing, **unmodified Linux binaries** run on the kernel through a per-process syscall-number map (selected by the `/linux` path prefix at `execve`; native processes keep the native map). The ladder is fully climbed and CI-gated as the `lx` shard: a static glibc `hello` (L1), upstream busybox `ls`/`cat`/`echo` with Linux-shaped `struct stat`/`getdents64` (L2), busybox `ash` running scripts with Linux signal frames (L3), dynamic PIE binaries through the real glibc loader + futex/TLS (L4), and an **unmodified stock lua 5.4** running a real script (L5). Unmapped Linux numbers fail loudly (`-ENOSYS`), so each rung's gaps are named, not silent; the deliberate absences (sendfile, rseq, faccessat2's full form, full struct-siginfo payloads) stay documented in `kernel/lx/lx_translate.c` and `LX_COMPAT_PLAN.md`. `lxrun(1)` is the front door; `tools/check_lx_claims.py` pins every ✅ phase to its artefacts and receipts. |
+ | SMP bring-up | ✅ | H8 scheduler: all online CPUs run preemptive round-robin with per-CPU run queues, LAPIC-timer ticks, cross-CPU work stealing and IPI TLB shootdown. **M1 added eager `FXSAVE`/`FXRSTOR` FPU/SSE context switching**, which H8 needed to be correct (gltest now passes 373/373 under `-smp 4`; `test_fpu_smp.sh`). |
+ | LAPIC / IOAPIC | ✅ | LAPIC enable + per-CPU timer and I/O APIC bring-up are implemented (MATURITY M2): the BSP runs on APIC IRQs (PIT@GSI2, kbd@GSI1), the IOAPIC base is cross-checked against the ACPI MADT at boot (`[ioapic] base … (MADT agree)`, RESIDUE R11), and legacy PIC/PIT paths remain available. MSI/MSI-X and MADT Interrupt Source Overrides remain named residue (RES-36 / ioapic.c). |
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -4365,6 +4365,10 @@
+ # wrong the moment somebody adds an export, and nobody notices.
+ 	@echo "[unit] running tools/gen_w32_api_table.py --check"
+ 	@python3 tools/gen_w32_api_table.py --check || exit 1
++# W32RUN WR-5: docs/win32_run.md's run-state matrix is generated from the
++# reviewed run data, so it cannot drift from the gates it cites.
++	@echo "[unit] running tools/gen_w32_run_matrix.py --check"
++	@python3 tools/gen_w32_run_matrix.py --check || exit 1
+ # W32-4: prove the ABI test would fail without ms_abi.
+ 	@echo "[unit] running tests/unit/test_w32_abi_negctl.sh"
+ 	@bash tests/unit/test_w32_abi_negctl.sh || exit 1
+diff --git a/docs/win32_run.md b/docs/win32_run.md
+new file mode 100644
+--- /dev/null
++++ b/docs/win32_run.md
+@@ -0,0 +1,42 @@
++# Win32 live-run matrix — which apps *run*, measured on pixels
++
++The live counterpart to `W32APP_PLAN.md` W32A-18's binding matrix
++(`docs/win32.md` tells what the personality *binds*; this file tells what
++*runs*). Per `docs/plans/W32RUN_PLAN.md` D-WR2, this matrix is the only
++place a "runs" claim lives, and every cell cites a live gate or a named
++reason. The evidence protocol (pins, gates, frame digests) is
++`docs/gui_receipts.md`.
++
++What the six states mean:
++
++- **binds** — the pinned binary's imports resolve (no REFUSE, no TODO
++  fall-through). The W32APP half, re-stated here so the row reads whole.
++- **enters** — it survives CRT startup to its first window on the live
++  OVMF framebuffer (no early fault, no early exit).
++- **draws** — it paints client content on pixels, not just a frame.
++- **main UI** — its primary window or dialog reaches the working state,
++  asserted over `screendump` pixels by `tools/fb_oracle.py`.
++- **core task** — its defining job completes: PuTTY drives sessions,
++  7-Zip lists/navigates/extracts, Notepad++ types/saves — byte- or
++  pixel-asserted by the phase gate.
++- **live net** — a live network flow completes against an in-lane server
++  (`N/A` where the app has no live-net surface: offline by design, not
++  silently untested).
++
++<!-- BEGIN GENERATED: w32 run matrix -->
++
++*4 apps x 6 run states. This matrix is generated by*
++*`tools/gen_w32_run_matrix.py`; edit the ROWS table there, not this list. Every green cell resolves to a live gate (file + recorded result); every other cell carries its reason, and the evidence column names the gaps the green does not cover.*
++
++| App | binds | enters | draws | main UI | core task | live net | evidence |
++|---|---|---|---|---|---|---|---|
++| PuTTY 0.85 | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | `tests/integration/cases/test_wr4_putty_live.sh` 14/14 (2026-10-22, two OVMF boots: dialog + raw, then ssh); binds the 348-import ledger; receipt `docs/w32app_receipts.md` WR-4 addendum incl. the ten-frame digest; lane servers `tests/integration/wr4_echo_server.py` + `tests/integration/wr4_ssh_server.py`. Named gaps: Telnet untested, Load button untested, font/colour/ clipboard/serial human-run, the one-live-TCP envelope, orphan-on-close lifecycle (see receipt). |
++| 7-Zip FM 24.09 | ✅ | ✅ | ✅ | ✅ | ✅ | N/A offline app | `tests/integration/cases/test_wr2_7zip_live.sh` 24/24 (2026-10-10); binds 292 imports; the panel lists /fat, navigate + navigate-back, byte-exact extract; receipt `docs/w32app_receipts.md` WR-2 section; reference frame `d5a96b225a8e0541...` (2026-09-30, short prefix only -- the full digest was never committed). Named gaps: clean extract (Progress Error), Tools > Options popup, drag-drop. |
++| Notepad++ 8.8.9 | ✅ | ✅ | ✅ | ✅ | ✅ | N/A offline app | `tests/integration/cases/test_wr3_npp_live.sh` 17/17 + 5 SKIP (2026-10-19); binds 590/590; frame, byte-exact typing, save round-trip (`a829ed05...`, 37 B); receipt `docs/w32app_receipts.md` addendum + `docs/WR3_WORKLOG.md`. No frame digest was recorded (named gap). Named gaps: Find (UCRT stack-cookie abort), File > Open (`REGDB_E_CLASSNOTREG`), plugins, tray, open-path paint smear. |
++| Audacity 3.7.5 | ❌ never binds | ❌ never binds | ❌ never binds | ❌ never binds | ❌ never binds | ❌ never binds | Outcome B (`W32A-17`): 19 modules / 419 symbols unmet, `w32/app_ledger/audacity-3.7.5.gap`; never binds, so no downstream state is reachable. |
++<!-- END GENERATED: w32 run matrix -->
++
++A green cell is never the whole story: the evidence column names the gaps
++the green does not cover (a clean-extract error box, an undriven dialog,
++a missing frame digest). Gaps are SKIP lines in the gates and prose here,
++never silent.
+diff --git a/tools/gen_w32_run_matrix.py b/tools/gen_w32_run_matrix.py
+new file mode 100644
+--- /dev/null
++++ b/tools/gen_w32_run_matrix.py
+@@ -0,0 +1,170 @@
++#!/usr/bin/env python3
++"""gen_w32_run_matrix.py -- W32RUN_PLAN.md WR-5.
++
++Generates the run-state matrix in docs/win32_run.md: per app, the six run
++states (binds / enters / draws / main UI / core task / live net) -- the
++live counterpart to W32APP_PLAN.md W32A-18's binding matrix.
++
++Honesty model (two layers, same as docs/win32.md's sdk-check pattern):
++
++  1. This generator renders REVIEWED data (the ROWS table below).  It
++     refuses to generate a matrix whose gate cites do not resolve: every
++     `tests/...` / `docs/...` / `w32/...` cite in an evidence cell must
++     exist under the tree, or generation fails loud.  A hand-edited
++     matrix that outruns its gates cannot be regenerated.
++  2. tools/check_w32app_claims.py (the WR section) resolves every cell at
++     check time: each row's app set is fixed, every file cite must
++     resolve, every N/N result must appear in W32RUN_PLAN.md, and every
++     non-green cell must carry a reason.  Deleting a gate after the doc
++     was generated fails `make test-unit`.
++
++Two modes:
++  --write   rewrite the matrix in docs/win32_run.md between its markers
++  --check   exit 1 if the file is out of date (used by make test-unit)
++"""
++import os
++import re
++import sys
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++DOC = os.path.join(ROOT, "docs", "win32_run.md")
++BEGIN = "<!-- BEGIN GENERATED: w32 run matrix -->"
++END = "<!-- END GENERATED: w32 run matrix -->"
++
++COLUMNS = ["binds", "enters", "draws", "main UI", "core task", "live net"]
++
++# Cell glyphs: OK (green, gate-backed), NO (blocked, reason attached),
++# NA (the app has no such surface -- offline by design, not untested).
++OK, NO, NA = "OK", "NO", "NA"
++GLYPH = {OK: "\u2705", NO: "\u274c", NA: "N/A"}
++
++# app label, [(state, reason-or-None)], evidence markdown.  Reasons on NO/NA
++# cells are mandatory -- a bare cross explains nothing.  Evidence cites the
++# gate file (which must exist), the recorded N/N result (which must appear
++# in W32RUN_PLAN.md) and the receipt anchor; named gaps ride along so no
++# green cell hides one.
++ROWS = [
++    ("PuTTY 0.85",
++     [OK, OK, OK, OK, OK, OK],
++     "`tests/integration/cases/test_wr4_putty_live.sh` 14/14 (2026-10-22, "
++     "two OVMF boots: dialog + raw, then ssh); binds the 348-import "
++     "ledger; receipt `docs/w32app_receipts.md` WR-4 addendum incl. the "
++     "ten-frame digest; lane servers "
++     "`tests/integration/wr4_echo_server.py` + "
++     "`tests/integration/wr4_ssh_server.py`. Named gaps: Telnet untested, "
++     "Load button untested, font/colour/ clipboard/serial human-run, the "
++     "one-live-TCP envelope, orphan-on-close lifecycle (see receipt)."),
++    ("7-Zip FM 24.09",
++     [OK, OK, OK, OK, OK, (NA, "offline app")],
++     "`tests/integration/cases/test_wr2_7zip_live.sh` 24/24 (2026-10-10); "
++     "binds 292 imports; the panel lists /fat, navigate + navigate-back, "
++     "byte-exact extract; receipt `docs/w32app_receipts.md` WR-2 section; "
++     "reference frame `d5a96b225a8e0541...` (2026-09-30, short prefix "
++     "only -- the full digest was never committed). Named gaps: clean "
++     "extract (Progress Error), Tools > Options popup, drag-drop."),
++    ("Notepad++ 8.8.9",
++     [OK, OK, OK, OK, OK, (NA, "offline app")],
++     "`tests/integration/cases/test_wr3_npp_live.sh` 17/17 + 5 SKIP "
++     "(2026-10-19); binds 590/590; frame, byte-exact typing, save "
++     "round-trip (`a829ed05...`, 37 B); receipt "
++     "`docs/w32app_receipts.md` addendum + `docs/WR3_WORKLOG.md`. No "
++     "frame digest was recorded (named gap). Named gaps: Find (UCRT "
++     "stack-cookie abort), File > Open (`REGDB_E_CLASSNOTREG`), "
++     "plugins, tray, open-path paint smear."),
++    ("Audacity 3.7.5",
++     [(NO, "never binds"), (NO, "never binds"), (NO, "never binds"),
++      (NO, "never binds"), (NO, "never binds"), (NO, "never binds")],
++     "Outcome B (`W32A-17`): 19 modules / 419 symbols unmet, "
++     "`w32/app_ledger/audacity-3.7.5.gap`; never binds, so no "
++     "downstream state is reachable."),
++]
++
++FILE_CITE = re.compile(r"`((?:tests|docs|w32)/[^`]+)`")
++
++
++def collect():
++    """Return ROWS after proving every file cite resolves.
++
++    A matrix row that cites a gate which is not in the tree is a claim
++    without evidence -- refuse to render it.
++    """
++    for app, cells, evidence in ROWS:
++        if len(cells) != len(COLUMNS):
++            raise SystemExit(
++                "gen_w32_run_matrix: %s has %d cells, want %d"
++                % (app, len(cells), len(COLUMNS)))
++        for cite in FILE_CITE.findall(evidence):
++            if not os.path.isfile(os.path.join(ROOT, cite)):
++                raise SystemExit(
++                    "gen_w32_run_matrix: %s cites %s, which is not in "
++                    "the tree -- refusing to render a cell its gate "
++                    "cannot back" % (app, cite))
++    return ROWS
++
++
++def render(rows):
++    out = [BEGIN,
++           "",
++           "*4 apps x 6 run states. This matrix is generated by*",
++           "*`tools/gen_w32_run_matrix.py`; edit the ROWS table there, not "
++           "this list. Every green cell resolves to a live gate (file + "
++           "recorded result); every other cell carries its reason, and the "
++           "evidence column names the gaps the green does not cover.*",
++           "",
++           "| App | binds | enters | draws | main UI | core task | "
++           "live net | evidence |",
++           "|---|---|---|---|---|---|---|---|"]
++    for app, cells, evidence in ROWS:
++        rendered = []
++        for cell in cells:
++            if isinstance(cell, tuple):
++                kind, reason = cell
++                rendered.append("%s %s" % (GLYPH[kind], reason))
++            else:
++                rendered.append(GLYPH[cell])
++        out.append("| %s | %s | %s |" % (app, " | ".join(rendered), evidence))
++    out.append(END)
++    return "\n".join(out)
++
++
++def main():
++    mode = sys.argv[1] if len(sys.argv) > 1 else "--check"
++    rows = collect()
++    new_block = render(rows)
++
++    if not os.path.isfile(DOC):
++        print("gen_w32_run_matrix: %s does not exist" % DOC, file=sys.stderr)
++        return 2
++    doc = open(DOC).read()
++
++    if BEGIN not in doc or END not in doc:
++        print("gen_w32_run_matrix: markers not found in %s" % DOC,
++              file=sys.stderr)
++        return 2
++
++    pre = doc.split(BEGIN, 1)[0]
++    post = doc.split(END, 1)[1]
++    updated = pre + new_block + post
++
++    if mode == "--write":
++        if updated != doc:
++            open(DOC, "w").write(updated)
++            print("  [w32] %s run matrix regenerated (%d apps x %d states)"
++                  % (DOC, len(rows), len(COLUMNS)))
++        else:
++            print("  [w32] %s already up to date" % DOC)
++        return 0
++
++    if updated != doc:
++        print("FAIL: %s is out of date with tools/gen_w32_run_matrix.py."
++              % DOC, file=sys.stderr)
++        print("      Run: python3 tools/gen_w32_run_matrix.py --write",
++              file=sys.stderr)
++        return 1
++    print("  PASS: %s matches the run-matrix data (%d apps x %d states)"
++          % (DOC, len(rows), len(COLUMNS)))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())

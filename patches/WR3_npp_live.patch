@@ -1,0 +1,2369 @@
+commit 1a6d7f0447842657bb649d2640deecad3e5aed6e (base; uncommitted WR-3 work below)
+Author: WR-3 session <wr3@auralite>
+Date:   Mon Oct 19 2026
+
+    WR-3: Notepad++ live — frame, byte-exact typing, save round-trip
+
+    13 fixes + the live gate (tests/integration/cases/test_wr3_npp_live.sh,
+    17/17 green) + receipts/plan/worklog.  See docs/WR3_WORKLOG.md.
+
+diff --git a/docs/WR3_WORKLOG.md b/docs/WR3_WORKLOG.md
+new file mode 100644
+index 0000000..c073b1e
+--- /dev/null
++++ b/docs/WR3_WORKLOG.md
+@@ -0,0 +1,120 @@
++# WR-3 worklog — Notepad++ live (2026-10-11 … 2026-10-19)
++
++The pinned `notepad++.exe` 8.8.9 (`a470014b…`, 8365216 B) runs on real pixels:
++frame, byte-exact typing, VFS open/save. Gate:
++`tests/integration/cases/test_wr3_npp_live.sh`. Patch: `patches/WR3_npp_live.patch`.
++
++## Fixes landed (11)
++
++1. **fat32 `find_free_run` 0x00 barrier** (`kernel/fs/fat32.c`): a create whose
++   tail free run sat past the first 0x00 wrote *behind* the terminator, so
++   lookup never saw the entry (LFN creates and shell `>` lost files). The run
++   must now start at/before the first 0x00; the grow path starts there.
++   Proved by selftest case 5 (`GROWTEST`) + `[fat32] PASS`; `stylers.xml` and
++   long names survive. Side effect: `/fat/w32trace.txt` started working,
++   which unlocked every diagnosis below.
++2. **WM_SIZE/WM_MOVE gating** (`w32/src/user32_win.c`): `ShowWindow` no longer
++   emits `WM_SIZE` unconditionally and `SetWindowPos` only on real geometry
++   change (`ever_shown`). The main `new 1 – Notepad++` frame appears (NPP was
++   stuck in a show/hide layout loop every ~3 s).
++3. **GDI window-origin translation** (`w32/src/w32_gdi.c`): every primitive
++   translates logical→device (`device = logical − worg`); `RectVisible` moved
++   to device units per MSDN (regions are device units). Live `worg` is 0, so
++   this is latent hygiene, not a behaviour change.
++4. **stdio/heap locks** (`lib/libc/src/{libc,malloc,stdio_extra}.c`,
++   `w32/src/w32_seh.c`): recursive global stdio lock (owner TCB + depth),
++   real `flockfile`, heap lock, malloc trace via raw `write`, w32trace via
++   raw fd/`O_APPEND`. Killed the input-path `0xc0000005` crashes (file/heap
++   races; `QM64`-style interleavings in the log). Verified: 106 keys, 6
++   queues, two series, zero crashes.
++5. **GDI object lock** (`w32/src/w32_gdi.c`): pool bump + object table +
++   `DeleteObject` under a lock. Closed the `CreateBitmap`-`memcpy` crash from
++   a lost bump update.
++6. **`TCM_GETROWCOUNT = 1`** (`w32/src/comctl32.c`, header): we returned 0 via
++   `DefWindowProc`, so TabBar computed `tabsHight = -4` and parked the editor
++   over the tab strip. Editor lands at exactly `(2,48,1016,597)`.
++7. **`GUI_OP_SET_HOLE`** (kernel `gui.c`/`gui_syscalls.*`, `libauragui`,
++   tab `WM_SIZE`): the tab window is full-size by design (NPP parents the
++   editor to the frame, not the tab), so its display area is cut transparent
++   for pixels *and* clicks. Scintilla text shows through.
++8. **`CreateBitmap` WORD stride** (`w32/src/w32_gdi.c`): source rows are
++   WORD-aligned per MSDN (`((w*bpp+15)/16*2)`); our DWORD stride over-read
++   Scintilla's 32-byte caret pack. One clean run + one fresh-heap run.
++9. **Cooked keys → VK** (`w32/src/user32_win.c` `ui_kb_to_vk`): the compositor
++   delivers cooked ASCII (`'e'` vs `'E'`, `'\n'`) + `KB_KEY_*` ≥ 0x100 (Shift
++   is 0x120). Posting that verbatim as the VK dropped every lowercase letter
++   (only digits/spaces, whose ASCII equals their VK, landed) and never set
++   `keystate[VK_SHIFT]`. Full map now: letters, shifted symbols to their base
++   position, OEM keys, arrows/nav/F1–F24/numpad. Unit cover in `test_w32_a5`.
++10. **Delivery-time key state** (`ui_q_pop`): the pump can post a whole chord
++    (Shift-down, key-down, key-up, Shift-up) before the first read, so
++    post-time `keystate[]` feeds left `TranslateMessage` a cleared Shift —
++    every fast shifted char arrived unshifted. Win32 feeds the thread state
++    at retrieval; so do we. Chord-burst regression test in `test_w32_a5`.
++11. **GETITEMA bounds** (`w32/src/comctl32.c` `a_to_a_buf`): tab/tree/header
++    `*M_GETITEMA` copied `strlen+1` ignoring `cchTextMax`; listview wrote wide
++    units into ANSI buffers. All four funnel through the bounded helper now.
++12. **Standard-control style check** (`w32/src/user32_win.c` `stdctl`): the
++    style low word is class-defined for Button/Edit/Static/ListBox/ScrollBar/
++    ComboBox, so only the high word is validated for them. NPP's autocomplete
++    ListBox popup (`LBS_NOINTEGRALHEIGHT`) was refused outright before this;
++    creation must succeed for the popup to exist at all. Necessary, but — as
++    fix 13 proved — not sufficient.
++13. **GetMonitorInfo honours cbSize** (the actual killer,
++    `w32/src/user32_win.c` + `w32/include/w32/user32.h`): our `W32_MONITORINFO`
++    lacked the leading `cbSize` (all fields shifted by 4) and both
++    GetMonitorInfo forms always filled the EX tail — 104 bytes into NPP's
++    40-byte stack `MONITORINFO`, parked directly under its /GS cookie when
++    AutoComplete positions the popup (MonitorFromPoint + GetMonitorInfoW).
++    The `0xc0000409` at `npp+0x3d9289` was never a deliberate suicide: it is
++    UCRT `__report_gsfailure`, reached through `__security_check_cookie`.
++    Proved by disassembly (IAT `GetMonitorInfoW`, cbSize=0x28, struct ending
++    exactly at the cookie slot) and a live gdbstub run ([RSP] at the abort
++    entry = the AutoComplete epilogue). The popup now opens, typing survives,
++    the edit saves byte-exact. The shared abort address with Find is
++    explained: one `__report_gsfailure`, many smashers.
++
++Plus: `tools/check_width_sweep.py` baseline 401→402 (one documented
++`(uint64_t)-1` in `gui_syscalls.c`, pin-moves-code-stays precedent).
++
++## Live evidence (runs 1–5, 1280x800, OVMF)
++
++- Window `new 1 – Notepad++` + tab strip; no crash dialogs.
++- `abc XYZ 123! -_ end` lands **byte-exact**, incl. shift chords.
++- Open `C:/fat/WR3FIX.TXT` (argv): title + 28-char line paint.
++- Edit + Ctrl+S: guest file is exactly
++  `WR3-FIXTURE-LINE1-0123456789\n WR3GATE` — 37 B, `a829ed05…`
++  (fixture alone: 29 B, `c5e474fd…`); `ls` size + `cat` lines agree.
++- `test-unit` green; host `test_fat32` 39/39; guest `test_fat32_mkdir` 5/5
++  + `test_fat32_full` 12/12; `test_w32` green except the pre-existing
++  `test_w32a8_comctl32` TREEVIEW failure (identical on clean `1a6d7f0` —
++  not a regression); provenance PASS; `test_wr3_npp_live.sh` 17/17 + 5 SKIP.
++
++## Named gaps (D-WR4) with exact diagnoses
++
++- **File > Open dialog**: NPP 8.8.9 never calls `GetOpenFileName` (consistent
++  with the W32A-16 §2.3 note); Ctrl+O issues
++  `CoCreateInstance(CLSID_FileOpenDialog dc1c5a9c-…)` → our zero-row COM table
++  answers `REGDB_E_CLASSNOTREG` → no dialog. Needs an `IFileDialog` surface.
++- **Find (Ctrl+F)**: the dialog builds (`[cw]` high-water 99), then NPP dies
++  at the same `npp+0x3d9289` — now known to be UCRT `__report_gsfailure`
++  (fix 13), so this is a second stack-cookie smash on the dialog path, not
++  a NULL-handle abort; the `no class: msctls_trackbar32` line is incidental
++  (a missing control NPP tolerates). The follow-up user `#PF` (inside w32run
++  `syscall`) is teardown fallout, not the disease. Next step is the same
++  recipe that caught fix 13: gdbstub break at the abort entry, [RSP] names
++  the failing function. Separate session, not this phase.
++- **Plugins / tray**: no DLL staged (D-WR3); tray never driven (NPP lights it
++  only minimised-to-tray).
++- **Open-path paint smear** (transient): the first line briefly shows a 4-char
++  `WR3-` ghost at the margin's old x — a pre-margin paint surviving until the
++  next line repaint erases it. Document bytes are correct (`cat` agrees);
++  next step is a paint-rect trace, time-boxed out of this phase.
++
++## Stand recipe (kept)
++
++Boot plain → wait `auralite#` → `w32run /fat/notepad++.exe &` → 28 s →
++`click --qmp 460 302` → 12 s → `click --qmp 400 300` → `type`/`key` → shot.
++Guest reads: `serial-run --cmd "$(printf '\x15\x15cat …')" --secs N` (no
++`--wait`; the PS/2 lane also feeds the shell, so a first `cat` can garble —
++retry reads clean). `w32trc_*` writes `/fat/w32trace.txt`, never serial.
+diff --git a/docs/plans/W32RUN_PLAN.md b/docs/plans/W32RUN_PLAN.md
+index a8fc27a..2aaf9ea 100644
+--- a/docs/plans/W32RUN_PLAN.md
++++ b/docs/plans/W32RUN_PLAN.md
+@@ -1,13 +1,13 @@
+ # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
+ 
+-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3…WR-5 planned.
++## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2 PARTIAL 2026-10-10 (the 7-Zip panel is live and gated: launch, `/fat` rows, navigate delta, **navigate back via Backspace**, byte-exact extract — 24/24; a clean extract and Tools > Options remain named gaps, drag-drop stays human-run); WR-3 PARTIAL 2026-10-19 (frame, byte-exact typing, save round-trip gated 17/17; Find/open-dialog/plugin/tray named gaps); WR-4…WR-5 planned.
+ 
+ | Phase | State |
+ |---|---|
+ | WR-0 The live-GUI lane and its oracles (OVMF + screendump + input harness) | ✅ done (2026-09-29) |
+ | WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ✅ done (2026-09-29) |
+ | WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | PARTIAL (2026-10-09): gate 22/22 — panel, navigate delta, byte-exact extract; named gaps: clean extract ("Progress Error"), navigate back, Options (no menu subsystem); drag-drop deferred |
+-| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | ⬜ planned |
++| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | 🟨 PARTIAL 2026-10-19 |
+ | WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | ⬜ planned |
+ | WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ⬜ planned |
+ 
+@@ -495,7 +495,10 @@ the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-
+       the helper receiving NULL.  `GetSystemTimePreciseAsFileTime` aliases
+       `GetSystemTimeAsFileTime` so the UCRT feature probe stores a real
+       pointer (removes the guest/Windows divergence at npp+0x3d8890).
+-- [ ] **CRT walk-order blocker (step3, open):** NPP faults at
++- [x] **CRT walk-order blocker (step3, RESOLVED 2026-10-19):** NPP ran past
++      CRT init once the heap/stdio-init races were fixed — the walk-order
++      theory is retired (the UCRT never reached its heap because of file/heap
++      races, not table order; see docs/WR3_WORKLOG.md fix 4).  NPP faults at
+       npp+0x402d19 (CR2=0x18) — the reader of the 512-entry lock table
+       indexes `npp+0x54ddb0` while it is still NULL and `npp+0x54dda8` is 0.
+       Isolated with `tools/npp_rsp_probe.py` (raw-RSP Z1 breakpoint at the
+@@ -506,28 +509,36 @@ the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-
+       allocator entry (npp+0x4304f8+0x18) has run; `__acrt_heap`
+       (npp+0x54e930) is NULL at the fault, i.e. the UCRT tables are being
+       dispatched out of order, not via a missing KERNEL32 export.
+-- [ ] **Live-frame gate**: `window_present` on the Notepad++ frame; the
+-      Scintilla client region is non-empty; the tab bar (COMCTL32) is present.
+-- [ ] Type + render: inject text via `gui_input type`, assert a content delta
+-      in the Scintilla region (the caret advanced, glyphs painted) — the
+-      GDI text-paint fidelity check.
+-- [ ] Open/Save: open a committed fixture file from `/fat`, edit, save,
+-      `sha256` the saved bytes against expected — headless open/save proof.
+-- [ ] Find: open the Find dialog (`DialogBox`, REAL), search a known string,
+-      assert the match-count status / selection delta.
++- [x] **Live-frame gate** (2026-10-19): `window_present` on the Notepad++
++      frame (blue title bar oracle); the Scintilla client paints the opened
++      fixture line; the tab bar is present (TCM_GETROWCOUNT=1 + SET_HOLE).
++      Gated: `test_wr3_npp_live.sh`.
++- [x] Type + render (2026-10-19): `abc XYZ 123! -_ end` lands byte-exact
++      (cooked-keys→VK map + delivery-time keystate); the gate types ` WR3GATE`
++      and asserts the editor delta PLUS post-type window liveness (a dead
++      window also moves pixels).
++- [x] Open/Save (2026-10-19): fixture opened off argv (`C:/fat/WR3FIX.TXT`,
++      29 B); edit + Ctrl+S reads back as exactly 37 B, sha256 `a829ed05…` —
++      headless open/save proof, gated.
++- [ ] Find (NAMED GAP 2026-10-19): the dialog builds, then NPP suicides via
++      `TerminateProcess(GetCurrentProcess, 0xc0000409)` — same abort address
++      as the autocomplete-ListBox kill (see docs/WR3_WORKLOG.md); a separate
++      session, not this phase.
+ - [ ] Plugins: `LoadLibraryW` a pinned NPP plugin DLL (delivered on `/fat`),
+       assert it appears in the Plugins menu (menu-item oracle) or document
+       the exact failure if a plugin needs an unbuilt surface.
+ - [ ] Tray: `Shell_NotifyIconW` places an icon; assert the taskbar/tray
+       region delta (or name it human-run if the tray is off-frame).
+-- [ ] Receipt `#notepad++` in `docs/w32app_receipts.md` updated to the
+-      live-frame gate; measured-not-run items named honestly.
++- [x] Receipt `#notepad++` in `docs/w32app_receipts.md` updated to the
++      live-frame gate (2026-10-19); measured-not-run items named honestly.
+ 
+ #### Test gate
+ 
+-- `test_wr3_npp_live.sh` green: editor window present, Scintilla paints typed
+-  text, fixture file open/save byte-exact, Find match, plugin loaded (or named
+-  gap). Receipt + frame digest committed.
++- `test_wr3_npp_live.sh` green (2026-10-19, 17/17 + 5 SKIP): editor window
++  present, Scintilla paints typed text, fixture open/save byte-exact, no
++  user #PF / fatal signal / panic.  Find + plugin + tray + File-Open stay
++  named gaps.  Patch: `patches/WR3_npp_live.patch`.  Receipt + frame digest
++  committed.
+ 
+ **Deliverable:** `tests/integration/cases/test_wr3_npp_live.sh`, fixture
+ file + pinned-plugin delivery, receipt edits, `patches/WR3_npp_live.patch`.
+diff --git a/docs/w32app_receipts.md b/docs/w32app_receipts.md
+index d3abd62..4c323bb 100644
+--- a/docs/w32app_receipts.md
++++ b/docs/w32app_receipts.md
+@@ -738,6 +738,25 @@ above by the fixture twin and the host unit test.
+ 
+ Closing patch: `patches/W32A16_npp.patch`.
+ 
++**WR-3 live run (2026-10-19) — the window, the typing, the save.** The pinned
++`notepad++.exe` now runs past bind on real pixels, gated by
++`tests/integration/cases/test_wr3_npp_live.sh` (OVMF, 1280x800): it binds
++590/590, resolves both delay-load api-set probes, opens its real `new 1`
++frame (blue title bar, white Scintilla client), paints the opened fixture
++line as dark glyphs, lands typed text byte-exact (lowercase, shifted
++uppercase, digits, symbols — `abc XYZ 123! -_ end` verified on pixels),
++and round-trips a save through the VFS: fixture (29 B, `c5e474fd…`) +
++` WR3GATE` edit via Ctrl+S reads back as exactly 37 B (`a829ed05…`), with
++no user #PF, no fatal signal and no panic anywhere in the run. Named gaps,
++not faked: the File > Open dialog (NPP uses
++`CoCreateInstance(CLSID_FileOpenDialog)`; the COM class table is a committed
++zero rows, so the call fails `REGDB_E_CLASSNOTREG`), Find (Ctrl+F builds the
++dialog, then NPP suicides via `TerminateProcess(…, 0xc0000409)` just after
++`[cw] no class: msctls_trackbar32` — trigger under investigation), plugins
++(no DLL staged), tray (minimise-to-tray never driven), and a transient
++open-path paint smear (a 4-char ghost at the line start until the next line
++repaint erases it). Closing patch: `patches/WR3_npp_live.patch`.
++
+ ## W32A-17 — App horizon: Audacity — PHASE CLOSED (2026-09-29), OUTCOME B (does not run)
+ 
+ The horizon phase. Modelled on W32-7 ("`LoadLibrary`, or a documented refusal"),
+diff --git a/kernel/fs/fat32.c b/kernel/fs/fat32.c
+index 2d9c19b..6d967cf 100644
+--- a/kernel/fs/fat32.c
++++ b/kernel/fs/fat32.c
+@@ -819,26 +819,41 @@ static int find_free_run(uint32_t dir_cluster, int count, uint32_t *out_off) {
+     int run = 0;
+     uint32_t scanned = 0;
+     uint32_t bytes = dir_chain_bytes(dir_cluster);
++    /* Offset of the first 0x00 slot, or UINT32_MAX when the directory has
++     * no end marker.  A directory scan stops at that slot (FAT: 0x00 ends
++     * the directory), so any entry placed AFTER it is unreachable: create
++     * must not report success for a file lookup can never find. */
++    uint32_t barrier = 0xFFFFFFFFu;
+ 
+     while (scanned < bytes) {
+         uint8_t e[32];
+         if (dir_read_entry(dir_cluster, off, e) != 0) return -EIO;
++        if (e[0] == 0x00 && barrier == 0xFFFFFFFFu)
++            barrier = off;
+         if (e[0] == 0x00 || e[0] == 0xE5) {
+             if (run == 0) run_start = off;
+             run++;
+-            if (run >= count) { *out_off = run_start; return 0; }
++            if (run >= count && run_start <= barrier) {
++                *out_off = run_start;
++                return 0;
++            }
+         } else {
+             run = 0;
+         }
+         off += 32;
+         scanned += 32;
+     }
+-    /* Need to grow the dir chain by one cluster. */
+-    uint32_t old_clusters = bytes / fs.bytes_per_clus;
+-    if (ensure_chain(dir_cluster, old_clusters + 1) == 0) return -ENOSPC;
+-    /* The new cluster is all-zero (zero_cluster was called) → all 32-byte
+-     * slots are free.  Use the start of the new cluster. */
+-    *out_off = old_clusters * fs.bytes_per_clus;
++    /* No reachable run inside the chain: the span must begin at the
++     * end-marker (overwriting it extends the directory) — or at the chain
++     * end when there is no marker at all — and may continue into clusters
++     * we allocate now. */
++    uint32_t start = (barrier != 0xFFFFFFFFu) ? barrier : bytes;
++    uint32_t need = start + (uint32_t)count * 32u;
++    uint32_t need_clusters =
++        (need + fs.bytes_per_clus - 1u) / fs.bytes_per_clus;
++    if (need_clusters == 0) need_clusters = 1;
++    if (ensure_chain(dir_cluster, need_clusters) == 0) return -ENOSPC;
++    *out_off = start;
+     return 0;
+ }
+ 
+@@ -1777,5 +1792,45 @@ void fat32_self_test(void) {
+         kprintf("[fat32] FAIL: unlink\n"); return;
+     }
+ 
++    /* 5. LFN create when the trailing free run is shorter than the entry
++     * count.  The name needs two 32-byte slots (LFN + short entry); with
++     * only one slot left after the directory's 0x00 end-marker the entries
++     * must land AT the marker (and, past the cluster end, into a cluster
++     * the chain grows to), where a scan can still see them.  A regression
++     * placed them after the marker: create reported success and every
++     * lookup/readdir missed the file. */
++    fat32_unlink_op(NULL, "GROWTEST/long.txt");
++    for (int i = 0; i < 64; i++) {
++        char pn[32];
++        ksnprintf(pn, sizeof(pn), "GROWTEST/F%03d", i);
++        fat32_unlink_op(NULL, pn);
++    }
++    fat32_rmdir_op(NULL, "GROWTEST");
++    if (fat32_mkdir_op(NULL, "GROWTEST") != 0) {
++        kprintf("[fat32] FAIL: mkdir GROWTEST\n"); return;
++    }
++    {
++        int slots = (int)(fs.bytes_per_clus / 32u);
++        for (int i = 0; i < slots - 1; i++) {
++            char pn[32], fn[16];
++            ksnprintf(fn, sizeof(fn), "F%03d", i);
++            ksnprintf(pn, sizeof(pn), "GROWTEST/F%03d", i);
++            if (!fat32_create(NULL, pn)) {
++                kprintf("[fat32] FAIL: fill GROWTEST/%s\n", fn); return;
++            }
++        }
++        /* Sanity: the fillers must be findable (1 slot each). */
++        if (!fat32_lookup(NULL, "GROWTEST/F000")) {
++            kprintf("[fat32] FAIL: filler not visible\n"); return;
++        }
++    }
++    if (!fat32_create(NULL, "GROWTEST/long.txt")) {
++        kprintf("[fat32] FAIL: create GROWTEST/long.txt\n"); return;
++    }
++    if (!fat32_lookup(NULL, "GROWTEST/long.txt")) {
++        kprintf("[fat32] FAIL: LFN create at end-marker not visible\n"); return;
++    }
++    fat32_unlink_op(NULL, "GROWTEST/long.txt");
++
+     kprintf("[fat32] PASS: FAT32 read/write and log sink ready\n");
+ }
+diff --git a/kernel/gui/gui.c b/kernel/gui/gui.c
+index 91babb9..f88fa41 100644
+--- a/kernel/gui/gui.c
++++ b/kernel/gui/gui.c
+@@ -159,6 +159,14 @@ typedef struct gui_win {
+      * and swapping them, not gating on a flag. */
+     uint32_t *front;
+     volatile int updating;
++    /* WR-3: see-through hole in window-buffer pixels (GUI_OP_SET_HOLE).
++     * Empty (r<=l or b<=t) means none; slots start zeroed, so windows are
++     * born opaque.  The compositor skips these pixels and the hit test
++     * falls through them, which is how a full-size tab control leaves its
++     * display area to the editor living in it -- Win32 paints that region
++     * by never painting it, an option a buffered compositor does not
++     * have without an explicit hole. */
++    int32_t hole_l, hole_t, hole_r, hole_b;
+ } gui_win_t;
+ 
+ /* WR-3: heap-allocated, not a static array.  At 256 slots this table is
+@@ -1417,6 +1425,26 @@ int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
+     return 0;
+ }
+ 
++/* WR-3: store (or clear) the see-through hole.  The rect is clamped into
++ * the live buffer so a stale oversized hole cannot outlive a shrink, and
++ * the window is dirtied: pixels that used to show must be recomposited
++ * away (or back) on the next tick. */
++void gui_window_set_hole(int wid, int32_t l, int32_t t, int32_t r, int32_t b) {
++    if (!win_alive(wid)) return;
++    gui_win_t *w = &windows[wid];
++    if (r > l && b > t) {
++        if (l < 0) l = 0;
++        if (t < 0) t = 0;
++        if (r > (int32_t)w->back_w) r = (int32_t)w->back_w;
++        if (b > (int32_t)w->back_h) b = (int32_t)w->back_h;
++    }
++    if (w->hole_l == l && w->hole_t == t && w->hole_r == r && w->hole_b == b)
++        return;
++    w->hole_l = l; w->hole_t = t; w->hole_r = r; w->hole_b = b;
++    w->content_dirty = 1;
++    mark_window_dirty(w);
++}
++
+ /* ===================================================================
+  * Event ring
+  * =================================================================== */
+@@ -1610,10 +1638,18 @@ static void blit_window_content(const gui_win_t *win) {
+     if (copy_w > (uint32_t)(fw - dst_x)) copy_w = (uint32_t)(fw - dst_x);
+     if (copy_w == 0 || copy_h == 0) return;
+ 
++    /* WR-3: the hole test runs in buffer pixels (what src_x/src_y index),
++     * and hoisting the empty check keeps the common no-hole path to one
++     * predictable branch per window. */
++    int has_hole = (win->hole_r > win->hole_l) && (win->hole_b > win->hole_t);
+     for (uint32_t row = 0; row < copy_h; row++) {
++        int32_t by = src_y + (int32_t)row;
++        int row_in_hole = has_hole && by >= win->hole_t && by < win->hole_b;
+         for (uint32_t col = 0; col < copy_w; col++) {
+-            uint32_t pixel = pixels[(src_y + (int32_t)row) * win->back_w +
+-                                    (src_x + (int32_t)col)];
++            int32_t bx = src_x + (int32_t)col;
++            if (row_in_hole && bx >= win->hole_l && bx < win->hole_r)
++                continue;
++            uint32_t pixel = pixels[by * win->back_w + bx];
+             gfx_putpixel((uint32_t)(dst_x + (int32_t)col),
+                          (uint32_t)(dst_y + (int32_t)row), pixel);
+         }
+@@ -2305,6 +2341,17 @@ static int hit_child(int pidx, int32_t mx, int32_t my) {
+         int32_t ax = win_abs_x(c), ay = win_abs_y(c);
+         if (mx >= ax && mx < ax + (int32_t)c->w &&
+             my >= ay && my < ay + (int32_t)c->h) {
++            /* WR-3: clicks fall through the see-through hole exactly like
++             * pixels do, or the tab would swallow the editor's mouse.  The
++             * hole lives in buffer pixels, whose origin is the content
++             * origin (identical to the window origin for a borderless
++             * child, but spelled out for a decorated one). */
++            if (c->hole_r > c->hole_l && c->hole_b > c->hole_t) {
++                int32_t lx = mx - content_x(c), ly = my - content_y(c);
++                if (lx >= c->hole_l && lx < c->hole_r &&
++                    ly >= c->hole_t && ly < c->hole_b)
++                    continue;
++            }
+             if (c->z >= bestz) { bestz = c->z; best = i; }
+         }
+     }
+diff --git a/kernel/gui/gui.h b/kernel/gui/gui.h
+index a0e6621..44aa4b4 100644
+--- a/kernel/gui/gui.h
++++ b/kernel/gui/gui.h
+@@ -364,6 +364,10 @@ int gui_blit(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+ int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
+                    const uint32_t *src, uint32_t src_stride);
+ 
++/* WR-3: see-through region (GUI_OP_SET_HOLE).  Coordinates are window-buffer
++ * pixels; an empty rect clears the hole. */
++void gui_window_set_hole(int wid, int32_t l, int32_t t, int32_t r, int32_t b);
++
+ /* Convenience: re-render everything right now. */
+ void gui_render_now(void);
+ 
+diff --git a/kernel/gui/gui_syscalls.c b/kernel/gui/gui_syscalls.c
+index 0a95e4f..5f3b103 100644
+--- a/kernel/gui/gui_syscalls.c
++++ b/kernel/gui/gui_syscalls.c
+@@ -367,6 +367,12 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
+         if (parent >= 0 && !require_owner(parent)) return (uint64_t)-1;
+         return (uint64_t)gui_set_parent((int)a2, parent);
+     }
++    case GUI_OP_SET_HOLE:
++        /* WR-3: a2=wid, a3=l|t<<32, a4=r|b<<32.  Owner-only like every
++         * other window mutation. */
++        if (!require_owner((int)a2)) return (uint64_t)-1;
++        gui_window_set_hole((int)a2, lo32(a3), hi32(a3), lo32(a4), hi32(a4));
++        return 0;
+     case GUI_OP_GET_PIXEL: {
+         /* W32A-7: one content pixel back.  Out-of-range coordinates are
+          * an error, not pixel 0 -- the caller distinguishes them. */
+diff --git a/kernel/gui/gui_syscalls.h b/kernel/gui/gui_syscalls.h
+index 0004e5e..627e9e8 100644
+--- a/kernel/gui/gui_syscalls.h
++++ b/kernel/gui/gui_syscalls.h
+@@ -85,6 +85,17 @@ enum {
+      * x/y become parent-relative and the compositor clips/stacks it inside
+      * the parent. */
+     GUI_OP_SET_PARENT,
++    /* ---- WR-3: see-through window region ----
++     * a2=owned wid, a3=l|t<<32, a4=r|b<<32, all in window-buffer pixels.
++     * The compositor skips the rectangle when drawing this window and the
++     * hit test falls through it to whatever is below, so a window can
++     * leave part of itself transparent the way Win32's direct-draw painter
++     * does by simply never painting there.  An empty rect (r<=l or b<=t)
++     * clears the hole.  The first client is the tab control: Notepad++
++     * sizes it to the full view by design and parks the editor in its
++     * display area, which a buffered compositor would otherwise cover
++     * with the tab's own background. */
++    GUI_OP_SET_HOLE,
+ };
+ 
+ /* Argument block for GUI_OP_BLIT / GUI_OP_BLIT_ALPHA.
+diff --git a/lib/libauragui/include/auragui.h b/lib/libauragui/include/auragui.h
+index d4a8117..8ef6fd3 100644
+--- a/lib/libauragui/include/auragui.h
++++ b/lib/libauragui/include/auragui.h
+@@ -157,6 +157,10 @@ int      ag_window_minimize(int wid);
+ int      ag_window_maximize(int wid);
+ int      ag_window_restore(int wid);
+ int      ag_window_lower(int wid);
++/* WR-3: see-through hole in window-buffer pixels; empty clears.  Pixels in
++ * the hole are skipped at composite time and clicks fall through them. */
++int      ag_window_set_hole(int wid, int32_t l, int32_t t,
++                            int32_t r, int32_t b);
+ int      ag_window_set_flags(int wid, uint32_t flags);
+ uint32_t ag_window_get_flags(int wid);        /* -1 (as uint32 -1) if gone */
+ int      ag_window_get_z(int wid);
+diff --git a/lib/libauragui/src/auragui.c b/lib/libauragui/src/auragui.c
+index fc7d306..3ce7599 100644
+--- a/lib/libauragui/src/auragui.c
++++ b/lib/libauragui/src/auragui.c
+@@ -36,6 +36,8 @@ enum {
+     GUI_OP_SEND_DROP, GUI_OP_TAKE_DROP,
+     /* CW: compositor child windows. */
+     GUI_OP_SET_PARENT,
++    /* WR-3: see-through window region. */
++    GUI_OP_SET_HOLE,
+ };
+ 
+ #define SYS_GUI_CALL_NUM    200
+@@ -67,6 +69,10 @@ int ag_window_set_parent(int wid, int parent_wid) {
+     return (int)gui_call(GUI_OP_SET_PARENT, (uint64_t)(uint32_t)wid,
+                          (uint64_t)(int64_t)parent_wid, 0, 0);
+ }
++int ag_window_set_hole(int wid, int32_t l, int32_t t, int32_t r, int32_t b) {
++    return (int)gui_call(GUI_OP_SET_HOLE, (uint64_t)(uint32_t)wid,
++                         pack2(l, t), pack2(r, b), 0);
++}
+ int ag_window_resize(int wid, uint32_t w, uint32_t h) {
+     return (int)gui_call(GUI_OP_RESIZE, wid, pack2((int32_t)w, (int32_t)h), 0, 0);
+ }
+diff --git a/lib/libc/src/libc.c b/lib/libc/src/libc.c
+index 341fe09..28e3dea 100644
+--- a/lib/libc/src/libc.c
++++ b/lib/libc/src/libc.c
+@@ -2007,23 +2007,89 @@ int snprintf(char *str, size_t size, const char *fmt, ...) {
+ 
+ int putchar(int c) { return fputc(c, stdout); }
+ 
+-int puts(const char *s) {
++static int puts_impl(const char *s) {
+     fputs(s, stdout);
+     fputc('\n', stdout);
+     return 0;
+ }
+ 
+-int printf(const char *fmt, ...) {
+-    va_list ap; va_start(ap, fmt);
+-    int n = vfprintf(stdout, fmt, ap);
+-    va_end(ap);
+-    return n;
+-}
++/* (printf's body lives in its locked wrapper below: a wrapper cannot
++ * re-spread "..." into an _impl, so it forwards its own va_list.) */
+ 
+ /* ==================================================================== */
+ /* FILE* stdio streams                                                   */
+ /* ==================================================================== */
+ 
++/* WR-3: the stdio lock.  Every public entry below funnels through it, so a
++ * multithreaded program (Notepad++ runs its loader, its UI and worker
++ * threads at once) cannot tear a stream: before this lock two threads in
++ * fputc_buffered raced bufpos past the end of the 1 KB internal buffer and
++ * corrupted whatever the FILE sat next to (the next static stream, or heap
++ * metadata after a fopen'd FILE), and two threads in vfprintf spliced each
++ * other's bytes across streams through the shared s_vf_target.  The victim
++ * died later, pages away, inside memcpy/snprintf -- the intermittent typing
++ * crash that looked like application stack damage.
++ *
++ * The lock is RECURSIVE (owner TCB + depth): the entries call each other
++ * (puts->fputs, printf->vfprintf, fflush(NULL)->fflush, fclose->fflush), a
++ * signal handler may run stdio on a thread parked mid-stdio, and a plain
++ * spin would self-deadlock all of those.  ptls_self() is one instruction
++ * (%fs:0) and valid on every thread including main, so the fast path is a
++ * single atomic load.  flockfile() is this lock by its POSIX name; the
++ * granularity is process-global rather than per-stream (documented, not
++ * hidden: coarser than POSIX, correct all the same).
++ *
++ * Lock order: stdio -> heap (fopen/fdopen allocate).  Nothing under the
++ * heap lock takes this one -- malloc's own diagnosis writes with a raw
++ * write(), never stdio -- so the order is acyclic.  A fork child that goes
++ * on to exec never notices the lock; a fork child that keeps running after
++ * a fork taken while a *sibling* thread held it would spin, which is the
++ * same accepted fork-in-MT caveat the heap lock already carries. */
++static volatile uintptr_t stdio_owner;   /* 0 = free, else the owning TCB */
++static volatile unsigned  stdio_depth;
++
++static void stdio_lock(void) {
++    uintptr_t me = (uintptr_t)ptls_self();
++    if (__atomic_load_n(&stdio_owner, __ATOMIC_ACQUIRE) == me) {
++        stdio_depth++;               /* same thread: signals, nesting */
++        return;
++    }
++    uintptr_t expect;
++    do {
++        while (__atomic_load_n(&stdio_owner, __ATOMIC_RELAXED) != 0)
++            __asm__ volatile ("pause");
++        expect = 0;
++    } while (!__atomic_compare_exchange_n(&stdio_owner, &expect, me, 0,
++                                          __ATOMIC_ACQUIRE, __ATOMIC_RELAXED));
++    stdio_depth = 1;
++}
++
++static void stdio_unlock(void) {
++    if (--stdio_depth == 0)
++        __atomic_store_n(&stdio_owner, 0, __ATOMIC_RELEASE);
++}
++
++/* Q2.7 fulfilled: real locking (see above), not the stubs stdio_extra.c
++ * used to carry.  The FILE* argument only selects the API; the lock is
++ * global, so locking any stream locks them all. */
++void flockfile(FILE *f)   { (void)f; stdio_lock(); }
++void funlockfile(FILE *f) { (void)f; stdio_unlock(); }
++int ftrylockfile(FILE *f) {
++    (void)f;
++    uintptr_t me = (uintptr_t)ptls_self();
++    if (__atomic_load_n(&stdio_owner, __ATOMIC_ACQUIRE) == me) {
++        stdio_depth++;
++        return 0;
++    }
++    uintptr_t expect = 0;
++    if (__atomic_compare_exchange_n(&stdio_owner, &expect, me, 0,
++                                    __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
++        stdio_depth = 1;
++        return 0;
++    }
++    return EBUSY;
++}
++
+ static FILE s_stdin  = { 0, 0, _IOLBF, 0, 0, 0, 0, 0, 0, -1, {0} };
+ static FILE s_stdout = { 1, 0, _IOLBF, 0, 0, 0, 0, 0, 0, -1, {0} };
+ static FILE s_stderr = { 2, 0, _IONBF, 0, 0, 0, 0, 0, 0, -1, {0} };
+@@ -2068,7 +2134,7 @@ static void stream_unregister(FILE *f) {
+ }
+ 
+ /* Flush buffered write data to the fd. */
+-int fflush(FILE *f) {
++static int fflush_impl(FILE *f) {
+     stdio_init_once();
+     if (f == 0) {
+         /* fflush(NULL): flush all output streams. */
+@@ -2103,7 +2169,7 @@ static void fputc_buffered(FILE *f, char c) {
+     else if (f->bufmode == _IOLBF && c == '\n') fflush(f);
+ }
+ 
+-int fputc(int c, FILE *f) {
++static int fputc_impl(int c, FILE *f) {
+     stdio_init_once();
+     fputc_buffered(f, (char)c);
+     if (f->flags & FILE_ERR) return EOF;
+@@ -2111,13 +2177,13 @@ int fputc(int c, FILE *f) {
+ }
+ int putc(int c, FILE *f) { return fputc(c, f); }
+ 
+-int fputs(const char *s, FILE *f) {
++static int fputs_impl(const char *s, FILE *f) {
+     stdio_init_once();
+     while (*s) { fputc_buffered(f, *s++); }
+     return (f->flags & FILE_ERR) ? EOF : 0;
+ }
+ 
+-size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f) {
++static size_t fwrite_impl(const void *ptr, size_t size, size_t nmemb, FILE *f) {
+     stdio_init_once();
+     if (size == 0 || nmemb == 0) return 0;
+     const char *p = (const char *)ptr;
+@@ -2140,7 +2206,7 @@ static int stream_fill(FILE *f) {
+     return (int)n;
+ }
+ 
+-int fgetc(FILE *f) {
++static int fgetc_impl(FILE *f) {
+     stdio_init_once();
+     if (f->ungot != -1) { int c = f->ungot; f->ungot = -1; return c; }
+     if (f->readpos >= f->bufcap) {
+@@ -2151,14 +2217,14 @@ int fgetc(FILE *f) {
+ int getc(FILE *f) { return fgetc(f); }
+ int getchar(void) { return fgetc(stdin); }
+ 
+-int ungetc(int c, FILE *f) {
++static int ungetc_impl(int c, FILE *f) {
+     if (c == EOF) return EOF;
+     f->ungot = (unsigned char)c;
+     f->flags &= ~FILE_EOF;     /* ungetc clears the EOF indicator */
+     return (unsigned char)c;
+ }
+ 
+-char *fgets(char *s, int size, FILE *f) {
++static char *fgets_impl(char *s, int size, FILE *f) {
+     stdio_init_once();
+     if (size <= 0) return 0;
+     int i = 0;
+@@ -2173,7 +2239,7 @@ char *fgets(char *s, int size, FILE *f) {
+     return s;
+ }
+ 
+-size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
++static size_t fread_impl(void *ptr, size_t size, size_t nmemb, FILE *f) {
+     stdio_init_once();
+     if (size == 0 || nmemb == 0) return 0;
+     char *p = (char *)ptr;
+@@ -2244,7 +2310,7 @@ static void sink_file_emit(struct fmt_sink *s, char c) {
+     s->count++;
+ }
+ 
+-int vfprintf(FILE *f, const char *fmt, va_list ap) {
++static int vfprintf_impl(FILE *f, const char *fmt, va_list ap) {
+     stdio_init_once();
+     struct fmt_sink s;
+     s.emit = sink_file_emit; s.count = 0; s.out = 0; s.cap = 0; s.len = 0;
+@@ -2252,12 +2318,7 @@ int vfprintf(FILE *f, const char *fmt, va_list ap) {
+     return format_to_sink(&s, fmt, ap);
+ }
+ 
+-int fprintf(FILE *f, const char *fmt, ...) {
+-    va_list ap; va_start(ap, fmt);
+-    int n = vfprintf(f, fmt, ap);
+-    va_end(ap);
+-    return n;
+-}
++/* (fprintf's body lives in its locked wrapper below, same reason.) */
+ 
+ static int parse_mode(const char *mode, int *o_flags) {
+     /* Returns 0 on success, fills O_* flags. */
+@@ -2276,7 +2337,7 @@ static int parse_mode(const char *mode, int *o_flags) {
+     return 0;
+ }
+ 
+-FILE *fdopen(int fd, const char *mode) {
++static FILE *fdopen_impl(int fd, const char *mode) {
+     stdio_init_once();
+     (void)mode;
+     FILE *f = (FILE *)malloc(sizeof(FILE));
+@@ -2290,7 +2351,7 @@ FILE *fdopen(int fd, const char *mode) {
+     return f;
+ }
+ 
+-FILE *fopen(const char *path, const char *mode) {
++static FILE *fopen_impl(const char *path, const char *mode) {
+     int oflags;
+     if (parse_mode(mode, &oflags) != 0) { errno = EINVAL; return 0; }
+     int fd = open(path, oflags, 0644);
+@@ -2301,7 +2362,7 @@ FILE *fopen(const char *path, const char *mode) {
+     return f;
+ }
+ 
+-int fclose(FILE *f) {
++static int fclose_impl(FILE *f) {
+     if (!f) return EOF;
+     fflush(f);
+     int fd = f->fd;
+@@ -2313,10 +2374,10 @@ int fclose(FILE *f) {
+ 
+ int feof(FILE *f) { return (f->flags & FILE_EOF) ? 1 : 0; }
+ int ferror(FILE *f) { return (f->flags & FILE_ERR) ? 1 : 0; }
+-void clearerr(FILE *f) { f->flags &= ~(FILE_EOF | FILE_ERR); }
++void clearerr(FILE *f) { flockfile(f); f->flags &= ~(FILE_EOF | FILE_ERR); funlockfile(f); }
+ int fileno(FILE *f) { return f->fd; }
+ 
+-int setvbuf(FILE *f, char *buf, int mode, size_t size) {
++static int setvbuf_impl(FILE *f, char *buf, int mode, size_t size) {
+     stdio_init_once();
+     f->bufmode = mode;
+     if (buf && size > 0) { f->buf = buf; f->bufsz = (int)size; f->bufpos = 0; }
+@@ -2331,6 +2392,84 @@ void __stdio_cleanup(void) {
+     }
+ }
+ 
++/* ---- locked public entries (the stdio lock note above applies) ----
++ * One shape each: take the lock, run the original body (now *_impl),
++ * release.  Bodies still call the PUBLIC names internally (puts->fputs/
++ * fputc, fgets->fgetc, fclose/fflush(NULL)->fflush, fopen->fdopen); the
++ * lock's recursion absorbs that, so no body was touched.  The two
++ * varargs entries forward their own va_lists straight into
++ * vfprintf_impl instead (a wrapper cannot re-spread "..."). */
++int puts(const char *s) {
++    stdio_lock(); int r = puts_impl(s); stdio_unlock(); return r;
++}
++int printf(const char *fmt, ...) {
++    stdio_lock();
++    va_list ap; va_start(ap, fmt);
++    int r = vfprintf_impl(stdout, fmt, ap);
++    va_end(ap);
++    stdio_unlock();
++    return r;
++}
++int fflush(FILE *f) {
++    stdio_lock(); int r = fflush_impl(f); stdio_unlock(); return r;
++}
++int fputc(int c, FILE *f) {
++    stdio_lock(); int r = fputc_impl(c, f); stdio_unlock(); return r;
++}
++int fputs(const char *s, FILE *f) {
++    stdio_lock(); int r = fputs_impl(s, f); stdio_unlock(); return r;
++}
++size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *f) {
++    stdio_lock();
++    size_t r = fwrite_impl(ptr, size, nmemb, f);
++    stdio_unlock();
++    return r;
++}
++int fgetc(FILE *f) {
++    stdio_lock(); int r = fgetc_impl(f); stdio_unlock(); return r;
++}
++int ungetc(int c, FILE *f) {
++    stdio_lock(); int r = ungetc_impl(c, f); stdio_unlock(); return r;
++}
++char *fgets(char *s, int size, FILE *f) {
++    stdio_lock(); char *r = fgets_impl(s, size, f); stdio_unlock(); return r;
++}
++size_t fread(void *ptr, size_t size, size_t nmemb, FILE *f) {
++    stdio_lock();
++    size_t r = fread_impl(ptr, size, nmemb, f);
++    stdio_unlock();
++    return r;
++}
++int vfprintf(FILE *f, const char *fmt, va_list ap) {
++    stdio_lock(); int r = vfprintf_impl(f, fmt, ap); stdio_unlock(); return r;
++}
++int fprintf(FILE *f, const char *fmt, ...) {
++    stdio_lock();
++    va_list ap; va_start(ap, fmt);
++    int r = vfprintf_impl(f, fmt, ap);
++    va_end(ap);
++    stdio_unlock();
++    return r;
++}
++FILE *fdopen(int fd, const char *mode) {
++    stdio_lock(); FILE *r = fdopen_impl(fd, mode); stdio_unlock(); return r;
++}
++FILE *fopen(const char *path, const char *mode) {
++    stdio_lock();
++    FILE *r = fopen_impl(path, mode);
++    stdio_unlock();
++    return r;
++}
++int fclose(FILE *f) {
++    stdio_lock(); int r = fclose_impl(f); stdio_unlock(); return r;
++}
++int setvbuf(FILE *f, char *buf, int mode, size_t size) {
++    stdio_lock();
++    int r = setvbuf_impl(f, buf, mode, size);
++    stdio_unlock();
++    return r;
++}
++
+ /* getentropy(2) — wrapper for syscall 318 */
+ int getentropy(void *buffer, size_t length) {
+     long ret = syscall(318, (long)buffer, (long)length, 0, 0, 0, 0);
+diff --git a/lib/libc/src/malloc.c b/lib/libc/src/malloc.c
+index 8da80e3..84e9b33 100644
+--- a/lib/libc/src/malloc.c
++++ b/lib/libc/src/malloc.c
+@@ -45,6 +45,24 @@ static block_meta *find_free_block(block_meta **last, size_t size) {
+ 
+ static volatile unsigned char rs_lock;
+ 
++/* WR-3: the heap lock.  request_space() above serialises growth, but the
++ * free-list half -- find_free_block() plus the free=0 mark in malloc(),
++ * and the zero+free=1 in free() -- ran unlocked: two threads could check
++ * out the same base block together, and one thread's free() then zeroed
++ * live bytes out from under the other.  Under Notepad++'s allocator
++ * chatter that mis-share was a matter of time, and the victim surfaced
++ * anywhere (a wild memcpy length, a torn snprintf) far from the cause.
++ * The lock nests heap -> growth only (request_space takes rs_lock, never
++ * this one back), and malloc never takes the stdio lock -- its diagnosis
++ * below writes with a raw write() -- so the global order stays acyclic. */
++static volatile unsigned char heap_lock;
++
++static void heap_take(void) {
++    while (__atomic_test_and_set(&heap_lock, __ATOMIC_ACQUIRE))
++        __asm__ volatile ("pause");
++}
++static void heap_drop(void) { __atomic_clear(&heap_lock, __ATOMIC_RELEASE); }
++
+ static block_meta *request_space(block_meta* last, size_t size) {
+     static unsigned char *cur = NULL, *end = NULL;
+     size_t need = (size + META_SIZE + 15u) & ~(size_t)15u;
+@@ -115,8 +133,11 @@ void *malloc(size_t size) {
+                         b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+                       } }
+                     b[n++] = '\n';
+-                    fwrite(b, 1, (unsigned long)n, stdout);
+-                    fflush(stdout);
++                    /* Raw write, never stdio: this runs inside malloc(),
++                     * where taking the stdio lock would invert the global
++                     * stdio -> heap order (fopen allocates), and where a
++                     * FILE race would corrupt the very heap being built. */
++                    (void)write(1, b, (size_t)n);
+                 }
+             }
+         }
+@@ -142,8 +163,7 @@ void *malloc(size_t size) {
+                 b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+               } }
+             b[n++] = '\n';
+-            fwrite(b, 1, (unsigned long)n, stdout);
+-            fflush(stdout);
++            (void)write(1, b, (size_t)n);   /* raw: see the MID site above */
+             }
+         }
+     }
+@@ -152,29 +172,37 @@ void *malloc(size_t size) {
+     // align size
+     size = (size + 7) & ~7;
+     
+-    if (!base) {
+-        block = request_space(NULL, size);
+-        if (!block) return NULL;
+-        base = block;
+-    } else {
++    heap_take();
++    if (base) {
+         block_meta *last = base;
+         block = find_free_block(&last, size);
+-        if (!block) {
+-            block = request_space(last, size);
+-            if (!block) return NULL;
+-        } else {
++        if (block) {
+             block->free = 0;
++            heap_drop();
++            return (block + 1);
+         }
+     }
+-    
++    heap_drop();
++    /* Miss (or first call): grow outside the heap lock.  request_space()
++     * carries its own lock and hands back a detached block, so no shared
++     * list state is touched here; only the base publication below needs
++     * the lock again. */
++    block = request_space(NULL, size);
++    if (!block) return NULL;
++    heap_take();
++    if (!base) base = block;
++    heap_drop();
++
+     return (block + 1);
+ }
+ 
+ void free(void *ptr) {
+     if (!ptr) return;
+     block_meta *block_ptr = ((block_meta*)ptr) - 1;
++    heap_take();
+     memset(ptr, 0, block_ptr->size);
+     block_ptr->free = 1;
++    heap_drop();
+ }
+ 
+ void *calloc(size_t nmemb, size_t size) {
+diff --git a/lib/libc/src/stdio_extra.c b/lib/libc/src/stdio_extra.c
+index 852804e..ffeb5b7 100644
+--- a/lib/libc/src/stdio_extra.c
++++ b/lib/libc/src/stdio_extra.c
+@@ -366,11 +366,11 @@ int pclose(FILE *stream) {
+     return status;
+ }
+ 
+-/* Q2.7 — Locking stubs (thread-safety deferred to Q6) */
+-
+-void flockfile(FILE *f)     { (void)f; }
+-void funlockfile(FILE *f)   { (void)f; }
+-int  ftrylockfile(FILE *f)  { (void)f; return 0; }
++/* Q2.7 fulfilled in libc.c: flockfile/funlockfile/ftrylockfile are the real
++ * stdio lock now (process-global granularity, see the lock note there).
++ * The *_unlocked aliases below intentionally keep routing through the
++ * locked entries: they stay correct everywhere and merely forgo the
++ * per-call fast path POSIX allows but does not require. */
+ int  getc_unlocked(FILE *f)      { return fgetc(f); }
+ int  putc_unlocked(int c, FILE *f) { return fputc(c, f); }
+ int  fgetc_unlocked(FILE *f)     { return fgetc(f); }
+@@ -394,7 +394,7 @@ int  fgetc_unlocked(FILE *f)     { return fgetc(f); }
+  *     wherever the stream used to be.
+  */
+ 
+-int fseek(FILE *f, long offset, int whence) {
++static int fseek_impl(FILE *f, long offset, int whence) {
+     if (!f) { errno = EINVAL; return -1; }
+ 
+     /* A pending write must reach the fd before the offset moves. */
+@@ -426,7 +426,7 @@ int fseek(FILE *f, long offset, int whence) {
+     return 0;
+ }
+ 
+-long ftell(FILE *f) {
++static long ftell_impl(FILE *f) {
+     if (!f) { errno = EINVAL; return -1; }
+ 
+     int64_t pos = lseek(f->fd, 0, SEEK_CUR);
+@@ -444,13 +444,13 @@ long ftell(FILE *f) {
+     return (long)pos;
+ }
+ 
+-void rewind(FILE *f) {
++static void rewind_impl(FILE *f) {
+     if (!f) return;
+     (void)fseek(f, 0, SEEK_SET);
+     f->flags &= ~(FILE_EOF | FILE_ERR);   /* rewind also clears the error */
+ }
+ 
+-int fgetpos(FILE *f, fpos_t *pos) {
++static int fgetpos_impl(FILE *f, fpos_t *pos) {
+     if (!f || !pos) { errno = EINVAL; return -1; }
+     long p = ftell(f);
+     if (p < 0) return -1;
+@@ -458,7 +458,29 @@ int fgetpos(FILE *f, fpos_t *pos) {
+     return 0;
+ }
+ 
+-int fsetpos(FILE *f, const fpos_t *pos) {
++static int fsetpos_impl(FILE *f, const fpos_t *pos) {
+     if (!f || !pos) { errno = EINVAL; return -1; }
+     return fseek(f, (long)*pos, SEEK_SET);
+ }
++
++/* ---- locked positioning entries (libc.c's stdio lock, by its POSIX
++ * names; the bodies above still call the public names and recurse). */
++int fseek(FILE *f, long offset, int whence) {
++    flockfile(f); int r = fseek_impl(f, offset, whence); funlockfile(f);
++    return r;
++}
++long ftell(FILE *f) {
++    flockfile(f); long r = ftell_impl(f); funlockfile(f);
++    return r;
++}
++void rewind(FILE *f) {
++    flockfile(f); rewind_impl(f); funlockfile(f);
++}
++int fgetpos(FILE *f, fpos_t *pos) {
++    flockfile(f); int r = fgetpos_impl(f, pos); funlockfile(f);
++    return r;
++}
++int fsetpos(FILE *f, const fpos_t *pos) {
++    flockfile(f); int r = fsetpos_impl(f, pos); funlockfile(f);
++    return r;
++}
+diff --git a/tests/integration/cases/test_wr3_npp_live.sh b/tests/integration/cases/test_wr3_npp_live.sh
+index 9b8fa90..18eca30 100644
+--- a/tests/integration/cases/test_wr3_npp_live.sh
++++ b/tests/integration/cases/test_wr3_npp_live.sh
+@@ -2,7 +2,8 @@
+ # test_wr3_npp_live.sh — W32RUN_PLAN.md phase WR-3 gate (Notepad++ live).
+ #
+ # The pinned Notepad++ 8.8.9 x64 portable (single notepad++.exe, no installer)
+-# is launched under the w32 personality and observed over the serial lane.
++# is launched under the w32 personality with a fixture on its argv, focused,
++# typed into, and saved — all observed on real pixels plus the serial lane.
+ # Binaries stay outside the repo (D-WR3: sha256 pins only); this gate reuses
+ # the gui_lane boot helpers written for WR-2.
+ #
+@@ -13,28 +14,29 @@
+ #     handing the helper a NULL module;
+ #   - WR-3 step1: the self-handle oracle holds — the pre-step1 signature, a
+ #     user #PF at npp+0x3f1933 faulting on CR2=0x12 (GetModuleHandleW(NULL)
+-#     returned a slot index that the caller dereferenced as a PEB), is gone:
+-#     hModule is the mapped base and the CRT image check passes;
++#     returned a slot index that the caller dereferenced as a PEB), is gone;
+ #   - WaitOnAddress/WakeByAddressSingle/WakeByAddressAll are exported by
+ #     KERNEL32 (the host DLL of api-ms-win-core-synch-l1-2-0), so the CRT
+ #     takes its fast futex lane instead of the SRW fallback (host-side check
+ #     against the built w32run.elf below);
+-#   - the frame is not black: the compositor and the console are alive behind
+-#     the attempt (the same baseline the WR-2 gate starts from).
++#   - the frame: NPP's real `new 1` window (blue title bar), the tab strip,
++#     and the opened fixture line painted as dark glyphs (pixel oracles);
++#   - typing: ` WR3GATE` at end-of-document moves pixels in the editor AND
++#     the window is still alive afterwards (a dead window also "moves
++#     pixels" — the delta alone cannot tell, so liveness is asserted
++#     separately on the post-type frame);
++#   - save: Ctrl+S round-trips through the VFS — fixture (29 B) + edit reads
++#     back as exactly 37 B with sha256 a829ed05…;
++#   - no user #PF, no fatal signal, no panic anywhere in the run.
+ #
+-# WHAT IS NOT ASSERTED (named, not faked — the current WR-3 blocker):
+-#   - the editor window.  NPP still dies during CRT start-up: the statically
+-#     linked UCRT runs its .CRT table walk (npp+0x3d9560 → npp+0x3f18fc →
+-#     do_cinit), which dispatches the three-slot tail array at npp+0x430538
+-#     while the 512-entry lock-table pointer at npp+0x54ddb0 is still NULL
+-#     (the allocator init at npp+0x4304f8+0x18 is not reached first).  User
+-#     #PF RIP=0x400000402d19 CR2=0x18, then npp+0x403145 CR2=0x20, exit 139.
+-#     Isolated with a raw-RSP guest probe (tools/npp_rsp_probe.py): at the
+-#     fault rip=0, rbx=3, rdi=3, the lock CS array and the table are all zero
+-#     and __acrt_heap (npp+0x54e930) is still NULL — i.e. the CRT walked the
+-#     user tables out of the order Windows delivers them, not a missing
+-#     kernel32 export.  The window/typing/fixture-find/save/plugin legs of
+-#     WR-3 stay behind this gate and are SKIP lines below.
++# WHAT IS NOT ASSERTED (named, not faked):
++#   - File > Open: NPP 8.8.9 never calls GetOpenFileName; Ctrl+O issues
++#     CoCreateInstance(CLSID_FileOpenDialog) -> REGDB_E_CLASSNOTREG (the COM
++#     class table is committed-zero).  Needs an IFileDialog surface.
++#   - Find (Ctrl+F): the dialog builds, then NPP suicides via
++#     TerminateProcess(GetCurrentProcess, 0xc0000409); trigger named in
++#     docs/WR3_WORKLOG.md, not fixed in this phase.
++#   - plugins / tray: no DLL staged (D-WR3); tray never driven.
+ #
+ # Skip convention mirrors test_wr2_7zip_live.sh: no OVMF or no pinned binary
+ # -> loud SKIP, not a silent green.  Slow under TCG -> on SLOW_CASES_RE.
+@@ -46,7 +48,7 @@ il_init
+ . lib/gui_lane.sh
+ gl_require_ovmf
+ 
+-il_section "WR-3: the pinned Notepad++ reaches the live CRT start-up gate"
++il_section "WR-3: Notepad++ live — frame, byte-exact typing, save round-trip"
+ 
+ # --- the pinned binary: outside the repo, delivered on /fat ------------------
+ WR3_NPP_DIR="${WR3_NPP_DIR:-$HOME/appbins}"
+@@ -74,21 +76,14 @@ else
+ fi
+ 
+ # doLocalConf.xml: one line, keeps NPP portable so it never touches APPDATA.
+-# The on-disk name MUST be exactly doLocalConf.xml: gl_make_fat_disk copies
+-# each staged file under its basename, and NPP's portable probe is a
+-# GetFileAttributesExW for "<module dir>\doLocalConf.xml" -- a renamed
+-# marker silently leaves NPP on the APPDATA config path.
+ CONF="$IL_LOGDIR/doLocalConf.xml"
+ printf '<?xml version="1.0" encoding="UTF-8" ?>\n<NotepadPlus>\n</NotepadPlus>\n' > "$CONF"
+ 
+ # Sibling config documents: the portable zip ships them next to the exe and
+-# NPP treats a missing langs/stylers document as FATAL -- the Configurator
+-# raises a modal MessageBoxW ("Load langs.xml failed!" / "Load stylers.xml
+-# failed") which blocks wWinMain forever, so the editor window never
+-# appears.  Per D-WR3 the binaries and their data stay outside the repo:
+-# whatever the staged WR3_NPP_DIR carries is delivered on /fat, and only
+-# when a document is absent does the gate synthesize a minimal one that
+-# parses and leaves NPP on its built-in defaults.
++# NPP treats a missing langs/stylers document as FATAL (a modal MessageBoxW
++# blocks wWinMain forever).  Whatever the staged WR3_NPP_DIR carries is
++# delivered on /fat, and only when a document is absent does the gate
++# synthesize a minimal one that parses and leaves NPP on built-in defaults.
+ STAGE=("$NPP" "$CONF")
+ for f in config.xml contextMenu.xml shortcuts.xml langs.xml stylers.xml \
+          langs.model.xml stylers.model.xml; do
+@@ -110,6 +105,14 @@ if ! st_have stylers.xml && ! st_have stylers.model.xml; then
+     STAGE+=("$STYLERS")
+ fi
+ 
++# The save leg's fixture: 29 B on the wire (`\n`-terminated).  NPP opens it
++# off argv; the gate appends ` WR3GATE` on the empty line 2, so Ctrl+S must
++# read back as exactly 37 B, sha256 a829ed05….
++FIX="$IL_LOGDIR/WR3FIX.TXT"
++printf 'WR3-FIXTURE-LINE1-0123456789\n' > "$FIX"
++STAGE+=("$FIX")
++WR3_WANT_SHA="a829ed05d9ca67e819e6d091236108f51a31286876ccbc84e696b2260ad48fd5"
++
+ trap 'gl_stop; il_dump_on_error' EXIT
+ 
+ # --- deliver the binary on a /fat disk and boot -------------------------------
+@@ -121,11 +124,22 @@ GL_SELFTEST=off
+ gl_boot || il_fail "OVMF boot did not reach the shell"
+ il_assert_grep "$GL_LOG" "auralite#" "reached the shell"
+ 
+-# --- launch: the gate is the CRT making it past bind + api-set probes --------
+-gl_send "w32run /fat/notepad++.exe &" 8
+-sleep 300
++# --- launch: explicit w32run (the shell's PE auto-route drops extra argv) ----
++gl_send "w32run /fat/notepad++.exe C:/fat/WR3FIX.TXT &" 8
+ 
+-il_assert_grep "$GL_LOG" "notepad[+][+][.]exe mapped at .* 590 import[(]s[)] bound" \
++# --- bind: host-side poll, NOT gl_wait ----------------------------------------
++# gl_wait opens a NEW serial connection and only sees what arrives after it
++# connects; gl_send above already drained the stream into GL_LOG, so a
++# gl_wait here would hang on an empty socket until timeout.  Poll the
++# accumulating GL_LOG on the host instead, draining the socket between
++# polls so the transcript keeps flowing.
++BIND_PAT='notepad[+][+][.]exe mapped at .* 590 import[(]s[)] bound'
++for i in $(seq 1 60); do
++    if grep -a -q "$BIND_PAT" "$GL_LOG" 2>/dev/null; then break; fi
++    python3 "$GL_CONSOLE" serial-drain --serial "$GL_SER" --secs 5 \
++        >>"$GL_LOG" 2>&1 || true
++done
++il_assert_grep "$GL_LOG" "$BIND_PAT" \
+     "notepad++.exe bound its full import ledger (590)"
+ il_assert_grep "$GL_LOG" "api-set name resolves to its host.*synch-l1-2-0" \
+     "delay-load api-set probe resolves synch-l1-2-0 to kernel32 (WR-3 step2)"
+@@ -136,23 +150,138 @@ il_assert_no_grep "$GL_LOG" "RIP=0x00004000003f1933" \
+ il_assert_no_grep "$GL_LOG" "PANIC" \
+     "no kernel panic during the attempt"
+ 
+-# --- frame baseline: the desktop is alive behind the attempt -----------------
+-gl_shot wr3_npp_live
+-SHOT="$GL_LAST_PNG"
++# --- the window: focus recipe, then pixel oracles ------------------------------
++# Stand recipe (docs/WR3_WORKLOG.md): two QMP clicks land focus in the
++# editor; the first wakes the frame, the second sets the caret (past the
++# text it lands at end-of-document anyway).
++sleep 15
++gl_click 460 302
++sleep 10
++gl_click 400 300
++sleep 5
++
++gl_shot wr3_frame
+ IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+-if [ -s "$SHOT" ] && gl_oracle brightness "$SHOT" --floor 10 >/dev/null; then
+-    il_pass "frame captured and not black (compositor alive behind the attempt)"
++if [ -s "$GL_LAST_PNG" ] && gl_oracle brightness "$GL_LAST_PNG" --floor 10 >/dev/null; then
++    il_pass "frame captured and not black (compositor alive)"
+ else
+     il_fail "no lit frame after launch (desktop/compositor broken — not an NPP issue)"
+ fi
+ 
+-# --- named gaps (NOT counted) -------------------------------------------------
+-echo "  SKIP (named gap, W32RUN_PLAN WR-3): editor window present — blocked by"
+-echo "        the CRT .CRT-table walk order at npp+0x402d19 (see header)."
+-echo "  SKIP (named gap): type-and-render delta (needs the window)."
+-echo "  SKIP (named gap): open /fat fixture + Ctrl+S byte-exact round trip."
+-echo "  SKIP (named gap): Find dialog (DialogBox) match check."
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle find-color "$GL_LAST_PNG" 47 96 192 --tol 10 \
++        --region "0 0 1280 40" --min-frac 0.05 >/dev/null; then
++    il_pass "NPP window present (blue title bar)"
++else
++    il_fail "no NPP title bar in the frame (window never painted)"
++fi
++
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle find-color "$GL_LAST_PNG" 0 0 0 --tol 8 \
++        --region "60 55 500 95" --min-frac 0.01 >/dev/null; then
++    il_pass "opened fixture line paints as dark glyphs"
++else
++    il_fail "no dark glyphs where the fixture line should paint"
++fi
++
++# --- typing: caret to end-of-document, then the edit ---------------------------
++gl_key ctrl-end
++sleep 3
++gl_shot wr3_pretype
++gl_type ' WR3GATE'
++sleep 5
++gl_shot wr3_typed
++
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle delta "$GL_SHOTDIR/wr3_pretype.png" "$GL_LAST_PNG" \
++        --region "0 48 1016 400" --thresh 40 >/dev/null; then
++    il_pass "typing moves pixels in the editor"
++else
++    il_fail "no pixel delta after typing (keystrokes lost)"
++fi
++
++# A dead window ALSO moves pixels (desktop paints over it) and the caret
++# blink alone trips the delta — so liveness is asserted separately: the
++# title bar must still be there on the post-type frame.
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle find-color "$GL_LAST_PNG" 47 96 192 --tol 10 \
++        --region "0 0 1280 40" --min-frac 0.05 >/dev/null; then
++    il_pass "window still alive after typing (title bar on the typed frame)"
++else
++    il_fail "window died during typing (no title bar on the typed frame)"
++fi
++
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle brightness "$GL_LAST_PNG" --floor 200 \
++        --region "500 200 1016 400" >/dev/null; then
++    il_pass "editor client still white (Scintilla alive, not trashed)"
++else
++    il_fail "editor client not white after typing"
++fi
++
++# --- save: Ctrl+S, then read the bytes back through the serial shell ----------
++gl_key ctrl-s
++sleep 8
++
++# The PS/2 lane also feeds the serial shell, so the typed edit sits on the
++# shell's command line: every read starts with ^U^U (clear-line twice).
++# Markers bracket the capture; no `;` (the guest shell's separator set is
++# not something this gate depends on).
++wr3_readback() {
++    gl_send "$(printf '\x15\x15echo WR3BEGIN')" 3
++    gl_send "cat /fat/WR3FIX.TXT" 4
++    gl_send "echo WR3END" 3
++    # The serial stream carries [bc] writeback chatter between commands, so
++    # marker bracketing over-captures.  Anchor on the fixture line itself:
++    # the saved file is line1 + '\n' + the edit, glued to the next prompt
++    # (no trailing newline), and the cat output is contiguous on the wire.
++    python3 - "$GL_LOG" <<'PY'
++import re, sys
++raw = open(sys.argv[1], 'rb').read()
++ms = list(re.finditer(rb'WR3-FIXTURE-LINE1-0123456789\n(.*?)auralite#',
++                      raw, re.DOTALL))
++if not ms:
++    print("capture: none")
++    sys.exit(0)
++body = b'WR3-FIXTURE-LINE1-0123456789\n' + ms[-1].group(1)
++open('/tmp/wr3_gate_capture.bin', 'wb').write(body)
++print("capture: %d bytes" % len(body))
++PY
++}
++CAPTURE_N=0
++for attempt in 1 2 3; do
++    echo "  [wr3] save readback attempt $attempt"
++    wr3_readback
++    CAPTURE_N=$(stat -c %s /tmp/wr3_gate_capture.bin 2>/dev/null || echo 0)
++    if [ "$CAPTURE_N" = "37" ]; then break; fi
++done
++
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if [ "$CAPTURE_N" = "37" ]; then
++    il_pass "save round-trips: fixture + edit reads back as exactly 37 B"
++else
++    il_fail "save readback is $CAPTURE_N B, not 37 (edit lost or window died)"
++fi
++
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++CAPTURE_SHA=$(sha256sum /tmp/wr3_gate_capture.bin 2>/dev/null | awk '{print $1}')
++if [ "$CAPTURE_SHA" = "$WR3_WANT_SHA" ]; then
++    il_pass "save bytes are byte-exact (sha256 a829ed05…)"
++else
++    il_fail "save bytes differ (got ${CAPTURE_SHA:-none}, want a829ed05…)"
++fi
++
++# --- no-crash legs --------------------------------------------------------------
++il_assert_no_grep "$GL_LOG" "from USER mode" \
++    "no user page fault anywhere in the run"
++il_assert_no_grep "$GL_LOG" "by signal 11" \
++    "no fatal signal anywhere in the run"
++
++# --- named gaps (NOT counted) ---------------------------------------------------
++echo "  SKIP (named gap): File > Open dialog (CLSID_FileOpenDialog unimplemented)."
++echo "  SKIP (named gap): Find dialog (Ctrl+F suicide, see docs/WR3_WORKLOG.md)."
+ echo "  SKIP (named gap): pinned plugin LoadLibraryW oracle."
+ echo "  SKIP (named gap): Shell_NotifyIconW tray region delta."
++echo "  SKIP (named gap): split view / second frame (undriven)."
+ 
+ il_summary
+diff --git a/tests/unit/test_w32_a5.c b/tests/unit/test_w32_a5.c
+index dd77d01..c29fcf3 100644
+--- a/tests/unit/test_w32_a5.c
++++ b/tests/unit/test_w32_a5.c
+@@ -601,6 +601,24 @@ int main(void) {
+         ok(bad == 0 && GetLastError() == W32_ERROR_INVALID_PARAMETER,
+            "a style bit with no compositor meaning is refused");
+     }
++    {
++        /* WR-3: the style low word is class-defined for the six standard
++         * controls -- NPP's autocomplete ListBox popup carries
++         * LBS_NOINTEGRALHEIGHT (0x100), and refusing it handed NPP a NULL
++         * handle it suicided on (0xc0000409). */
++        static const uint16_t LB[8] = { 'L','i','s','t','B','o','x', 0 };
++        w32_user_register_dialog_class();
++        W32_HWND lb = CreateWindowExW(0, LB, TITLE,
++                                      W32_WS_CHILD | W32_WS_VISIBLE | 0x100u,
++                                      0, 0, 100, 60, h1, 0, 0, 0);
++        ok(lb != 0, "a ListBox with LBS_NOINTEGRALHEIGHT is created, not refused");
++        if (lb) DestroyWindow(lb);
++        W32_HWND bad = CreateWindowExW(0, CLS, TITLE,
++                                       W32_WS_POPUP | 0x100u, 0, 0, 10, 10,
++                                       0, 0, 0, 0);
++        ok(bad == 0 && GetLastError() == W32_ERROR_INVALID_PARAMETER,
++           "the low-word check still holds for app classes");
++    }
+     {
+         const uint16_t nope[5] = { 'n','o','p','e', 0 };
+         W32_HWND bad = CreateWindowExW(0, nope, TITLE, W32_WS_POPUP, 0, 0, 10, 10,
+@@ -870,11 +888,29 @@ int main(void) {
+     {
+         W32_MONITORINFOEXW mi;
+         memset(&mi, 0, sizeof mi);
++        mi.mi.cbSize = (uint32_t)sizeof mi;
+         W32_HMONITOR mon = MonitorFromWindow(h1, W32_MONITOR_DEFAULTTONEAREST);
+         ok(mon != 0 && GetMonitorInfoW(mon, &mi) == W32_TRUE &&
+            mi.mi.rcMonitor.right == 1280 && mi.mi.rcWork.bottom == 760,
+            "GetMonitorInfoW describes the framebuffer minus the taskbar");
+         ok(mi.mi.dwFlags == 1u, "the only monitor is the primary one");
++        /* WR-3: the caller sizes its struct via cbSize.  A 40-byte
++         * MONITORINFO must not receive the EX tail -- NPP parks one on
++         * the stack under its /GS cookie when it positions the
++         * autocomplete popup, and the overrun aborted it (0xc0000409). */
++        {
++            struct { W32_MONITORINFO m; uint64_t canary; } s;
++            memset(&s, 0, sizeof s);
++            s.m.cbSize = (uint32_t)sizeof s.m;
++            s.canary = 0xC0FFEE1122334455ull;
++            ok(GetMonitorInfoW(mon, (W32_MONITORINFOEXW *)&s) == W32_TRUE &&
++               s.m.rcMonitor.right == 1280 &&
++               s.canary == 0xC0FFEE1122334455ull,
++               "a 40-byte MONITORINFO gets the base, and the tail stops");
++            memset(&s, 0, sizeof s);
++            ok(GetMonitorInfoW(mon, (W32_MONITORINFOEXW *)&s) == W32_FALSE,
++               "cbSize 0 is refused, not trusted");
++        }
+         ok(EnumDisplayMonitors(0, 0, 0, 0) == W32_FALSE,
+            "EnumDisplayMonitors refuses a null callback");
+     }
+@@ -912,6 +948,55 @@ int main(void) {
+         fake_event(1, 11 /* UI_EVT_KEY_UP */, 0, 0, 'A', 0, 0, 0x1E);
+         PeekMessageW(&m, 0, 0, 0, 1);
+         ok((GetKeyState('A') & 0x8000) == 0, "and the key up clears it");
++        /* WR-3: the compositor speaks cooked codes ('e' vs 'E', 0x120 for
++         * shift); Win32 wants virtual keys, mapped at the edge. */
++        fake_event(1, 10 /* UI_EVT_KEY_DOWN */, 0, 0, 'e', 0, 0, 0x12);
++        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE &&
++           m.message == W32_WM_KEYDOWN && m.wParam == 'E',
++           "a cooked lowercase letter arrives as its uppercase VK");
++        fake_event(1, 11 /* UI_EVT_KEY_UP */, 0, 0, 'e', 0, 0, 0x12);
++        PeekMessageW(&m, 0, 0, 0, 1);
++        fake_event(1, 10, 0, 0, 0x120, 0, 0, 0);
++        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE &&
++           m.message == W32_WM_KEYDOWN && m.wParam == W32_VK_SHIFT &&
++           (GetKeyState(W32_VK_SHIFT) & 0x8000) != 0,
++           "the 0x120 shift code arrives as VK_SHIFT, down");
++        fake_event(1, 11, 0, 0, 0x120, 0, 0, 0);
++        PeekMessageW(&m, 0, 0, 0, 1);
++        /* WR-3: shift is state, not a character -- with shift held, the
++         * cooked 'X' must translate shifted. */
++        fake_event(1, 10, 0, 0, 0x120, 0, 0, 0);
++        fake_event(1, 10, 0, 0, 'X', 0, 0, 0x2D);
++        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == W32_VK_SHIFT &&
++           PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == 'X' &&
++           (GetKeyState(W32_VK_SHIFT) & 0x8000) != 0,
++           "shift is still down when the shifted letter is retrieved");
++        ok(TranslateMessage(&m) == W32_TRUE &&
++           PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.message == W32_WM_CHAR &&
++           m.wParam == 'X',
++           "TranslateMessage renders the shifted letter");
++        fake_event(1, 11, 0, 0, 'X', 0, 0, 0x2D);
++        fake_event(1, 11, 0, 0, 0x120, 0, 0, 0);
++        PeekMessageW(&m, 0, 0, 0, 1);
++        PeekMessageW(&m, 0, 0, 0, 1);
++        /* WR-3: the chord burst -- shift-down, key-down, key-up, shift-up
++         * posted before the first read must still show shift down at the
++         * letter.  Feeding keystate at pump time collapsed this and every
++         * fast shifted character arrived unshifted. */
++        fake_event(1, 10, 0, 0, 0x120, 0, 0, 0);
++        fake_event(1, 10, 0, 0, '!', 0, 0, 0x02);
++        fake_event(1, 11, 0, 0, '!', 0, 0, 0x02);
++        fake_event(1, 11, 0, 0, 0x120, 0, 0, 0);
++        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == W32_VK_SHIFT,
++           "burst: shift-down arrives first");
++        ok(PeekMessageW(&m, 0, 0, 0, 1) == W32_TRUE && m.wParam == '1' &&
++           (GetKeyState(W32_VK_SHIFT) & 0x8000) != 0,
++           "burst: base key with shift down at retrieval");
++        ok(TranslateMessage(&m) == W32_TRUE &&
++           PeekMessageW(&m, 0, W32_WM_CHAR, W32_WM_CHAR, 1) == W32_TRUE &&
++           m.wParam == '!',
++           "burst: '!' survives the chord");
++        drain();
+         W32_POINT pt;
+         ok(GetCursorPos(&pt) == W32_TRUE && pt.x == 100 && pt.y == 100,
+            "GetCursorPos asks the compositor");
+diff --git a/tools/check_width_sweep.py b/tools/check_width_sweep.py
+index 74626e9..6d4c3eb 100644
+--- a/tools/check_width_sweep.py
++++ b/tools/check_width_sweep.py
+@@ -59,7 +59,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ # Measured at the I6 landing commit.  When your change removes casts or
+ # migrates includes to arch.h, lower the number in the SAME commit --
+ # that is the ratchet clicking, and the whole point.
+-BASELINE_UINT64_CASTS = 401   # was 397; the SH8 spawn-buffer fix added 4 in
++BASELINE_UINT64_CASTS = 402   # was 401; W32RUN_PLAN.md WR-3 added 1 in
++                              # kernel/gui/gui_syscalls.c -- the GUI_OP_
++                              # SET_HOLE arm's require_owner refusal
++                              # returning (uint64_t)-1.  Identical idiom,
++                              # identical file and identical justification
++                              # to the CW-1/W32A-7 moves recorded below: a
++                              # syscall ABI word, not an address.  Pin
++                              # moves, code stays.
++                              # was 397; the SH8 spawn-buffer fix added 4 in
+                               # kernel/proc/process.c.  process_spawn() used
+                               # to kmalloc a fixed 16 MiB and compare against
+                               # the SPAWN_MAX_IMAGE macro; it now sizes the
+diff --git a/w32/include/w32/comctl32.h b/w32/include/w32/comctl32.h
+index f56b464..a5eeae9 100644
+--- a/w32/include/w32/comctl32.h
++++ b/w32/include/w32/comctl32.h
+@@ -581,6 +581,7 @@ typedef struct {
+ #define W32_TCM_GETCURFOCUS  (W32_TCM_FIRST + 47)
+ #define W32_TCM_SETCURFOCUS  (W32_TCM_FIRST + 48)
+ #define W32_TCM_ADJUSTRECT   (W32_TCM_FIRST + 40)
++#define W32_TCM_GETROWCOUNT  (W32_TCM_FIRST + 44)
+ 
+ /* F30 (WR-3): lParam sits at 0x20 -- iImage ends there and lParam is
+  * 8-byte aligned, so there is no padding in front of it.  An explicit
+diff --git a/w32/include/w32/user32.h b/w32/include/w32/user32.h
+index 424bdf5..b0fdf6d 100644
+--- a/w32/include/w32/user32.h
++++ b/w32/include/w32/user32.h
+@@ -537,6 +537,8 @@ typedef struct {
+ } W32_NMHDR;
+ 
+ typedef struct {
++    uint32_t cbSize;               /* WR-3: the caller sizes its own struct
++                                    * (40 = MONITORINFO, 104/72 = EXW/EXA) */
+     W32_RECT rcMonitor;
+     W32_RECT rcWork;
+     uint32_t dwFlags;
+diff --git a/w32/src/comctl32.c b/w32/src/comctl32.c
+index e47b3fe..6d9ed48 100644
+--- a/w32/src/comctl32.c
++++ b/w32/src/comctl32.c
+@@ -199,6 +199,17 @@ static void a_to_w16_buf(uint16_t *dst, size_t cap, const char *src) {
+     dst[n] = 0;
+ }
+ 
++/* WR-3: the ANSI twin.  The A-form GETITEM handlers copied strlen+1 bytes
++ * ignoring cchTextMax (a heap overrun into the caller), and the listview
++ * wrote wide units into ANSI buffers.  All four funnel through here now:
++ * at most cap-1 bytes plus the NUL, always NUL-terminated. */
++static void a_to_a_buf(char *dst, size_t cap, const char *src) {
++    size_t n = 0;
++    if (!dst || !cap) return;
++    while (src && src[n] && n + 1 < cap) { dst[n] = src[n]; n++; }
++    dst[n] = 0;
++}
++
+ /* The control id a window carries (mirrors GWLP_ID; windows created
+  * with a menu handle hold it there). */
+ int32_t w32_comctl_ctrl_id(W32_HWND hwnd) {
+@@ -417,6 +428,10 @@ static int ctl_surf_dispatch(ctl_surface_t *s, int type, int32_t x, int32_t y) {
+ #define CTL_KIND_REBAR    10    /* WR-2: 7-Zip FM's address-bar band host */
+ #define CTL_KIND_COMBOEX  11    /* WR-2: 7-Zip FM's address-bar path combo */
+ 
++/* The tab strip stands 22px tall (TCM_GETITEMRECT's bottom, above); the
++ * window below that line is display area the application owns. */
++#define CTL_TAB_STRIP_H 22
++
+ /* WR-3 diagnosis (temporary): weak *reference* (the pattern from
+  * kernel32.c) so this file links with or without w32_seh.c.  Declared here,
+  * above the control procedures that trace, not beside the image-list code
+@@ -1177,11 +1192,16 @@ static void lv_splice(ctl_state_t *c, int at, int del, const char *with_text,
+     if (sel >= 0) ctl_surf_set_sel(&c->surf, sel);
+ }
+ 
+-static void lv_fill_item_out(ctl_state_t *c, W32_LVITEMW *it) {
++static void lv_fill_item_out(ctl_state_t *c, W32_LVITEMW *it, int wide) {
+     if (it->mask & W32_LVIF_TEXT) {
+-        if (it->pszText && it->cchTextMax > 0)
+-            a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax,
+-                         c->u.lv.text[it->iItem]);
++        if (it->pszText && it->cchTextMax > 0) {
++            if (wide)
++                a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax,
++                             c->u.lv.text[it->iItem]);
++            else
++                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
++                           c->u.lv.text[it->iItem]);
++        }
+     }
+     if (it->mask & W32_LVIF_STATE)
+         it->state = c->u.lv.state[it->iItem];
+@@ -1366,7 +1386,7 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
+     case W32_LVM_GETITEMW: {
+         W32_LVITEMW *it = (W32_LVITEMW *)(uintptr_t)lp;
+         if (!it || it->iItem < 0 || it->iItem >= c->u.lv.n_items) return 0;
+-        lv_fill_item_out(c, it);
++        lv_fill_item_out(c, it, msg == W32_LVM_GETITEMW);
+         return 1;
+     }
+     case W32_LVM_GETITEMTEXTA:
+@@ -1374,7 +1394,7 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
+         W32_LVITEMW *it = (W32_LVITEMW *)(uintptr_t)lp;
+         if (!it || it->iItem < 0 || it->iItem >= c->u.lv.n_items) return 0;
+         it->mask |= W32_LVIF_TEXT;
+-        lv_fill_item_out(c, it);
++        lv_fill_item_out(c, it, msg == W32_LVM_GETITEMTEXTW);
+         return 1;
+     }
+     case W32_LVM_SETITEMA:
+@@ -1812,8 +1832,8 @@ static W32_LRESULT ctl_treeview_proc(ctl_state_t *c, W32_HWND hwnd,
+                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax,
+                              c->u.tv.text[idx]);
+             else
+-                memcpy((void *)it->pszText, c->u.tv.text[idx],
+-                       strlen(c->u.tv.text[idx]) + 1);
++                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
++                           c->u.tv.text[idx]);
+         }
+         if (it->mask & W32_TVIF_PARAM) it->lParam = c->u.tv.lparam[idx];
+         if (it->mask & W32_TVIF_STATE) {
+@@ -2085,8 +2105,8 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
+             if (msg == W32_TCM_GETITEMW)
+                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax, c->u.tc.text[i]);
+             else
+-                memcpy((void *)it->pszText, c->u.tc.text[i],
+-                       strlen(c->u.tc.text[i]) + 1);
++                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
++                           c->u.tc.text[i]);
+         }
+         if (it->mask & W32_TCIF_PARAM) it->lParam = c->u.tc.lparam[i];
+         return 1;
+@@ -2138,6 +2158,34 @@ static W32_LRESULT ctl_tab_proc(ctl_state_t *c, W32_HWND hwnd,
+         r->right = r->left + 90; r->bottom = 22;
+         return 1;
+     }
++    case W32_TCM_GETROWCOUNT:
++        /* Single-row by construction (fixed 90x22 items, no wrapping), so
++         * the strip always stands one row tall -- including empty, the way
++         * the system control reports it.  Returning 0 here made
++         * Notepad++'s TabBar::reSizeTo compute a NEGATIVE tab height
++         * (0 rows * 22px - 6 + edge), so the editor was parked on top of
++         * the tab strip instead of below it. */
++        return 1;
++    case W32_WM_SIZE: {
++        /* WR-3: punch the display area out of the compositor image.  The
++         * application sizes this window to the whole view BY DESIGN and
++         * parks the editor in the display area below the strip; Win32
++         * shows the editor there because direct-draw painters simply
++         * never paint the area, while a buffered compositor would cover
++         * it with this window's own background.  The hole carries the
++         * same see-through contract, and clicks fall through it too. */
++#ifndef AURALITE_W32_HOST_TEST
++        {
++            int wid = w32_win_cls_ag_wid(hwnd);
++            uint32_t cw = (uint32_t)lp & 0xFFFFu;
++            uint32_t ch = ((uint32_t)lp >> 16) & 0xFFFFu;
++            if (wid >= 0)
++                ag_window_set_hole(wid, 0, CTL_TAB_STRIP_H,
++                                   (int32_t)cw, (int32_t)ch);
++        }
++#endif
++        return 0;
++    }
+     case W32_WM_LBUTTONDOWN:
+     case W32_WM_LBUTTONDBLCLK: {
+         int prev = c->u.tc.active;
+@@ -2513,8 +2561,8 @@ static W32_LRESULT ctl_header_proc(ctl_state_t *c, W32_HWND hwnd,
+             if (msg == W32_HDM_GETITEMW)
+                 a_to_w16_buf((uint16_t *)(uintptr_t)it->pszText, (size_t)it->cchTextMax, c->u.hd.text[i]);
+             else
+-                memcpy((void *)it->pszText, c->u.hd.text[i],
+-                       strlen(c->u.hd.text[i]) + 1);
++                a_to_a_buf((char *)it->pszText, (size_t)it->cchTextMax,
++                           c->u.hd.text[i]);
+         }
+         if (it->mask & W32_HDI_WIDTH)  it->cxy = c->u.hd.cx[i];
+         if (it->mask & W32_HDI_FORMAT) it->fmt = (uint32_t)c->u.hd.fmt[i];
+diff --git a/w32/src/user32_win.c b/w32/src/user32_win.c
+index 2acbbe8..61048d7 100644
+--- a/w32/src/user32_win.c
++++ b/w32/src/user32_win.c
+@@ -273,6 +273,10 @@ struct ui_class {
+     W32_HICON icon_sm;            /* W32A-14: GCLP_HICONSM (PuTTY stamps this) */
+     W32_HCURSOR cursor;
+     int       comctl;             /* W32A-8: a common-control class (WS_CHILD ok) */
++    int       stdctl;             /* WR-3: a Win32 standard control (Button, Edit,
++                                   * Static, ListBox, ScrollBar, ComboBox): the
++                                   * style low word is class-defined, so only the
++                                   * high word faces the known-style check. */
+     int32_t   cb_wnd_extra;       /* WR-3: WNDCLASSEX.cbWndExtra, capped */
+     /* WR-2: WNDCLASS.lpszMenuName.  Win32 keeps this in the class, not in the
+      * window: a window created with hMenu == NULL gets the class menu.  Both
+@@ -319,6 +323,7 @@ struct ui_window {
+     int       painting;
+     W32_HWND  lock_owner;             /* LockWindowUpdate */
+     int       tracking_leave;
++    int       ever_shown;              /* WM_SIZE fired on the first show */
+     int32_t   last_mx, last_my;
+     W32_DWORD layered_key, layered_flags;
+     uint8_t   layered_alpha;
+@@ -904,7 +909,13 @@ W32_WORD w32_user_register_dialog_class(void) {
+         if (ui_find_class_w(std[i].name)) continue;
+         c.lpfnWndProc = std[i].proc;
+         c.lpszClassName = std[i].name;
+-        ui_register_class(&c);
++        if (ui_register_class(&c)) {
++            /* WR-3: mark the predefined control so CreateWindowExW checks
++             * the high style word only (LBS_x/CBS_x/BS_x live in the low
++             * word by documented Win32 design). */
++            struct ui_class *k = ui_find_class_w(std[i].name);
++            if (k) k->stdctl = 1;
++        }
+     }
+     return a;
+ }
+@@ -987,9 +998,12 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
+      * ES_*, BS_* ...), interpreted by the control's own WndProc -- user32 must
+      * not validate them as WS_* styles. Only the high word carries the standard
+      * WS_ bits. For a common-control class we therefore check the high word
+-     * only; standard windows keep the full check (their low word is DS_ or
++     * only, and WR-3 extends that to the six standard controls (an app's
++     * ListBox popup carries e.g. LBS_NOINTEGRALHEIGHT in the low word, and
++     * refusing it handed Notepad++ a NULL handle it terminated on);
++     * ordinary windows keep the full check (their low word is DS_ or
+      * zero, already inside UI_STYLE_KNOWN). */
+-    W32_DWORD style_std = k->comctl ? (style & 0xFFFF0000u) : style;
++    W32_DWORD style_std = (k->comctl || k->stdctl) ? (style & 0xFFFF0000u) : style;
+     if ((style_std & ~UI_STYLE_KNOWN) || (exstyle & ~UI_EXSTYLE_KNOWN)) {
+         if (w32trc_line) {
+             w32trc_str("[cw] rejected style of class", k->name_a);
+@@ -1118,6 +1132,7 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
+     win->proc_top = 0;
+     win->n_inv = 0;
+     win->tracking_leave = 0;
++    win->ever_shown = 0;
+     win->layered_key = 0; win->layered_alpha = 255; win->layered_flags = 0;
+     win->mb_n = 0;
+     ui_unlock();
+@@ -1459,6 +1474,21 @@ static int ui_q_pop(struct ui_queue *q, W32_MSG *out, W32_HWND filter,
+         q->last_time = m->time;
+         q->last_px = m->px;
+         q->last_py = m->py;
++        /* WR-3 live fix: the thread key-state array is fed by DELIVERED key
++         * messages.  The pump used to feed it while translating, which let a
++         * whole burst (shift-down, letter, shift-up) collapse before the
++         * program read its first message -- GetKeyState(VK_SHIFT) was already
++         * clear when TranslateMessage ran ToAscii on the letter, and every
++         * shifted character lost its shift.  Win32 defines the state as of
++         * the last message retrieved; feeding here, on removal, is that. */
++        if (remove &&
++            (out->message == W32_WM_KEYDOWN || out->message == W32_WM_KEYUP) &&
++            out->wParam < 256) {
++            if (out->message == W32_WM_KEYDOWN)
++                q->keystate[out->wParam] |= 0x80;
++            else
++                q->keystate[out->wParam] &= (uint8_t)~0x80;
++        }
+         if (remove) ui_q_remove_at(q, i);
+         return 1;
+     }
+@@ -1473,6 +1503,86 @@ static W32_LPARAM ui_pt_lparam(int32_t x, int32_t y) {
+     return (W32_LPARAM)(((uint32_t)(uint16_t)y << 16) | (uint16_t)x);
+ }
+ 
++/* WR-3 live fix: the compositor speaks COOKED key codes -- printable ASCII
++ * plus the KB_KEY_* specials at 0x100+ (drivers/keyboard/keyboard.h; kept in
++ * step by hand, same as the event numbers above) -- while Win32 wants
++ * VIRTUAL keys.  Posting the cooked code as the VK made TranslateMessage
++ * produce nothing: lowercase 'a' is not VK_A, and 0x120 (shift) sailed past
++ * the <256 keystate feed entirely.  Map at the edge, into the documented
++ * virtual-key codes.  Returns 0 for keys with no Win32 VK (drop, not invent).
++ */
++static W32_DWORD ui_kb_to_vk(uint32_t code) {
++    if (code < 0x100) {
++        if (code >= 'a' && code <= 'z') return (W32_DWORD)(code - ('a' - 'A'));
++        if (code >= 0x01 && code <= 0x1A) return (W32_DWORD)(code + 0x40); /* ctrl+letter */
++        if (code == (uint32_t)'\n') return W32_VK_RETURN;
++        if (code == (uint32_t)'\b') return W32_VK_BACK;
++        if (code == (uint32_t)'\t') return W32_VK_TAB;
++        if (code == 0x1B) return W32_VK_ESCAPE;
++        if (code == 0x7F) return W32_VK_DELETE;
++        if (code < 0x20) return 0;
++        /* The kernel cooks WITH shift ('!' for shift+1), while ToAscii
++         * wants the BASE key and re-applies shift itself -- so shifted
++         * symbols land on their base position, and punctuation lands on
++         * the documented OEM virtual keys (ToAscii's table holds base
++         * keys only; posting '!' or '-' verbatim translates to nothing). */
++        switch (code) {
++        case '!': return '1'; case '@': return '2'; case '#': return '3';
++        case '$': return '4'; case '%': return '5'; case '^': return '6';
++        case '&': return '7'; case '*': return '8'; case '(': return '9';
++        case ')': return '0';
++        case '-': case '_': return 0xBD; /* VK_OEM_MINUS */
++        case '=': case '+': return 0xBB; /* VK_OEM_PLUS */
++        case '[': case '{': return 0xDB; /* VK_OEM_4 */
++        case ']': case '}': return 0xDD; /* VK_OEM_6 */
++        case '\\': case '|': return 0xDC; /* VK_OEM_5 */
++        case ';': case ':': return 0xBA; /* VK_OEM_1 */
++        case '\'': case '"': return 0xDE; /* VK_OEM_7 */
++        case ',': case '<': return 0xBC; /* VK_OEM_COMMA */
++        case '.': case '>': return 0xBE; /* VK_OEM_PERIOD */
++        case '/': case '?': return 0xBF; /* VK_OEM_2 */
++        case '`': case '~': return 0xC0; /* VK_OEM_3 */
++        default: break;
++        }
++        return (W32_DWORD)code; /* digits, uppercase, space: VK == ASCII */
++    }
++    switch (code) {
++    case 0x100: return W32_VK_LEFT;
++    case 0x101: return W32_VK_RIGHT;
++    case 0x102: return W32_VK_UP;
++    case 0x103: return W32_VK_DOWN;
++    case 0x104: return W32_VK_HOME;
++    case 0x105: return W32_VK_END;
++    case 0x106: return W32_VK_PRIOR;
++    case 0x107: return W32_VK_NEXT;
++    case 0x108: return W32_VK_INSERT;
++    case 0x109: return W32_VK_DELETE;
++    case 0x120: case 0x121: return W32_VK_SHIFT;
++    case 0x122: case 0x125: return W32_VK_CONTROL;
++    case 0x123: case 0x126: return W32_VK_MENU;
++    default: break;
++    }
++    if (code >= 0x110 && code <= 0x11B) return (W32_DWORD)(0x70 + code - 0x110); /* F1-F12 */
++    if (code == 0x11C) return 0x2C; /* VK_SNAPSHOT */
++    if (code == 0x11D) return 0x13; /* VK_PAUSE */
++    if (code == 0x124) return 0x14; /* VK_CAPITAL */
++    if (code == 0x127) return 0x5B; /* VK_LWIN */
++    if (code == 0x128) return 0x5C; /* VK_RWIN */
++    if (code == 0x129) return 0x5D; /* VK_APPS */
++    if (code == 0x12A) return 0x90; /* VK_NUMLOCK */
++    if (code == 0x12B) return 0x91; /* VK_SCROLL */
++    if (code >= 0x130 && code <= 0x139) return (W32_DWORD)(0x60 + code - 0x130); /* numpad 0-9 */
++    if (code == 0x13A) return 0x6E; /* VK_DECIMAL */
++    if (code == 0x13B) return 0x6F; /* VK_DIVIDE */
++    if (code == 0x13C) return 0x6A; /* VK_MULTIPLY */
++    if (code == 0x13D) return 0x6D; /* VK_SUBTRACT */
++    if (code == 0x13E) return 0x6B; /* VK_ADD */
++    if (code == 0x13F) return W32_VK_RETURN;
++    if (code == 0x140) return 0x6C; /* VK_SEPARATOR */
++    if (code >= 0x150 && code <= 0x15B) return (W32_DWORD)(0x7C + code - 0x150); /* F13-F24 */
++    return 0;
++}
++
+ static W32_WPARAM ui_mk_state(uint8_t buttons, uint8_t mods) {
+     W32_WPARAM mk = 0;
+     if (buttons & 0x01) mk |= 0x0001;          /* MK_LBUTTON */
+@@ -1596,28 +1706,29 @@ static void ui_translate(struct ui_window *w, W32_HWND hwnd, const ui_event_t *e
+                 windows[ki].cls < UI_MAX_CLASSES)
+                 kc = classes[windows[ki].cls].name_a;
+             w32trc_line("[key] vk=%u win=#%u\n",
+-                        (unsigned long long)e->key, (unsigned long long)ki, 0);
++                        (unsigned long long)ui_kb_to_vk(e->key),
++                        (unsigned long long)ki, 0);
+             w32trc_str("[key]   cls=", kc);
+         }
+-        /* One keystroke carries its scan code and its transition bits; the
+-         * thread's key-state array is fed here, which is what GetKeyState
+-         * reads back. */
+-        if (e->key < 256) {
+-            struct ui_queue *q = ui_queue_for(w->tid ? w->tid : GetCurrentThreadId(), 1);
+-            if (q) q->keystate[e->key] |= 0x80;
++        /* WR-3: the cooked kernel code becomes a virtual key at the edge
++         * (see ui_kb_to_vk), and the thread's key-state array is fed at
++         * DELIVERY (ui_q_pop), not here: feeding at pump time collapsed
++         * whole sendkey bursts before the program read its first message. */
++        {
++            W32_DWORD vk = ui_kb_to_vk(e->key);
++            if (vk)
++                ui_post_to(hwnd, W32_WM_KEYDOWN, vk,
++                           (W32_LPARAM)(1 | ((uint32_t)e->data << 16)), e->x, e->y);
+         }
+-        ui_post_to(hwnd, W32_WM_KEYDOWN, e->key,
+-                   (W32_LPARAM)(1 | ((uint32_t)e->data << 16)), e->x, e->y);
+         break;
+     }
+-    case UI_EVT_KEY_UP:
+-        if (e->key < 256) {
+-            struct ui_queue *q = ui_queue_for(w->tid ? w->tid : GetCurrentThreadId(), 1);
+-            if (q) q->keystate[e->key] &= (uint8_t)~0x80;
+-        }
+-        ui_post_to(hwnd, W32_WM_KEYUP, e->key,
+-                   (W32_LPARAM)(int32_t)0xC0000001u, e->x, e->y);
++    case UI_EVT_KEY_UP: {
++        W32_DWORD vk = ui_kb_to_vk(e->key);
++        if (vk)
++            ui_post_to(hwnd, W32_WM_KEYUP, vk,
++                       (W32_LPARAM)(int32_t)0xC0000001u, e->x, e->y);
+         break;
++    }
+     case UI_EVT_FOCUS:
+         ui_post_to(hwnd, W32_WM_SETFOCUS, 0, 0, e->x, e->y);
+         break;
+@@ -2705,6 +2816,7 @@ W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
+     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
+     struct ui_window *w = &windows[i];
+     W32_BOOL was_visible = w->visible ? W32_TRUE : W32_FALSE;
++    int was_min = w->minimized, was_max = w->maximized;
+ 
+     switch (cmd) {
+     case W32_SW_HIDE:
+@@ -2741,11 +2853,22 @@ W32ABI W32_BOOL ShowWindow(W32_HWND hwnd, int32_t cmd) {
+         w->maximized = 0;
+         w->visible = 1;
+         ui_refresh_geom(w);
+-        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
+         if (cmd != W32_SW_SHOWNOACTIVATE) ag_window_focus(w->ag_wid);
+         InvalidateRect(hwnd, 0, W32_TRUE);
+         break;
+     }
++    /* WM_SIZE follows a change of the SIZE STATE -- maximize, minimize,
++     * restore, or the first transition to visible (the initial layout) --
++     * never a plain re-show of an already-visible window.  Posting WM_SIZE
++     * unconditionally turned every layout pass that re-stated a window's
++     * visibility into a WM_SIZE storm: Notepad++'s re-layout answers each
++     * WM_SIZE with the same show/hide sequence, which posted another
++     * WM_SIZE, and startup never finished. */
++    int size_state_changed = (w->minimized != was_min) || (w->maximized != was_max);
++    int first_show = !was_visible && w->visible && !w->ever_shown;
++    if (w->visible) w->ever_shown = 1;
++    if (size_state_changed || first_show)
++        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
+     return was_visible;
+ }
+ 
+@@ -2781,6 +2904,8 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
+     int i = w32_win_index_from_hwnd(hwnd);
+     if (i < 0) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return W32_FALSE; }
+     struct ui_window *w = &windows[i];
++    int32_t pos_x0 = w->x, pos_y0 = w->y;
++    uint32_t size_w0 = w->w, size_h0 = w->h;
+ 
+     if (!(flags & W32_SWP_NOZORDER)) {
+         if (after == W32_HWND_TOP || after == W32_HWND_TOPMOST)
+@@ -2810,10 +2935,20 @@ W32ABI W32_BOOL SetWindowPos(W32_HWND hwnd, W32_HWND after, int32_t x,
+     if (flags & W32_SWP_SHOWWINDOW) { ag_window_show(w->ag_wid); w->visible = 1; }
+     if (flags & W32_SWP_HIDEWINDOW) { ag_window_hide(w->ag_wid); w->visible = 0; }
+ 
+-    /* The compositor moved content: tell the window, then repaint.  Win32
+-     * sends WM_WINDOWPOSCHANGED/WM_SIZE through the same path. */
++    /* WM_WINDOWPOSCHANGED always; WM_MOVE/WM_SIZE only where the geometry
++     * actually changed.  Posting WM_SIZE on every call -- even SWP_NOSIZE
++     * with an unchanged size -- fed Notepad++'s layout loop: each pass
++     * re-stated its children's geometry, each re-statement posted WM_SIZE,
++     * and the handler that answers WM_SIZE with a re-layout never drained
++     * its queue. */
+     PostMessageW(hwnd, W32_WM_WINDOWPOSCHANGED, 0, 0);
+-    PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
++    if (!(flags & W32_SWP_NOMOVE) && (w->x != pos_x0 || w->y != pos_y0))
++        PostMessageW(hwnd, W32_WM_MOVE, 0,
++                     (W32_LPARAM)(((uint32_t)(uint16_t)(int16_t)(w->y & 0xFFFF)) << 16 |
++                                  (uint32_t)(uint16_t)(int16_t)(w->x & 0xFFFF)));
++    if (!(flags & W32_SWP_NOSIZE) &&
++        (w->w != size_w0 || w->h != size_h0))
++        PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(w));
+     if (!(flags & W32_SWP_NOREDRAW)) InvalidateRect(hwnd, 0, W32_TRUE);
+     return W32_TRUE;
+ }
+@@ -3496,40 +3631,68 @@ W32ABI int32_t GetKeyboardType(int32_t type) {
+ 
+ #define UI_MONITOR_HANDLE ((W32_HMONITOR)(uintptr_t)0x5000)
+ 
+-static void ui_monitor_info(W32_MONITORINFOEXW *mi) {
++static void ui_monitor_info_base(W32_MONITORINFO *m) {
+     ui_theme_t t;
+     uint32_t sw = 0, sh = 0;
+     ag_screen_size(&sw, &sh);
+     uint32_t taskbar = (ag_theme_get(&t) == 0) ? t.taskbar_h : 0;
+-    mi->mi.rcMonitor.left = 0; mi->mi.rcMonitor.top = 0;
+-    mi->mi.rcMonitor.right = (int32_t)sw; mi->mi.rcMonitor.bottom = (int32_t)sh;
+-    mi->mi.rcWork.left = 0; mi->mi.rcWork.top = 0;
+-    mi->mi.rcWork.right = (int32_t)sw;
+-    mi->mi.rcWork.bottom = (int32_t)(sh - taskbar);
+-    mi->mi.dwFlags = 1;                        /* MONITORINFOF_PRIMARY */
++    m->rcMonitor.left = 0; m->rcMonitor.top = 0;
++    m->rcMonitor.right = (int32_t)sw; m->rcMonitor.bottom = (int32_t)sh;
++    m->rcWork.left = 0; m->rcWork.top = 0;
++    m->rcWork.right = (int32_t)sw;
++    m->rcWork.bottom = (int32_t)(sh - taskbar);
++    m->dwFlags = 1;                            /* MONITORINFOF_PRIMARY */
++}
++
++static void ui_monitor_info(W32_MONITORINFOEXW *mi) {
++    ui_monitor_info_base(&mi->mi);
+     const uint16_t dev[] = { 'A','u','r','a','L','i','t','e',0 };
+     w16_copy(mi->szDevice, dev, 32);
+ }
+ 
++/* WR-3 live fix: the caller sizes its own struct through cbSize (40 for a
++ * plain MONITORINFO, 104/72 for the EXW/EXA forms), and NPP passes a 40-byte
++ * MONITORINFO on the stack, directly under its /GS cookie, when it positions
++ * the autocomplete popup.  Filling the EX tail unconditionally overwrote the
++ * cookie and the abort that followed (0xc0000409 at npp+0x3d9289, shared
++ * with the Find path) looked like a deliberate suicide.  Honour cbSize. */
+ W32ABI W32_BOOL GetMonitorInfoW(W32_HMONITOR mon, W32_MONITORINFOEXW *mi) {
+     if (mon != UI_MONITOR_HANDLE || !mi) {
+         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+         return W32_FALSE;
+     }
+-    ui_monitor_info(mi);
++    if (mi->mi.cbSize < sizeof(W32_MONITORINFO)) {
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++        return W32_FALSE;
++    }
++    ui_monitor_info_base(&mi->mi);
++    if (mi->mi.cbSize >= sizeof(W32_MONITORINFOEXW)) {
++        const uint16_t dev[] = { 'A','u','r','a','L','i','t','e',0 };
++        w16_copy(mi->szDevice, dev, 32);
++    }
+     return W32_TRUE;
+ }
+ 
+ W32ABI W32_BOOL GetMonitorInfoA(W32_HMONITOR mon, void *out) {
+     if (!out) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
++    W32_MONITORINFO *m = (W32_MONITORINFO *)out;
++    if (m->cbSize < sizeof(W32_MONITORINFO)) {
++        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++        return W32_FALSE;
++    }
++    uint32_t size = m->cbSize;   /* input: the caller's struct size */
+     W32_MONITORINFOEXW mi;
++    mi.mi.cbSize = (uint32_t)sizeof mi;
+     if (!GetMonitorInfoW(mon, &mi)) return W32_FALSE;
+-    /* The A form: same struct with a single-byte device name. */
+-    struct { W32_MONITORINFO mi; char dev[32]; } *a = out;
+-    a->mi = mi.mi;
+-    int n = 0;
+-    while (n < 31 && mi.szDevice[n]) { a->dev[n] = (char)mi.szDevice[n]; n++; }
+-    a->dev[n] = 0;
++    /* The A form: same base with a single-byte device name. */
++    *m = mi.mi;
++    m->cbSize = size;           /* cbSize is input, preserved */
++    if (size >= sizeof(W32_MONITORINFO) + 32) {
++        char *dev = (char *)out + sizeof(W32_MONITORINFO);
++        int n = 0;
++        while (n < 31 && mi.szDevice[n]) { dev[n] = (char)mi.szDevice[n]; n++; }
++        dev[n] = 0;
++    }
+     return W32_TRUE;
+ }
+ 
+@@ -3663,9 +3826,10 @@ W32ABI int16_t GetKeyState(int32_t vk) {
+     if (vk < 0 || vk > 255) return 0;
+     struct ui_queue *q = ui_queue_for(GetCurrentThreadId(), 0);
+     if (!q) return 0;
+-    /* The array is fed by delivered key messages (see ui_translate), so the
+-     * state a program reads is the state its own loop has seen -- not a
+-     * second copy of the keyboard driver's idea. */
++    /* The array is fed by delivered key messages (see ui_q_pop: Win32 state
++     * is as of the last message retrieved), so the state a program reads is
++     * the state its own loop has seen -- not a second copy of the keyboard
++     * driver's idea. */
+     uint8_t s = q->keystate[vk];
+     return (int16_t)(((s & 0x80) ? 0x8000 : 0) | ((s & 0x01) ? 0x0001 : 0));
+ }
+diff --git a/w32/src/w32_gdi.c b/w32/src/w32_gdi.c
+index b97afbf..5ded449 100644
+--- a/w32/src/w32_gdi.c
++++ b/w32/src/w32_gdi.c
+@@ -203,17 +203,25 @@ static gdi_obj_t *obj_from_h(void *h, int type) {
+     return &gobjs[i];
+ }
+ 
++/* The GDI lock lives with the pool below; the table claims it too. */
++static void gdi_take(void);
++static void gdi_drop(void);
++
+ static void *gdi_alloc_obj(int type, gdi_obj_t **out) {
++    void *h = 0;
++    gdi_take();
+     for (int i = 0; i < GDI_OBJ_MAX; i++) {
+         if (!gobjs[i].used) {
+             memset(&gobjs[i], 0, sizeof gobjs[i]);
+             gobjs[i].used = 1;
+             gobjs[i].type = type;
+             if (out) *out = &gobjs[i];
+-            return (void *)(uintptr_t)h_from_idx(i);
++            h = (void *)(uintptr_t)h_from_idx(i);
++            break;
+         }
+     }
+-    return 0;
++    gdi_drop();
++    return h;
+ }
+ 
+ static void *handle_of_obj(gdi_obj_t *o) {
+@@ -230,18 +238,44 @@ static void *handle_of_obj(gdi_obj_t *o) {
+ static uint8_t  gdi_pool[GDI_POOL_SIZE] __attribute__((aligned(16)));
+ static size_t   gdi_pool_used;
+ 
++/* WR-3: the GDI lock.  The pool's bump pointer and the object table's
++ * used flags are check-then-act shared state, and Notepad++ calls GDI
++ * from more than one thread: unlocked, two allocations could check out
++ * the same pool region (or the same table slot), and a lost bump update
++ * could walk gdi_pool_used straight past the arena into the adjacent
++ * gobjs table -- after which a bitmap's alloc/bits read corrupt and the
++ * next CreateBitmap memcpy faults pages away from any real bug.  The
++ * three primitives below are self-locking and never nest (DeleteObject
++ * takes the lock only for the table half, around nothing that locks),
++ * so the order is flat.  Handle lookups stay lock-free: a handle only
++ * becomes known after its slot is claimed, so a racing reader meets at
++ * worst a stale-but-bounded entry, never a torn one. */
++static volatile unsigned char gdi_lock;
++
++static void gdi_take(void) {
++    while (__atomic_test_and_set(&gdi_lock, __ATOMIC_ACQUIRE))
++        __asm__ volatile ("pause");
++}
++static void gdi_drop(void) { __atomic_clear(&gdi_lock, __ATOMIC_RELEASE); }
++
+ static void *pool_alloc(size_t n) {
+     n = (n + 15u) & ~(size_t)15u;
+     if (n == 0) n = 16;
+-    if (gdi_pool_used + n > GDI_POOL_SIZE) return 0;
+-    void *p = &gdi_pool[gdi_pool_used];
+-    gdi_pool_used += n;
++    gdi_take();
++    void *p = 0;
++    if (gdi_pool_used + n <= GDI_POOL_SIZE) {
++        p = &gdi_pool[gdi_pool_used];
++        gdi_pool_used += n;
++    }
++    gdi_drop();
+     return p;
+ }
+ static void pool_free(void *p, size_t n) {
+     if (!p) return;
+     n = (n + 15u) & ~(size_t)15u;
++    gdi_take();
+     if ((uint8_t *)p + n == &gdi_pool[gdi_pool_used]) gdi_pool_used -= n;
++    gdi_drop();
+ }
+ 
+ /* ===================================================================== *
+@@ -506,6 +540,22 @@ static int surf_of_dc(gdi_dc_t *d, surf_t *s) {
+ /* Window-DC rendering: raster into an ARGB temp, then one blit. */
+ typedef void (*surf_draw_fn)(surf_t *s, void *user);
+ 
++/* MM_TEXT maps logical to device as device = logical - window_org.  Every
++ * drawing coordinate enters here in the application's logical space; the
++ * rasterers index device pixels.  SetWindowOrgEx/OffsetWindowOrgEx move
++ * the origin Scintilla-style (each sub-surface re-anchors its draws), so
++ * skipping this subtraction lands every glyph and fill at the unshifted
++ * position -- text disappears past the clip while its opaque background
++ * rectangles pile up somewhere else. */
++static void dc_log_to_dev(const gdi_dc_t *d, int32_t *x, int32_t *y) {
++    *x -= d->worg_x;
++    *y -= d->worg_y;
++}
++static void dc_rect_to_dev(const gdi_dc_t *d, W32_RECT *r) {
++    r->left -= d->worg_x;  r->right -= d->worg_x;
++    r->top  -= d->worg_y;  r->bottom -= d->worg_y;
++}
++
+ /* WR-2: a top-level window with a menu has its client origin that many rows
+  * below the top of the compositor's content area.  Defined in user32_win.c.
+  * Everything that maps a client coordinate onto window pixels adds this;
+@@ -1051,7 +1101,9 @@ W32ABI W32_BOOL DeleteObject(W32_HGDIOBJ obj) {
+     default:
+         break;
+     }
++    gdi_take();
+     gobjs[i].used = 0;
++    gdi_drop();
+     return W32_TRUE;
+ }
+ 
+@@ -1372,6 +1424,8 @@ W32ABI W32_BOOL BitBlt(W32_HDC dd, int32_t x, int32_t y, int32_t w, int32_t h,
+     }
+     gdi_dc_t *ddc = dc_from_h(dd), *sdc = dc_from_h(sd);
+     if (!ddc || !sdc) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
++    dc_log_to_dev(ddc, &x, &y);
++    dc_log_to_dev(sdc, &sx, &sy);
+     W32_RECT r = { x, y, x + w, y + h };
+     if (!clip_intersects(ddc, &r)) return 1;
+     blit_ctx_t c;
+@@ -1425,6 +1479,7 @@ W32ABI W32_BOOL PatBlt(W32_HDC hdc, int32_t x, int32_t y, int32_t w, int32_t h,
+     }
+     gdi_dc_t *d = dc_from_h(hdc);
+     if (!d) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
++    dc_log_to_dev(d, &x, &y);
+     blit_ctx_t c;
+     memset(&c, 0, sizeof c);
+     c.rop = rop2 ? rop2 : W32_PATCOPY;
+@@ -1621,8 +1676,13 @@ W32ABI W32_HBITMAP CreateBitmap(int32_t w, int32_t h, W32_UINT planes,
+     gdi_bitmap_t *b = bmp_create_internal(w, h, (int)bpp, 0, 0, 0, 0);
+     if (!b) { w32_set_last_error(W32_ERROR_NOT_ENOUGH_MEMORY); return 0; }
+     if (bits) {
+-        /* CreateBitmap rows are DWORD-aligned, top-down, no colour table. */
+-        uint32_t src_stride = ((uint32_t)w * bpp + 31u) / 32u * 4u;
++        /* DDB initial bits are WORD-aligned per row (MSDN's CreateBitmap
++         * contract -- "each scan line must be word aligned"), top-down,
++         * no colour table.  That is NOT the DIB DWORD rule: Scintilla's
++         * 1x16 caret hands 2 bytes/row (32 bytes), and a DWORD stride
++         * reads twice past the buffer end -- harmless heap slop on
++         * Windows, a fault here when the tail crosses off the break. */
++        uint32_t src_stride = ((uint32_t)w * (uint32_t)bpp + 15u) / 16u * 2u;
+         size_t n = (size_t)src_stride * (size_t)h;
+         if (n <= b->alloc) memcpy(b->bits, bits, n);
+     }
+@@ -2179,7 +2239,11 @@ W32ABI int32_t IntersectClipRect(W32_HDC hdc, int32_t l, int32_t t, int32_t r, i
+ W32ABI W32_BOOL RectVisible(W32_HDC hdc, const W32_RECT *r) {
+     gdi_dc_t *d = dc_from_h(hdc);
+     if (!d || !r) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
+-    return clip_intersects(d, r) ? 1 : 0;
++    /* The query rect arrives in logical units but the region MSDN keeps in
++     * device units, so cross the same bridge the rasterers do. */
++    W32_RECT rr = *r;
++    dc_rect_to_dev(d, &rr);
++    return clip_intersects(d, &rr) ? 1 : 0;
+ }
+ 
+ /* ===================================================================== *
+@@ -2246,6 +2310,7 @@ static void shape_bounds(const shape_ctx_t *c, int32_t *bx, int32_t *by,
+ W32ABI W32_BOOL Rectangle(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t b) {
+     surf_t s;
+     if (shapes_prep(hdc, &s) < 0) return 0;
++    { gdi_dc_t *d = dc_from_h(hdc); if (d) { dc_log_to_dev(d, &l, &t); dc_log_to_dev(d, &r, &b); } }
+     shape_ctx_t c = { l, t, r, b, 0, 0, 0, 0, SHAPE_RECT };
+     int32_t bx, by, bw, bh;
+     shape_bounds(&c, &bx, &by, &bw, &bh);
+@@ -2256,6 +2321,7 @@ W32ABI W32_BOOL Rectangle(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t
+ W32ABI W32_BOOL Ellipse(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t b) {
+     surf_t s;
+     if (shapes_prep(hdc, &s) < 0) return 0;
++    { gdi_dc_t *d = dc_from_h(hdc); if (d) { dc_log_to_dev(d, &l, &t); dc_log_to_dev(d, &r, &b); } }
+     shape_ctx_t c = { l, t, r, b, 0, 0, 0, 0, SHAPE_ELLIPSE };
+     int32_t bx, by, bw, bh;
+     shape_bounds(&c, &bx, &by, &bw, &bh);
+@@ -2267,6 +2333,7 @@ W32ABI W32_BOOL RoundRect(W32_HDC hdc, int32_t l, int32_t t, int32_t r, int32_t
+                           int32_t ew, int32_t eh) {
+     surf_t s;
+     if (shapes_prep(hdc, &s) < 0) return 0;
++    { gdi_dc_t *d = dc_from_h(hdc); if (d) { dc_log_to_dev(d, &l, &t); dc_log_to_dev(d, &r, &b); } }
+     shape_ctx_t c = { l, t, r, b, ew, eh, 0, 0, SHAPE_ROUNDRECT };
+     int32_t bx, by, bw, bh;
+     shape_bounds(&c, &bx, &by, &bw, &bh);
+@@ -2335,7 +2402,9 @@ W32ABI int32_t FrameRect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
+         br = &frameb;
+     }
+     frame_ctx_t c;
+-    c.l = r->left; c.t = r->top; c.r = r->right; c.b = r->bottom;
++    W32_RECT rr = *r;
++    dc_rect_to_dev(d, &rr);
++    c.l = rr.left; c.t = rr.top; c.r = rr.right; c.b = rr.bottom;
+     c.br = br;
+     if (d->kind == 1) {
+         surf_t s;
+@@ -2343,8 +2412,8 @@ W32ABI int32_t FrameRect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
+         frame_body(&s, &c);
+         return 1;
+     }
+-    return win_raster_blit(d, r->left, r->top,
+-                           r->right - r->left, r->bottom - r->top,
++    return win_raster_blit(d, rr.left, rr.top,
++                           rr.right - rr.left, rr.bottom - rr.top,
+                            frame_body, &c) ? 1 : 0;
+ }
+ 
+@@ -2532,6 +2601,9 @@ W32ABI W32_BOOL ExtTextOutW(W32_HDC hdc, int32_t x, int32_t y, W32_UINT flags,
+     gdi_dc_t *d = dc_from_h(hdc);
+     if (!d) { w32_set_last_error(W32_ERROR_INVALID_HANDLE); return 0; }
+     if (!s) return 1;
++    W32_RECT rr;
++    if (r) { rr = *r; dc_rect_to_dev(d, &rr); r = &rr; }
++    dc_log_to_dev(d, &x, &y);
+     const W32_RECT *clip = (flags & W32_ETO_CLIPPED) ? r : 0;
+     const gdi_font_face_t *f = gdi_face();
+     if ((flags & W32_ETO_OPAQUE) && r && f) {
+@@ -3329,11 +3401,11 @@ W32ABI W32_BOOL MoveToEx(W32_HDC hdc, int32_t x, int32_t y, W32_POINT *old) {
+     return W32_TRUE;
+ }
+ 
+-typedef struct { int32_t x1, y1; } line_ctx_t;
++typedef struct { int32_t x0, y0, x1, y1; } line_ctx_t;
+ 
+ static void line_body(surf_t *s, void *user) {
+     line_ctx_t *c = (line_ctx_t *)user;
+-    surf_line_pen(s, s->dc->cur_x, s->dc->cur_y, c->x1, c->y1);
++    surf_line_pen(s, c->x0, c->y0, c->x1, c->y1);
+ }
+ 
+ W32ABI W32_BOOL LineTo(W32_HDC hdc, int32_t x, int32_t y) {
+@@ -3342,9 +3414,12 @@ W32ABI W32_BOOL LineTo(W32_HDC hdc, int32_t x, int32_t y) {
+     gdi_pen_t *p = dc_pen(d);
+     int w = p->width > 0 ? p->width : 1;
+     int32_t x0 = d->cur_x, y0 = d->cur_y;
++    int32_t lx = x, ly = y;          /* keep the logical cursor point */
++    dc_log_to_dev(d, &x0, &y0);
++    dc_log_to_dev(d, &x, &y);
+     int32_t minx = x0 < x ? x0 : x, maxx = x0 > x ? x0 : x;
+     int32_t miny = y0 < y ? y0 : y, maxy = y0 > y ? y0 : y;
+-    line_ctx_t c = { x, y };
++    line_ctx_t c = { x0, y0, x, y };
+     int ok;
+     if (d->kind == 1) {
+         surf_t s;
+@@ -3356,7 +3431,7 @@ W32ABI W32_BOOL LineTo(W32_HDC hdc, int32_t x, int32_t y) {
+                              (maxx - minx) + 2 * w + 1,
+                              (maxy - miny) + 2 * w + 1, line_body, &c);
+     }
+-    d->cur_x = x; d->cur_y = y;
++    d->cur_x = lx; d->cur_y = ly;
+     return ok;
+ }
+ 
+@@ -3388,7 +3463,9 @@ W32_BOOL w32_gdi_fill_rect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
+         br = &legacy;
+     }
+     fill_ctx_t c;
+-    c.l = r->left; c.t = r->top; c.r = r->right; c.b = r->bottom;
++    W32_RECT rr = *r;
++    dc_rect_to_dev(d, &rr);
++    c.l = rr.left; c.t = rr.top; c.r = rr.right; c.b = rr.bottom;
+     c.br = br;
+     if (d->kind == 1) {
+         surf_t s;
+@@ -3396,8 +3473,8 @@ W32_BOOL w32_gdi_fill_rect(W32_HDC hdc, const W32_RECT *r, W32_HBRUSH brush) {
+         fill_body(&s, &c);
+         return 1;
+     }
+-    return win_raster_blit(d, r->left, r->top,
+-                           r->right - r->left, r->bottom - r->top,
++    return win_raster_blit(d, rr.left, rr.top,
++                           rr.right - rr.left, rr.bottom - rr.top,
+                            fill_body, &c);
+ }
+ 
+diff --git a/w32/src/w32_seh.c b/w32/src/w32_seh.c
+index 52f9862..9ad8681 100644
+--- a/w32/src/w32_seh.c
++++ b/w32/src/w32_seh.c
+@@ -35,24 +35,64 @@
+ #include <stddef.h>
+ #include <stdint.h>
+ #include <stdio.h>
++#include <string.h>
++#include <fcntl.h>
++#include <unistd.h>
+ 
+ /* WR-3 diagnosis (temporary): the serial line drops single printf lines
+  * under the kernel writeback flood, so the SEH dispatch trace goes to a
+  * file on the /fat delivery disk instead; the poll harness cats it back
+- * before poweroff. */
+-static FILE *w32trc_fp(void) {
+-    static FILE *fp = (FILE *)-1;
+-    if (fp == (FILE *)-1)
+-        fp = fopen("/fat/w32trace.txt", "w");
+-    return fp;
++ * before poweroff.
++ *
++ * The sink is a RAW FD, deliberately not a FILE*: NPP writes these traces
++ * from several threads at once (UI input, cross-thread sends, and the
++ * fault dispatcher itself, which runs in signal context), and sharing one
++ * buffered FILE* across them raced bufpos past the buffer end and
++ * corrupted the heap -- the intermittent typing crash inside memcpy/
++ * snprintf that looked like application stack damage.  O_APPEND keeps
++ * every write() at the true end of file so concurrent writers only
++ * interleave whole lines, and snprintf formats on the stack, so no
++ * shared state is touched at all. */
++static int w32trc_fd(void) {
++    static volatile int fd = -2;   /* -2 = not opened yet */
++    int cur = __atomic_load_n(&fd, __ATOMIC_ACQUIRE);
++    if (cur == -2) {
++        int nfd = open("/fat/w32trace.txt",
++                       O_WRONLY | O_CREAT | O_TRUNC | O_APPEND, 0644);
++        if (nfd < 0) nfd = -1;
++        if (!__atomic_compare_exchange_n(&fd, &cur, nfd, 0,
++                                         __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
++            if (nfd >= 0) close(nfd);   /* lost the open race */
++        } else {
++            cur = nfd;
++        }
++    }
++    return cur;
+ }
+-#define W32TRC(...) do { FILE *tf_ = w32trc_fp();            \
+-        if (tf_) { fprintf(tf_, __VA_ARGS__); fflush(tf_); } } while (0)
++
++static void w32trc_emit(int fd, const char *p, size_t n) {
++    while (n > 0) {
++        ssize_t w = write(fd, p, n);
++        if (w <= 0) return;
++        p += w;
++        n -= (size_t)w;
++    }
++}
++#define W32TRC(...) do { int tf_ = w32trc_fd();                  \
++        if (tf_ >= 0) { char tb_[512];                           \
++            int tn_ = snprintf(tb_, sizeof tb_, __VA_ARGS__);    \
++            if (tn_ > 0)                                         \
++                w32trc_emit(tf_, tb_, (size_t)tn_ < sizeof tb_ ? \
++                            (size_t)tn_ : sizeof tb_); } } while (0)
+ 
+ void w32trc_line(const char *fmt, unsigned long long a,
+                  unsigned long long b, unsigned long long c) {
+-    FILE *tf = w32trc_fp();
+-    if (tf) { fprintf(tf, fmt, a, b, c); fflush(tf); }
++    int tf = w32trc_fd();
++    if (tf < 0) return;
++    char tb[512];
++    int n = snprintf(tb, sizeof tb, fmt, a, b, c);
++    if (n > 0)
++        w32trc_emit(tf, tb, (size_t)n < sizeof tb ? (size_t)n : sizeof tb);
+ }
+ 
+ /* WR-3 diagnosis (temporary): the string form, for a MessageBox body.  The
+@@ -60,11 +100,15 @@ void w32trc_line(const char *fmt, unsigned long long a,
+  * painted by the same thread that would have to flush it), so the text goes
+  * to the same /fat/w32trace.txt the rest of the dispatch trace uses. */
+ void w32trc_str(const char *tag, const char *s) {
+-    FILE *tf = w32trc_fp();
+-    if (tf) { fprintf(tf, "%s: %s\n", tag, s ? s : "(null)"); fflush(tf); }
++    int tf = w32trc_fd();
++    if (tf < 0) return;
++    if (!s) s = "(null)";
++    w32trc_emit(tf, tag, strlen(tag));
++    w32trc_emit(tf, ": ", 2);
++    w32trc_emit(tf, s, strlen(s));
++    w32trc_emit(tf, "\n", 1);
+ }
+ #include <stdlib.h>
+-#include <string.h>
+ 
+ #include "w32/w32_abi.h"
+ #include "w32/w32_seh.h"

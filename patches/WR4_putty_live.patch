@@ -1,0 +1,1776 @@
+From: WR-4 PuTTY live gate <wr4@auralite>
+Subject: [PATCH] WR-4 PuTTY live: personality fixes + live gate + receipt
+
+Base: 4450da7 (WR-3 merged). Part 1 (kernel/w32) is the WR-4 progress
+patch verbatim (12 files, personality fixes FIX1-FIX32b incl. probes);
+Part 2 stages the live gate, the in-lane lane servers + pinned SSH host
+key, the SLOW_CASES_RE registration, and the #putty receipt addendum.
+Gate: tests/integration/cases/test_wr4_putty_live.sh — 14/14 green
+(2026-10-22, two OVMF boots). No foreign bytes (D-WR3): the pinned
+putty.exe reaches the guest on /fat; only its sha256 pin is recorded.
+
+--- Part 1: personality fixes (WR4_progress_4450da7.patch, verbatim) ---
+
+diff --git a/kernel/fs/diskfs.c b/kernel/fs/diskfs.c
+index 62cf428..69c191b 100644
+--- a/kernel/fs/diskfs.c
++++ b/kernel/fs/diskfs.c
+@@ -17,12 +17,17 @@
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/errno.h"   /* RESIDUE2 T1: native errno */
++#include "kernel/mm/kheap.h"      /* FIX32: heap file buffer */
+ 
+ #define DISKFS_MAGIC 0x41554653u /* AUFS */
+ #define DISKFS_VERSION 2
+ #define DISKFS_MAX_FILES 8
+ #define DISKFS_NAME_MAX 48
+-#define DISKFS_FILE_SECTORS 8
++/* FIX32 (WR-4): 16 KiB files; a real PuTTY session hive is ~4.5 KiB
++ * and legitimately overflows the old 4 KiB cap (EFBIG broke registry
++ * saves and wedged the app in an error modal).  Layout stride grows with
++ * it (fresh lab disks; no on-disk compat needed). */
++#define DISKFS_FILE_SECTORS 32
+ #define DISKFS_MAX_FILE_SIZE (DISKFS_FILE_SECTORS * BLKDEV_SECTOR_SIZE)
+ #define DISKFS_SUPER_LBA 2
+ #define DISKFS_TABLE_LBA 3
+@@ -230,11 +235,13 @@ static int64_t diskfs_read(struct vnode *vn, uint64_t pos,
+     if (!e || pos >= e->size) return 0;
+     if (pos + count > e->size) count = e->size - pos;
+ 
+-    uint8_t tmp[DISKFS_MAX_FILE_SIZE];
++    uint8_t *tmp = kmalloc(DISKFS_MAX_FILE_SIZE);
++    if (!tmp) return -ENOMEM;
+     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
+-        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -EIO;
++        if (read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) { kfree(tmp); return -EIO; }
+     }
+     memcpy(buf, tmp + pos, (size_t)count);
++    kfree(tmp);
+     e->atime = vfs_now();
+     sync_table();
+     rebuild_vnodes();
+@@ -247,8 +254,9 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
+     if (!e) return -EBADF;
+     if (pos + count > DISKFS_MAX_FILE_SIZE || pos + count < pos) return -EFBIG;
+ 
+-    uint8_t tmp[DISKFS_MAX_FILE_SIZE];
+-    memset(tmp, 0, sizeof(tmp));
++    uint8_t *tmp = kmalloc(DISKFS_MAX_FILE_SIZE);
++    if (!tmp) return -ENOMEM;
++    memset(tmp, 0, DISKFS_MAX_FILE_SIZE);
+     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
+         (void)read_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE);
+     }
+@@ -258,8 +266,9 @@ static int64_t diskfs_write(struct vnode *vn, uint64_t pos,
+     e->mtime = e->ctime = vfs_now();
+ 
+     for (uint32_t s = 0; s < DISKFS_FILE_SECTORS; s++) {
+-        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) return -EIO;
++        if (write_sector(e->start_lba + s, tmp + s * BLKDEV_SECTOR_SIZE) != 0) { kfree(tmp); return -EIO; }
+     }
++    kfree(tmp);
+     sync_table();
+     rebuild_vnodes();
+     return (int64_t)count;
+diff --git a/kernel/gui/gui.c b/kernel/gui/gui.c
+index f88fa41..fc8160b 100644
+--- a/kernel/gui/gui.c
++++ b/kernel/gui/gui.c
+@@ -492,6 +492,21 @@ int gui_focus_window(int wid) {
+      * level and the child's control would still not see WM_KEYDOWN. */
+     if (win_has_parent(&windows[wid]) || (windows[wid].flags & GUI_WIN_NO_DECOR)) {
+         gui_event_t fe = { GUI_EVT_FOCUS, 0,0,0,0,0,0 };
++        /* WR-4 F24 (4450da7 port): a top-level popup (the PuTTY config
++         * box is parent-less and NO_DECOR) must not steal keyboard
++         * focus from a live visible descendant that already holds it.
++         * Without this, focusing the popup orphaned the focused edit
++         * and typed keys went nowhere (4450da7's win_has_parent
++         * takes a window pointer, not an id). */
++        if (!win_has_parent(&windows[wid])) {
++            int kf = key_focus;
++            if (kf >= 0 && kf < GUI_MAX_WINDOWS &&
++                windows[kf].in_use && windows[kf].parent == wid &&
++                windows[kf].visible && !windows[kf].minimized) {
++                gui_post_event(wid, &fe);
++                return 0;
++            }
++        }
+         key_focus = wid;
+         gui_post_event(wid, &fe);
+         return 0;
+diff --git a/kernel/gui/gui_syscalls.c b/kernel/gui/gui_syscalls.c
+index 5f3b103..bf31f00 100644
+--- a/kernel/gui/gui_syscalls.c
++++ b/kernel/gui/gui_syscalls.c
+@@ -26,13 +26,30 @@ static char gui_kernel_clipboard[GUI_USER_TEXT_MAX] = {0};
+ static inline int32_t  lo32(uint64_t v) { return (int32_t)(v & 0xFFFFFFFFu); }
+ static inline int32_t  hi32(uint64_t v) { return (int32_t)(v >> 32); }
+ 
++/* WR-4 fix #5: a window title longer than the kernel buffer truncates
++ * instead of failing the create.  copy_string_from_user reports -1 when no
++ * NUL fits in the limit, which turned a 99-character PuTTY hint static into
++ * GUI_OP_CREATE => -1 (lasterr=8); the create path (gui_create_window) only
++ * ever keeps the first bytes anyway, so truncate here and fail solely on
++ * an unreadable first byte. */
+ static int copy_gui_title(char *dst, uint64_t user_title) {
++    uint64_t i;
+     if (!user_title) {
+         dst[0] = 0;
+         return 0;
+     }
+-    return copy_string_from_user(dst, (const char *)(uintptr_t)user_title,
+-                                 GUI_TITLE_MAX);
++    for (i = 0; i < (uint64_t)(GUI_TITLE_MAX - 1); i++) {
++        char c;
++        if (copy_from_user(&c, (const void *)(uintptr_t)(user_title + i), 1) != 0)
++            break;
++        dst[i] = c;
++        if (!c)
++            return 0;
++    }
++    if (i == 0)
++        return -1;
++    dst[i] = 0;
++    return 0;
+ }
+ 
+ static uint64_t current_pid(void) {
+diff --git a/kernel/net/socket.c b/kernel/net/socket.c
+index f6e4c84..09d2fe8 100644
+--- a/kernel/net/socket.c
++++ b/kernel/net/socket.c
+@@ -67,7 +67,11 @@ static socket_t *get_owned_socket(int sid) {
+ int64_t socket_create(int domain, int type, int protocol) {
+     if (domain != AURA_AF_INET && domain != AURA_AF_INET6) return -EAFNOSUPPORT;
+     if (type != AURA_SOCK_STREAM && type != AURA_SOCK_DGRAM) return -EINVAL;
+-    for (int i = 0; i < SOCKET_MAX; i++) {
++    /* WR-4 FIX30d: never hand out 0/1/2 as a socket id.  Winsock apps
++     * treat a 0 wParam as "no socket" and drop the message (PuTTY's
++     * select_result returns early on wParam==0), so every WM_NETEVENT
++     * for sid 0 was silently ignored.  Slots 0-2 stay FREE forever. */
++    for (int i = 3; i < SOCKET_MAX; i++) {
+         if (sockets[i].state == SOCK_SLOT_FREE) {
+             memset(&sockets[i], 0, sizeof(sockets[i]));
+             sockets[i].state = SOCK_SLOT_OPEN;
+@@ -85,7 +89,10 @@ int64_t socket_create(int domain, int type, int protocol) {
+ int64_t socket_connect(int sid, uint32_t ip, uint16_t port) {
+     socket_t *s = get_owned_socket(sid);
+     if (!s) return -EBADF;
+-    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
++    /* WR-4: a bound socket connects fine (PuTTY binds outgoing
++     * sockets to INADDR_ANY:0 first); only unusable states fail. */
++    if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND)
++        return -EINVAL;
+     if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+     int h = tcp_open(ip, port);
+     if (h < 0) return h;   /* -ECONNREFUSED / -EHOSTUNREACH / -ETIMEDOUT / -EMFILE */
+@@ -101,7 +108,8 @@ int64_t socket_connect6(int sid, const uint8_t addr[16], uint16_t port) {
+     netl3_addr_t dst;
+     int h;
+     if (!s) return -EBADF;
+-    if (s->state != SOCK_SLOT_OPEN) return -EINVAL;
++    if (s->state != SOCK_SLOT_OPEN && s->state != SOCK_SLOT_BOUND)
++        return -EINVAL;
+     if (s->type != AURA_SOCK_STREAM) return -EOPNOTSUPP;
+     if (!addr) return -EFAULT;
+     if (s->domain != AURA_AF_INET6 && s->domain != AURA_AF_INET)
+@@ -177,7 +185,7 @@ int64_t socket_accept(int sid, uint32_t *ip, uint16_t *port) {
+     int new_h = tcp_accept(s->tcp_handle, &peer_ip, &peer_port);
+     if (new_h < 0) return new_h;   /* -EBADF / -ETIMEDOUT / -EMFILE */
+ 
+-    for (int i = 0; i < SOCKET_MAX; i++) {
++    for (int i = 3; i < SOCKET_MAX; i++) {   /* WR-4 FIX30d: see socket_create */
+         if (sockets[i].state == SOCK_SLOT_FREE) {
+             memset(&sockets[i], 0, sizeof(sockets[i]));
+             sockets[i].state = SOCK_SLOT_CONNECTED;
+diff --git a/kernel/net/tcp.c b/kernel/net/tcp.c
+index 1ecb941..326aaa6 100644
+--- a/kernel/net/tcp.c
++++ b/kernel/net/tcp.c
+@@ -292,10 +292,33 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
+                                     uint64_t timeout_ticks) {
+     uint8_t buf[2048];
+     uint64_t deadline = timer_get_ticks() + timeout_ticks;
+-    while (timer_get_ticks() < deadline) {
+-        uint64_t now = timer_get_ticks();
+-        uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
+-        int n = netdev_recv_wait(buf, sizeof(buf), remaining);
++    /* WR-4 FIX30b: timeout_ticks==0 is a pure non-blocking poll (the
++     * WSAAsyncSelect pump depends on it).  The old `while (now<deadline)`
++     * never executed the body for 0, so zero-tick recv saw nothing and
++     * inbound never arrived.  Poll once per pass via the non-blocking
++     * entry; never sleep.  (recv_wait(0) blocks -- it is the drivers'
++     * blocking entry -- so it must not be used here.) */
++    int zero_poll = (timeout_ticks == 0);
++    int zero_cap = 32;
++    int first_pass = 1;
++    for (;;) {
++        if (!first_pass) {
++            if (zero_poll) {
++                if (zero_cap <= 0) break;
++            } else if (timer_get_ticks() >= deadline) {
++                break;
++            }
++        }
++        first_pass = 0;
++        int n;
++        if (zero_poll) {
++            zero_cap--;
++            n = netdev_recv(buf, sizeof(buf));
++        } else {
++            uint64_t now = timer_get_ticks();
++            uint64_t remaining = (deadline > now) ? (deadline - now) : 1;
++            n = netdev_recv_wait(buf, sizeof(buf), remaining);
++        }
+         if (n < 0) return -1;
+         if (n == 0) break;
+         /* Y3 CATCH: while TCP owns the NIC, SLIRP's NS for our
+diff --git a/w32/include/w32/comctl32.h b/w32/include/w32/comctl32.h
+index a5eeae9..c1956db 100644
+--- a/w32/include/w32/comctl32.h
++++ b/w32/include/w32/comctl32.h
+@@ -522,10 +522,12 @@ typedef struct {
+ #define W32_TVIS_EXPANDEDONCE  0x0040u
+ 
+ /* HTREEITEM sentinels (documented). */
+-#define W32_TVI_ROOT   ((W32_HWND)(uintptr_t)0xFFFF0000ull)
+-#define W32_TVI_FIRST  ((W32_HWND)(uintptr_t)0xFFFF0001ull)
+-#define W32_TVI_LAST   ((W32_HWND)(uintptr_t)0xFFFF0002ull)
+-#define W32_TVI_SORT   ((W32_HWND)(uintptr_t)0xFFFF0003ull)
++/* WR-4 fix #6: the sentinels are negative HTREEITEMs (commctrl.h), not
++ * bare 32-bit tags -- the truncated ROOT missed PuTTY's first insert. */
++#define W32_TVI_ROOT   ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0000ull)
++#define W32_TVI_FIRST  ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0001ull)
++#define W32_TVI_LAST   ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0002ull)
++#define W32_TVI_SORT   ((W32_HWND)(uintptr_t)0xFFFFFFFFFFFF0003ull)
+ 
+ /* TVM_EXPAND wParam. */
+ #define W32_TVE_COLLAPSE 0x0001u
+diff --git a/w32/src/advapi32.c b/w32/src/advapi32.c
+index 41502e2..8ba9bae 100644
+--- a/w32/src/advapi32.c
++++ b/w32/src/advapi32.c
+@@ -541,6 +541,11 @@ static void hive_load(void) {
+ }
+ 
+ static int fsync_noted;
++/* FIX32b (WR-4): defer persistence to flush/close; per-value saves
++ * turned one PuTTY Save click (~200 registry ops) into ~200 full
++ * 16 KiB file rewrites and wedged the pump behind minutes of I/O. */
++static int hive_dirty = 0;
++
+ static int hive_save(void) {
+     buf_t b = {0};
+     buf_u32(&b, 2);
+@@ -894,7 +899,7 @@ static W32_LONG reg_create_common(W32_HKEY key, const uint16_t *subkey,
+     int err = 0;
+     reg_key_t *k = resolve_for_write(root, c, n, 1, &err);
+     if (!k) return err ? (W32_LONG)err : (W32_LONG)W32_ERROR_NOT_ENOUGH_MEMORY;
+-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++    hive_dirty = 1;  /* FIX32b: persist on flush/close */
+ 
+     W32_HKEY h = handle_alloc(root, joined, (size_t)jn);
+     if (!h) return W32_ERROR_NOT_ENOUGH_MEMORY;
+@@ -931,6 +936,11 @@ W32_LONG W32ABI RegCloseKey(W32_HKEY key) {
+     for (int i = 0; i < REG_KEY_HANDLES; i++) {
+         if (reg_handles[i].used && (W32_HKEY)(uintptr_t)&reg_handles[i] == key) {
+             reg_handles[i].used = 0;
++            /* FIX32b: last writer out persists (PuTTY closes its session key). */
++            if (hive_dirty) {
++                if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++                hive_dirty = 0;
++            }
+             return W32_ERROR_SUCCESS;
+         }
+     }
+@@ -1061,7 +1071,7 @@ static W32_LONG reg_set_common(W32_HKEY key, const uint16_t *name,
+ 
+     if (key_set_value(k, vn, vnl, type, data, len) != 0)
+         return W32_ERROR_NOT_ENOUGH_MEMORY;
+-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++    hive_dirty = 1;  /* FIX32b: persist on flush/close */
+     return W32_ERROR_SUCCESS;
+ }
+ 
+@@ -1130,7 +1140,7 @@ W32_LONG W32ABI RegDeleteValueW(W32_HKEY key, const uint16_t *name) {
+     reg_value_t *v = key_find_value(k, name, vnl);
+     if (!v) return W32_ERROR_FILE_NOT_FOUND;
+     key_delete_value(k, v);
+-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++    hive_dirty = 1;  /* FIX32b: persist on flush/close */
+     return W32_ERROR_SUCCESS;
+ }
+ 
+@@ -1170,7 +1180,7 @@ static W32_LONG reg_delete_common(W32_HKEY key, const uint16_t *subkey,
+     if (!child) return W32_ERROR_FILE_NOT_FOUND;
+     if (refuse_nonempty && child->nsubs) return W32_ERROR_ACCESS_DENIED;
+     key_remove_child(parent, child);
+-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++    hive_dirty = 1;  /* FIX32b: persist on flush/close */
+     return W32_ERROR_SUCCESS;
+ }
+ 
+@@ -1451,7 +1461,10 @@ W32_LONG W32ABI RegFlushKey(W32_HKEY key) {
+     (void)key;                    /* flush is whole-hive, not per-key */
+     hive_ensure_loaded();
+     if (hive_corrupt) return W32_ERROR_FILE_CORRUPT;
+-    if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++    if (hive_dirty) {
++        if (hive_save() != 0) return W32_ERROR_REGISTRY_IO_FAILED;
++        hive_dirty = 0;
++    }
+     return W32_ERROR_SUCCESS;
+ }
+ 
+diff --git a/w32/src/user32_win.c b/w32/src/user32_win.c
+index 61048d7..37468bb 100644
+--- a/w32/src/user32_win.c
++++ b/w32/src/user32_win.c
+@@ -310,6 +310,9 @@ struct ui_window {
+     int32_t   normal_x, normal_y;     /* placement: restored geometry */
+     uint32_t  normal_w, normal_h;
+     int32_t   ctrl_id;
++    int       check_state;          /* WR-4: BM_GETCHECK/BM_SETCHECK */
++    int32_t   edit_caret;           /* WR-4: caret char index */
++    int       edit_focus;           /* WR-4: nonzero while focused */
+     W32_WNDPROC proc[UI_MAX_PROCS];   /* [0] class proc, [n] subclasses */
+     int       proc_top;               /* index of the current top, >= 0 */
+     void     *user_data;
+@@ -409,6 +412,21 @@ static int w16_eq(const uint16_t *a, const uint16_t *b) {
+     return *a == 0 && *b == 0;
+ }
+ 
++/* WR-4 fix #3: window-class names compare case-insensitively (PuTTY creates
++ * BUTTON/STATIC/EDIT while the predefined classes register as
++ * Button/Static/Edit); the exact match refused every panel child. */
++static int w16_ieq(const uint16_t *a, const uint16_t *b) {
++    if (!a || !b) return 0;
++    while (*a && *b) {
++        uint16_t ca = *a, cb = *b;
++        if (ca >= (uint16_t)'a' && ca <= (uint16_t)'z') ca -= (uint16_t)('a' - 'A');
++        if (cb >= (uint16_t)'a' && cb <= (uint16_t)'z') cb -= (uint16_t)('a' - 'A');
++        if (ca != cb) return 0;
++        a++; b++;
++    }
++    return *a == 0 && *b == 0;
++}
++
+ /* UTF-16 -> UTF-8 into a fixed buffer; returns the byte length written. */
+ static int w16_to_a(char *dst, size_t cap, const uint16_t *src) {
+     size_t needed = 0;
+@@ -604,6 +622,34 @@ static int32_t ui_parent_client_dy(const struct ui_window *w) {
+     return ui_parent_client_dy_idx(w->parent);
+ }
+ 
++/* WR-4: the compositor position of a child is parent-surface-relative
++ * (SetWindowPos stores logical + menu strip there), while the rect/point
++ * APIs speak screen coordinates (MSDN GetWindowRect).  A top level's
++ * compositor position IS screen (its outer origin -- SetWindowPos moves
++ * it there directly), so accumulate ancestor surface origins up the
++ * parent chain; a top level's own path contributes nothing.  Nested
++ * children carry no decor and no menu strip (ui_decor / ui_menu_h
++ * exclude WS_CHILD), so only the top ancestor adds decoration. */
++static void ui_ancestor_screen_offset(int i, int32_t *dx, int32_t *dy) {
++    int32_t x = 0, y = 0;
++    int p = (i >= 0 && i < UI_MAX_WINDOWS) ? windows[i].parent : -1;
++    while (p >= 0 && p < UI_MAX_WINDOWS && windows[p].in_use) {
++        int32_t px = 0, py = 0;
++        ag_window_get_pos(windows[p].ag_wid, &px, &py);
++        if (windows[p].parent < 0) {
++            uint32_t bw = 0, th = 0;
++            ui_decor(&windows[p], &bw, &th);
++            x += px + (int32_t)bw;
++            y += py + (int32_t)(th + bw);
++        } else {
++            x += px;
++            y += py;
++        }
++        p = windows[p].parent;
++    }
++    *dx = x; *dy = y;
++}
++
+ static void ui_refresh_geom(struct ui_window *w) {
+     if (w->ag_wid < 0) return;
+     ag_window_get_pos(w->ag_wid, &w->x, &w->y);
+@@ -648,7 +694,7 @@ int w32_win_cls_ag_wid(W32_HWND hwnd) {
+ static struct ui_class *ui_find_class_w(const uint16_t *name) {
+     if (!name) return 0;
+     for (int i = 0; i < UI_MAX_CLASSES; i++)
+-        if (classes[i].in_use && w16_eq(classes[i].name_w, name)) return &classes[i];
++        if (classes[i].in_use && w16_ieq(classes[i].name_w, name)) return &classes[i];
+     return 0;
+ }
+ 
+@@ -724,7 +770,7 @@ W32_WORD w32_win_register_comctl_class(const W32_WNDCLASSEXW *c) {
+     W32_WORD atom = ui_register_class(c);
+     if (!atom) return 0;
+     for (int i = 0; i < UI_MAX_CLASSES; i++) {
+-        if (classes[i].in_use && w16_eq(classes[i].name_w, c->lpszClassName)) {
++        if (classes[i].in_use && w16_ieq(classes[i].name_w, c->lpszClassName)) {
+             classes[i].comctl = 1;
+             break;
+         }
+@@ -866,12 +912,500 @@ const uint16_t w32_cls_ListBox_w[] = {'L','i','s','t','B','o','x',0};
+ const uint16_t w32_cls_ScrollBar_w[] = {'S','c','r','o','l','l','B','a','r',0};
+ const uint16_t w32_cls_ComboBox_w[] = {'C','o','m','b','o','B','o','x',0};
+ 
++/* ---- WR-4: standard control painters --------------------------------------
++ * Button and Static were DefWindowProc personalities (erase, no content), so
++ * a dialog made of standard controls -- PuTTY's config panel is nothing
++ * else -- stayed blank.  They paint here.  Colours are the Win32
++ * dialog-classic COLORREFs (MSDN "GetSysColor" defaults); control *content*
++ * stays readable on any desktop, exactly as on Windows where dialogs ignore
++ * the wallpaper.  Style numbers are the MSDN "Button Styles" / "Static
++ * Control Styles" values; no W32_ constants exist for them yet, so they are
++ * spelled out once, here. */
++
++/* Button type: the style's low nibble. */
++#define WR4_BS_PUSHBUTTON      0u
++#define WR4_BS_DEFPUSHBUTTON   1u
++#define WR4_BS_CHECKBOX        2u
++#define WR4_BS_AUTOCHECKBOX    3u
++#define WR4_BS_RADIOBUTTON     4u
++#define WR4_BS_GROUPBOX        7u
++#define WR4_BS_AUTORADIOBUTTON 9u
++/* Static text kinds: the style's low nibble. */
++#define WR4_SS_LEFT   0u
++#define WR4_SS_CENTER  1u
++#define WR4_SS_RIGHT   2u
++#define WR4_SS_SIMPLE  11u
++#define WR4_SS_NOWRAP 12u
++/* Button messages / check states (MSDN "BM_GETCHECK"). */
++#define WR4_BM_GETCHECK 0xF0u
++#define WR4_BM_SETCHECK 0xF1u
++#define WR4_BST_CHECKED 1
++
++#define WR4_C_FACE   ((W32_DWORD)0x00C8D0D4u)   /* D4D0C8 dialog face */
++#define WR4_C_SHADOW ((W32_DWORD)0x00808080u)
++#define WR4_C_HILITE ((W32_DWORD)0x00FFFFFFu)
++#define WR4_C_TEXT   ((W32_DWORD)0x00000000u)
++
++/* Copy a control caption, collapsing the mnemonic marker: a lone '&' marks
++ * the mnemonic and is not drawn, '&&' draws one (MSDN "Buttons": the
++ * ampersand prefix).  Returns the stored length. */
++static int32_t w32_ctl_stripped(const uint16_t *src, uint16_t *dst,
++                                int32_t cap) {
++    int32_t n = 0, i = 0;
++    if (!src || !dst || cap <= 1) return 0;
++    while (src[i] && n < cap - 1) {
++        if (src[i] == '&') {
++            if (src[i + 1] == '&') { dst[n++] = '&'; i++; }
++            /* else: mnemonic marker, dropped */
++        } else dst[n++] = src[i];
++        i++;
++    }
++    dst[n] = 0;
++    return n;
++}
++
++/* Edit styles/messages (MSDN "Edit Control Styles", "EM_GETSEL"). */
++#define WR4_ES_MULTILINE 0x4u
++#define WR4_ES_PASSWORD  0x20u
++#define WR4_ES_READONLY  0x800u
++#define WR4_EX_CLIENTEDGE 0x200u
++#define WR4_EN_CHANGE 0x300u
++#define WR4_EM_GETSEL 0xB0u
++#define WR4_EM_SETSEL 0xB1u
++
++static int32_t w32_edit_len(int i) {
++    int32_t n = 0;
++    while (n < UI_TITLE_MAX && windows[i].title[n]) n++;
++    return n;
++}
++
++static W32_LRESULT W32ABI w32_edit_proc(W32_HWND hw, W32_UINT msg,
++                                        W32_WPARAM wp, W32_LPARAM lp) {
++    if (msg == W32_WM_PAINT) {
++        int i = w32_win_index_from_hwnd(hw);
++        if (i < 0) return 0;
++        W32_PAINTSTRUCT ps;
++        W32_HDC hdc = BeginPaint(hw, &ps);
++        if (hdc) {
++            W32_RECT rc, e;
++            uint16_t buf[UI_TITLE_MAX];
++            int32_t n = 0, k;
++            int32_t ytxt;
++            W32_SIZE sz;
++            GetClientRect(hw, &rc);
++            FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++            if (windows[i].exstyle & WR4_EX_CLIENTEDGE) {
++                e = rc; e.bottom = e.top + 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
++                e = rc; e.right = e.left + 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
++                e = rc; e.top = e.bottom - 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                e = rc; e.left = e.right - 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++            }
++            /* Visible text: the caption (v1: first line; a multiline box
++             * keeps the rest for WM_GETTEXT).  A password shows stars. */
++            for (k = 0; k < UI_TITLE_MAX - 1 && windows[i].title[k]; k++) {
++                uint16_t c = windows[i].title[k];
++                if (c == '\r' || c == '\n') break;
++                buf[n++] = (windows[i].style & WR4_ES_PASSWORD) ? '*' : c;
++            }
++            buf[n] = 0;
++            ytxt = rc.top + 2;
++            sz.cx = 0; sz.cy = 14;
++            if (GetTextExtentPoint32W(hdc, buf, n, &sz) && sz.cy > 0)
++                ytxt = rc.top + ((rc.bottom - rc.top) - sz.cy) / 2;
++            if (ytxt < rc.top) ytxt = rc.top;
++            if (n > 0) {
++                SetBkMode(hdc, W32_TRANSPARENT);
++                SetTextColor(hdc, WR4_C_TEXT);
++                TextOutW(hdc, rc.left + 3, ytxt, buf, n);
++            }
++            if (windows[i].edit_focus) {
++                /* Caret: a 2px bar after the caret char. */
++                int32_t ci = windows[i].edit_caret;
++                int32_t cxp = rc.left + 3;
++                W32_SIZE pre;
++                if (ci > n) ci = n;
++                if (ci > 0 && GetTextExtentPoint32W(hdc, buf, ci, &pre))
++                    cxp += pre.cx;
++                e.left = cxp; e.top = ytxt;
++                e.right = cxp + 2; e.bottom = ytxt + sz.cy;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_TEXT);
++            }
++            EndPaint(hw, &ps);
++        }
++        return 0;
++    }
++    if (msg == W32_WM_SETFOCUS || msg == W32_WM_KILLFOCUS) {
++        int fi = w32_win_index_from_hwnd(hw);
++        if (fi >= 0) {
++            windows[fi].edit_focus = (msg == W32_WM_SETFOCUS) ? 1 : 0;
++            InvalidateRect(hw, 0, W32_TRUE);
++        }
++        return 0;
++    }
++    if (msg == 0x0087u /*WM_GETDLGCODE*/) {
++        /* DLGC_WANTCHARS|DLGC_HASSETSEL|DLGC_WANTARROWS: an edit owns
++         * character keys, arrows and the selection, so IsDialogMessage
++         * translates KEYDOWN into WM_CHAR for it. */
++        return (W32_LRESULT)(0x0080u | 0x0008u | 0x0001u);
++    }
++    if (msg == W32_WM_CHAR) {
++        int ci = w32_win_index_from_hwnd(hw);
++        if (ci >= 0 && !(windows[ci].style & WR4_ES_READONLY)) {
++            int32_t len = w32_edit_len(ci);
++            int32_t at = windows[ci].edit_caret;
++            int changed = 0;
++            if (at < 0) at = 0;
++            if (at > len) at = len;
++            if (wp == 0x08) {                       /* backspace */
++                if (at > 0) {
++                    memmove(&windows[ci].title[at - 1],
++                            &windows[ci].title[at],
++                            (size_t)(len - at + 1) * sizeof(uint16_t));
++                    at--;
++                    changed = 1;
++                }
++            } else if (wp >= 0x20 && wp < 0x10000 && len < UI_TITLE_MAX - 1) {
++                memmove(&windows[ci].title[at + 1], &windows[ci].title[at],
++                        (size_t)(len - at + 1) * sizeof(uint16_t));
++                windows[ci].title[at] = (uint16_t)wp;
++                at++;
++                changed = 1;
++            }
++            if (changed) {
++                windows[ci].edit_caret = at;
++                w16_to_a(windows[ci].title_a, sizeof windows[ci].title_a,
++                         windows[ci].title);
++                InvalidateRect(hw, 0, W32_TRUE);
++                {
++                    W32_HWND parent = GetParent(hw);
++                    if (parent)
++                        PostMessageW(parent, W32_WM_COMMAND,
++                                     (W32_WPARAM)(((uint32_t)WR4_EN_CHANGE << 16) |
++                                                  ((uint32_t)(unsigned)windows[ci].ctrl_id & 0xFFFFu)),
++                                     (W32_LPARAM)hw);
++                }
++            }
++        }
++        return 0;
++    }
++    if (msg == W32_WM_KEYDOWN) {
++        int ki = w32_win_index_from_hwnd(hw);
++        if (ki >= 0) {
++            int32_t len = w32_edit_len(ki);
++            int32_t at = windows[ki].edit_caret;
++            int moved = 1;
++            switch ((uint32_t)wp) {
++            case W32_VK_LEFT:  if (at > 0) at--; break;
++            case W32_VK_RIGHT: if (at < len) at++; break;
++            case W32_VK_HOME:  at = 0; break;
++            case W32_VK_END:   at = len; break;
++            case W32_VK_DELETE:
++                if (at < len) {
++                    memmove(&windows[ki].title[at],
++                            &windows[ki].title[at + 1],
++                            (size_t)(len - at) * sizeof(uint16_t));
++                    w16_to_a(windows[ki].title_a,
++                             sizeof windows[ki].title_a, windows[ki].title);
++                    InvalidateRect(hw, 0, W32_TRUE);
++                }
++                break;
++            default: moved = 0; break;
++            }
++            if (moved) {
++                windows[ki].edit_caret = at;
++                InvalidateRect(hw, 0, W32_TRUE);
++            }
++        }
++        return 0;
++    }
++    if (msg == WR4_EM_GETSEL) {
++        int gi = w32_win_index_from_hwnd(hw);
++        int32_t at = (gi >= 0) ? windows[gi].edit_caret : 0;
++        if (wp) *(W32_DWORD *)(uintptr_t)wp = (W32_DWORD)at;
++        if (lp) *(W32_DWORD *)(uintptr_t)lp = (W32_DWORD)at;
++        return (W32_LRESULT)(((uint32_t)at << 16) | (uint32_t)at);
++    }
++    if (msg == WR4_EM_SETSEL) {
++        int si = w32_win_index_from_hwnd(hw);
++        if (si >= 0) {
++            int32_t len = w32_edit_len(si);
++            int32_t at = (int32_t)(lp == (W32_LPARAM)(int32_t)-1 ? len
++                                                                 : (int32_t)lp);
++            if (at < 0) at = 0;
++            if (at > len) at = len;
++            windows[si].edit_caret = at;
++            InvalidateRect(hw, 0, W32_TRUE);
++        }
++        return 0;
++    }
++    if (msg == W32_WM_SETTEXT) {
++        W32_LRESULT r = DefWindowProcW(hw, msg, wp, lp);
++        int ti = w32_win_index_from_hwnd(hw);
++        if (ti >= 0) {
++            windows[ti].edit_caret = w32_edit_len(ti);
++            InvalidateRect(hw, 0, W32_TRUE);
++        }
++        return r;
++    }
++    return DefWindowProcW(hw, msg, wp, lp);
++}
++
++static W32_LRESULT W32ABI w32_static_proc(W32_HWND hw, W32_UINT msg,
++                                          W32_WPARAM wp, W32_LPARAM lp) {
++    if (msg == W32_WM_PAINT) {
++        int i = w32_win_index_from_hwnd(hw);
++        if (i < 0) return 0;
++        W32_UINT type = windows[i].style & 0xFu;
++        W32_PAINTSTRUCT ps;
++        W32_HDC hdc = BeginPaint(hw, &ps);
++        if (hdc) {
++            if (type == WR4_SS_LEFT || type == WR4_SS_CENTER ||
++                type == WR4_SS_RIGHT || type == WR4_SS_SIMPLE ||
++                type == WR4_SS_NOWRAP || type == 0xDu) {
++                W32_RECT rc;
++                GetClientRect(hw, &rc);
++                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                uint16_t buf[UI_TITLE_MAX];
++                int32_t n = w32_ctl_stripped(windows[i].title, buf,
++                                             UI_TITLE_MAX);
++                if (n > 0) {
++                    int32_t x = rc.left;
++                    if (type == WR4_SS_CENTER || type == WR4_SS_RIGHT) {
++                        W32_SIZE sz;
++                        if (GetTextExtentPoint32W(hdc, buf, n, &sz)) {
++                            if (type == WR4_SS_CENTER)
++                                x = rc.left +
++                                    ((rc.right - rc.left) - sz.cx) / 2;
++                            else
++                                x = rc.right - sz.cx;
++                            if (x < rc.left) x = rc.left;
++                        }
++                    }
++                    SetBkMode(hdc, W32_TRANSPARENT);
++                    SetTextColor(hdc, WR4_C_TEXT);
++                    TextOutW(hdc, x, rc.top, buf, n);
++                }
++            }
++            /* Icon/bitmap/rect/frame kinds keep the BeginPaint erase. */
++            EndPaint(hw, &ps);
++        }
++        return 0;
++    }
++    if (msg == W32_WM_SETTEXT) {
++        W32_LRESULT r = DefWindowProcW(hw, msg, wp, lp);
++        InvalidateRect(hw, 0, W32_TRUE);
++        return r;
++    }
++    return DefWindowProcW(hw, msg, wp, lp);
++}
++
++/* One-pixel 3D edge: highlight top/left, shadow bottom/right. */
++static void w32_btn_edge(W32_HDC hdc, const W32_RECT *rc) {
++    W32_RECT e;
++    e = *rc; e.bottom = e.top + 1;
++    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++    e = *rc; e.right = e.left + 1;
++    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++    e = *rc; e.top = e.bottom - 1;
++    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
++    e = *rc; e.left = e.right - 1;
++    FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
++}
++
++/* Centered caption inside (cx0,cy0)-(cx1,cy1). */
++static void w32_btn_text(W32_HDC hdc, int i, int32_t cx0, int32_t cy0,
++                         int32_t cx1, int32_t cy1) {
++    uint16_t buf[UI_TITLE_MAX];
++    int32_t n = w32_ctl_stripped(windows[i].title, buf, UI_TITLE_MAX);
++    if (n <= 0) return;
++    W32_SIZE sz;
++    int32_t x = cx0, y = cy0;
++    if (GetTextExtentPoint32W(hdc, buf, n, &sz)) {
++        x = cx0 + ((cx1 - cx0) - sz.cx) / 2;
++        y = cy0 + ((cy1 - cy0) - sz.cy) / 2;
++        if (x < cx0) x = cx0;
++        if (y < cy0) y = cy0;
++    }
++    SetBkMode(hdc, W32_TRANSPARENT);
++    SetTextColor(hdc, WR4_C_TEXT);
++    TextOutW(hdc, x, y, buf, n);
++}
++
++/* Left-aligned caption at x0, vertically centred in (cy0, cy1). */
++static void w32_btn_ltext(W32_HDC hdc, int i, int32_t x0, int32_t cy0,
++                          int32_t cy1) {
++    uint16_t buf[UI_TITLE_MAX];
++    int32_t n = w32_ctl_stripped(windows[i].title, buf, UI_TITLE_MAX);
++    if (n <= 0) return;
++    W32_SIZE sz;
++    int32_t y = cy0;
++    if (GetTextExtentPoint32W(hdc, buf, n, &sz)) {
++        y = cy0 + ((cy1 - cy0) - sz.cy) / 2;
++        if (y < cy0) y = cy0;
++    }
++    SetBkMode(hdc, W32_TRANSPARENT);
++    SetTextColor(hdc, WR4_C_TEXT);
++    TextOutW(hdc, x0, y, buf, n);
++}
++
+ /* The predefined Button personality: a click is a WM_COMMAND to the parent
+  * with the control's id and BN_CLICKED.  That is all a default button has
+- * to do for a WinMain dialog to work (7-Zip's IDD_COPY OK/Cancel). */
++ * to do for a WinMain dialog to work (7-Zip's IDD_COPY OK/Cancel).
++ * WR-4: push/radio/check/group paint, BM_GETCHECK/BM_SETCHECK storage, and
++ * the AUTO toggle, so a config panel reads as a config panel. */
+ static W32_LRESULT W32ABI w32_btn_defproc(W32_HWND hw, W32_UINT msg,
+                                           W32_WPARAM wp, W32_LPARAM lp) {
++    if (msg == WR4_BM_GETCHECK) {
++        int gi = w32_win_index_from_hwnd(hw);
++        return gi < 0 ? 0 : (W32_LRESULT)windows[gi].check_state;
++    }
++    if (msg == WR4_BM_SETCHECK) {
++        int si = w32_win_index_from_hwnd(hw);
++        if (si >= 0) {
++            windows[si].check_state = (wp != 0) ? WR4_BST_CHECKED : 0;
++            InvalidateRect(hw, 0, W32_TRUE);
++        }
++        return 0;
++    }
++    if (msg == W32_WM_SETTEXT) {
++        W32_LRESULT r = DefWindowProcW(hw, msg, wp, lp);
++        InvalidateRect(hw, 0, W32_TRUE);
++        return r;
++    }
++    if (msg == W32_WM_PAINT) {
++        int i = w32_win_index_from_hwnd(hw);
++        if (i < 0) return 0;
++        W32_UINT type = windows[i].style & 0xFu;
++        int checked = (windows[i].check_state == WR4_BST_CHECKED);
++        W32_PAINTSTRUCT ps;
++        W32_HDC hdc = BeginPaint(hw, &ps);
++        if (hdc) {
++            W32_RECT rc;
++            GetClientRect(hw, &rc);
++            switch (type) {
++            case WR4_BS_PUSHBUTTON:
++            case WR4_BS_DEFPUSHBUTTON:
++                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                w32_btn_edge(hdc, &rc);
++                if (type == WR4_BS_DEFPUSHBUTTON)
++                    FrameRect(hdc, &rc, GetStockObject(W32_BLACK_BRUSH));
++                w32_btn_text(hdc, i, rc.left + 3, rc.top + 3,
++                             rc.right - 3, rc.bottom - 3);
++                break;
++            case WR4_BS_RADIOBUTTON:
++            case WR4_BS_AUTORADIOBUTTON: {
++                int32_t d = 12;
++                int32_t cy = (rc.top + rc.bottom - d) / 2;
++                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                SelectObject(hdc, GetStockObject(W32_WHITE_BRUSH));
++                SelectObject(hdc, GetStockObject(W32_BLACK_PEN));
++                Ellipse(hdc, rc.left + 1, cy, rc.left + 1 + d, cy + d);
++                if (checked) {
++                    SelectObject(hdc, GetStockObject(W32_BLACK_BRUSH));
++                    SelectObject(hdc, GetStockObject(W32_NULL_PEN));
++                    Ellipse(hdc, rc.left + 4, cy + 3,
++                            rc.left + 10, cy + 9);
++                }
++                w32_btn_ltext(hdc, i, rc.left + 16, rc.top, rc.bottom);
++                break;
++            }
++            case WR4_BS_CHECKBOX:
++            case WR4_BS_AUTOCHECKBOX: {
++                int32_t d = 11;
++                int32_t cy = (rc.top + rc.bottom - d) / 2;
++                W32_RECT b;
++                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                b.left = rc.left + 1; b.top = cy;
++                b.right = b.left + d; b.bottom = cy + d;
++                FillRect(hdc, &b, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++                FrameRect(hdc, &b, GetStockObject(W32_BLACK_BRUSH));
++                if (checked) {
++                    SelectObject(hdc, GetStockObject(W32_BLACK_PEN));
++                    MoveToEx(hdc, b.left + 2, b.top + 2, 0);
++                    LineTo(hdc, b.right - 2, b.bottom - 2);
++                    MoveToEx(hdc, b.right - 2, b.top + 2, 0);
++                    LineTo(hdc, b.left + 2, b.bottom - 2);
++                }
++                w32_btn_ltext(hdc, i, rc.left + 16, rc.top, rc.bottom);
++                break;
++            }
++            case WR4_BS_GROUPBOX: {
++                /* The group sits BELOW its siblings (lowered at
++                 * creation), so the middle fills dialog-face; only
++                 * the margins show, around the sibling controls. */
++                FillRect(hdc, &rc,
++                         (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                W32_RECT e;
++                uint16_t buf[UI_TITLE_MAX];
++                int32_t n = w32_ctl_stripped(windows[i].title, buf,
++                                             UI_TITLE_MAX);
++                W32_SIZE sz;
++                sz.cx = 0; sz.cy = 12;
++                if (n > 0)
++                    GetTextExtentPoint32W(hdc, buf, n, &sz);
++                e.left = rc.left; e.top = rc.top + 8;
++                e.right = rc.right; e.bottom = e.top + 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
++                e.top++; e.bottom++;
++                if (n <= 0 || e.right > rc.left + 10 + sz.cx + 4)
++                    FillRect(hdc, &e,
++                             (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++                e = rc; e.top = rc.top + 8; e.right = e.left + 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_SHADOW);
++                e = rc; e.top = rc.bottom - 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++                e = rc; e.left = e.right - 1;
++                FillRect(hdc, &e, (W32_HBRUSH)(uintptr_t)WR4_C_HILITE);
++                if (n > 0) {
++                    W32_RECT pad;
++                    pad.left = rc.left + 8; pad.top = rc.top;
++                    pad.right = pad.left + sz.cx + 4;
++                    pad.bottom = pad.top + sz.cy;
++                    FillRect(hdc, &pad,
++                             (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                    SetBkMode(hdc, W32_TRANSPARENT);
++                    SetTextColor(hdc, WR4_C_TEXT);
++                    TextOutW(hdc, rc.left + 10, rc.top, buf, n);
++                }
++                break;
++            }
++            default:
++                FillRect(hdc, &rc, (W32_HBRUSH)(uintptr_t)WR4_C_FACE);
++                w32_btn_text(hdc, i, rc.left + 3, rc.top + 3,
++                             rc.right - 3, rc.bottom - 3);
++                break;
++            }
++            EndPaint(hw, &ps);
++        }
++        return 0;
++    }
+     if (msg == W32_WM_LBUTTONUP) {
++        int ci = w32_win_index_from_hwnd(hw);
++        if (ci >= 0) {
++            W32_UINT ctype = windows[ci].style & 0xFu;
++            if (ctype == WR4_BS_AUTOCHECKBOX) {
++                windows[ci].check_state ^= 1;
++                InvalidateRect(hw, 0, W32_TRUE);
++            } else if (ctype == WR4_BS_AUTORADIOBUTTON) {
++                int pi = windows[ci].parent;
++                for (int j = 0; j < UI_MAX_WINDOWS; j++) {
++                    if (!windows[j].in_use || windows[j].parent != pi)
++                        continue;
++                    if (((windows[j].style & 0xFu) ==
++                         WR4_BS_AUTORADIOBUTTON) &&
++                        windows[j].check_state) {
++                        windows[j].check_state = 0;
++                        InvalidateRect(idx_to_hwnd(j), 0, W32_TRUE);
++                    }
++                }
++                windows[ci].check_state = WR4_BST_CHECKED;
++                InvalidateRect(hw, 0, W32_TRUE);
++            }
++        }
+         W32_HWND parent = GetParent(hw);
+         int i = w32_win_index_from_hwnd(hw);
+         if (parent && i >= 0) {
+@@ -899,8 +1433,8 @@ W32_WORD w32_user_register_dialog_class(void) {
+      * never replaced (ui_register_class refuses duplicates). */
+     static const struct { const uint16_t *name; W32_WNDPROC proc; } std[] = {
+         { w32_cls_Button_w,   w32_btn_defproc },
+-        { w32_cls_Edit_w,     DefWindowProcW },
+-        { w32_cls_Static_w,   DefWindowProcW },
++        { w32_cls_Edit_w,     w32_edit_proc },
++        { w32_cls_Static_w,   w32_static_proc },
+         { w32_cls_ListBox_w,  DefWindowProcW },
+         { w32_cls_ScrollBar_w,DefWindowProcW },
+         { w32_cls_ComboBox_w, DefWindowProcW },
+@@ -1193,12 +1727,34 @@ W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
+         return 0;
+     }
+ 
++    /* WR-4: a CBS_DROPDOWN/DROPDOWNLIST combo's created height is the
++     * dropped-list extent; the window itself shrinks to the edit
++     * height (MSDN "Combo Box Styles": the height sets the list
++     * size).  Without the shrink GetWindowRect reports the list
++     * extent and PuTTY's align_next_to centres the neighbouring
++     * radios on the list (dy=+40), not on the edit.  24px matches
++     * PuTTY's own single-line edits. */
++    if (strcmp(k->name_a, "ComboBox") == 0 &&
++        (style & 0xFu) >= 2u && (style & 0xFu) <= 3u) {
++        ag_window_resize(ag_wid, (uint32_t)w, 24u);
++        win->h = 24u;
++        win->normal_h = 24u;
++        h = 24;
++    }
+     if (win->visible) {
+         ag_window_show(ag_wid);
+         ui_refresh_geom(win);
+         PostMessageW(hwnd, W32_WM_SIZE, 0, ui_client_sizeparam(win));
+         InvalidateRect(hwnd, 0, W32_TRUE);
+     }
++    /* WR-4: a GROUPBOX paints frame+caption only; its opaque surface
++     * must not cover the siblings that live inside it, so it goes
++     * below them (Win32 groups are transparent: same pixels).  After
++     * the show: show raises, which would undo an earlier lower. */
++    if (strcmp(k->name_a, "Button") == 0 &&
++        (style & 0xFu) == 7u) {
++        ag_window_lower(ag_wid);
++    }
+     /* WR-2: draw the bar here rather than waiting for WM_PAINT -- a frame
+      * whose client is covered by child panes never gets one. */
+     if (!(style & W32_WS_CHILD) && menu) w32_win_menu_bar_changed(hwnd);
+@@ -2052,6 +2608,8 @@ W32ABI W32_LRESULT DefWindowProcW(W32_HWND hwnd, W32_UINT msg,
+         /* The default handler is what actually changes the caption; a
+          * subclass that swallows WM_SETTEXT therefore wins, as on Windows. */
+         if (i >= 0) ui_set_text(&windows[i], (const uint16_t *)(uintptr_t)lp);
++        /* WR-4: a new caption repaints, as on Windows. */
++        if (i >= 0) InvalidateRect(hwnd, 0, W32_TRUE);
+         return W32_TRUE;
+     }
+     case W32_WM_GETTEXTLENGTH:
+@@ -2509,8 +3067,11 @@ W32ABI W32_BOOL GetWindowRect(W32_HWND hwnd, W32_RECT *r) {
+     }
+     int32_t x = 0, y = 0;
+     uint32_t w = 0, h = 0;
++    int32_t aox = 0, aoy = 0;
+     ag_window_get_pos(windows[i].ag_wid, &x, &y);
+     ag_window_get_size(windows[i].ag_wid, &w, &h);
++    ui_ancestor_screen_offset(i, &aox, &aoy);  /* WR-4: screen, not parent */
++    x += aox; y += aoy;
+     uint32_t bw = 0, th = 0;
+     ui_decor(&windows[i], &bw, &th);
+     r->left = x;
+@@ -2543,6 +3104,11 @@ W32ABI W32_BOOL ClientToScreen(W32_HWND hwnd, W32_POINT *pt) {
+     ui_decor(&windows[i], &bw, &th);
+     pt->x += x + (int32_t)bw;
+     pt->y += y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
++    {   /* WR-4: screen, not parent */
++        int32_t aox = 0, aoy = 0;
++        ui_ancestor_screen_offset(i, &aox, &aoy);
++        pt->x += aox; pt->y += aoy;
++    }
+     return W32_TRUE;
+ }
+ 
+@@ -2555,6 +3121,11 @@ W32ABI W32_BOOL ScreenToClient(W32_HWND hwnd, W32_POINT *pt) {
+     ui_decor(&windows[i], &bw, &th);
+     pt->x -= x + (int32_t)bw;
+     pt->y -= y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
++    {   /* WR-4: screen, not parent */
++        int32_t aox = 0, aoy = 0;
++        ui_ancestor_screen_offset(i, &aox, &aoy);
++        pt->x -= aox; pt->y -= aoy;
++    }
+     return W32_TRUE;
+ }
+ 
+diff --git a/w32/src/w32_dlg.c b/w32/src/w32_dlg.c
+index 9bb691b..b2289d6 100644
+--- a/w32/src/w32_dlg.c
++++ b/w32/src/w32_dlg.c
+@@ -456,8 +456,10 @@ W32ABI W32_HWND CreateDialogParamA(W32_HINSTANCE inst, const char *name,
+  * resolves, and reports unhandled exactly like Windows for messages it
+  * does not process.  No message is swallowed here. */
+ W32ABI W32_LRESULT DefDlgProcW(W32_HWND dlg, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
+-    (void)dlg; (void)msg; (void)wp; (void)lp;
+-    return 0;
++    /* WR-4 fix #2: like the real DefDlgProc, forward unhandled messages to
++     * DefWindowProc -- a blanket 0 refused WM_NCCREATE and killed PuTTY's
++     * PuTTYConfigBox frame at creation. */
++    return DefWindowProcW(dlg, msg, wp, lp);
+ }
+ W32ABI W32_LRESULT DefDlgProcA(W32_HWND dlg, W32_UINT msg, W32_WPARAM wp, W32_LPARAM lp) {
+     return DefDlgProcW(dlg, msg, wp, lp);
+@@ -467,18 +469,59 @@ W32ABI W32_BOOL EndDialog(W32_HWND hw, W32_INT_PTR result) {
+     w32_dlg_t *d = dlg_by_hwnd(hw);
+     if (!d) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return 0; }
+     d->result = result; d->ended = 1;
+-    PostQuitMessage(0);
+     return 1;
+ }
+-W32ABI W32_BOOL IsDialogMessageW(W32_HWND dlg, W32_MSG *msg) { (void)dlg; (void)msg; return 0; }
++W32ABI W32_BOOL IsDialogMessageW(W32_HWND dlg, W32_MSG *msg) {
++    (void)dlg;
++    if (!msg) return 0;
++    /* WR-4: keyboard translation lives here, not (only) in the app loop.
++     * PuTTY's config loop never calls TranslateMessage, yet typing works
++     * on Windows: the dialog manager asks the focused control what it
++     * wants (WM_GETDLGCODE) and turns character keys into WM_CHAR itself,
++     * consuming the KEYDOWN so a loop-level TranslateMessage (the usual
++     * pattern, and ours) does not produce a second copy. */
++    if (msg->message == W32_WM_KEYDOWN) {
++        W32_UINT vk = (W32_UINT)(uintptr_t)msg->wParam;
++        /* WR-4 FIX31b: Enter activates the default (IDOK) button and Esc
++         * the Cancel (IDCANCEL) button, consumed here so the focused
++         * control never sees them.  (No DLGC_WANTALLKEYS exemption yet:
++         * single-line config edits are the only callers in the lane.) */
++        if (vk == 0x0Du || vk == 0x1Bu) {
++            int32_t bid = (vk == 0x1Bu) ? W32_IDCANCEL : W32_IDOK;
++            W32_HWND btn = dlg ? GetDlgItem(dlg, bid) : 0;
++            if (dlg)
++                SendMessageW(dlg, W32_WM_COMMAND,
++                             (W32_WPARAM)(uint32_t)(bid & 0xFFFF),
++                             (W32_LPARAM)btn);
++            return 1;
++        }
++        /* Tab stays on the dispatch path (no dialog nav yet). */
++        if (vk == 0x09u) return 0;
++        W32_HWND target = msg->hwnd;
++        if (!target) return 0;
++        W32_LRESULT code = SendMessageW(target, 0x0087u /*WM_GETDLGCODE*/,
++                                        0, 0);
++        if (code & (0x0080u | 0x0004u) /*WANTCHARS|WANTALLKEYS*/) {
++            /* Consume only when a character was produced: arrows and
++             * friends still dispatch to the control. */
++            return TranslateMessage(msg);
++        }
++        return 0;
++    }
++    return 0;
++}
+ W32ABI W32_BOOL IsDialogMessageA(W32_HWND dlg, W32_MSG *msg) { return IsDialogMessageW(dlg, msg); }
+ W32ABI W32_BOOL MapDialogRect(W32_HWND dlg, W32_RECT *r) {
+     (void)dlg;
+     if (!r) return 0;
+-    int32_t rw = r->right - r->left;
+-    int32_t rh = r->bottom - r->top;
+-    r->right  = r->left + rw * 8 / 4;
+-    r->bottom = r->top  + rh * 16 / 8;
++    /* WR-4 fix #4: honest dialog-unit contract -- every member is a
++     * coordinate scaled by the base units (PuTTY stores width/height in
++     * right/bottom and relies on linearity; the delta form made heights
++     * negative). */
++    r->left   = r->left   * 8 / 4;
++    r->top    = r->top    * 16 / 8;
++    r->right  = r->right  * 8 / 4;
++    r->bottom = r->bottom * 16 / 8;
+     return 1;
+ }
+ W32ABI W32_DWORD GetDialogBaseUnits(void) { return (16u << 16) | 8u; }
+@@ -680,20 +723,19 @@ static W32_LRESULT W32ABI w32_popup_proc(W32_HWND h, W32_UINT m,
+     case W32_WM_LBUTTONUP: {
+         int32_t x = (int16_t)(lp & 0xFFFF), y = (int16_t)(lp >> 16);
+         if (x < 0 || y < 0 || x >= PP.width || y >= PP.height) {
+-            PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); return 0;
++            PP.done = 1; PP.chosen_id = (uint32_t)-1; return 0;
+         }
+         int pos = (y - 2) / PP.row_h;
+-        if (pos < 0 || pos >= PP.n) { PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); return 0; }
++        if (pos < 0 || pos >= PP.n) { PP.done = 1; PP.chosen_id = (uint32_t)-1; return 0; }
+         int kind = w32_menu_kind(PP.menu, pos, 0);
+         if (kind == 1) return 0;
+         PP.hover = pos; PP.done = 1;
+         if (kind == 2) { PP.sub = w32_menu_sub(PP.menu, pos); PP.chosen_pos = pos; }
+         else { PP.sub = 0; w32_menu_kind(PP.menu, pos, &PP.chosen_id); }
+-        PostQuitMessage(0);
+         return 0;
+     }
+     case W32_WM_KEYDOWN:
+-        if (wp == W32_VK_ESCAPE) { PP.done = 1; PP.chosen_id = (uint32_t)-1; PostQuitMessage(0); }
++        if (wp == W32_VK_ESCAPE) { PP.done = 1; PP.chosen_id = (uint32_t)-1; }
+         return 0;
+     }
+     return DefWindowProcW(h, m, wp, lp);
+diff --git a/w32/src/w32_module.c b/w32/src/w32_module.c
+index cae6873..6111b9a 100644
+--- a/w32/src/w32_module.c
++++ b/w32/src/w32_module.c
+@@ -167,6 +167,15 @@ static int is_api_set_name(const char *name) {
+  * interchangeably.  Compare ignoring case and an optional .dll suffix, or
+  * half of those spellings fail to find a module that is loaded. */
+ static int module_name_matches(const char *have, const char *want) {
++    /* A caller may pass a qualified path (PuTTY: GetSystemDirectory +
++     * "\\ws2_32.dll"); built-ins match by basename, like KnownDLLs. */
++    const char *b = want;
++    const char *p = want;
++    while (*p) {
++        if (*p == '\\' || *p == '/' || *p == ':') b = p + 1;
++        p++;
++    }
++    want = b;
+     if (ieq(have, want)) return 1;
+ 
+     char trimmed[W32_MODULE_NAME_MAX];
+@@ -261,6 +270,18 @@ static w32_module_t *find_by_name(const char *name) {
+     for (i = 0; i < W32_MODULE_MAX; i++) {
+         if (!modules[i].used || modules[i].loading) continue;
+         if (module_name_matches(modules[i].name, name)) return &modules[i];
++        /* WR-4 fix #1: a builtin personality has no file behind it, so it
++         * answers a path-bearing load by its basename -- PuTTY builds
++         * "C:\win\sys\ws2_32.dll" via GetSystemDirectoryA and expects
++         * the system module, not MOD_NOT_FOUND.  File rows keep the
++         * exact match (two files in different dirs stay distinct). */
++        if (modules[i].builtin) {
++            const char *base = name, *p;
++            for (p = name; *p; p++)
++                if (*p == '\\' || *p == '/') base = p + 1;
++            if (base != name && module_name_matches(modules[i].name, base))
++                return &modules[i];
++        }
+     }
+     return NULL;
+ }
+diff --git a/w32/src/ws2_32.c b/w32/src/ws2_32.c
+index e04cbf3..4a6b017 100644
+--- a/w32/src/ws2_32.c
++++ b/w32/src/ws2_32.c
+@@ -189,13 +189,14 @@ static void ws2_pump(void) {
+             long fire = r & e->async_mask & ~e->async_seen;
+             static const int bits[] = { WS2_FD_READ, WS2_FD_WRITE,
+                 WS2_FD_ACCEPT, WS2_FD_CONNECT, WS2_FD_CLOSE };
+-            static const int idx[]  = { WS2_FD_READ_BIT, WS2_FD_WRITE_BIT,
+-                WS2_FD_ACCEPT_BIT, WS2_FD_CONNECT_BIT, WS2_FD_CLOSE_BIT };
+             for (unsigned i = 0; i < sizeof bits / sizeof bits[0]; i++) {
+                 if (fire & bits[i]) {
++                    /* WR-4 FIX30c: LOWORD carries the FD_* bitmask
++                     * (FD_READ=0x01, ...), not the bit index -- the old
++                     * index made FD_READ arrive as lParam 0 (ignored). */
+                     PostMessageW(e->async_hwnd, e->async_msg,
+                                  (uint64_t)(unsigned)fd,
+-                                 W32_MAKELONG(idx[i], 0));
++                                 W32_MAKELONG(bits[i], 0));
+                     e->async_seen |= bits[i];
+                 }
+             }
+@@ -444,6 +445,16 @@ W32ABI int w32_ws2_recv(W32_SOCKET s, char *buf, int len, int flags) {
+     }
+     int r = recv(fd, buf, (uint32_t)len);
+     if (r < 0) { ws2_fail(); return W32_SOCKET_ERROR; }
++    /* WR-4 FIX30f (4450da7 port): the app took bytes, so re-arm the
++     * FD_READ edge.  The pump's `seen &= r` re-arm can only clear
++     * READ once the level is fully drained, but one recv syscall
++     * returns at most SYSCALL_IO_CHUNK bytes while Winsock apps read
++     * once per FD_READ -- without this, the tail of any >256B
++     * segment stranded with no second fire and the peer stalled.
++     * An app that never recvs never clears, so an ignored FD_READ
++     * still fires exactly once (no message storm). */
++    if (r > 0 && fd >= 0 && fd < WS2_MAXFD)
++        ws2_ep[fd].async_seen &= ~WS2_FD_READ;
+     return r;
+ }
+ 
+diff --git a/w32/tests/w32a14_putty.c b/w32/tests/w32a14_putty.c
+index 73f1481..9898b2a 100644
+--- a/w32/tests/w32a14_putty.c
++++ b/w32/tests/w32a14_putty.c
+@@ -244,6 +244,22 @@ void __stdcall winstart(void) {
+         }
+     }
+ 
++    /* ---- WR-4 fix #1 twin: PuTTY builds the system-dir path itself ---- */
++    {
++        char sysdir[260];
++        char path[300];
++        UINT n = GetSystemDirectoryA(sysdir, (UINT)sizeof sysdir);
++        CHECK(n > 0 && n < sizeof sysdir, "sysdir-for-ws2_32");
++        if (n > 0 && n < sizeof sysdir) {
++            size_t i = 0, j = 0;
++            const char *tail = "\\ws2_32.dll";
++            while (sysdir[i] && i + 1 < sizeof path) { path[i] = sysdir[i]; i++; }
++            while (tail[j] && i + 1 < sizeof path) { path[i] = tail[j]; i++; j++; }
++            path[i] = 0;
++            CHECK(LoadLibraryA(path) != NULL, "loadlibrary-ws2_32-sysdir-path");
++        }
++    }
++
+     if (fails == 0) {
+         say("W32A14-PUTTY-OK\r\n");
+         ExitProcess(78);
+
+--- Part 2: live gate + lane servers + receipt ---
+
+diff --git a/tests/integration/cases/test_wr4_putty_live.sh b/tests/integration/cases/test_wr4_putty_live.sh
+new file mode 100755
+--- /dev/null
++++ b/tests/integration/cases/test_wr4_putty_live.sh
+@@ -0,0 +1,299 @@
++#!/usr/bin/env bash
++# test_wr4_putty_live.sh — W32RUN_PLAN.md phase WR-4 gate (PuTTY live).
++#
++# The pinned PuTTY 0.85 x64 (single putty.exe) is launched under the w32
++# personality and driven live: config dialog, session round-trip through the
++# registry hive, a -raw echo leg, and a -ssh leg against host-side lane
++# servers.  Binaries stay outside the repo (sha256 pins only).
++#
++# WHAT THIS GATE ASSERTS (live, headless, CI-automatable):
++#   - launch: putty.exe binds its 348-import ledger; the config dialog paints;
++#   - session UI round-trip: a typed marker host lands in the host edit
++#     (pixels), persists byte-exact into /disk/w32hive under the PuTTY
++#     session key, and repopulates the edit after Cancel + relaunch;
++#   - raw echo: guest bytes reach the lane echo server (server-side) and the
++#     ECHO: reply paints in the terminal; the terminal then closes fully
++#     (X + Exit Confirmation OK), verified by pixels AND server-side EOF —
++#     the gate holds strictly ONE live TCP connection at a time;
++#   - ssh: kex+auth+channel complete (server-side) and the command output
++#     paints in the terminal — in a SECOND boot, so every leg runs with a
++#     single live TCP connection (the stack's proven envelope; closing the
++#     raw window orphans its connection process-side, a WR-5 lifecycle gap,
++#     so the ssh leg boots fresh instead of sharing the wire);
++#   - no kernel panic; frame digests are recorded for the #putty receipt.
++#
++# Skip convention mirrors test_wr3_npp_live.sh: no OVMF or no pinned binary
++# -> loud SKIP, not a silent green.  Slow under TCG -> on SLOW_CASES_RE.
++
++set -u
++CASE_DIR="$(dirname "$0")"
++cd "$CASE_DIR/.."
++. lib/lib.sh
++il_init
++. lib/gui_lane.sh
++gl_require_ovmf
++
++il_section "WR-4: the pinned PuTTY drives dialog, raw and ssh legs live"
++
++# --- the pinned binary: outside the repo, delivered on /fat ------------------
++WR4_PUTTY_DIR="${WR4_PUTTY_DIR:-$HOME/appbins}"
++PUTTY="$WR4_PUTTY_DIR/putty.exe"
++PUTTY_SHA="d01fdb5aae8f112526040a39b0bfb9e27d813003178645e65f8d1cfdb2a26c87"
++if [ ! -f "$PUTTY" ]; then
++    echo "  SKIP: pinned putty.exe not staged ($WR4_PUTTY_DIR/putty.exe)"
++    echo "        set WR4_PUTTY_DIR=/path/to/pinned to run this gate."
++    il_summary
++    exit 0
++fi
++if [ "$(sha256sum "$PUTTY" | awk '{print $1}')" != "$PUTTY_SHA" ]; then
++    echo "  SKIP: staged putty.exe is not the pinned 0.85 x64 build"
++    il_summary
++    exit 0
++fi
++
++# --- geometry (1280x800 frame; deterministic placement, measured) ------------
++SAVE_X=875;  SAVE_Y=448    # config dialog Save button
++CANCEL_X=873; CANCEL_Y=631 # config dialog Cancel button (measured)
++TERM_X=713;  TERM_X_Y=74    # terminal title-bar close box (measured)
++EXIT_OK_X=461; EXIT_OK_Y=299 # PuTTY Exit Confirmation OK button (measured)
++CONFIRM_REGION="250 205 500 225" # confirm title bar (blue) vs Hello-GUI white
++HOST_REGION="530 230 935 280"     # host-name edit + padding (marker paints x545-650)
++DLG_REGION="330 140 940 620"       # config dialog client area (measured)
++TREE_REGION="410 180 595 595"     # category tree (static once painted)
++LIST_REGION="648 372 810 545"     # saved-sessions (white) list box
++TERM_REGION="80 55 880 500"       # terminal title bar + client
++FRAME_NOTASK="0 0 1280 760"       # full frame minus the clocked taskbar
++MARKER="wr4rt11"
++
++BIND_PAT='putty[.]exe mapped at .* import[(]s[)] bound'
++
++# --- in-lane servers (host side) ----------------------------------------------
++ECHO_LOG="$IL_LOGDIR/wr4_echo.log"
++SSH_LOG="$IL_LOGDIR/wr4_ssh.log"
++ECHO_PID=""; SSH_PID=""
++python3 "$CASE_DIR/../wr4_echo_server.py" >"$ECHO_LOG" 2>&1 &
++ECHO_PID=$!
++SSH_OK=0
++if python3 -c "import paramiko" 2>/dev/null && [ -f "$CASE_DIR/../wr4_ssh_host_rsa.key" ]; then
++    python3 "$CASE_DIR/../wr4_ssh_server.py" >"$SSH_LOG" 2>&1 &
++    SSH_PID=$!
++    SSH_OK=1
++else
++    echo "  SKIP (env gap): paramiko or the pinned ssh host key is missing — ssh leg off"
++fi
++
++trap 'kill $ECHO_PID $SSH_PID 2>/dev/null; gl_stop; il_dump_on_error' EXIT
++
++# --- lane helpers (probe-free asserts; the serial lane is drained actively) ---
++wr4_drain() { # $1=secs — one-shot serial drain into GL_LOG (best effort)
++    python3 "$GL_CONSOLE" serial-drain --serial "$GL_SER" --secs "$1" \
++        >>"$GL_LOG" 2>&1 || true
++}
++
++wr4_wait_grep() { # $1=file $2=pattern $3=timeout_secs — 0 iff seen
++    local f="$1" pat="$2" budget="$3" i=0
++    while [ "$i" -lt "$budget" ]; do
++        if grep -a -q "$pat" "$f" 2>/dev/null; then return 0; fi
++        wr4_drain 2; i=$((i + 2))
++    done
++    return 1
++}
++
++wr4_send() { # $1=cmd [$2=secs] — gl_send, stdout quiet (GL_LOG has it)
++    gl_send "$1" "${2:-8}" >/dev/null
++}
++
++wr4_wait_count() { # $1=file $2=pattern $3=min_count $4=timeout — 0 iff met
++    local f="$1" pat="$2" want="$3" budget="$4" i=0 n=0
++    while [ "$i" -lt "$budget" ]; do
++        n=$(grep -a -c "$pat" "$f" 2>/dev/null || echo 0)
++        if [ "$n" -ge "$want" ]; then return 0; fi
++        wr4_drain 2; i=$((i + 2))
++    done
++    return 1
++}
++
++BIND_BASE=0
++wr4_boot() { # fresh boot for one leg-group; resets the bind ordinal base
++    gl_stop 2>/dev/null || true
++    gl_boot || { il_fail "OVMF boot did not reach the shell"; il_summary; exit 1; }
++    il_assert_grep "$GL_LOG" "auralite#" "reached the shell"
++    BIND_BASE=$(grep -a -c "$BIND_PAT" "$GL_LOG" 2>/dev/null || true)
++    BIND_BASE=${BIND_BASE:-0}
++}
++wr4_launch_putty() { # $1=extra args $2=ordinal-in-boot — send + wait for Nth bind
++    wr4_send "w32run /fat/putty.exe $1 &" 8
++    wr4_wait_count "$GL_LOG" "$BIND_PAT" "$((BIND_BASE + $2))" 120
++}
++
++wr4_flush_shell() {
++    # HMP-typed text ALSO reaches the shell (the console taps the PS/2
++    # stream), so after typing into an app a garbage line pends and would
++    # concatenate with the next command.  A bare CR executes (and clears) it.
++    sleep 2
++    wr4_send "" 2
++}
++
++wr4_settle() { # $1=tag $2=region $3=budget_secs — frame stable 2 shots apart
++    local tag="$1" region="$2" budget="$3" i=0
++    gl_shot "_settle_${tag}_0" >/dev/null 2>&1
++    while [ "$i" -lt "$budget" ]; do
++        sleep 2
++        gl_shot "_settle_${tag}_1" >/dev/null 2>&1
++        if gl_oracle delta "$GL_SHOTDIR/_settle_${tag}_0.png" \
++                "$GL_SHOTDIR/_settle_${tag}_1.png" --region "$region" >/dev/null 2>&1; then
++            mv -f "$GL_SHOTDIR/_settle_${tag}_1.png" "$GL_SHOTDIR/_settle_${tag}_0.png"
++        else
++            return 0 # identical — settled
++        fi
++        i=$((i + 2))
++    done
++    return 1
++}
++
++wr4_assert_delta() { # $1=a $2=b $3=region $4=msg — pass iff region changed
++    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++    if gl_oracle delta "$1" "$2" --region "$3" >/dev/null 2>&1; then
++        il_pass "$4"
++    else
++        il_fail "$4"
++    fi
++}
++
++wr4_assert_bright() { # $1=img $2=region $3=floor $4=msg — pass iff mean > floor
++    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++    local mean
++    mean=$(gl_oracle region-brightness "$1" --region "$2" 2>/dev/null | sed -n 's/.*mean=\([0-9.]*\).*/\1/p')
++    if [ -n "$mean" ] && python3 -c "import sys; sys.exit(0 if float('$mean') > $3 else 1)" 2>/dev/null; then
++        il_pass "$4 (mean $mean > $3)"
++    else
++        il_fail "$4 (mean ${mean:-?} <= $3)"
++    fi
++}
++
++wr4_assert_dark() { # $1=img $2=region $3=floor $4=msg — pass iff mean < floor
++    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++    local mean
++    mean=$(gl_oracle region-brightness "$1" --region "$2" 2>/dev/null | sed -n 's/.*mean=\([0-9.]*\).*/\1/p')
++    if [ -n "$mean" ] && python3 -c "import sys; sys.exit(0 if float('$mean') < $3 else 1)" 2>/dev/null; then
++        il_pass "$4 (mean $mean < $3)"
++    else
++        il_fail "$4 (mean ${mean:-?} >= $3)"
++    fi
++}
++
++# --- deliver the binary on a /fat disk and boot -------------------------------
++APP_IMG="$IL_LOGDIR/wr4_putty_live_fat.img"
++gl_make_fat_disk "$APP_IMG" "$PUTTY"
++export GL_APP_DISK="$APP_IMG"
++
++GL_SELFTEST=off
++# --- boot 1: dialog legs + raw leg (one live connection) -----------------------
++wr4_boot
++gl_shot wr4_pre
++
++# --- 1. config dialog ----------------------------------------------------------
++# A missed launch poisons every leg below with no-putty cascades, so stop here
++# instead of cascading ten vacuous failures.
++wr4_launch_putty "" 1 || { il_fail "putty.exe did not bind (dialog launch)"; il_summary; exit 1; }
++il_assert_grep "$GL_LOG" "$BIND_PAT" "putty.exe bound its import ledger"
++wr4_settle dlg "$TREE_REGION" 60 || il_fail "dialog did not settle (frame)"
++gl_shot wr4_dlg0
++wr4_assert_delta "$GL_SHOTDIR/wr4_pre.png" "$GL_SHOTDIR/wr4_dlg0.png" \
++    "$DLG_REGION" "config dialog painted (dialog-region delta)"
++sleep 10  # input-ready grace: settle fires before PuTTY drains keys
++
++# --- 2. session UI round-trip --------------------------------------------------
++python3 "$GL_CONSOLE" type --monitor "$GL_MON" --delay 0.12 "$MARKER" \
++    || il_fail "typing the marker host failed"
++sleep 8  # TCG paints late; pilot shows +8s is fully painted
++gl_shot wr4_typed
++wr4_assert_delta "$GL_SHOTDIR/wr4_dlg0.png" "$GL_SHOTDIR/wr4_typed.png" \
++    "$HOST_REGION" "typed marker host landed in the host edit (pixels)"
++gl_click $SAVE_X $SAVE_Y
++sleep 4
++wr4_flush_shell
++# The app disk snapshot cannot be read back from the host, so the hive bytes
++# are asserted through an in-guest cat fenced between markers (the fence keeps
++# shell-echoed copies of the marker out of the match).
++wr4_send "echo HIVEBEGIN; cat /disk/w32hive; echo HIVEEND" 10
++wr4_drain 6
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if tr -d '\000' < "$GL_LOG" | awk '/HIVEBEGIN/{f=1;next}/HIVEEND/{f=0}f' \
++        | grep -a -F -q "$MARKER"; then
++    il_pass "marker host persisted to /disk/w32hive (byte-exact)"
++else
++    il_fail "marker host persisted to /disk/w32hive (byte-exact)"
++fi
++gl_click $CANCEL_X $CANCEL_Y
++sleep 3
++gl_shot wr4_closed
++wr4_assert_dark "$GL_SHOTDIR/wr4_closed.png" "$LIST_REGION" 100 \
++    "dialog closed (sessions list region dark again)"
++wr4_launch_putty "" 2 || il_fail "putty.exe did not bind (relaunch)"
++wr4_settle dlg1 "$TREE_REGION" 60 || il_fail "reopened dialog did not settle"
++sleep 10  # paint grace: repopulated text lands after settle (hv1: +12s proven)
++gl_shot wr4_dlg1
++wr4_assert_delta "$GL_SHOTDIR/wr4_dlg0.png" "$GL_SHOTDIR/wr4_dlg1.png" \
++    "$HOST_REGION" "reopened dialog repopulated the host edit (round-trip)"
++gl_click $CANCEL_X $CANCEL_Y
++sleep 3
++
++# --- 3. raw echo, live ---------------------------------------------------------
++wr4_launch_putty "-raw 10.0.2.2 2323" 3 \
++    || il_fail "putty.exe did not bind (-raw launch)"
++wr4_wait_grep "$ECHO_LOG" "wr4echo: conn" 60 \
++    || il_fail "echo server saw no connection"
++sleep 6
++gl_shot wr4_term0
++python3 "$GL_CONSOLE" type --monitor "$GL_MON" --delay 0.12 $'hello WR4\n' \
++    || il_fail "typing into the raw terminal failed"
++wr4_flush_shell
++wr4_wait_grep "$ECHO_LOG" "wr4echo: got" 60 \
++    || il_fail "echo server received no guest bytes"
++sleep 5
++gl_shot wr4_term1
++il_assert_grep "$ECHO_LOG" "wr4echo: got b'hello WR4" \
++    "guest bytes reached the echo server (server-side)"
++wr4_assert_delta "$GL_SHOTDIR/wr4_term0.png" "$GL_SHOTDIR/wr4_term1.png" \
++    "$TERM_REGION" "ECHO: reply painted in the terminal"
++gl_click $TERM_X $TERM_X_Y
++sleep 4  # PuTTY Exit Confirmation appears (WarnOnClose: session is live)
++gl_click $EXIT_OK_X $EXIT_OK_Y
++sleep 3
++gl_shot wr4_rawclosed
++wr4_assert_bright "$GL_SHOTDIR/wr4_rawclosed.png" "$CONFIRM_REGION" 165 \
++    "raw terminal window closed (confirm dialog gone)"
++echo "  SKIP (named gap, WR-5 lifecycle): raw server-side EOF — the closed"
++echo "        window orphans its connection process-side; the ssh leg boots fresh."
++
++# --- boot 2: ssh leg alone (fresh wire, one live connection) ----------------------
++if [ "$SSH_OK" = "1" ]; then
++    wr4_boot
++    wr4_launch_putty "-ssh wr4@10.0.2.2 -P 2222 -pw wr4pass -hostkey \"ssh-rsa 2048 18:9b:f3:ce:90:36:6e:eb:3a:4c:81:fe:61:e6:ea:d5\"" 1 \
++        || il_fail "putty.exe did not bind (-ssh launch)"
++    wr4_wait_grep "$SSH_LOG" "wr4ssh: shell open" 120 \
++        || il_fail "SSH session never opened (kex/auth/channel)"
++    il_assert_grep "$SSH_LOG" "wr4ssh: shell open" \
++        "SSH kex+auth+channel completed (server-side)"
++    sleep 6
++    gl_shot wr4_ssh0
++    python3 "$GL_CONSOLE" type --monitor "$GL_MON" --delay 0.12 $'echo SSH-OK\n' \
++        || il_fail "typing into the ssh terminal failed"
++    wr4_flush_shell
++    wr4_wait_grep "$SSH_LOG" "wr4ssh: cmd 'echo SSH-OK'" 60 \
++        || il_fail "ssh server received no command"
++    sleep 5
++    gl_shot wr4_ssh1
++    wr4_assert_delta "$GL_SHOTDIR/wr4_ssh0.png" "$GL_SHOTDIR/wr4_ssh1.png" \
++        "$TERM_REGION" "SSH command output painted in the terminal"
++fi
++
++# --- no fault behind the run ----------------------------------------------------
++il_assert_no_grep "$GL_LOG" "PANIC" "no kernel panic during the run"
++
++# --- frame digests for the #putty receipt ---------------------------------------
++sha256sum "$GL_SHOTDIR"/wr4_*.png | sed "s|$GL_SHOTDIR/||" \
++    | tee "$IL_LOGDIR/wr4_frames.sha256"
++
++il_summary
+diff --git a/tests/integration/wr4_echo_server.py b/tests/integration/wr4_echo_server.py
+new file mode 100644
+--- /dev/null
++++ b/tests/integration/wr4_echo_server.py
+@@ -0,0 +1,33 @@
++#!/usr/bin/env python3
++# WR-4 host-side echo server for the PuTTY -raw leg (guest dials 10.0.2.2:2323).
++# Binds 127.0.0.1 (guest SLIRP forwards there; never 0.0.0.0: sandbox probes).
++import socket
++import threading
++
++srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++srv.bind(("127.0.0.1", 2323))
++srv.listen(5)
++print("wr4echo: listening on 127.0.0.1:2323", flush=True)
++
++
++def handle(c, a):
++    print("wr4echo: conn from %s" % (a,), flush=True)
++    try:
++        c.sendall(b"WR4-ECHO-READY\r\n")
++        while True:
++            d = c.recv(1024)
++            if not d:
++                break
++            print("wr4echo: got %r" % d, flush=True)
++            c.sendall(b"ECHO:" + d)
++    except OSError as e:
++        print("wr4echo: err %s" % e, flush=True)
++    finally:
++        c.close()
++        print("wr4echo: closed %s" % (a,), flush=True)
++
++
++while True:
++    c, a = srv.accept()
++    threading.Thread(target=handle, args=(c, a), daemon=True).start()
+diff --git a/tests/integration/wr4_ssh_server.py b/tests/integration/wr4_ssh_server.py
+new file mode 100644
+--- /dev/null
++++ b/tests/integration/wr4_ssh_server.py
+@@ -0,0 +1,91 @@
++#!/usr/bin/env python3
++# WR-4 host-side SSH server for the PuTTY -ssh leg (guest dials 10.0.2.2:2222).
++# Paramiko-based: password auth wr4/wr4pass, canned shell. Deterministic:
++# sends banner+prompt, answers "echo SSH-OK" with "SSH-OK".
++# Binds 127.0.0.1. Host key is the pinned wr4_ssh_host_rsa.key next to this file.
++import os
++import socket
++import threading
++import traceback
++
++import paramiko
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++KEYF = os.path.join(HERE, "wr4_ssh_host_rsa.key")
++USER = "wr4"
++PW = "wr4pass"
++PROMPT = b"wr4@test:$ "
++
++
++class Srv(paramiko.ServerInterface):
++    def check_auth_password(self, username, password):
++        return (
++            paramiko.AUTH_SUCCESSFUL
++            if (username == USER and password == PW)
++            else paramiko.AUTH_FAILED
++        )
++
++    def get_allowed_auths(self, username):
++        return "password"
++
++    def check_channel_request(self, kind, chanid):
++        return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
++
++    def check_channel_shell_request(self, channel):
++        return True
++
++    def check_channel_pty_request(self, *args):
++        return True
++
++
++def handle(c):
++    t = paramiko.Transport(c)
++    t.add_server_key(paramiko.RSAKey.from_private_key_file(KEYF))
++    try:
++        t.start_server(server=Srv())
++        ch = t.accept(30)
++        if ch is None:
++            print("wr4ssh: no channel", flush=True)
++            return
++        print("wr4ssh: shell open", flush=True)
++        ch.send(b"WR4-SSH-READY\r\n" + PROMPT)
++        buf = b""
++        while True:
++            d = ch.recv(1024)
++            if not d:
++                break
++            buf += d
++            while b"\r" in buf or b"\n" in buf:
++                line, _, rest = buf.replace(b"\r", b"\n").partition(b"\n")
++                buf = rest
++                cmd = line.decode("utf-8", "replace").strip()
++                print("wr4ssh: cmd %r" % cmd, flush=True)
++                if cmd == "echo SSH-OK":
++                    ch.send(b"SSH-OK\r\n" + PROMPT)
++                elif cmd == "exit":
++                    ch.send(b"bye\r\n")
++                    ch.close()
++                    return
++                elif cmd:
++                    ch.send(b"unk: " + cmd.encode()[:32] + b"\r\n" + PROMPT)
++                else:
++                    ch.send(PROMPT)
++    except Exception:
++        traceback.print_exc()
++    finally:
++        try:
++            t.close()
++        except Exception:
++            pass
++        print("wr4ssh: closed", flush=True)
++
++
++srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++srv.bind(("127.0.0.1", 2222))
++srv.listen(5)
++print("wr4ssh: listening on 127.0.0.1:2222", flush=True)
++while True:
++    c, a = srv.accept()
++    print("wr4ssh: conn from %s" % (a,), flush=True)
++    threading.Thread(target=handle, args=(c,), daemon=True).start()
+diff --git a/tests/integration/wr4_ssh_host_rsa.key b/tests/integration/wr4_ssh_host_rsa.key
+new file mode 100644
+--- /dev/null
++++ b/tests/integration/wr4_ssh_host_rsa.key
+@@ -0,0 +1,27 @@
++-----BEGIN RSA PRIVATE KEY-----
++MIIEogIBAAKCAQEA7zVtJvmXRCozVCCrMcX6BFx5flIAfAdjkUDXkJGBFWTm7jc5
++rKTbB4h7lenMaCFLqFmmKynEycZS28DyuISBRgKSHjIOYfw8Ls3Q99w+4eIKP43O
++gs1iHo7J6HToymtvtvbDJGA8IvImVeNQPbBxqiOva3V7N5CvoE4dfaOVqZ1rRliC
++e61RmSKuQW/GWgtkt7k5pe9M0/Sz/woDub+/BtJLCTRtGBdwWJLGtZ0ZOu1+F/c+
++2l+2G6FzJ6/BXm/3lZNA9WbmgVd+xHxuLnykO14B41o/R+Ftj81Cf5GkhxCaTCKO
++fxs3Oo7WtXsJHnofzR5zNLpTzhgaxaxjfDxy8QIDAQABAoIBABn3SLP0X/EsS4oU
++ScELZopWp3GI4TiVbL91tHCi+sohu9eb8wzEkGoO7KtnR6L+CkJqCNminRPyDUiB
++d1eEOqwo10ej01/bi4ThHo/pPoIykT443HPia4Y5pb0wA50FcIkB3Ej0kVKRyouE
++M0+e+ZeobABULl3nvMi/8f+TZEmW8TVQvYhZAx4Tmxq4A4LBnZmKGieQeSFbCH8c
++BpvhyjEGu3I1EwQj1iVAOqpzNQQJLHP9eC/OpbDkioXbtJ72dw33Z8mRk46pAF6O
++qS4ZPVfcbRoWCrYtPZVkCWhVjKr6qPXWYvKaTBaKjjTIwjw1So8qYAlYhgVUdcV7
++U5LjFekCgYEA+u9n6lH3Miw2RRNiOFWSgHK/QRnaMP5NIYxkzjXeTgvizz2IL3O0
++gRB+7k+GdjagumSThhj6XMv83tJGJHLc/2M1X5XslnA2xK9XH6USOYUcufdo60aS
++vqbNkQKGFJA5kaIdPgeQn8Nca6HFTDuw8SE+r3PkZo51P2IpaJG/9Z8CgYEA9Alt
++3W5+8L/OydMvhEYRrDwQE7EyYDaFdpcLM6WxSk1z5I0ciwn6fq4eWyUs5Rz6oNM0
++Ehjh4FhFYhVsHV0tRjKQ6p9ES07uPQNnYqlInFUH4rZa89gkTRREUx8WwPUQnNWD
++vRtyKzEAlm1Zy2OhbUT+hl9LjL22LW/+u1usLW8CgYBhIbp/oSqmaSa4pkAmvjjv
++L3uIn5Et1cHVcpqyl3dtjnxE6/SDKa59Jv17EZ1itNKSU8wm5BRFR1Cij5JHGY8h
++7C0EyuvBb75Dc/utbCAZ08TC11nteGvlEHwR3YA5BXrDPJVFJXh93wkvQHc2gwSC
++0fOJxrpqWEpaNo0AxSog0QKBgAlA1kagKvYL/9ZNSK72TTM/r8hfXq6hQpxFi+ow
++bTGJEEzpQNzQywvEpGgGV9Z0K9ivSXkqMl5kWnUmpMvUPaQ8xJvw4BEO9B+iImhu
++TM+ItdzV10sJtg6qJxETy7QTVsbrnaws/z4+BGyvxsjchUF0bUZBFMdIZkEAzyLh
++jfzHAoGAYrNhcch3/bMItI1FNf0Lo04PP20zckX2jTMCSWTM9rHKg7tRSjFQJoaQ
++1X7J56s5HsLqxG60hyrKwUsC8YP2iqc8m7bOWXSayevFqLkj44AA771hgh9hxABE
++8gSGqsaJSCq/vpxHU5ZX7RtblU8zQwHYm1TTW+DPZ6+BntNLYjI=
++-----END RSA PRIVATE KEY-----
+diff --git a/tests/integration/wr4_ssh_host_rsa.key.pub b/tests/integration/wr4_ssh_host_rsa.key.pub
+new file mode 100644
+--- /dev/null
++++ b/tests/integration/wr4_ssh_host_rsa.key.pub
+@@ -0,0 +1 @@
++ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDvNW0m+ZdEKjNUIKsxxfoEXHl+UgB8B2ORQNeQkYEVZObuNzmspNsHiHuV6cxoIUuoWaYrKcTJxlLbwPK4hIFGApIeMg5h/DwuzdD33D7h4go/jc6CzWIejsnodOjKa2+29sMkYDwi8iZV41A9sHGqI69rdXs3kK+gTh19o5WpnWtGWIJ7rVGZIq5Bb8ZaC2S3uTml70zT9LP/CgO5v78G0ksJNG0YF3BYksa1nRk67X4X9z7aX7YboXMnr8Feb/eVk0D1ZuaBV37EfG4ufKQ7XgHjWj9H4W2PzUJ/kaSHEJpMIo5/Gzc6jta1ewkeeh/NHnM0ulPOGBrFrGN8PHLx
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -303,7 +303,7 @@
+ # is even slower: it runs the whole closure twice plus the QEMU idle that waits
+ # out the closure's fixed budget, so it is the case "--fast" must never carry.
+ # --fast skips both exactly like the other correctness-over-speed gates above.
+-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_wr3_npp_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
++SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_wr3_npp_live$|test_wr4_putty_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
+ 
+ # ---- thematic CI shards (2026-08-21) ----
+ #
+--- a/docs/w32app_receipts.md
++++ b/docs/w32app_receipts.md
+@@ -570,6 +570,64 @@
+ paths, and the dynamic-WinSock resolution path — is proved above by the
+ fixture twin and the host unit test.
+ 
++**WR-4 live addendum (2026-10-22): the same pinned binary, live on the
++framebuffer + live network.** `tests/integration/cases/test_wr4_putty_live.sh`
++is green, **14/14 assertions**, over two OVMF boots (boot 1: dialog + raw,
++boot 2: ssh — each leg runs with a single live TCP connection, see the
++envelope note below). What the gate proves, all measured on pixels and
++server-side bytes, never on probes:
++
++- the real config dialog paints (dialog-region delta vs the desktop);
++- a typed host (`wr4rt11`) lands in the host edit (edit-region delta);
++- `Save` persists it byte-exact into `/disk/w32hive` under
++  `HKCU\Software\SimonTatham\PuTTY\Sessions\Default%20Settings`
++  (`HostName`, fenced in-guest `cat` — PuTTY munges the session name);
++- `Cancel` closes the dialog (the PuTTY config dialog is *modeless* —
++  close runs through `DestroyWindow`, no `EndDialog`);
++- relaunch repopulates the edit from the hive (round-trip delta);
++- `-raw` against the in-lane echo server: guest bytes arrive server-side
++  and the `ECHO:` reply paints in the terminal grid;
++- the terminal window closes via title-bar X + `PuTTY Exit Confirmation` OK
++  (pixel-verified);
++- `-ssh` against the in-lane paramiko server: kex+auth+channel complete
++  server-side and the `echo SSH-OK` output paints in the terminal;
++- no kernel panic; frame digests recorded below.
++
++Lane servers (committed, host side): `tests/integration/wr4_echo_server.py`
++(`WR4-ECHO-READY` banner, `ECHO:` replies) and `wr4_ssh_server.py`
++(password `wr4`/`wr4pass`, canned shell), both on `127.0.0.1`
++(`:2323`/`:2222`, reachable in-guest at `10.0.2.2` via SLIRP), with the
++pinned host key `tests/integration/wr4_ssh_host_rsa.key` (RSA 2048,
++MD5 `18:9b:f3:ce:90:36:6e:eb:3a:4c:81:fe:61:e6:ea:d5`, passed to PuTTY
++via `-hostkey`). No crypto gap was hit: the SSH leg completes real
++kex+auth with no missing `CryptoAPI`/`bcrypt` symbol.
++
++Frame digest (the ten gate shots, `wr4_frames.sha256` from the green run):
++
++```
++a35c844b46b0704cd85827d859812f1fb8e71c123bb838e23c10475a5c91bb4d  wr4_pre.png
++e40926859908a42c3670b1b388b0aecb9be788be8e75225abd58d8d5677d47a7  wr4_dlg0.png
++55e244f9e379a0b7199dd0da5029940015eba0f4fcfcbe0cf9d53cc6dca847ad  wr4_typed.png
++54059370108d8114d03a4465a1d59bcbcd3788a5ac00e67674cf201a4b233ae4  wr4_closed.png
++49ca65c48584da8f817fdf2a16ee650b5e83e487330549b4963f207493b2b2b7  wr4_dlg1.png
++1843c4769288797d085223cb7e8a9a5594dff8ed0b053c0095579354357e2749  wr4_term0.png
++4c41ce12efafbbeec517195aa331b95d98de9e528021fe3449254b5380acfd73  wr4_term1.png
++49ee7f6724578768729d187778be421a8c14595e0da0a4dbdf126e4704c2de8a  wr4_rawclosed.png
++0e0093d271b7f313a6633cf47220b4867180199e28c42f254f19114293298bc3  wr4_ssh0.png
++a2b3543233455f32cbc03439129c7f388204ab165960c0762ef0e8e217b18237  wr4_ssh1.png
++```
++
++**Named gaps (D-WR4 — not faked, not greened).** Telnet is untested (Raw
++only); the dialog `Load` button is untested (the Default-Settings
++auto-load round-trip is what the gate proves); font/colour choosers,
++clipboard, and the live-process serial re-assert stay human-run; the
++concurrent-TCP envelope is one live connection (two live connections
++corrupt each other — shared NIC queue with mismatch-drop vs the ws2
++readiness pump — which is why the gate boots twice); closing the raw
++window orphans its connection process-side and the process never quits
++(WR-5 lifecycle follow-up). The auth-fallback surface (`SECUR32`/
++`GSSAPI64`) was not exercised: password auth succeeded outright.
++
+ Closing patch: `patches/W32A14_putty.patch`.
+ WR-4 closing patch: `patches/WR4_putty_live.patch`.
+ 

@@ -4365,6 +4365,10 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # wrong the moment somebody adds an export, and nobody notices.
 	@echo "[unit] running tools/gen_w32_api_table.py --check"
 	@python3 tools/gen_w32_api_table.py --check || exit 1
+# W32RUN WR-5: docs/win32_run.md's run-state matrix is generated from the
+# reviewed run data, so it cannot drift from the gates it cites.
+	@echo "[unit] running tools/gen_w32_run_matrix.py --check"
+	@python3 tools/gen_w32_run_matrix.py --check || exit 1
 # W32-4: prove the ABI test would fail without ms_abi.
 	@echo "[unit] running tests/unit/test_w32_abi_negctl.sh"
 	@bash tests/unit/test_w32_abi_negctl.sh || exit 1

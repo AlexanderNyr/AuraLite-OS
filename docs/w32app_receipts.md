@@ -570,7 +570,66 @@ surface closing to 0 TODO, the registry/console/cursor/serial personality
 paths, and the dynamic-WinSock resolution path — is proved above by the
 fixture twin and the host unit test.
 
+**WR-4 live addendum (2026-10-22): the same pinned binary, live on the
+framebuffer + live network.** `tests/integration/cases/test_wr4_putty_live.sh`
+is green, **14/14 assertions**, over two OVMF boots (boot 1: dialog + raw,
+boot 2: ssh — each leg runs with a single live TCP connection, see the
+envelope note below). What the gate proves, all measured on pixels and
+server-side bytes, never on probes:
+
+- the real config dialog paints (dialog-region delta vs the desktop);
+- a typed host (`wr4rt11`) lands in the host edit (edit-region delta);
+- `Save` persists it byte-exact into `/disk/w32hive` under
+  `HKCU\Software\SimonTatham\PuTTY\Sessions\Default%20Settings`
+  (`HostName`, fenced in-guest `cat` — PuTTY munges the session name);
+- `Cancel` closes the dialog (the PuTTY config dialog is *modeless* —
+  close runs through `DestroyWindow`, no `EndDialog`);
+- relaunch repopulates the edit from the hive (round-trip delta);
+- `-raw` against the in-lane echo server: guest bytes arrive server-side
+  and the `ECHO:` reply paints in the terminal grid;
+- the terminal window closes via title-bar X + `PuTTY Exit Confirmation` OK
+  (pixel-verified);
+- `-ssh` against the in-lane paramiko server: kex+auth+channel complete
+  server-side and the `echo SSH-OK` output paints in the terminal;
+- no kernel panic; frame digests recorded below.
+
+Lane servers (committed, host side): `tests/integration/wr4_echo_server.py`
+(`WR4-ECHO-READY` banner, `ECHO:` replies) and `wr4_ssh_server.py`
+(password `wr4`/`wr4pass`, canned shell), both on `127.0.0.1`
+(`:2323`/`:2222`, reachable in-guest at `10.0.2.2` via SLIRP), with the
+pinned host key `tests/integration/wr4_ssh_host_rsa.key` (RSA 2048,
+MD5 `18:9b:f3:ce:90:36:6e:eb:3a:4c:81:fe:61:e6:ea:d5`, passed to PuTTY
+via `-hostkey`). No crypto gap was hit: the SSH leg completes real
+kex+auth with no missing `CryptoAPI`/`bcrypt` symbol.
+
+Frame digest (the ten gate shots, `wr4_frames.sha256` from the green run):
+
+```
+a35c844b46b0704cd85827d859812f1fb8e71c123bb838e23c10475a5c91bb4d  wr4_pre.png
+e40926859908a42c3670b1b388b0aecb9be788be8e75225abd58d8d5677d47a7  wr4_dlg0.png
+55e244f9e379a0b7199dd0da5029940015eba0f4fcfcbe0cf9d53cc6dca847ad  wr4_typed.png
+54059370108d8114d03a4465a1d59bcbcd3788a5ac00e67674cf201a4b233ae4  wr4_closed.png
+49ca65c48584da8f817fdf2a16ee650b5e83e487330549b4963f207493b2b2b7  wr4_dlg1.png
+1843c4769288797d085223cb7e8a9a5594dff8ed0b053c0095579354357e2749  wr4_term0.png
+4c41ce12efafbbeec517195aa331b95d98de9e528021fe3449254b5380acfd73  wr4_term1.png
+49ee7f6724578768729d187778be421a8c14595e0da0a4dbdf126e4704c2de8a  wr4_rawclosed.png
+0e0093d271b7f313a6633cf47220b4867180199e28c42f254f19114293298bc3  wr4_ssh0.png
+a2b3543233455f32cbc03439129c7f388204ab165960c0762ef0e8e217b18237  wr4_ssh1.png
+```
+
+**Named gaps (D-WR4 — not faked, not greened).** Telnet is untested (Raw
+only); the dialog `Load` button is untested (the Default-Settings
+auto-load round-trip is what the gate proves); font/colour choosers,
+clipboard, and the live-process serial re-assert stay human-run; the
+concurrent-TCP envelope is one live connection (two live connections
+corrupt each other — shared NIC queue with mismatch-drop vs the ws2
+readiness pump — which is why the gate boots twice); closing the raw
+window orphans its connection process-side and the process never quits
+(WR-5 lifecycle follow-up). The auth-fallback surface (`SECUR32`/
+`GSSAPI64`) was not exercised: password auth succeeded outright.
+
 Closing patch: `patches/W32A14_putty.patch`.
+WR-4 closing patch: `patches/WR4_putty_live.patch`.
 
 ## W32A-15 7zFM — PHASE CLOSED (2026-09-28), the 7-Zip File Manager app gate (CI-provable half)
 
