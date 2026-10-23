@@ -9,10 +9,10 @@ tests/integration/
 ├── README.md                 ← this file
 ├── run_all.sh                ← top-level orchestrator (+ ALL_CASES registry)
 ├── lib/lib.sh                ← shared helpers (qemu launcher, asserts, colors)
-└── cases/                    ← 212 case scripts, one per behaviour
+└── cases/                    ← 214 case scripts, one per behaviour
 ```
 
-The 212 cases are partitioned into **15 thematic CI shards** so they run in
+The 214 cases are partitioned into **15 thematic CI shards** so they run in
 parallel instead of one ~2 h job. The partition lives in `run_all.sh`
 (`GROUP_NAMES` / `group_re()`) and is **self-checked on every invocation**:
 each registered case must match exactly one shard regex — a case that matches

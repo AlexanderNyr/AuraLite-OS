@@ -305,3 +305,11 @@ machine can prove the chip.  tools/check_realtek_claims.py pins every ✅
 phase to its artefacts and greppable receipts (negative control included)
 in make test-unit and the workflow's claim-check step.  Baseline moved
 same-commit (status-wip 7 → 6; the RTL8169 status row flips 🚧 → ✅).
+
+W32RUN WR-5 (2026-10-23, live-matrix close-out): +1 marker line in
+`docs/plans/W32RUN_PLAN.md` (WR-4's "orphan-on-close lifecycle
+follow-up", the PuTTY session-window teardown gap); baseline moved
+W32RUN_PLAN.md 6 → 7 same-commit.  No new debt rows: the gap is a
+named WR-4 PARTIAL gap owned by the plan (the live matrix in
+docs/win32_run.md carries it), not a ledger-class residue — the
+table's 59 rows and class totals are untouched.

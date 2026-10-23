@@ -609,7 +609,7 @@ make test-integration       # full QEMU integration suite
 bash tests/integration/run_all.sh --group w32-core  # one Win32 CI shard (the others are w32-gui and w32-apps)
 ```
 
-The full suite currently registers 212 black-box QEMU cases in 15 thematic CI
+The full suite currently registers 214 black-box QEMU cases in 15 thematic CI
 shards (Win32 runs in three shards: `w32-core`, `w32-gui` and `w32-apps`). Cases cover AHCI, FAT32 persistence,
 ext2 cross-OS round-trips, the ext4/f2fs/btrfs/exFAT/NTFS interop lanes,
 USB MSC/HID/hub/xHCI rings,

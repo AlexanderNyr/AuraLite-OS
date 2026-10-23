@@ -700,8 +700,12 @@ int main(void) {
     /* ---- same-thread send, posted messages, quit ---- */
     {
         W32_MSG m;
-        seen_n = 0;
+        /* Drain BEFORE zeroing: WR-4's DefWindowProcW repaints a changed
+         * caption, so queued WM_SIZE/WM_PAINT messages ride in the queue --
+         * dispatching them after the reset would count them as part of the
+         * send under test. */
         drain();
+        seen_n = 0;
         W32_LRESULT r = SendMessageW(h1, 0x8001, 7, 9);
         ok(seen_n == 1 && seen_msg[0] == 0x8001 && r == 0,
            "SendMessageW on the owning thread dispatches directly");

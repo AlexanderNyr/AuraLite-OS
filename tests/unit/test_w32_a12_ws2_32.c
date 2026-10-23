@@ -480,7 +480,10 @@ int main(void) {
         CHECK(dbl_post_count == before + 1);
         CHECK(dbl_post_hwnd == hwnd && dbl_post_msg == 0x0400);
         CHECK(dbl_post_wp == (uint64_t)fd2);
-        CHECK((dbl_post_lp & 0xffff) == 0);                /* FD_READ_BIT == 0 */
+        /* WR-4 FIX30c: LOWORD carries the FD_* bitmask (FD_READ=0x01), not
+         * the bit index -- the old index delivered lParam 0, which Win32
+         * apps ignore. */
+        CHECK((dbl_post_lp & 0xffff) == 0x01);             /* FD_READ mask */
         /* edge-latched: a second pump with the level unchanged posts nothing */
         dbl_registered_pump();
         CHECK(dbl_post_count == before + 1);

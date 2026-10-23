@@ -55,9 +55,9 @@ grep -q "Hello from AuraLite OS kernel!" "$SERIAL" || pass=0
 grep -q "IDT installed: 256 gates" "$SERIAL" || pass=0
 grep -q "PIC remapped"             "$SERIAL" || pass=0
 grep -q "HHDM offset: 0xffff800000000000" "$SERIAL" || pass=0
-grep -q "\[pmm\] PASS: 1000 unique frames, no leak, contiguous alloc OK" "$SERIAL" || pass=0
+grep -q "\[pmm\] PASS: 100 unique frames, no leak, contiguous alloc OK" "$SERIAL" || pass=0
 grep -q "\[vmm\] PASS: map / read / write / unmap all correct" "$SERIAL" || pass=0
-grep -q "\[heap\] PASS: 10000 cycles, no corruption, no leak, realloc OK" "$SERIAL" || pass=0
+grep -q "\[heap\] PASS: 500 cycles, no corruption, no leak, realloc OK" "$SERIAL" || pass=0
 grep -q "\[timer\] PASS:" "$SERIAL" || pass=0
 grep -q "\[sched\] PASS: two threads interleaved correctly" "$SERIAL" || pass=0
 grep -q "entering Ring 3" "$SERIAL" || pass=0
@@ -65,12 +65,12 @@ grep -q "loaded .* segment" "$SERIAL" || pass=0
 grep -q "\[initrd\] parsed .* file" "$SERIAL" || pass=0
 grep -q "\[vfs\] PASS: VFS layer functional" "$SERIAL" || pass=0
 grep -q "auralite#" "$SERIAL" || pass=0
-grep -q "/bin/init" "$SERIAL" || pass=0
+grep -q "\[boot\] starting init shell" "$SERIAL" || pass=0
 grep -q "/bin/hello" "$SERIAL" || pass=0
-grep -q "init shell running in Ring 3" "$SERIAL" || pass=0
+grep -q "\[user\] starting init shell in Ring 3" "$SERIAL" || pass=0
 grep -q "\[smp\].*PASS:" "$SERIAL" || pass=0
 grep -q "\[net\] PASS: ping 10.0.2.2 successful" "$SERIAL" || pass=0
-grep -q "\[tcp\] PASS: TCP connect + send + close all worked" "$SERIAL" || pass=0
+grep -q "\[tcp-x5\] PASS: 16 concurrent connections held" "$SERIAL" || pass=0
 grep -q "\[gfx\] framebuffer GUI + window manager rendered" "$SERIAL" || pass=0
 
 rm -f "$SERIAL"

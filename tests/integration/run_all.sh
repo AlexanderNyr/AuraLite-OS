@@ -374,9 +374,9 @@ group_re() {
         # 71+70+120+90+100+150+200+150+234+540+90 = 1815 s
         w32-gui)  echo '^test_(w32_user32|w32a5_user32win|w32a6_user32dlg|w32a7_gdi|w32a8_comctl32|w32a11_theme)$' ;;
         # 102+497+412+380+240+80 = 1711 s
-        w32-apps) echo '^test_(w32a10_furniture|w32a11_core_subset|w32a11_dragdrop|w32a11_tokens|w32a11_ole|w32a12_winsock|w32a14_putty_fixture|w32a15_7zip_fixture|w32a16_npp_fixture|wr1_shell_namespace|wr2_7zip_launch|wr2_7zip_live|wr3_npp_live)$' ;;
-        # 180+180+135+105+301+90+90+90+90+90+0+0+0 = 1351 s (wr2/wr3 skip
-        # without the pinned binaries; with WR2_7ZIP_DIR/WR3_NPP_DIR staged
+        w32-apps) echo '^test_(w32a10_furniture|w32a11_core_subset|w32a11_dragdrop|w32a11_tokens|w32a11_ole|w32a12_winsock|w32a14_putty_fixture|w32a15_7zip_fixture|w32a16_npp_fixture|wr1_shell_namespace|wr2_7zip_launch|wr2_7zip_live|wr3_npp_live|wr4_putty_live)$' ;;
+        # 180+180+135+105+301+90+90+90+90+90+0+0+0+0 = 1351 s (wr2/wr3/wr4
+        # skip without the pinned binaries; with WR2_7ZIP_DIR/WR3_NPP_DIR staged
         # this is the shard that grows, which is why it starts as the
         # lightest of the three)
         # The selfhost arc (SELFHOST_PLAN.md) split into three shards so the
@@ -410,7 +410,7 @@ check_groups() {
     return "$bad"
 }
 
-# The partition is checked on EVERY run (212 cases, 15 groups);
+# The partition is checked on EVERY run (214 cases, 15 groups);
 # --check-groups checks and exits, for the CI step and the curious.
 if ! check_groups; then
     exit 2
