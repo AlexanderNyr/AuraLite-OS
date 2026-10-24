@@ -99,7 +99,10 @@ il_send "exit"
 # IL_SELFTEST=fast: this case's subject is the personality, not the kernel
 # self-test lane, and three boots have to fit in one run_all shard slot
 # (test_w32_a4_unwind.sh part 2 sets the same knob for the same reason).
-IL_SELFTEST=fast il_run_qemu "$LOG1" 180 "${DISK_ARGS[@]}"
+# 180s was too tight on a loaded CI runner: the fixture was still mid-THREAD
+# (zero failure markers, all sections up to INPUT green) when the boot was
+# cut, so the phase got real headroom instead of dying near the finish.
+IL_SELFTEST=fast il_run_qemu "$LOG1" 300 "${DISK_ARGS[@]}"
 
 # --- the image loaded and its imports were bound --------------------------------
 # 63 since the CW-1 fix: the CREATE section now also drives GetParent to
@@ -153,7 +156,7 @@ il_send "run /apps/w32run /tests/w32a5_win.exe"
 il_send_delay 10
 il_send "exit"
 
-IL_SELFTEST=fast il_run_qemu "$LOG2" 200 "${DISK_ARGS[@]}"
+IL_SELFTEST=fast il_run_qemu "$LOG2" 280 "${DISK_ARGS[@]}"
 
 il_assert_grep "$LOG2" "GTHEME ACCENT 0xAA3311" \
     "the tinted theme survived the reboot (dotfile read back)"

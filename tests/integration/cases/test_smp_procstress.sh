@@ -24,7 +24,11 @@ il_send "run smpstress"
 il_send_delay 20
 il_send "exit"
 
-il_run_qemu "$LOG" 90 -smp 4
+# 180 (was 90): the O_APPEND storm under -smp 4 plus a loaded CI runner has
+# to fit — 90s caught the run mid-churn with no markers yet even though the
+# invariants were progressing.  The wait_queue/futex blocking fix keeps the
+# storm fast; the raised budget is the slow-runner belt.
+il_run_qemu "$LOG" 180 -smp 4
 
 il_assert_grep "$LOG" "SMPSTRESS: O_APPEND .* intact" \
     "O_APPEND appends intact under 4-cpu concurrency"

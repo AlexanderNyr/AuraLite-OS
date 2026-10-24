@@ -15,6 +15,7 @@
 #include "kernel/lib/atomic_compat.h"   /* __sync_* spellings (tcc) */
 #include "kernel/lib/errno.h"
 #include "kernel/proc/usercopy.h"
+#include "kernel/arch/arch.h"           /* arch_irq_save/restore for the wait */
 #include <stdint.h>
 
 #define FUTEX_HASH_BITS 6
@@ -77,7 +78,21 @@ int futex_wait_bitset(uint32_t *uaddr, uint32_t val, uint32_t bitset) {
     cur->state = THREAD_BLOCKED;
     spinlock_release_irqrestore(&b->lock, fl);
 
-    sched_yield();
+    /* Block for real (IRQs off, the time.c nanosleep shape).  The old
+     * sched_yield() reset THREAD_READY unconditionally, so the BLOCKED
+     * state set above never stuck and this wait spun through a full
+     * scheduler rotation per retry — every cross-thread SendMessage, every
+     * thread join, every event wait in the guest paid that thrash, and on
+     * a loaded CI runner the queue-rotation churn was pure budget loss
+     * (see wq_wait for the sibling fix).  The enqueue above is atomic
+     * with the value re-check under the bucket lock and futex_wake flips
+     * us to READY there, so schedule() either sleeps until that wake or
+     * returns at once when the wake already landed. */
+    {
+        arch_irqflags_t rflags = arch_irq_save();
+        schedule();
+        arch_irq_restore(rflags);
+    }
 
     /* Woken (or requeued-and-then-woken): the waker has already unlinked us,
      * so this self-unlink is the safety net for any path that left the node
