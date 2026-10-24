@@ -17,7 +17,11 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/errno.h"
 
-#define SOCKET_MAX 32
+/* WR-4 FIX30d keeps ids 0-2 free forever (see socket_create), so the
+ * handable capacity stays 32 with the reserved prefix: slots 0-2 plus
+ * sids 3..34 = 35 slots, the 33rd socket() returns -EMFILE (the
+ * socktest contract, userspace/tests/socktest). */
+#define SOCKET_MAX 35
 
 typedef enum {
     SOCK_SLOT_FREE = 0,

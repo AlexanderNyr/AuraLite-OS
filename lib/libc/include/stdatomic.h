@@ -17,6 +17,26 @@
  * cross-builds, GCC for host-side unit tests).
  */
 
+#ifdef __TINYC__
+/* Guest tcc: delegate to tcc's own <stdatomic.h> — the compiler-bundled
+ * header behind this wrapper's -I, reached with include_next exactly like
+ * stddef.h.  It carries the __ATOMIC_* order macros and the _n spellings
+ * over tcc's native core __atomic_* builtins; the clang/gcc body below
+ * assumes both come from the compiler and would not survive tcc (SH5d:
+ * the libc sources failed to compile in-guest with '__ATOMIC_ACQUIRE
+ * undeclared').  Two GCC forms tcc's header lacks are re-spelled here on
+ * the same core builtins, per-site width kept via __typeof__ — the
+ * kernel/lib/atomic_compat.h model. */
+#include_next <stdatomic.h>
+
+#define __atomic_test_and_set(p, o)                                  \
+    ({ __typeof__(*(p)) __ts_new = 1, __ts_old;                      \
+       __atomic_exchange((p), &__ts_new, &__ts_old, (o));            \
+       __ts_old != 0; })
+
+#define __atomic_clear(p, o) __atomic_store_n((p), 0, (o))
+#else /* __TINYC__ */
+
 #include <stddef.h>
 #include <stdint.h>
 
@@ -163,5 +183,6 @@ typedef struct {
     __atomic_clear(&(flag)->__val, (mo))
 
 #endif /* __clang__ */
+#endif /* __TINYC__ */
 
 #endif /* AURALITE_LIBC_STDATOMIC_H */

@@ -167,6 +167,12 @@ static int is_api_set_name(const char *name) {
  * interchangeably.  Compare ignoring case and an optional .dll suffix, or
  * half of those spellings fail to find a module that is loaded. */
 static int module_name_matches(const char *have, const char *want) {
+    /* Exact match first: a file row stores the path it was loaded with
+     * (load_one), so loading that same path twice must recognise its own
+     * row — the WR-4 basename strip below otherwise made "/x/y.dll" miss
+     * itself and load a second copy (dlltest: refcount 1, two mappings). */
+    if (ieq(have, want)) return 1;
+
     /* A caller may pass a qualified path (PuTTY: GetSystemDirectory +
      * "\\ws2_32.dll"); built-ins match by basename, like KnownDLLs. */
     const char *b = want;

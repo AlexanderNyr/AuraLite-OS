@@ -516,8 +516,16 @@ void __stdcall winstart(void) {
         NULL);
     CHECKX(n > 5, "proc-msg-sys");
     CHECKX(weq(w, "The named file was not found."), "proc-msg-sys-text");
-    CHECKX(FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 9999, 0, w,
-        512, NULL) == 0, "proc-msg-sys-missing");
+    /* WR-3 (NPP crash #1): an unknown FROM_SYSTEM id yields the documented
+     * synthesised wording ("The system cannot find message text for message
+     * number %u."), not 0 -- Windows apps wcslen() that buffer instead of
+     * checking for NULL.  Assert the contract the loader actually keeps. */
+    n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM, NULL, 9999, 0, w, 512,
+        NULL);
+    CHECKX(n > 5 &&
+           weq(w, "The system cannot find message text for message number "
+                  "9999."),
+           "proc-msg-sys-missing");
     {
         WCHAR fmt[64], ins[16];
         DWORD_PTR args[3];

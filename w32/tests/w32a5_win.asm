@@ -1115,6 +1115,9 @@ start:
     test rax, rax
     jz   .f_monitor
     mov  rcx, rax
+    mov  dword [mi], 40             ; cbSize: callers size their own struct (40 =
+                                   ; plain MONITORINFO), as on Windows; cbSize 0
+                                   ; is rejected by both Windows and this gate
     lea  rdx, [mi]
     call GetMonitorInfoW
     test eax, eax

@@ -1647,8 +1647,23 @@ static W32_LRESULT ctl_listview_proc(ctl_state_t *c, W32_HWND hwnd,
 static W32_HWND tv_handle(int idx) {
     return (W32_HWND)(uintptr_t)(size_t)(idx + 1);
 }
+/* TVI_* sentinels arrive in two spellings: the Windows SDK's
+ * (HTREEITEM)(ULONG_PTR)0xFFFF000x -- zero-extended on x64, which is what
+ * the asm fixtures and real binaries put in TVINSERTSTRUCTW -- and the
+ * in-tree (INT_PTR) sign-extension (W32_TVI_ROOT = 0xFFFF...0000).  Both
+ * name the same logical root: normalise to the sign-extended form so a
+ * root insert from either spelling passes the == W32_TVI_ROOT checks
+ * (the zero-extended one used to miss them and the first insert was
+ * refused as an invalid parent: A8-TREEVIEW-FAIL). */
+static W32_HWND tv_norm(W32_HWND h) {
+    uint64_t v = (uint64_t)(uintptr_t)h;
+    if (v >= 0xFFFF0000ull && v <= 0xFFFFFFFFull)
+        v |= 0xFFFFFFFF00000000ull;
+    return (W32_HWND)(uintptr_t)v;
+}
+
 static int tv_index(W32_HWND h) {
-    size_t v = (size_t)(uintptr_t)h;
+    uint64_t v = (uint64_t)(uintptr_t)tv_norm(h);
     if (!v || v > 0xFFFF0000ull) return -1;   /* rejects TVI_* sentinels */
     return (int)v - 1;
 }
@@ -1718,8 +1733,9 @@ static W32_LRESULT ctl_treeview_proc(ctl_state_t *c, W32_HWND hwnd,
             return (W32_LRESULT)(uintptr_t)0;
         }
         int parent = tv_index(ins->hParent);
-        if (ins->hParent == W32_TVI_ROOT) parent = -1;
-        if (ins->hParent && parent < 0 && ins->hParent != W32_TVI_ROOT) {
+        W32_HWND hp = tv_norm(ins->hParent);
+        if (hp == W32_TVI_ROOT) parent = -1;
+        if (hp && parent < 0 && hp != W32_TVI_ROOT) {
             w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
             return (W32_LRESULT)(uintptr_t)0;
         }
@@ -1736,7 +1752,7 @@ static W32_LRESULT ctl_treeview_proc(ctl_state_t *c, W32_HWND hwnd,
          * the parent's first child.  All three replay the widget. */
         int at = c->u.tv.n_items;
         int after = tv_index(ins->hInsertAfter);
-        if (ins->hInsertAfter == W32_TVI_FIRST) {
+        if (tv_norm(ins->hInsertAfter) == W32_TVI_FIRST) {
             at = parent + 1;
             if (parent < 0) at = 0;
             while (at < c->u.tv.n_items && c->u.tv.parent[at] == parent) at++;
@@ -1763,7 +1779,7 @@ static W32_LRESULT ctl_treeview_proc(ctl_state_t *c, W32_HWND hwnd,
     }
     case W32_TVM_DELETEITEM: {
         /* lp is the item handle (or TVI_ROOT = delete everything) */
-        if ((W32_HWND)(uintptr_t)lp == W32_TVI_ROOT) {
+        if (tv_norm((W32_HWND)(uintptr_t)lp) == W32_TVI_ROOT) {
             c->u.tv.n_items = 0;
             c->u.tv.caret = -1;
             ctl_surf_clear(&c->surf);

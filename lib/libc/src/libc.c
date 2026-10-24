@@ -5,6 +5,9 @@
  * syscall wrappers, string functions, stdlib, and printf.
  */
 
+#ifdef __TINYC__
+#include <stdatomic.h>   /* guest tcc: __ATOMIC_* orders + the _n forms */
+#endif
 #include <stdint.h>
 #include <stdarg.h>
 #include "unistd.h"
@@ -894,8 +897,11 @@ void* sbrk(intptr_t increment) {
                 }
             }
             b[n++] = '\n';
-            fwrite(b, 1, (unsigned long)n, stdout);
-            fflush(stdout);
+            /* stderr: this is a diagnosis trace, and stdout belongs to the
+             * program (W32A-2 proc-child-output: a child with redirected
+             * stdout must not have SBRK prepended to its own output). */
+            fwrite(b, 1, (unsigned long)n, stderr);
+            fflush(stderr);
         }
     }
 

@@ -1,5 +1,8 @@
 /* libc/src/pthread/spin.c — pthread_spin_* (Phase Q6) */
 
+#ifdef __TINYC__
+#include <stdatomic.h>   /* guest tcc: __ATOMIC_* orders + the _n forms */
+#endif
 #include <pthread.h>
 #include <errno.h>
 

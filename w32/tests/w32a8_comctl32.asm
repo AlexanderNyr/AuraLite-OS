@@ -362,14 +362,15 @@ struc TVITEMW
     .hItem          resq 1
     .state          resd 1
     .stateMask      resd 1
-    .rsvd1          resd 2      ; pad to 32: pointers are 8-aligned in the C struct
-    .pszText        resq 1
+    .pszText        resq 1      ; @24: x64 aligns it right after stateMask
+                                ; (F30: no hand-placed pad after stateMask --
+                                ; an extra pad here put pszText 8 bytes too
+                                ; far and GETITEM read the caller's stale NULL)
     .cchTextMax     resd 1
     .iImage         resd 1
     .iSelectedImage resd 1
     .cChildren      resd 1
-    .rsvd2          resd 1
-    .lParam         resq 1
+    .lParam         resq 1      ; @48: 8-aligned right after cChildren
 endstruc
 
 struc TVINSERTSTRUCTW
@@ -393,8 +394,8 @@ endstruc
 struc TOOLINFOW
     .cbSize   resd 1
     .uFlags   resd 1
-    .rsvd0    resd 2      ; pad to 16
-    .hwnd     resq 1
+    .hwnd     resq 1      ; @8: x64 aligns the handle straight after two
+                           ; DWORDs (F30: no pad between uFlags and hwnd)
     .uId      resq 1
     .rect     resb RECT_size
     .hinst    resq 1
@@ -405,13 +406,12 @@ endstruc
 struc HDITEMW
     .mask       resd 1
     .cxy        resd 1
-    .rsvd0      resd 2      ; pad to 16
-    .pszText    resq 1
+    .pszText    resq 1     ; @8: already 8-aligned after cxy (F30: the old
+                           ; pad here put pszText 8 bytes too far)
     .hbm        resq 1
     .cchTextMax resd 1
     .fmt        resd 1
-    .rsvd1      resd 2      ; pad to 48
-    .lParam     resq 1
+    .lParam     resq 1     ; @32: 8-aligned right after fmt (F30: no pad)
     .iImage     resd 1
     .iOrder     resd 1
 endstruc
@@ -430,8 +430,7 @@ endstruc
 struc PROPSHEETPAGEW
     .dwSize     resd 1
     .dwFlags    resd 1
-    .rsvd0      resd 2      ; pad to 16
-    .hInstance  resq 1
+    .hInstance  resq 1     ; @8: no pad after two DWORDs (F30)
     .pResource  resq 1
     .pszIcon    resq 1
     .pszTitle   resq 1
@@ -442,8 +441,8 @@ endstruc
 struc PROPSHEETHEADERW
     .dwSize      resd 1
     .dwFlags     resd 1
-    .rsvd0       resd 2      ; pad to 16
-    .hwndParent  resq 1
+    .hwndParent  resq 1    ; @8: no pad after two DWORDs (F30); the pad
+                           ; before ppsp IS real (nPages ends at 0x2c)
     .hInstance   resq 1
     .pszIcon     resq 1
     .pszCaption  resq 1
@@ -563,6 +562,28 @@ f_sub       db "A8-SUBCLASS-FAIL", 13, 10
 f_sub_l     equ $ - f_sub
 f_ps        db "A8-PSHEET-FAIL", 13, 10
 f_ps_l      equ $ - f_ps
+f_psR       db "A8-PSRET-FAIL", 13, 10
+f_psR_l     equ $ - f_psR
+f_psI1      db "A8-PSINIT1-FAIL", 13, 10
+f_psI1_l    equ $ - f_psI1
+f_psI2      db "A8-PSINIT2-FAIL", 13, 10
+f_psI2_l    equ $ - f_psI2
+f_psB       db "A8-PSBTN-FAIL", 13, 10
+f_psB_l     equ $ - f_psB
+f_psA1      db "A8-PSACT1-FAIL", 13, 10
+f_psA1_l    equ $ - f_psA1
+f_psK       db "A8-PSKILL-FAIL", 13, 10
+f_psK_l     equ $ - f_psK
+f_psA2      db "A8-PSACT2-FAIL", 13, 10
+f_psA2_l    equ $ - f_psA2
+f_psP1      db "A8-PSAPL1-FAIL", 13, 10
+f_psP1_l    equ $ - f_psP1
+f_psP2      db "A8-PSAPL2-FAIL", 13, 10
+f_psP2_l    equ $ - f_psP2
+f_psL1      db "A8-PSLP1-FAIL", 13, 10
+f_psL1_l    equ $ - f_psL1
+f_psL2      db "A8-PSLP2-FAIL", 13, 10
+f_psL2_l    equ $ - f_psL2
 f_refuse    db "A8-REFUSE-FAIL", 13, 10
 f_refuse_l  equ $ - f_refuse
 f_hd        db "A8-HEADER-FAIL", 13, 10
@@ -921,7 +942,8 @@ page1_proc:
     leave
     ret
 .notify:
-    ; r9 -> PSHNOTIFY { hdr(24), iPage, pad, lParam }
+    ; r9 -> PSHNOTIFY { hdr(24), lParam }  (F30: no iPage field --
+    ; the sheet carries the OK/Apply direction straight in lParam @24)
     mov  r10d, [r9+16]               ; hdr.code
     cmp  r10d, PSN_SETACTIVE
     je   .setactive
@@ -944,7 +966,7 @@ page1_proc:
     ret
 .apply:
     mov  dword [g_psApply1], 1
-    mov  rax, [r9+32]                 ; PSHNOTIFY.lParam
+    mov  rax, [r9+24]                 ; PSHNOTIFY.lParam
     mov  [g_psApplyLp1], rax
     xor  eax, eax                     ; PSNRET_NOERROR
     leave
@@ -990,7 +1012,7 @@ page2_proc:
     ret
 .apply:
     mov  dword [g_psApply2], 1
-    mov  rax, [r9+32]
+    mov  rax, [r9+24]                 ; PSHNOTIFY.lParam (F30: no iPage)
     mov  [g_psApplyLp2], rax
     xor  eax, eax
     leave
@@ -2192,72 +2214,92 @@ mainCRTStartup:
 ; ============================ PSHEET ===========================================
     ; two contiguous PROPSHEETPAGEW records (the PSH_PROPSHEETPAGE array)
     lea  rbx, [g_psPages]
-    mov  dword [rbx+0], PROPSHEETPAGEW_size         ; dwSize
-    mov  dword [rbx+4], PSP_DLGINDIRECT             ; dwFlags
+    mov  dword [rbx+PROPSHEETPAGEW.dwSize], PROPSHEETPAGEW_size
+    mov  dword [rbx+PROPSHEETPAGEW.dwFlags], PSP_DLGINDIRECT
     mov  rax, [g_hinst]
-    mov  [rbx+16], rax                              ; hInstance
+    mov  [rbx+PROPSHEETPAGEW.hInstance], rax
     lea  rax, [ps_tmpl1]
-    mov  [rbx+24], rax                              ; pResource
-    mov  qword [rbx+32], 0                          ; pszIcon
+    mov  [rbx+PROPSHEETPAGEW.pResource], rax
+    mov  qword [rbx+PROPSHEETPAGEW.pszIcon], 0
     lea  rax, [t_psPage1]
-    mov  [rbx+40], rax                              ; pszTitle
+    mov  [rbx+PROPSHEETPAGEW.pszTitle], rax
     lea  rax, [page1_proc]
-    mov  [rbx+48], rax                              ; pfnDlgProc
-    mov  qword [rbx+56], 0x51                       ; lParam
+    mov  [rbx+PROPSHEETPAGEW.pfnDlgProc], rax
+    mov  qword [rbx+PROPSHEETPAGEW.lParam], 0x51
     mov  r12, PROPSHEETPAGEW_size
-    mov  dword [rbx+r12+0], PROPSHEETPAGEW_size
-    mov  dword [rbx+r12+4], PSP_DLGINDIRECT
-    mov  [rbx+r12+16], rax
+    mov  dword [rbx+r12+PROPSHEETPAGEW.dwSize], PROPSHEETPAGEW_size
+    mov  dword [rbx+r12+PROPSHEETPAGEW.dwFlags], PSP_DLGINDIRECT
     mov  rax, [g_hinst]
-    mov  [rbx+r12+16], rax
+    mov  [rbx+r12+PROPSHEETPAGEW.hInstance], rax
     lea  rax, [ps_tmpl2]
-    mov  [rbx+r12+24], rax
+    mov  [rbx+r12+PROPSHEETPAGEW.pResource], rax
     lea  rax, [t_psPage2]
-    mov  [rbx+r12+40], rax
+    mov  [rbx+r12+PROPSHEETPAGEW.pszTitle], rax
     lea  rax, [page2_proc]
-    mov  [rbx+r12+48], rax
-    mov  qword [rbx+r12+56], 0x52
+    mov  [rbx+r12+PROPSHEETPAGEW.pfnDlgProc], rax
+    mov  qword [rbx+r12+PROPSHEETPAGEW.lParam], 0x52
 
     lea  rbx, [g_psph]
-    mov  dword [rbx+0], PROPSHEETHEADERW_size       ; dwSize
-    mov  dword [rbx+4], PSH_PROPSHEETPAGE           ; dwFlags
+    mov  dword [rbx+PROPSHEETHEADERW.dwSize], PROPSHEETHEADERW_size
+    mov  dword [rbx+PROPSHEETHEADERW.dwFlags], PSH_PROPSHEETPAGE
     mov  rax, [g_hwnd]
-    mov  [rbx+16], rax                              ; hwndParent
+    mov  [rbx+PROPSHEETHEADERW.hwndParent], rax
     mov  rax, [g_hinst]
-    mov  [rbx+24], rax                              ; hInstance
+    mov  [rbx+PROPSHEETHEADERW.hInstance], rax
     lea  rax, [t_psTitle]
-    mov  [rbx+40], rax                              ; pszCaption
-    mov  dword [rbx+48], 2                          ; nPages
+    mov  [rbx+PROPSHEETHEADERW.pszCaption], rax
+    mov  dword [rbx+PROPSHEETHEADERW.nPages], 2
     lea  rax, [g_psPages]
-    mov  [rbx+56], rax                              ; ppsp
+    mov  [rbx+PROPSHEETHEADERW.ppsp], rax
 
-    mov  rcx, rbx
     mov  rcx, rbx
     call PropertySheetW
     mov  [g_psRet], rax
     cmp  eax, IDOK
-    jne  .f_ps
+    je   .ps_ck1
+    FAIL f_psR, f_psR_l
+.ps_ck1:
     cmp  dword [g_psInit1], 0
-    je   .f_ps
+    jne  .ps_ck2
+    FAIL f_psI1, f_psI1_l
+.ps_ck2:
     cmp  dword [g_psInit2], 0
-    je   .f_ps
+    jne  .ps_ck3
+    FAIL f_psI2, f_psI2_l
+.ps_ck3:
     cmp  dword [g_psBtn1], 0
-    je   .f_ps                       ; the template's button became a window
+    jne  .ps_ck4
+    FAIL f_psB, f_psB_l
+.ps_ck4:
     cmp  dword [g_psActive1], 0
-    je   .f_ps
+    jne  .ps_ck5
+    FAIL f_psA1, f_psA1_l
+.ps_ck5:
     cmp  dword [g_psKill1], 0
-    je   .f_ps
+    jne  .ps_ck6
+    FAIL f_psK, f_psK_l
+.ps_ck6:
     cmp  dword [g_psActive2], 0
-    je   .f_ps
+    jne  .ps_ck7
+    FAIL f_psA2, f_psA2_l
+.ps_ck7:
     cmp  dword [g_psApply1], 0
-    je   .f_ps
+    jne  .ps_ck8
+    FAIL f_psP1, f_psP1_l
+.ps_ck8:
     cmp  dword [g_psApply2], 0
-    je   .f_ps
+    jne  .ps_ck9
+    FAIL f_psP2, f_psP2_l
+.ps_ck9:
     cmp  qword [g_psApplyLp1], 1     ; OK direction: lParam TRUE
-    jne  .f_ps
+    je   .ps_ck10
+    FAIL f_psL1, f_psL1_l
+.ps_ck10:
     cmp  qword [g_psApplyLp2], 1
-    jne  .f_ps
+    je   .ps_ok
+    FAIL f_psL2, f_psL2_l
 
+.ps_ok:
     OK m_ps, m_ps_l
 
 ; ============================ REFUSE ===========================================

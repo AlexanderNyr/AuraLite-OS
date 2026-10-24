@@ -4,6 +4,9 @@
  * fnmatch + glob, inet_pton/ntop/aton/ntoa, getaddrinfo, getgr*.
  */
 
+#ifdef __TINYC__
+#include <stdatomic.h>   /* guest tcc: __ATOMIC_* orders + the _n forms */
+#endif
 #include <poll.h>
 #include <locale.h>
 #include <wchar.h>

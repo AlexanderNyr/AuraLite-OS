@@ -1,3 +1,6 @@
+#ifdef __TINYC__
+#include <stdatomic.h>   /* guest tcc: __ATOMIC_* orders + the _n forms */
+#endif
 #include "stdlib.h"
 #include "unistd.h"
 #include "string.h"
@@ -136,8 +139,11 @@ void *malloc(size_t size) {
                     /* Raw write, never stdio: this runs inside malloc(),
                      * where taking the stdio lock would invert the global
                      * stdio -> heap order (fopen allocates), and where a
-                     * FILE race would corrupt the very heap being built. */
-                    (void)write(1, b, (size_t)n);
+                     * FILE race would corrupt the very heap being built.
+                     * fd 2 (stderr): a diagnosis trace must never prepend
+                     * itself to a program's redirected stdout (W32A-2
+                     * proc-child-output gate). */
+                    (void)write(2, b, (size_t)n);
                 }
             }
         }
@@ -163,7 +169,7 @@ void *malloc(size_t size) {
                 b[n++] = (char)(d < 10 ? '0' + d : 'a' + d - 10);
               } }
             b[n++] = '\n';
-            (void)write(1, b, (size_t)n);   /* raw: see the MID site above */
+            (void)write(2, b, (size_t)n);   /* raw on stderr: see MID site */
             }
         }
     }
