@@ -178,7 +178,15 @@ m_thread_hdr_l equ $ - m_thread_hdr
 m_thread_send_hdr: db "A5-THREAD-SEND-AS-REPORTED",10
 m_thread_send_hdr_l equ $ - m_thread_send_hdr
 m_thread:   db "A5-THREAD-OK",10
-m_thread_l  equ $ - m_thread
+m_thread_l equ $ - m_thread
+m_send_beg: db "A5-THRD-SEND-BEG",10
+m_send_beg_l equ $ - m_send_beg
+m_send_end: db "A5-THRD-SEND-END",10
+m_send_end_l equ $ - m_send_end
+m_join_beg: db "A5-THRD-JOIN-BEG",10
+m_join_beg_l equ $ - m_join_beg
+m_join_end: db "A5-THRD-JOIN-END",10
+m_join_end_l equ $ - m_join_end
 m_pixel:    db "A5-PIXEL-AT",10
 m_pixel_l   equ $ - m_pixel
 m_visible:  db "A5-PAINT-VISIBLE",10
@@ -264,6 +272,8 @@ f_thread6:  db "A5-THREAD-FAIL-6",10
 f_thread6_l equ $ - f_thread6
 f_thread7:  db "A5-THREAD-FAIL-7",10
 f_thread7_l equ $ - f_thread7
+f_thread8:  db "A5-THREAD-FAIL-8",10
+f_thread8_l equ $ - f_thread8
 
 section .bss
 written:     resq 1
@@ -1235,7 +1245,12 @@ start:
     mov  [probe+20], eax
     cmp  rax, [work_tid]
     je   .f_thread4
-    ; the send: blocks until the worker's procedure returns wParam+1
+    ; the send: blocks until the worker's procedure returns wParam+1.
+    ; SEND-BEG/END bracket it so a CI hang shows which call it is stuck
+    ; in (the boot-1 log never used to reach the shard on failure).
+    lea  rsi, [m_send_beg]
+    mov  edi, m_send_beg_l
+    call puts_raw
     mov  rcx, [work_hwnd]
     mov  edx, PROBE_MSG
     mov  r8d, PROBE_ARG
@@ -1244,6 +1259,9 @@ start:
     mov  [probe+24], eax
     mov  rax, [work_proc_tid]
     mov  [probe+28], eax
+    lea  rsi, [m_send_end]
+    mov  edi, m_send_end_l
+    call puts_raw
     lea  rsi, [m_thread_send_hdr]
     mov  edi, m_thread_send_hdr_l
     call puts_raw
@@ -1263,9 +1281,19 @@ start:
     call PostMessageW
     test eax, eax
     jz   .f_thread7
+    lea  rsi, [m_join_beg]
+    mov  edi, m_join_beg_l
+    call puts_raw
     mov  rcx, [work_thread]
-    mov  edx, INFINITE
+    mov  edx, 30000                   ; bounded, not INFINITE: a worker that
+                                      ; never exits turns into FAIL-8 with a
+                                      ; marker instead of a silent boot-1 cap
     call WaitForSingleObject
+    test eax, eax
+    jnz  .f_thread8
+    lea  rsi, [m_join_end]
+    mov  edi, m_join_end_l
+    call puts_raw
     lea  rsi, [m_thread]
     mov  edi, m_thread_l
     call puts_raw
@@ -1427,6 +1455,10 @@ start:
 .f_thread7:
     lea  rsi, [f_thread7]
     mov  edi, f_thread7_l
+    jmp  .fail
+.f_thread8:
+    lea  rsi, [f_thread8]
+    mov  edi, f_thread8_l
     jmp  .fail
 .fail:
     call puts_raw

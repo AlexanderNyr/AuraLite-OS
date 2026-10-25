@@ -63,4 +63,12 @@ else
     il_assert_grep "$LOG" "our IP: 10\\.0\\.2\\.15"             "static IP assigned over virtio-net"
 fi
 
+# TCP/X5 evidence: these lines sit near the top of the boot log, where the
+# automatic last-40-lines failure dump never reaches — surface them on
+# every run so a red shard shows the guest's own diagnosis directly.
+echo "── tcp-x5 gate ──"
+grep "tcp-x5" "$LOG" || true
+echo "── tcp evidence ──"
+grep -E "connection refused|timeout waiting|unreachable|peer options|SYN options|ESTABLISHED" "$LOG" | tail -20 || true
+
 il_summary

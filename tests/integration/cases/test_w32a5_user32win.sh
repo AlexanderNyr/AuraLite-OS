@@ -304,4 +304,12 @@ print('%d %d %d want %d %d %d delta %d' % (r, g, b, want[0], want[1], want[2], d
     trap il_dump_on_error EXIT
 fi
 
+# The EXIT trap only dumps IL_LAST_LOG (the last phase's log — part 3's
+# UEFI log), so boot 1's tail — the one that carries a THREAD-section
+# hang — never reached a red shard.  Dump it explicitly when asserts failed.
+if [ "${IL_FAIL_COUNT:-0}" -gt 0 ] && [ -f "$LOG1" ]; then
+    echo "── last 40 lines of $LOG1 (boot 1 — the failing phase) ──"
+    tail -n 40 "$LOG1"
+fi
+
 il_summary

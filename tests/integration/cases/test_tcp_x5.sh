@@ -86,4 +86,12 @@ il_assert_grep "$LOG" "^tcp_retransmits [0-9]+" \
 il_assert_grep "$LOG" "^tcp_rto_events [0-9]+" \
     "transport counters print (RTO events)"
 
+# TCP/X5 evidence: these lines sit near the top of the boot log, where the
+# automatic last-40-lines failure dump never reaches — surface them on
+# every run so a red shard shows the guest's own diagnosis directly.
+echo "── tcp-x5 gate ──"
+grep "tcp-x5" "$LOG" || true
+echo "── tcp evidence ──"
+grep -E "connection refused|timeout waiting|unreachable|peer options|SYN options|ESTABLISHED" "$LOG" | tail -20 || true
+
 il_summary
