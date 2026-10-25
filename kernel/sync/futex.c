@@ -88,6 +88,12 @@ int futex_wait_bitset(uint32_t *uaddr, uint32_t val, uint32_t bitset) {
      * with the value re-check under the bucket lock and futex_wake flips
      * us to READY there, so schedule() either sleeps until that wake or
      * returns at once when the wake already landed. */
+    /* Reap wait4()-ed zombies here: thread_reap_zombies() used to run on
+     * every sched_yield(), and this yield-poll was one of those yields —
+     * without a reap pass at the same cadence the kernel stacks of exited
+     * children leak until the guest goes OOM (see wq_wait).  The bucket
+     * lock is released and the old yield site held no caller lock either. */
+    thread_reap_zombies();
     {
         arch_irqflags_t rflags = arch_irq_save();
         schedule();

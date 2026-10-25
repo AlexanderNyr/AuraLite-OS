@@ -99,10 +99,11 @@ il_send "exit"
 # IL_SELFTEST=fast: this case's subject is the personality, not the kernel
 # self-test lane, and three boots have to fit in one run_all shard slot
 # (test_w32_a4_unwind.sh part 2 sets the same knob for the same reason).
-# 180s was too tight on a loaded CI runner: the fixture was still mid-THREAD
-# (zero failure markers, all sections up to INPUT green) when the boot was
-# cut, so the phase got real headroom instead of dying near the finish.
-IL_SELFTEST=fast il_run_qemu "$LOG1" 300 "${DISK_ARGS[@]}"
+# 180 was too tight on a loaded CI runner (the fixture was still mid-THREAD
+# with zero failure markers), and even 300 lost a slow run: CI guest boots
+# measured ~4x the local wall-clock, so this phase gets real headroom
+# instead of dying near the finish.
+IL_SELFTEST=fast il_run_qemu "$LOG1" 480 "${DISK_ARGS[@]}"
 
 # --- the image loaded and its imports were bound --------------------------------
 # 63 since the CW-1 fix: the CREATE section now also drives GetParent to

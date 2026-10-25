@@ -16,7 +16,6 @@
 #include "kernel/proc/thread.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/lib/string.h"
-#include "kernel/arch/arch.h"      /* arch_irq_save/restore for wq_wait */
 #include <stddef.h>
 
 void wq_init(struct wait_queue *wq) {
@@ -53,37 +52,12 @@ void wq_wait(struct wait_queue *wq, spinlock_t *lock) {
     if (!cur) return;
 
     struct wq_entry entry = { cur, NULL };
+    wq_add_entry(wq, &entry);
 
-    /* Publish the entry AND mark the thread blocked as one atomic step
-     * under the queue lock (the futex.c model), with IRQs already off so
-     * the run-up to schedule() is indivisible against a local tick.  The
-     * waker side (wq_wake_*) takes this same lock and only wakes
-     * THREAD_BLOCKED tcbs: the old split — plain wq_add_entry(), then a
-     * bare state store — let a wake landing in between find the entry
-     * with the state still ready, clear the list with head = NULL and
-     * leave this thread blocked with nobody left to wake it.
-     *
-     * The old sched_yield() was a second bug in the same wait: it resets
-     * THREAD_READY unconditionally, so the BLOCKED set here never stuck
-     * and every "wait" actually spun through a full scheduler rotation
-     * per retry.  Under the smpstress O_APPEND contention (-smp 4, six
-     * writers) that thrash is what pushed the case over its CI budget —
-     * blocked threads now really block (the syscall.c note: they account
-     * as idle and the scheduler can reach hlt). */
-    arch_irqflags_t rflags = arch_irq_save();
-    uint64_t wqfl = spinlock_acquire_irqsave(&wq->lock);
-    entry.next = wq->head;
-    wq->head = &entry;
     cur->state = THREAD_BLOCKED;
-    spinlock_release_irqrestore(&wq->lock, wqfl);
-
     if (lock) spinlock_release(lock);
 
-    schedule();          /* IRQs off, like time.c: nanosleep — sleep until
-                          * woken; wq_wait_deadline additionally relies on
-                          * signal_tick honouring sleep_deadline. */
-
-    arch_irq_restore(rflags);
+    sched_yield();
 
     if (lock) spinlock_acquire(lock);
 
