@@ -187,6 +187,8 @@ m_join_beg: db "A5-THRD-JOIN-BEG",10
 m_join_beg_l equ $ - m_join_beg
 m_join_end: db "A5-THRD-JOIN-END",10
 m_join_end_l equ $ - m_join_end
+m_ready_ok: db "A5-THRD-READY-OK",10
+m_ready_ok_l equ $ - m_ready_ok
 m_pixel:    db "A5-PIXEL-AT",10
 m_pixel_l   equ $ - m_pixel
 m_visible:  db "A5-PAINT-VISIBLE",10
@@ -1233,6 +1235,9 @@ start:
     mov  eax, [ready_flag]
     cmp  eax, 1
     jne  .f_thread2                         ; the worker failed a stage
+    lea  rsi, [m_ready_ok]
+    mov  edi, m_ready_ok_l
+    call puts_raw
     ; the corner of the window it created, so the gate can see which surface
     ; the cross-thread call landed on
     mov  rcx, [work_hwnd]

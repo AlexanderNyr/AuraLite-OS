@@ -307,9 +307,18 @@ fi
 # The EXIT trap only dumps IL_LAST_LOG (the last phase's log — part 3's
 # UEFI log), so boot 1's tail — the one that carries a THREAD-section
 # hang — never reached a red shard.  Dump it explicitly when asserts failed.
-if [ "${IL_FAIL_COUNT:-0}" -gt 0 ] && [ -f "$LOG1" ]; then
-    echo "── last 40 lines of $LOG1 (boot 1 — the failing phase) ──"
-    tail -n 40 "$LOG1"
+# Two passes per log: the fixture's own anchor lines (immune to anything
+# flooding the serial log) and the tail with the buffer-cache writeback
+# spam filtered out — on a capped boot that spam owned the whole last-40
+# window and hid where the fixture actually stopped.
+if [ "${IL_FAIL_COUNT:-0}" -gt 0 ]; then
+    for lg in "$LOG1" "$LOG2"; do
+        [ -f "$lg" ] || continue
+        echo "── fixture anchors of $lg ──"
+        grep -E "^A5-|/apps/w32run|GTHEME|auralite#" "$lg" | tail -n 40 || true
+        echo "── last 120 non-writeback lines of $lg ──"
+        grep -v "\[bc\] writeback" "$lg" | tail -n 120 || true
+    done
 fi
 
 il_summary
