@@ -295,7 +295,12 @@ struct w32_thread {
                               * reads both lock-free, and a plain payload
                               * lets the compiler sink the killer's store
                               * below the flag/unlock, so the victim can
-                              * observe pending=1 with a stale code=0. */
+                              * observe pending=1 with a stale code=0.
+                              * Store order must stay code-THEN-flag in
+                              * every writer (TerminateThread, kill_all):
+                              * the checkpoint takes flag then code, and
+                              * only payload-first publishing makes the
+                              * code visible no later than the flag. */
     int orphaned;            /* handle closed while running: nobody will
                               * reap; ExitThread frees the heap object
                               * itself (the stack/TEB mappings leak — a
@@ -1406,8 +1411,18 @@ W32ABI W32_BOOL TerminateThread(W32_HANDLE h, W32_DWORD code) {
      * keeps its code (decided under the spin). */
     thr_spin_lock();
     if (!t->exited_word) {
-        t->kill_pending = 1;
+        /* Payload BEFORE the flag: thr_checkpoint reads the pair
+         * lock-free (flag, then code) with no spin, so publishing the
+         * flag first lets a victim land in the window where pending=1
+         * is globally visible but kill_code is still the stale zero —
+         * thr_suicide(0) then records exit_code 0 and
+         * GetExitCodeThread reports 0 instead of `code` (flaked
+         * test_w32_a3: FAIL L449 code (0) != 55u).  Store order
+         * code->flag makes the code visible no later than the flag on
+         * x86, closing the window; volatile keeps the compiler from
+         * sinking either store. */
         t->kill_code = code;
+        t->kill_pending = 1;
         thr_abandon_owned(t);
         t->start_seq++;   /* suspend-kick (already-exiting ignores it) */
     }
@@ -1728,8 +1743,10 @@ void w32_thr_kill_all(void) {
     for (int i = 0; i < n; i++) {
         thr_spin_lock();
         if (!objs[i]->exited_word) {
-            objs[i]->kill_pending = 1;
+            /* Payload before flag, same publish order as
+             * TerminateThread (lock-free checkpoint readers). */
             objs[i]->kill_code = 0;
+            objs[i]->kill_pending = 1;
             objs[i]->start_seq++;
         }
         thr_spin_unlock();
@@ -2700,31 +2717,23 @@ static int thr_mutex_try_take(struct w32_thr_mutex *m, W32_DWORD me,
         m->recursion++;
         return 1;
     }
-    /* Held by another: is the owner dead?  Scan the live list for the
-     * owner's word (a dead thread leaves the list, so absence == dead). */
-    {
-        int owner_alive = 0;
-        for (int i = 0; i < thr_live_n; i++) {
-            struct w32_thread *o = thr_live[i];
-            if (o && o->tid == m->owner_tid) {
-                owner_alive = (o->is_main || !o->exited_word);
-                break;
-            }
-        }
-        if (!owner_alive) {
-            /* Abandoned mid-wait (the TerminateThread race window):
-             * take it and report. */
-            m->owner_tid = me;
-            m->recursion = 1;
-            m->abandoned = 0;
-            if (t) {
-                m->owner_next = t->owned;
-                t->owned = m;
-            }
-            *abandoned = 1;
-            return 1;
-        }
-    }
+    /* Held by another: block.  Deliberately NO live-list "owner is
+     * dead" inference — absence is not proof of death: a freshly
+     * cloned child can already own this mutex while its creator has
+     * not yet published it into the live list (the parent inserts
+     * after clone returns; a preemption in between widens the
+     * window).  Hijacking that LIVE owner poisons ownership: its
+     * Release refuses (owner_tid no longer its own), the ghost link
+     * stays in its owned list, and its exit then abandons a mutex it
+     * no longer holds — flaked CI as a bogus WAIT_ABANDONED_0 on a
+     * mutex every worker had released (test_w32_a3 FAIL L856, with
+     * the old double-evaluating CHECK_EQ printing the masked value).
+     * Real death cannot hide here: every exit path runs
+     * thr_abandon_owned under this same spin, zeroing owner_tid,
+     * setting abandoned and waking the waiter — so the owner==0
+     * branch above reports a genuine ABANDONED, while an owner we
+     * cannot classify simply keeps the waiter enqueued until the
+     * release/abandon wake. */
     return 0;
 }
 

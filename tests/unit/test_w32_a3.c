@@ -93,10 +93,17 @@ static int checks;
 #define CHECK(cond) do { checks++; \
     if (!(cond)) { \
         printf("  FAIL L%d: %s\n", __LINE__, #cond); fails++; } } while (0)
+/* CHECK_EQ evaluates each side exactly ONCE.  The old form re-ran the
+ * expressions inside printf on failure: a failed WaitForSingleObject
+ * re-issued the wait (a W32_WAIT_ABANDONED_0 take became WAIT_OBJECT_0
+ * in the print) and masked the real value, while the extra take skewed
+ * recursive-mutex counts and manufactured a follow-up bogus FAIL
+ * (CI: FAIL L856 printed (0) != (0), FAIL L860 !ReleaseMutex). */
 #define CHECK_EQ(a, b) do { checks++; \
-    if ((long long)(a) != (long long)(b)) { \
+    long long _ck_a = (long long)(a), _ck_b = (long long)(b); \
+    if (_ck_a != _ck_b) { \
         printf("  FAIL L%d: %s (%lld) != %s (%lld)\n", __LINE__, \
-               #a, (long long)(a), #b, (long long)(b)); fails++; } } while (0)
+               #a, _ck_a, #b, _ck_b); fails++; } } while (0)
 
 /* ---- shared worker state (plain memory, threads only) ---- */
 
