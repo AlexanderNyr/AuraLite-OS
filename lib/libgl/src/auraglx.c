@@ -345,8 +345,8 @@ int aglxSwapBuffers(aglx_context_t *ctx) {
      * to PID <= 2 in the kernel, so an ordinary application calling it just
      * gets -1 back.  gui_blit() already sets content_dirty, and this makes the
      * intent explicit and keeps the frame path working for unprivileged
-     * processes.  The compositor runs at 100 FPS, so the added latency is at
-     * most one tick. */
+     * processes.  The compositor runs event-driven at ~100 Hz, so the added
+     * latency is at most one tick. */
     ag_window_invalidate(ctx->wid);
     return 0;
 }

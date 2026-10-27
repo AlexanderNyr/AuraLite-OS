@@ -1,0 +1,1735 @@
+From: WR-1 SHELL32 namespace <wr1@auralite>
+Subject: [PATCH] WR-1 SHELL32 namespace: IShellFolder, drives, CFSFolder, PIDL
+
+Base: 21ccad5 (WR0 update).  Delivers the WR-1 phase: shell32_ns.c
+(529 lines), the private header, the 45-check host unit test
+(tests/unit/test_shell_ns.c), the in-guest fixture twin
+(w32/tests/wr1_shellns.c), the test_wr1_shell_namespace.sh gate,
+Makefile/run_all wiring, provenance and census doc updates.
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index a46c10b..e476eb9 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,44 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WR-1 — The SHELL32 namespace is real (§7 closed)] 2026-09-29
++
++Closes the long-standing SHELL32 "plan section 7": the shell namespace object,
++which `SHGetDesktopFolder` refused with `E_NOTIMPL` and `SHGetFileInfoW` refused
++for PIDL addressing. It is the one hard dependency for the WR-2 live 7-Zip
++panel, which gives `E_FAIL` instead of a file listing without it.
++
++- **A real `IShellFolder` graph.** `w32/src/shell32_ns.c` (ABI in
++  `w32/include/w32/shell32_priv.h`) builds a minimal-but-honest namespace
++  rooted `Desktop → My Computer → C: → the filesystem (CFSFolder)`.
++  `EnumObjects` walks the real VFS through `FindFirstFileW`/`FindNextFileW`
++  into an `IEnumIDList`; `BindToObject` descends; `GetDisplayNameOf`
++  (normal / in-folder / for-parsing), `GetAttributesOf` (`SFGAO_FOLDER`/
++  `FILESYSTEM`/`STREAM`/`CANRENAME`/`CANDELETE`/…), `CompareIDs` and
++  `ParseDisplayName` answer against real entries. PIDLs are byte-compatible
++  with the existing single-item pair, so `SHGetPathFromIDListW` and the graph
++  share one layout.
++- **Scoped by measurement (D-WR1).** Only the surface the pinned `7zFM.exe`
++  imports. The GUI-object verbs a single-user file panel does not need —
++  `CreateViewObject`, `GetUIObjectOf`, `BindToStorage`, `SetNameOf` — fail
++  clean `E_NOTIMPL`, named, not faked (D-WR4).
++- **`SHGetFileInfoW` accepts PIDLs.** The `SHGFI_PIDL` early-out is gone:
++  a filesystem PIDL decodes to its path and reuses the by-path body for
++  name/type/icon/attrs; the virtual "Computer" root answers
++  "Computer"/"System Folder"/`DIRECTORY` without a filesystem path.
++- **The gates.** Host twin `tests/unit/test_shell_ns.c` amalgamates the
++  namespace and mocks `FindFirstFileW`/`FindNextFileW`/`FindClose` against a
++  scripted VFS, driving the whole graph through the vtable under ASan/UBSan —
++  **45 checks, 0 failures, Find handles balanced 9/9**; wired into
++  `UNIT_TESTS`. Guest twin `w32/tests/wr1_shellns.c` +
++  `tests/integration/cases/test_wr1_shell_namespace.sh` (registered in
++  `run_all.sh`) drive the SAME ABI from a compiler-emitted PE in the booted
++  OS, asserting `WR1-SHELLNS-OK`/exit 78; it loud-SKIPs without the
++  cross-compiler, like every W32A-2…A-16 fixture. Provenance and
++  test-registry gates green (210 cases). `docs/win32.md` updated: SHELL32
++  is 19/19 REAL with the namespace described, not `§7`.
++
++
+ ## [WR-0 — The live-GUI lane and its oracles] 2026-09-29
+ 
+ Opens the W32RUN ladder (`docs/plans/W32RUN_PLAN.md`): the successor to
+diff --git a/Makefile b/Makefile
+index dbbe1fb..25a4497 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3101,6 +3101,27 @@ $(W32A16_EXE): $(W32_MINGW_STAMP)
+ 	@: > $@
+ endif
+ 
++# W32RUN_PLAN.md WR-1: the SHELL32 namespace guest fixture.  One mingw-w64 TU
++# (-nostdlib, --entry=winstart, no CRT) that drives the IShellFolder /
++# IEnumIDList / PIDL surface the pinned 7zFM.exe imports, through the documented
++# COM vtable — the same call path a real consumer takes.  -lshell32 supplies
++# SHGetDesktopFolder, -lole32 the CoInitialize/CoTaskMemFree the consumer frees
++# PIDLs through, and -luuid the IID_IShellFolder/IEnumIDList/IUnknown GUIDs.
++W32WR1_EXE := $(BUILD_DIR)/user/wr1_shellns.exe
++ifneq ($(MINGW_CC),)
++$(W32WR1_EXE): w32/tests/wr1_shellns.c $(W32_MINGW_STAMP)
++	@mkdir -p $(dir $@)
++	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin $< -o $@ \
++	    -nostdlib -Wl,--entry=winstart \
++	    -lshell32 -lole32 -luuid -lkernel32 -luser32 -lgcc
++	@echo "  [pe] $@ (WR-1 SHELL32 namespace guest fixture)"
++else
++$(W32WR1_EXE): $(W32_MINGW_STAMP)
++	@mkdir -p $(dir $@)
++	@echo "  [pe] skipping the WR-1 fixture (no x86_64-w64-mingw32-gcc)"
++	@: > $@
++endif
++
+ # W32A-4: the real-C++ unwinding fixture.  -nostdlib + --entry=winstart like
+ # the A2 probes (kernel32-only imports, no msvcrt.dll); libstdc++/libgcc come
+ # in statically, and the TU carries every CRT shim the link needs (see the
+@@ -3309,7 +3330,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
+                          $(SELFHOST_KERNEL_STAGE) \
+                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
+                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
+-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
++                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+ 	@rm -rf $(INITRD_DIR)
+ 	@rm -f $@
+ 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
+@@ -3539,6 +3560,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
+ 	@if [ -s $(W32A15_EXE) ]; then cp $(W32A15_EXE) $(INITRD_DIR)/tests/w32a15_7zip.exe; fi
+ # W32A-16: the Notepad++ app-gate guest fixture, basename-preserved.
+ 	@if [ -s $(W32A16_EXE) ]; then cp $(W32A16_EXE) $(INITRD_DIR)/tests/w32a16_npp.exe; fi
++# WR-1: the SHELL32 namespace guest fixture, basename-preserved.
++	@if [ -s $(W32WR1_EXE) ]; then cp $(W32WR1_EXE) $(INITRD_DIR)/tests/wr1_shellns.exe; fi
+ # LX_COMPAT L1: the /linux subtree is the personality's namespace --
+ # stage the host-built static hello under it so the prefix rule and the
+ # gate case exercise a real Linux binary.
+@@ -3829,6 +3852,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_w32_a15_bitmap \
+                 $(BUILD_DIR)/test_w32_a16_shlwapi \
+                 $(BUILD_DIR)/test_w32_a16_layout_icon \
++                $(BUILD_DIR)/test_shell_ns \
+                 $(BUILD_DIR)/test_fsformat \
+                 $(BUILD_DIR)/test_exfat_ntfs
+ 
+@@ -4116,6 +4140,15 @@ $(BUILD_DIR)/test_w32_a11_com: tests/unit/test_w32_a11_com.c \
+ 	@mkdir -p $(dir $@)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
+ 	          -fsanitize=address,undefined $(W32_INC) $< -lpthread -o $@
++# WR-1 (W32RUN_PLAN.md): the SHELL32 namespace. The test amalgamates
++# shell32_ns.c and mocks the ONLY kernel32 surface it uses (FindFirstFileW/
++# FindNextFileW/FindClose), so it links shell32_ns.c alone — no kernel32_fs.c.
++$(BUILD_DIR)/test_shell_ns: tests/unit/test_shell_ns.c \
++                                w32/src/shell32_ns.c \
++                                w32/include/w32/shell32_priv.h
++	@mkdir -p $(dir $@)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g \
++	          -fsanitize=address,undefined $(W32_INC) -I . $< -o $@
+ # Activation probes are REAL now: CLSIDFromProgID runs against the actual
+ # W32A-9 hive on a scratch file (the A9 amalgamation pattern updated for
+ # ole32), CoCreateInstance answers its typed refusals, the probe lines are
+diff --git a/docs/plans/W32RUN_PLAN.md b/docs/plans/W32RUN_PLAN.md
+index 91acc06..df20fc9 100644
+--- a/docs/plans/W32RUN_PLAN.md
++++ b/docs/plans/W32RUN_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
+ 
+-## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1…WR-5 planned.
++## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1 landed 2026-09-29 (the SHELL32 §7 namespace is REAL, host gate green); WR-2…WR-5 planned.
+ 
+ | Phase | State |
+ |---|---|
+@@ -253,7 +253,14 @@ the style of `docs/w32app_receipts.md`.
+ 
+ ## 4. Phases
+ 
+-### Phase WR-1 — `SHELL32` namespace (§7 closed): `IShellFolder`, drives, CFSFolder, PIDL
++### Phase WR-1 — `SHELL32` namespace (§7 closed): `IShellFolder`, drives, CFSFolder, PIDL ✅
++
++_Landed 2026-09-29. Host gate green (`tests/unit/test_shell_ns.c`, 45 checks,
++ASan/UBSan, Find handles balanced 9/9); provenance + test-registry gates green;
++`shell32.c`/`shell32_ns.c` compile clean. The mingw fixture twin and the full
++`w32run.elf` link are toolchain-gated (no cross-compiler / `llvm-rc`+`rustc` in
++this environment) and run when those are present — the fixture loud-SKIPs
++otherwise, exactly like the W32A-2…A-16 guest fixtures._
+ 
+ **Objective:** replace the `E_NOTIMPL`/`ERROR_INVALID_PARAMETER` shell-namespace
+ stubs with a real, minimal, honest namespace — the exact surface §2.2 measured
+@@ -267,43 +274,57 @@ list control is `SysListView32` (REAL); only the COM object graph is new.
+ 
+ #### Tasks
+ 
+-- [ ] `IShellFolder` vtable in `w32/src/shell32.c` (or a new
+-      `w32/src/shell32_ns.c`): `QueryInterface`/`AddRef`/`Release`,
+-      `EnumObjects` → `IEnumIDList`, `BindToObject`, `GetDisplayNameOf`,
+-      `GetAttributesOf`, `ParseDisplayName`, `CompareIDs` — the documented
+-      subset the panel calls.
+-- [ ] The desktop root: `SHGetDesktopFolder` returns the desktop folder whose
++- [x] `IShellFolder` vtable in a new `w32/src/shell32_ns.c`:
++      `QueryInterface`/`AddRef`/`Release`, `EnumObjects` → `IEnumIDList`,
++      `BindToObject`, `GetDisplayNameOf`, `GetAttributesOf`,
++      `ParseDisplayName`, `CompareIDs` — the documented subset the panel calls.
++      All 13 vtable slots present in the documented order; the GUI-object verbs
++      (`CreateViewObject`/`GetUIObjectOf`/`BindToStorage`/`SetNameOf`) fail
++      clean `E_NOTIMPL`, named (D-WR4).
++- [x] The desktop root: `SHGetDesktopFolder` returns the desktop folder whose
+       `EnumObjects` yields one child, `My Computer`, whose `EnumObjects`
+       yields one drive, `C:`.
+-- [ ] `CFSFolder`: binding `C:` (or any filesystem PIDL) yields a folder whose
++- [x] `CFSFolder`: binding `C:` (or any filesystem PIDL) yields a folder whose
+       `EnumObjects` walks the VFS via `FindFirstFileW`/`FindNextFileW`, and
+-      whose `GetDisplayNameOf` round-trips through `SHGetPathFromIDListW`.
+-- [ ] The PIDL byte layout: agree with the existing pair
+-      (`shell32.c:183`/`:208`) so 7-Zip's in-tree `IL*` helpers and our
+-      `SHGetPathFromIDListW` see the same bytes. Unit-tested both directions.
+-- [ ] `SHGetFileInfoW` PIDL branch: resolve PIDL → path, then reuse the
+-      by-path body for name/type/icon/attrs (drop the
+-      `ERROR_INVALID_PARAMETER` early-out for the PIDL flag).
+-- [ ] `SHGetSpecialFolderLocation` / `SHGetSpecialFolderPathW` for the CSIDL
+-      roots the panel asks for (Desktop, Drives, Personal) → real PIDL/path.
+-- [ ] `SHBrowseForFolderW` over the new namespace (folder-picker); `SHChangeNotify`
+-      documented as a no-op where the user looks (named, not hidden).
+-- [ ] Host unit test `tests/unit/test_shell_ns.c` — enumerate desktop → My
+-      Computer → C: → a known VFS dir, assert names/attrs/PIDL round-trip,
+-      under ASan/UBSan.
+-- [ ] Fixture twin `tests/integration/cases/test_wr1_shellns_fixture.sh` — a
+-      mingw-w64 PE that calls `SHGetDesktopFolder`, walks two levels and prints
+-      a folder's children, green in-guest.
++      whose `GetDisplayNameOf` (`SHGDN_FORPARSING`) round-trips through
++      `ns_pidl_to_path` (the same bytes `SHGetPathFromIDListW` decodes).
++- [x] The PIDL byte layout: byte-compatible with the existing single-item pair
++      (`{ u16 cb, u16 kind, u16 units, path, u16 0, u16 0 }`) so the in-tree
++      `IL*`/`SHGetPathFromIDListW` see the same bytes. Unit-tested both
++      directions.
++- [x] `SHGetFileInfoW` PIDL branch: resolve PIDL → path, then reuse the
++      by-path body for name/type/icon/attrs (the `ERROR_INVALID_PARAMETER`
++      early-out is gone; the virtual "Computer" root answers name/type/attrs
++      without a filesystem path).
++- [~] `SHGetSpecialFolderLocation` / `SHGetSpecialFolderPathW`: already REAL
++      from W32A-10 (the CSIDL PIDL/path pair); no change needed for the
++      measured 7-Zip surface, so left as-is (D-WR1: measured surface only).
++- [~] `SHBrowseForFolderW` / `SHChangeNotify`: already REAL from W32A-10;
++      untouched — not on the WR-1 critical path.
++- [x] Host unit test `tests/unit/test_shell_ns.c` — enumerate desktop → My
++      Computer → C: → a scripted VFS tree, assert names/attrs/PIDL round-trip,
++      enum Next/Skip/Reset, fail-clean verbs, and Find-handle balance, under
++      ASan/UBSan (45 checks, 0 failures).
++- [x] Fixture twin `tests/integration/cases/test_wr1_shell_namespace.sh` +
++      guest `w32/tests/wr1_shellns.c` — a mingw-w64 PE that calls
++      `SHGetDesktopFolder`, walks the graph through the COM vtable and asserts
++      each step, printing `WR1-SHELLNS-OK`/exit 78; registered in `run_all.sh`,
++      loud-SKIPs when the cross-compiler is absent.
+ 
+ #### Test gate
+ 
+-- Host unit test green under ASan/UBSan; fixture twin green in-guest; the
+-  census gap does not grow (`w32_import_ledger.py check`); `w32run.elf` links
+-  clean. No live-frame gate yet — WR-1 is headless COM.
++- Host unit test green under ASan/UBSan (45 checks); provenance and
++  test-registry gates green (210 cases); `shell32.c`/`shell32_ns.c` compile
++  `-Wall -Wextra -Werror` clean. Census gap does not grow (`SHGetDesktopFolder`
++  was already a ledger symbol — it changed from stub to REAL, no new import).
++  Fixture twin green in-guest and the full `w32run.elf` link are toolchain-gated
++  (mingw / `llvm-rc`+`rustc`), run when those are installed. No live-frame gate
++  yet — WR-1 is headless COM.
+ 
+-**Deliverable:** `w32/src/shell32_ns.c` (+ `shell32.c` edits),
++**Deliverable:** `w32/src/shell32_ns.c` (+ `shell32.c`/`shell32.h` edits),
+ `w32/include/w32/shell32_priv.h`, `tests/unit/test_shell_ns.c`,
+-`tests/integration/cases/test_wr1_shellns_fixture.sh`,
++`w32/tests/wr1_shellns.c`,
++`tests/integration/cases/test_wr1_shell_namespace.sh`, Makefile wiring,
+ `patches/WR1_shell_namespace.patch`.
+ 
+ ---
+diff --git a/docs/win32.md b/docs/win32.md
+index 98ce1e2..f28fe4f 100644
+--- a/docs/win32.md
++++ b/docs/win32.md
+@@ -467,8 +467,9 @@ flows but carry a documented approximation. Each has its own section:
+ - **CryptoAPI is hash-only.** `crypt32` (`Cert*`/`CryptMsg*`) is `FAIL-CLEAN`;
+   only the `advapi32` `Crypt*Hash` surface is `REAL` — see "CryptoAPI is hash-only".
+ - **Shell PIDL subset and no-undo file ops.** The namespace is a real
+-  filesystem view over a PIDL subset, and `SHFileOperation` deletes without a
+-  recycle-bin undo — see "The shell is a real filesystem view".
++  `IShellFolder` filesystem view over a PIDL subset (WR-1), and
++  `SHFileOperation` deletes without a recycle-bin undo — see "The shell is a
++  real filesystem view".
+ - **Unthemed fallbacks.** `uxtheme` draws the classic (unthemed) control when a
+   visual style part is unknown rather than refusing — see the theme note under
+   "W32A-11 incremental COM, IME and themed controls".
+@@ -709,9 +710,24 @@ else `/tmp` with the volatility logged once. `CSIDL_FLAG_CREATE` creates
+ the directory.
+ 
+ **PIDL** (`SHGetSpecialFolderLocation` + `SHGetPathFromIDListW`): one
+-item `{ u16 cb, u16 csidl, u16 path_units, UTF-16 path, u16 0 }`. The two
+-functions round-trip; nothing else accepts a PIDL (full PIDL algebra is
+-§7). `SHGetDesktopFolder` is `E_NOTIMPL`.
++item `{ u16 cb, u16 kind, u16 path_units, UTF-16 path, u16 0 }`. The
++functions round-trip, and the namespace object below now consumes and
++produces the same byte layout.
++
++**The namespace** (`SHGetDesktopFolder`, WR-1): a minimal-but-real
++`IShellFolder` / `IEnumIDList` / PIDL graph rooted
++`Desktop → My Computer → C: → the filesystem (CFSFolder)`. `EnumObjects`
++walks the real VFS through `FindFirstFileW`; `BindToObject` descends;
++`GetDisplayNameOf`/`GetAttributesOf`/`CompareIDs`/`ParseDisplayName` answer
++against real entries (a directory reports `SFGAO_FOLDER|SFGAO_FILESYSTEM`,
++a file `SFGAO_STREAM|SFGAO_CANRENAME|SFGAO_CANDELETE`). The GUI-object
++verbs are a documented non-goal on this layer and fail clean by name:
++`CreateViewObject`/`GetUIObjectOf`/`BindToStorage`/`SetNameOf` →
++`E_NOTIMPL` (the shell *view* is a compositor object; rename lives on
++`SHFileOperationW`). The private ABI is `w32/include/w32/shell32_priv.h`;
++the graph is `w32/src/shell32_ns.c`. `SHGetFileInfoW` now decodes a
++namespace PIDL to its path (or answers "Computer"/"System Folder" for the
++virtual root) instead of refusing `SHGFI_PIDL`.
+ 
+ **IShellItem** (`SHCreateItemFromParsingName`): a minimal `IShellItem`
+ for filesystem paths; `GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)`
+@@ -734,7 +750,8 @@ notification engine (`ag_notify`).
+ executes via `CreateProcessW` and returns `>32`; every other verb
+ (`runas` → `SE_ERR_ACCESSDENIED`, `print`/`edit`/unknown → `SE_ERR_NOASSOC`)
+ is refused by name. Documents and directories refuse as `NOASSOC` (no
+-association table, desktop namespace is §7).
++association table; the namespace object that would host a default-verb
++lookup is the WR-1 `IShellFolder` above, which does not implement one).
+ 
+ **Notifications** (`Shell_NotifyIconW`): 8 slots keyed `(hwnd, id)`;
+ `ADD` shows `ag_notify`, `MODIFY` updates, `DELETE` removes;
+diff --git a/tests/integration/cases/test_wr1_shell_namespace.sh b/tests/integration/cases/test_wr1_shell_namespace.sh
+new file mode 100644
+index 0000000..45a6b54
+--- /dev/null
++++ b/tests/integration/cases/test_wr1_shell_namespace.sh
+@@ -0,0 +1,72 @@
++#!/usr/bin/env bash
++# test_wr1_shell_namespace.sh — W32RUN_PLAN.md phase WR-1 gate (SHELL32
++# namespace: IShellFolder / IEnumIDList / PIDL, closing plan §7),
++# CI-automatable half.
++#
++# One mingw-w64 fixture (wr1_shellns.exe) that drives the exact IShellFolder /
++# IEnumIDList / PIDL surface the pinned 7zFM.exe imports (SHGetDesktopFolder +
++# the PIDL info calls) through the documented COM vtable -- the same call path
++# a real consumer takes.  It walks the namespace the implementation builds,
++# Desktop -> My Computer -> C: -> the filesystem (CFSFolder over the REAL
++# FindFirstFileW), and asserts each step: a live desktop folder with working
++# QueryInterface, EnumObjects yielding a browsable My Computer, BindToObject
++# descending to the drive and then the VFS root, GetDisplayNameOf /
++# GetAttributesOf on real entries, ParseDisplayName round-tripping an existing
++# path and failing clean on a missing one, and CreateViewObject (a GUI object,
++# a documented non-goal on this layer) returning E_NOTIMPL by name.
++#
++# It prints WR1-SHELLNS-OK and exits 78 on a clean run, or FAIL-<mark> +
++# WR1-SHELLNS-FAIL / exit 1.
++#
++# The host twin (tests/unit/test_shell_ns.c, ASan/UBSan) pins the same object
++# graph against a scripted VFS and is the always-on gate; this integration case
++# proves a compiler-emitted PE consumer drives the SAME ABI through w32_bind.c
++# in the booted OS.  It runs only when the cross-compiler was present at build
++# time, skipping loudly otherwise.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "WR-1 integration: the SHELL32 namespace app gate (fixture twin)"
++
++LOG="$IL_LOGDIR/wr1_shellns.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++# The fixture is only in the image when the cross-compiler was installed at
++# build time.  Skip loudly rather than assert on a file never built.
++if ! tar tf "$IL_BUILD/initrd.tar" 2>/dev/null | grep -q wr1_shellns; then
++    echo "  SKIP: WR-1 fixture not in the image (no cross-compiler)"
++    il_summary
++    exit 0
++fi
++
++il_send_delay 8
++il_send "run /tests/wr1_shellns.exe"
++il_send_delay 12
++il_send "exit"
++
++il_run_qemu "$LOG" 90
++
++# --- the fixture passed every in-guest check --------------------------------
++il_assert_grep "$LOG" "WR1-SHELLNS-OK" \
++    "the SHELL32 namespace fixture passed in-guest"
++
++# --- and exited 78 ----------------------------------------------------------
++il_assert_grep "$LOG" "'/tests/wr1_shellns\\.exe' \\(tid [0-9]+\\) exited \\(code=78\\)" \
++    "wr1_shellns.exe exited 78"
++
++# --- no failed check, no fault ----------------------------------------------
++il_assert_no_grep "$LOG" "WR1-SHELLNS-FAIL" \
++    "no fixture check failed"
++il_assert_no_grep "$LOG" "FAIL-" \
++    "no individual namespace assertion failed"
++il_assert_no_grep "$LOG" "TODO .* needs W32|E_NOTIMPL.*section 7" \
++    "no import fell through to a loud TODO stub (the namespace is REAL now)"
++il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION.*KERNEL|kernel panic|PANIC" \
++    "no fault during the run"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 07c78a0..5c6f634 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -130,6 +130,7 @@ ALL_CASES=(
+     test_w32a14_putty_fixture
+     test_w32a15_7zip_fixture
+     test_w32a16_npp_fixture
++    test_wr1_shell_namespace
+     test_ahci_large_read
+     test_doom
+     test_stack_guard
+diff --git a/tests/unit/test_shell_ns.c b/tests/unit/test_shell_ns.c
+new file mode 100644
+index 0000000..fc6e0e5
+--- /dev/null
++++ b/tests/unit/test_shell_ns.c
+@@ -0,0 +1,306 @@
++/* WR-1 (W32RUN_PLAN.md) — the SHELL32 namespace, host unit test.
++ *
++ * Exercises w32/src/shell32_ns.c directly (amalgamated) against a scripted
++ * VFS: the ONLY kernel32 surface the namespace touches — FindFirstFileW /
++ * FindNextFileW / FindClose — is mocked here so the test links shell32_ns.c
++ * alone (no kernel32_fs.c). The mock serves a small tree and supports both
++ * the "parent\\*" enumeration form and the exact-path existence query the
++ * code emits, so the same code path a real 7-Zip FM consumer drives is what
++ * runs under ASan/UBSan.
++ *
++ * Tree:
++ *     C:\fat            (dir)
++ *     C:\readme.txt     (file)
++ *     C:\sub            (dir)
++ *     C:\fat\7zFM.exe   (file)
++ *     C:\fat\DOCS       (dir)
++ */
++#include <stdio.h>
++#include <stdlib.h>
++#include <stdint.h>
++#include <string.h>
++
++#include "w32/shell32_priv.h"
++#include "w32/kernel32.h"
++
++/* ---- the scripted VFS -------------------------------------------------- */
++struct ent { const char *path; int is_dir; };
++static const struct ent TREE[] = {
++    { "C:\\fat",          1 },
++    { "C:\\readme.txt",   0 },
++    { "C:\\sub",          1 },
++    { "C:\\fat\\7zFM.exe", 0 },
++    { "C:\\fat\\DOCS",    1 },
++};
++enum { TREE_N = (int)(sizeof TREE / sizeof TREE[0]) };
++
++static int ci_eq(const char *a, const char *b) {
++    for (;; a++, b++) {
++        int ca = *a, cb = *b;
++        if (ca >= 'A' && ca <= 'Z') ca += 32;
++        if (cb >= 'A' && cb <= 'Z') cb += 32;
++        if (ca != cb) return 0;
++        if (!ca) return 1;
++    }
++}
++/* directory that owns an entry: everything before the last backslash */
++static void parent_of(const char *path, char *out) {
++    strcpy(out, path);
++    char *slash = strrchr(out, '\\');
++    if (slash) *slash = 0; else out[0] = 0;
++}
++/* leaf name of an entry: everything after the last backslash */
++static const char *leaf_of(const char *path) {
++    const char *slash = strrchr(path, '\\');
++    return slash ? slash + 1 : path;
++}
++/* the directory a "...\\*" pattern lists (strip trailing '*' then any sep) */
++static void dir_from_pattern(const char *pat, char *out) {
++    strcpy(out, pat);
++    size_t n = strlen(out);
++    if (n && out[n - 1] == '*') out[--n] = 0;
++    if (n && (out[n - 1] == '\\' || out[n - 1] == '/')) out[--n] = 0;
++}
++
++/* wide<->ascii for the mock boundary */
++static void w2a(const uint16_t *w, char *a, size_t cap) {
++    size_t i = 0;
++    for (; w[i] && i + 1 < cap; i++) a[i] = (char)(w[i] & 0xFF);
++    a[i] = 0;
++}
++static void a2w(const char *a, uint16_t *w, size_t cap) {
++    size_t i = 0;
++    for (; a[i] && i + 1 < cap; i++) w[i] = (uint8_t)a[i];
++    w[i] = 0;
++}
++
++/* the find handle: a list of matched TREE indices + a cursor */
++struct mockfind { int idx[16]; int n; int pos; };
++
++static void fill(W32_WIN32_FIND_DATAW *out, int e) {
++    memset(out, 0, sizeof *out);
++    out->dwFileAttributes = TREE[e].is_dir ? W32_FILE_ATTRIBUTE_DIRECTORY : 0x80u /*NORMAL*/;
++    a2w(leaf_of(TREE[e].path), out->cFileName, 260);
++}
++
++/* counters, so the test can prove FindClose balances FindFirst */
++static int g_open = 0, g_closed = 0;
++
++W32ABI W32_HANDLE FindFirstFileW(W32_LPCWSTR name, W32_WIN32_FIND_DATAW *out) {
++    char a[512];
++    w2a(name, a, sizeof a);
++    struct mockfind mf; mf.n = 0; mf.pos = 0;
++
++    size_t la = strlen(a);
++    int wildcard = la && a[la - 1] == '*';
++    if (wildcard) {
++        char dir[512];
++        dir_from_pattern(a, dir);
++        for (int i = 0; i < TREE_N; i++) {
++            char par[512];
++            parent_of(TREE[i].path, par);
++            if (ci_eq(par, dir)) mf.idx[mf.n++] = i;
++        }
++    } else {
++        for (int i = 0; i < TREE_N; i++)
++            if (ci_eq(TREE[i].path, a)) { mf.idx[mf.n++] = i; break; }
++    }
++    if (mf.n == 0) return W32_INVALID_HANDLE_VALUE;
++
++    struct mockfind *h = (struct mockfind *)malloc(sizeof *h);
++    *h = mf;
++    fill(out, h->idx[0]);
++    h->pos = 1;
++    g_open++;
++    return (W32_HANDLE)h;
++}
++W32ABI W32_BOOL FindNextFileW(W32_HANDLE handle, W32_WIN32_FIND_DATAW *out) {
++    struct mockfind *h = (struct mockfind *)handle;
++    if (!h || h->pos >= h->n) return 0;
++    fill(out, h->idx[h->pos++]);
++    return 1;
++}
++W32ABI W32_BOOL FindClose(W32_HANDLE handle) {
++    if (handle && handle != W32_INVALID_HANDLE_VALUE) { free(handle); g_closed++; return 1; }
++    return 0;
++}
++
++/* ---- the object under test -------------------------------------------- */
++#include "../../w32/src/shell32_ns.c"
++
++static int n_checks, n_fail;
++#define CHECK(x) do { n_checks++; if (!(x)) { n_fail++; fprintf(stderr, "FAIL:%d: %s\n", __LINE__, #x); } } while (0)
++
++/* convenient casts to the real vtbl wrappers */
++#define SF(p)  ((W32_IShellFolder *)(p))
++#define EN(p)  ((W32_IEnumIDList *)(p))
++#define SFV(p) (SF(p)->vtbl)
++#define ENV(p) (EN(p)->vtbl)
++
++static int wide_eq_a(const uint16_t *w, const char *a) {
++    size_t i = 0;
++    for (; a[i]; i++) if (w[i] != (uint16_t)(uint8_t)a[i]) return 0;
++    return w[i] == 0;
++}
++
++/* pull every pidl out of an enumerator (one at a time, S_FALSE terminates) */
++static size_t drain(void *en, void **buf, size_t cap) {
++    size_t got = 0;
++    for (;;) {
++        void *pidl = NULL; W32_UINT f = 0;
++        W32_LONG hr = ENV(en)->Next(en, 1, &pidl, &f);
++        if (hr != 0 /*S_OK*/ || f != 1) { if (pidl) free(pidl); break; }
++        if (got < cap) buf[got] = pidl; else free(pidl);
++        got++;
++    }
++    return got;
++}
++
++int main(void) {
++    /* --- SHGetDesktopFolder --- */
++    void *desktop = NULL;
++    CHECK(ns_get_desktop_folder(&desktop) == 0 && desktop);
++    CHECK(ns_get_desktop_folder(NULL) == (W32_LONG)0x80004003uL); /* E_POINTER */
++
++    /* QueryInterface: IShellFolder, IUnknown yes; garbage no */
++    void *qi = NULL;
++    CHECK(SFV(desktop)->QueryInterface(desktop, W32_IID_IShellFolder, &qi) == 0 && qi == desktop);
++    SFV(desktop)->Release(desktop); /* balance the AddRef QI did */
++    CHECK(SFV(desktop)->QueryInterface(desktop, W32_IID_IUnknown, &qi) == 0 && qi == desktop);
++    SFV(desktop)->Release(desktop);
++    uint8_t bad[16] = { 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 };
++    qi = (void *)1;
++    CHECK(SFV(desktop)->QueryInterface(desktop, bad, &qi) == (W32_LONG)0x80004002uL && qi == NULL);
++
++    /* --- Desktop enumerates exactly one child: My Computer --- */
++    void *en = NULL;
++    CHECK(SFV(desktop)->EnumObjects(desktop, NULL, W32_SHCONTF_FOLDERS, &en) == 0 && en);
++    void *comp_pidl[4];
++    size_t nc = drain(en, comp_pidl, 4);
++    CHECK(nc == 1);
++    ENV(en)->Release(en);
++
++    /* My Computer displays as "Computer"; is a browsable folder */
++    W32_STRRET sr; memset(&sr, 0, sizeof sr);
++    CHECK(SFV(desktop)->GetDisplayNameOf(desktop, comp_pidl[0], W32_SHGDN_NORMAL, &sr) == 0);
++    CHECK(sr.uType == W32_STRRET_WSTR && wide_eq_a(sr.pOleStr, "Computer"));
++    free(sr.pOleStr);
++    { const void *ap[1] = { comp_pidl[0] }; W32_UINT a = 0xFFFFFFFFu;
++      CHECK(SFV(desktop)->GetAttributesOf(desktop, 1, ap, &a) == 0);
++      CHECK((a & W32_SFGAO_FOLDER) && (a & W32_SFGAO_HASSUBFOLDER) && !(a & W32_SFGAO_FILESYSTEM)); }
++
++    /* --- BindToObject(My Computer) -> the Computer folder, enum -> C:\ --- */
++    void *computer = NULL;
++    CHECK(SFV(desktop)->BindToObject(desktop, comp_pidl[0], NULL, W32_IID_IShellFolder, &computer) == 0 && computer);
++    CHECK(SFV(computer)->EnumObjects(computer, NULL, W32_SHCONTF_FOLDERS | W32_SHCONTF_NONFOLDERS, &en) == 0);
++    void *drive_pidl[4];
++    size_t nd = drain(en, drive_pidl, 4);
++    CHECK(nd == 1);
++    ENV(en)->Release(en);
++    /* the drive shows as "C:" normally, "C:\" for parsing */
++    CHECK(SFV(computer)->GetDisplayNameOf(computer, drive_pidl[0], W32_SHGDN_NORMAL, &sr) == 0 && wide_eq_a(sr.pOleStr, "C:"));
++    free(sr.pOleStr);
++    CHECK(SFV(computer)->GetDisplayNameOf(computer, drive_pidl[0], W32_SHGDN_FORPARSING, &sr) == 0 && wide_eq_a(sr.pOleStr, "C:\\"));
++    free(sr.pOleStr);
++
++    /* --- BindToObject(C:\) -> the CFSFolder, enum -> root children --- */
++    void *root = NULL;
++    CHECK(SFV(computer)->BindToObject(computer, drive_pidl[0], NULL, W32_IID_IShellFolder, &root) == 0 && root);
++    CHECK(SFV(root)->EnumObjects(root, NULL, W32_SHCONTF_FOLDERS | W32_SHCONTF_NONFOLDERS, &en) == 0);
++    void *kids[8];
++    size_t nk = drain(en, kids, 8);
++    CHECK(nk == 3); /* fat, readme.txt, sub */
++    ENV(en)->Release(en);
++
++    /* folders-only filter drops the file */
++    CHECK(SFV(root)->EnumObjects(root, NULL, W32_SHCONTF_FOLDERS, &en) == 0);
++    void *fo[8]; size_t nfo = drain(en, fo, 8);
++    CHECK(nfo == 2);
++    ENV(en)->Release(en);
++    for (size_t i = 0; i < nfo; i++) free(fo[i]);
++
++    /* find the "fat" child, check display + attributes (a folder w/ subfolders) */
++    void *fat_pidl = NULL, *file_pidl = NULL;
++    for (size_t i = 0; i < nk; i++) {
++        memset(&sr, 0, sizeof sr);
++        SFV(root)->GetDisplayNameOf(root, kids[i], W32_SHGDN_INFOLDER, &sr);
++        if (wide_eq_a(sr.pOleStr, "fat")) fat_pidl = kids[i];
++        if (wide_eq_a(sr.pOleStr, "readme.txt")) file_pidl = kids[i];
++        free(sr.pOleStr);
++    }
++    CHECK(fat_pidl && file_pidl);
++    /* full parse name resolves to the absolute path */
++    CHECK(SFV(root)->GetDisplayNameOf(root, fat_pidl, W32_SHGDN_FORPARSING, &sr) == 0 && wide_eq_a(sr.pOleStr, "C:\\fat"));
++    free(sr.pOleStr);
++    { const void *ap[1] = { fat_pidl }; W32_UINT a = 0xFFFFFFFFu;
++      SFV(root)->GetAttributesOf(root, 1, ap, &a);
++      CHECK((a & W32_SFGAO_FOLDER) && (a & W32_SFGAO_FILESYSTEM) && (a & W32_SFGAO_HASSUBFOLDER)); }
++    { const void *ap[1] = { file_pidl }; W32_UINT a = 0xFFFFFFFFu;
++      SFV(root)->GetAttributesOf(root, 1, ap, &a);
++      CHECK(!(a & W32_SFGAO_FOLDER) && (a & W32_SFGAO_STREAM) && (a & W32_SFGAO_CANDELETE)); }
++
++    /* CompareIDs: fat < readme.txt < (itself == 0) */
++    CHECK((int16_t)SFV(root)->CompareIDs(root, 0, fat_pidl, file_pidl) < 0);
++    CHECK((int16_t)SFV(root)->CompareIDs(root, 0, fat_pidl, fat_pidl) == 0);
++
++    /* --- BindToObject(fat) -> subfolder, enum -> its children --- */
++    void *fatf = NULL;
++    CHECK(SFV(root)->BindToObject(root, fat_pidl, NULL, W32_IID_IShellFolder, &fatf) == 0 && fatf);
++    CHECK(SFV(fatf)->EnumObjects(fatf, NULL, W32_SHCONTF_FOLDERS | W32_SHCONTF_NONFOLDERS, &en) == 0);
++    void *gk[8]; size_t ng = drain(en, gk, 8);
++    CHECK(ng == 2); /* 7zFM.exe, DOCS */
++    /* enumerator Skip/Reset behave */
++    ENV(en)->Reset(en);
++    CHECK(ENV(en)->Skip(en, 1) == 0);
++    void *one = NULL; W32_UINT f1 = 0;
++    CHECK(ENV(en)->Next(en, 1, &one, &f1) == 0 && f1 == 1);
++    free(one);
++    CHECK(ENV(en)->Next(en, 1, &one, &f1) == 1 /*S_FALSE*/ && f1 == 0);
++    ENV(en)->Release(en);
++    for (size_t i = 0; i < ng; i++) free(gk[i]);
++
++    /* --- ParseDisplayName: relative hit, absolute hit, miss --- */
++    void *pp = NULL; W32_UINT eaten = 0, pattrs = 0xFFFFFFFFu;
++    uint16_t wname[64];
++    a2w("7zFM.exe", wname, 64);
++    CHECK(SFV(fatf)->ParseDisplayName(fatf, NULL, NULL, wname, &eaten, &pp, &pattrs) == 0 && pp);
++    CHECK(pattrs & W32_SFGAO_FILESYSTEM);
++    free(pp);
++    a2w("C:\\readme.txt", wname, 64); pp = NULL;
++    CHECK(SFV(root)->ParseDisplayName(root, NULL, NULL, wname, NULL, &pp, NULL) == 0 && pp);
++    free(pp);
++    a2w("nope.dat", wname, 64); pp = (void *)1;
++    CHECK(SFV(fatf)->ParseDisplayName(fatf, NULL, NULL, wname, NULL, &pp, NULL) == (W32_LONG)0x80070002uL && pp == NULL);
++
++    /* --- the deliberately-unimplemented GUI verbs fail clean, named --- */
++    void *v = (void *)1;
++    CHECK(SFV(root)->CreateViewObject(root, NULL, W32_IID_IUnknown, &v) == (W32_LONG)0x80004001uL && v == NULL);
++    { const void *ap[1] = { fat_pidl }; void *u = (void *)1;
++      CHECK(SFV(root)->GetUIObjectOf(root, NULL, 1, ap, W32_IID_IUnknown, NULL, &u) == (W32_LONG)0x80004001uL && u == NULL); }
++    v = (void *)1;
++    CHECK(SFV(root)->BindToStorage(root, fat_pidl, NULL, W32_IID_IUnknown, &v) == (W32_LONG)0x80004001uL && v == NULL);
++    void *op = (void *)1;
++    a2w("x", wname, 64);
++    CHECK(SFV(root)->SetNameOf(root, NULL, fat_pidl, wname, 0, &op) == (W32_LONG)0x80004001uL && op == NULL);
++
++    /* --- ns_pidl_to_path: FS -> path, Computer -> 0, garbage -> -1 --- */
++    uint16_t path[64];
++    CHECK(ns_pidl_to_path(fat_pidl, path, 64) == 6 && wide_eq_a(path, "C:\\fat"));
++    CHECK(ns_pidl_to_path(comp_pidl[0], path, 64) == 0);
++    uint16_t junk[2] = { 3 /*cb too small*/, 0 };
++    CHECK(ns_pidl_to_path(junk, path, 64) == -1);
++
++    /* --- release the whole graph; then prove Find handles all closed --- */
++    SFV(fatf)->Release(fatf);
++    SFV(root)->Release(root);
++    SFV(computer)->Release(computer);
++    SFV(desktop)->Release(desktop);
++    for (size_t i = 0; i < nk; i++) free(kids[i]);
++    free(drive_pidl[0]);
++    free(comp_pidl[0]);
++    CHECK(g_open == g_closed && g_open > 0);
++
++    fprintf(stderr, "shell-ns: %d checks, %d failures (finds opened=%d closed=%d)\n",
++            n_checks, n_fail, g_open, g_closed);
++    return n_fail ? 1 : 0;
++}
+diff --git a/w32/PROVENANCE.md b/w32/PROVENANCE.md
+index 63e4767..dcba529 100644
+--- a/w32/PROVENANCE.md
++++ b/w32/PROVENANCE.md
+@@ -125,6 +125,8 @@ ReactOS.
+ | `src/shlwapi.c` | The SHLWAPI pure engine (W32A-10): Path* string transforms (drive/UNC/slash, drive number, extension, FileSpec, Combine/Append, AddExtension with .exe default, CompactPathEx ellipses), PathFileExistsW via w32_fs_xlate, PathMatchSpecW wildcard, Color* HLS (0..240) with the documented luminance math, AssocQueryStringW empty-table S_FALSE |
+ | `include/w32/shell32.h` | SHELL32 declarations: the 19-symbol known-folder/PIDL/file-op/shell-execution/notification surface (W32A-10) |
+ | `src/shell32.c` | The shell engine (W32A-10): known folders (CSIDL mapping onto /disk or /tmp, PIDL {cb,csidl,path} round-trip), IShellItem minimal, SHGetFileInfoW/ExtractIconExW via PE icon decode, SHFileOperationW over the VFS (no undo), ShellExecute verb dispatch (open via spawn, runas/noassoc refused), Shell_NotifyIconW onto ag_notify, Drag trio model |
++| `include/w32/shell32_priv.h` | WR-1 (W32RUN_PLAN.md §7) the shell namespace ABI: the documented shobjidl vtable layouts (`IShellFolder`/`IEnumIDList`), `STRRET`/`SFGAO_*`/`SHGDN_*`/`SHCONTF_*` constants, our PIDL item kinds, and the IID byte arrays — an author's expression of a documented interface ABI (mingw-w64 headers / MSDN), the same class of fact docs/win32.md records; no foreign implementation consulted |
++| `src/shell32_ns.c` | WR-1 (W32RUN_PLAN.md §7) the REAL shell namespace: a minimal-but-honest `IShellFolder`/`IEnumIDList`/PIDL graph rooted Desktop→My Computer→C:→CFSFolder, enumerating the VFS through the REAL FindFirstFileW; backs `SHGetDesktopFolder` and the `SHGetFileInfoW` PIDL branch; the GUI-object verbs (CreateViewObject/GetUIObjectOf/BindToStorage/SetNameOf) fail clean E_NOTIMPL by name; author-written |
+ | `include/w32/comdlg32.h` | COMDLG32 declarations: the 10-symbol common-dialog surface (W32A-10) |
+ | `src/comdlg32.c` | The common-dialog engine (W32A-10): GetOpenFileNameW/Save (filter/initial-dir/multi-select, hook precedence, overwrite prompt via MessageBox), ChooseColor/ChooseFont over the 16-colour and VGA 8x16 ladder, PrintDlgW FAIL-CLEAN, SHBrowseForFolderW folder picker, the listbox class (LB_*) and the dialog template expander |
+ | `include/w32/version.h` | VERSION declarations: the 3-symbol file-version surface (W32A-10) |
+@@ -158,6 +160,9 @@ ReactOS.
+ | `tests/w32a16_npp.c` | W32A-16 (Notepad++ app gate) guest fixture: mingw-w64 TU (name imports for KERNEL32/USER32/GDI32/COMCTL32/SHELL32/SHLWAPI/OLE32/WININET/SENSAPI/WINTRUST) exercising NPP's personality paths — SysTabControl32 tab strip, SHLWAPI Path*/Color*, the `IShellItem` traced open path, VFS save/reopen, plugin DLL chain, tray icon, offline updater, and (added this phase) the nine newly-landed imports: DeferWindowPos batch, `CreateIconIndirect`/`GetIconInfo` round-trip, `wsprintfW`, `FreeLibraryWhenCallbackReturns`, `ReadDirectoryChangesW` fail-clean; author-written, no third-party bytes |
+ | `tests/W32A16.probe.log` | W32A-16 import-coverage probe of the pinned `notepad++.exe`: names/counts only (590 imports, 19 DLLs), class census (565 REAL / 25 FAIL-CLEAN, 0 REFUSE, 0 TODO), the traced no-`GetOpenFileName` open path, the census-gap correction (13 → 4) and the refreshed live fixture boot; sha256/size of the source binary, no binary bytes |
+ | `tests/integration/cases/test_w32a16_npp_fixture.sh` | W32A-16 QEMU effect gate booting `w32a16_npp.exe` and asserting `W32A16-NPP-OK`/exit 78; CI-provable half of the NPP gate, no pinned-app pixel claim; registered in `tests/integration/run_all.sh` |
++| `tests/wr1_shellns.c` | WR-1 (W32RUN_PLAN.md §7) the SHELL32 namespace guest fixture: mingw-w64 TU (name imports for SHELL32/OLE32/UUID/KERNEL32/USER32) driving `SHGetDesktopFolder` and the `IShellFolder`/`IEnumIDList`/PIDL graph through the documented COM vtable — desktop QI, EnumObjects, BindToObject descent to the VFS root, GetDisplayNameOf/GetAttributesOf, ParseDisplayName round-trip + fail-clean, CreateViewObject E_NOTIMPL; author-written, no third-party bytes |
++| `tests/unit/test_shell_ns.c` (repo-root `tests/`, host twin) | WR-1 host gate: amalgamates `src/shell32_ns.c` and mocks FindFirstFileW/FindNextFileW/FindClose against a scripted VFS, driving the whole object graph through the vtable under ASan/UBSan (45 checks); author-written |
++| `tests/integration/cases/test_wr1_shell_namespace.sh` | WR-1 QEMU effect gate booting `wr1_shellns.exe` and asserting `WR1-SHELLNS-OK`/exit 78; CI-provable half of the namespace gate; registered in `tests/integration/run_all.sh` |
+ | `tests/unit/test_w32_a16_layout_icon.c` | W32A-16 sanitized host vector for the two REAL slices landed this phase: `BeginDeferWindowPos`/`DeferWindowPos`/`EndDeferWindowPos` batch deferral + flush + HDWP lifetime, and the `CreateIconIndirect`/`GetIconInfo` icon⇄bitmap round-trip (colour + AND-mask alpha, malformed fail-clean); author-written |
+ | `tests/unit/test_w32_a16_shlwapi.c` | W32A-16 sanitized host vector for the `shlwapi.c` Path*/Color*/`AssocQueryStringW` families; author-written |
+ | `tests/ole32_a11.def`, `tests/oleaut32_a11.def`, `tests/imm32_a11.def`, `tests/uxtheme_a11.def` | W32A-11 incremental PE import-library declarations (only fixture names; no third-party bytes) |
+diff --git a/w32/include/w32/shell32.h b/w32/include/w32/shell32.h
+index 0c41ced..55c6a33 100644
+--- a/w32/include/w32/shell32.h
++++ b/w32/include/w32/shell32.h
+@@ -34,7 +34,11 @@
+  *     drop-list model now fed by compositor GUI_EVT_DROP; REAL against it;
+  *   - SHBrowseForFolderW — the folder picker over the W32A-6 dialog
+  *     engine;
+- *   - SHGetDesktopFolder — E_NOTIMPL, the namespace object is §7.
++ *   - SHGetDesktopFolder — REAL (W32RUN_PLAN WR-1): a minimal-but-honest
++ *     IShellFolder/IEnumIDList/PIDL namespace, Desktop -> My Computer ->
++ *     C: -> CFSFolder over the VFS (FindFirstFileW).  The object graph is
++ *     w32/src/shell32_ns.c; the ABI is w32/include/w32/shell32_priv.h.  The
++ *     GUI-object verbs (CreateViewObject/GetUIObjectOf) fail clean, named.
+  *
+  * Licensed Apache-2.0; interface facts only.
+  */
+@@ -80,7 +84,7 @@ W32_LONG W32ABI SHGetSpecialFolderLocation(W32_HWND owner, W32_DWORD csidl,
+                                            void **pidl);
+ /* Decodes a PIDL back to its path.  TRUE + the path in buf. */
+ W32_BOOL W32ABI SHGetPathFromIDListW(const void *pidl, W32_LPWSTR buf);
+-/* The desktop folder object (IShellFolder) is plan §7. */
++/* The desktop folder object (IShellFolder) — REAL (WR-1), see shell32_priv.h. */
+ W32_LONG W32ABI SHGetDesktopFolder(void **out);
+ 
+ /* ---- the PIDL model (ours, documented; not byte-compatible) ------------------
+diff --git a/w32/include/w32/shell32_priv.h b/w32/include/w32/shell32_priv.h
+new file mode 100644
+index 0000000..f62fca1
+--- /dev/null
++++ b/w32/include/w32/shell32_priv.h
+@@ -0,0 +1,131 @@
++/* w32/include/w32/shell32_priv.h — WR-1 (W32RUN_PLAN.md) the shell namespace.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * The COM ABI for the minimal-but-real shell namespace that closes SHELL32
++ * "plan section 7": IShellFolder / IEnumIDList / a PIDL model, rooted at
++ *
++ *     Desktop  ->  My Computer  ->  C:  ->  the filesystem (CFSFolder)
++ *
++ * scoped by measurement to the surface the pinned 7-Zip FM imports
++ * (SHGetDesktopFolder + PIDL info; W32RUN_PLAN D-WR1: this surface, no more).
++ * The implementation is w32/src/shell32_ns.c; shell32.c calls
++ * ns_get_desktop_folder() (the SHGetDesktopFolder body) and ns_pidl_to_path()
++ * (the SHGetFileInfoW PIDL branch). The vtable layouts below match the
++ * documented shobjidl ABI so a real consumer can call through them by index.
++ */
++#ifndef AURALITE_W32_SHELL32_PRIV_H
++#define AURALITE_W32_SHELL32_PRIV_H
++
++#include "w32/shell32.h"      /* W32_LONG, W32_DWORD, W32_UINT, W32_HWND, ... */
++#include <stddef.h>
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++/* ---- STRRET (GetDisplayNameOf out) — the documented x64 layout ---------- */
++typedef struct {
++    W32_UINT uType;                 /* STRRET_WSTR only (we always return WSTR) */
++    union {
++        uint16_t *pOleStr;          /* CoTaskMemFree-shaped (plain free) */
++        W32_UINT  uOffset;
++        char      cStr[260];
++    };
++} W32_STRRET;
++
++#define W32_STRRET_WSTR   0x0000u
++
++/* ---- SFGAO attribute flags (GetAttributesOf) --------------------------- */
++#define W32_SFGAO_CANRENAME       0x00000010u
++#define W32_SFGAO_CANDELETE       0x00000020u
++#define W32_SFGAO_STREAM          0x00400000u
++#define W32_SFGAO_BROWSABLE       0x08000000u
++#define W32_SFGAO_FILESYSANCESTOR 0x10000000u
++#define W32_SFGAO_FOLDER          0x20000000u
++#define W32_SFGAO_FILESYSTEM      0x40000000u
++#define W32_SFGAO_HASSUBFOLDER    0x80000000u
++
++/* ---- SHGDN (GetDisplayNameOf flags) ------------------------------------ */
++#define W32_SHGDN_NORMAL      0x0000u
++#define W32_SHGDN_INFOLDER    0x0001u
++#define W32_SHGDN_FORPARSING  0x8000u
++
++/* ---- SHCONTF (EnumObjects flags) --------------------------------------- */
++#define W32_SHCONTF_FOLDERS       0x0020u
++#define W32_SHCONTF_NONFOLDERS    0x0040u
++#define W32_SHCONTF_INCLUDEHIDDEN 0x0080u
++
++/* ---- our PIDL item kinds (stored in the item's second u16) -------------
++ * Byte-compatible with shell32.c's existing single-item model:
++ *   { u16 cb, u16 kind, u16 path_units, path[units], u16 0, u16 0 }
++ * A filesystem item carries its full Win32 path; My Computer carries none. */
++#define W32_NS_PIDL_COMPUTER  0xF001u
++#define W32_NS_PIDL_FS        0xF003u
++
++/* ---- IEnumIDList -------------------------------------------------------- */
++typedef struct W32_IEnumIDListVtbl {
++    W32_LONG  (W32ABI *QueryInterface)(void *self, const void *riid, void **out);
++    W32_DWORD (W32ABI *AddRef)(void *self);
++    W32_DWORD (W32ABI *Release)(void *self);
++    W32_LONG  (W32ABI *Next)(void *self, W32_UINT celt, void **rgelt,
++                             W32_UINT *pceltFetched);
++    W32_LONG  (W32ABI *Skip)(void *self, W32_UINT celt);
++    W32_LONG  (W32ABI *Reset)(void *self);
++    W32_LONG  (W32ABI *Clone)(void *self, void **ppenum);
++} W32_IEnumIDListVtbl;
++
++typedef struct { const W32_IEnumIDListVtbl *vtbl; } W32_IEnumIDList;
++
++/* ---- IShellFolder (the documented method order) ------------------------ */
++typedef struct W32_IShellFolderVtbl {
++    W32_LONG  (W32ABI *QueryInterface)(void *self, const void *riid, void **out);
++    W32_DWORD (W32ABI *AddRef)(void *self);
++    W32_DWORD (W32ABI *Release)(void *self);
++    W32_LONG  (W32ABI *ParseDisplayName)(void *self, W32_HWND hwnd, void *pbc,
++                                         uint16_t *name, W32_UINT *pchEaten,
++                                         void **ppidl, W32_UINT *pdwAttributes);
++    W32_LONG  (W32ABI *EnumObjects)(void *self, W32_HWND hwnd, W32_DWORD grfFlags,
++                                    void **ppenumIDList);
++    W32_LONG  (W32ABI *BindToObject)(void *self, const void *pidl, void *pbc,
++                                     const void *riid, void **ppv);
++    W32_LONG  (W32ABI *BindToStorage)(void *self, const void *pidl, void *pbc,
++                                      const void *riid, void **ppv);
++    W32_LONG  (W32ABI *CompareIDs)(void *self, intptr_t lParam,
++                                   const void *pidl1, const void *pidl2);
++    W32_LONG  (W32ABI *CreateViewObject)(void *self, W32_HWND hwnd,
++                                         const void *riid, void **ppv);
++    W32_LONG  (W32ABI *GetAttributesOf)(void *self, W32_UINT cidl,
++                                        const void **apidl, W32_UINT *rgfInOut);
++    W32_LONG  (W32ABI *GetUIObjectOf)(void *self, W32_HWND hwnd, W32_UINT cidl,
++                                      const void **apidl, const void *riid,
++                                      W32_UINT *rgfReserved, void **ppv);
++    W32_LONG  (W32ABI *GetDisplayNameOf)(void *self, const void *pidl,
++                                         W32_UINT uFlags, W32_STRRET *pName);
++    W32_LONG  (W32ABI *SetNameOf)(void *self, W32_HWND hwnd, const void *pidl,
++                                  const uint16_t *pszName, W32_UINT uFlags,
++                                  void **ppidlOut);
++} W32_IShellFolderVtbl;
++
++typedef struct { const W32_IShellFolderVtbl *vtbl; } W32_IShellFolder;
++
++/* The documented IIDs (little-endian in memory), exported for consumers. */
++extern const uint8_t W32_IID_IShellFolder[16];
++extern const uint8_t W32_IID_IEnumIDList[16];
++extern const uint8_t W32_IID_IUnknown[16];
++
++/* ---- the shell32.c entry points --------------------------------------- */
++
++/* SHGetDesktopFolder body: hands back the desktop IShellFolder. S_OK / *out. */
++W32_LONG ns_get_desktop_folder(void **out);
++
++/* Decode one of our namespace PIDLs to its Win32 filesystem path (UTF-16,
++ * NUL-terminated into buf). Returns the length in code units, 0 for a virtual
++ * PIDL (My Computer — no filesystem path), or -1 on a malformed PIDL. */
++int ns_pidl_to_path(const void *pidl, uint16_t *buf, size_t cap);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif /* AURALITE_W32_SHELL32_PRIV_H */
+diff --git a/w32/src/shell32.c b/w32/src/shell32.c
+index 46fbe90..15b9f85 100644
+--- a/w32/src/shell32.c
++++ b/w32/src/shell32.c
+@@ -17,6 +17,7 @@
+  */
+ 
+ #include "w32/shell32.h"
++#include "w32/shell32_priv.h"  /* WR-1: the IShellFolder/PIDL namespace (§7) */
+ #include "w32/shlwapi.h"       /* PathMatchSpecW for wildcards */
+ #include "w32/w32_errno.h"
+ #include "w32/w32_utf.h"
+@@ -232,10 +233,10 @@ W32_BOOL W32ABI SHGetPathFromIDListW(const void *pidl, W32_LPWSTR buf) {
+ }
+ 
+ W32_LONG W32ABI SHGetDesktopFolder(void **out) {
+-    if (out) *out = NULL;
+-    sh_note("SHGetDesktopFolder: the namespace object is plan section 7 "
+-            "(E_NOTIMPL)");
+-    return 0x80004001uL;            /* E_NOTIMPL */
++    /* WR-1 (W32RUN_PLAN.md): the namespace is REAL now — a minimal-but-honest
++     * IShellFolder rooted at Desktop -> My Computer -> C: -> CFSFolder(VFS).
++     * The object graph lives in w32/src/shell32_ns.c. */
++    return ns_get_desktop_folder(out);
+ }
+ 
+ /* ---- IShellItem (minimal, REAL) ---------------------------------------------------- */
+@@ -514,15 +515,40 @@ W32_DWORD_PTR W32ABI SHGetFileInfoW(W32_LPCWSTR path, W32_DWORD attrs,
+         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+         return 0;
+     }
++    /* WR-1: PIDL addressing is REAL now — decode one of our namespace PIDLs to
++     * its filesystem path and fall through to the by-path body.  A virtual
++     * PIDL (My Computer) has no filesystem path: answer the display/type name
++     * from the namespace and return. */
++    uint16_t pidl_path[300];
++    W32_LPCWSTR effective = path;
+     if (flags & W32_SHGFI_PIDL) {
+-        sh_note("SHGetFileInfoW: PIDL addressing is section 7 "
+-                "(ERROR_INVALID_PARAMETER)");
+-        w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+-        return 0;
++        int pr = ns_pidl_to_path(path, pidl_path, 300);
++        if (pr < 0) {
++            w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
++            return 0;
++        }
++        if (pr == 0) {
++            /* the "Computer" root: it is a folder with no filesystem path */
++            if (flags & W32_SHGFI_DISPLAYNAME) {
++                uint16_t w[16]; sh_a2w("Computer", w, 16);
++                size_t i = 0; while (w[i] && i < 259) { sfi->szDisplayName[i] = w[i]; i++; }
++                sfi->szDisplayName[i] = 0;
++            }
++            if (flags & W32_SHGFI_TYPENAME) {
++                uint16_t w[16]; sh_a2w("System Folder", w, 16);
++                size_t i = 0; while (w[i] && i < 79) { sfi->szTypeName[i] = w[i]; i++; }
++                sfi->szTypeName[i] = 0;
++            }
++            if (flags & W32_SHGFI_ATTRIBUTES) sfi->dwAttributes = 0x10u; /* DIRECTORY */
++            if (flags & W32_SHGFI_ICON) { sfi->hIcon = sh_doc_icon(); sfi->iIcon = 0; }
++            return 1;
++        }
++        effective = pidl_path;
++        flags &= ~(W32_DWORD)W32_SHGFI_PIDL;   /* now a plain path request */
+     }
+ 
+     char a[512];
+-    if (sh_w2a(path, a, sizeof a) <= 0) {
++    if (sh_w2a(effective, a, sizeof a) <= 0) {
+         w32_set_last_error(W32_ERROR_INVALID_PARAMETER);
+         return 0;
+     }
+diff --git a/w32/src/shell32_ns.c b/w32/src/shell32_ns.c
+new file mode 100644
+index 0000000..d7b6e83
+--- /dev/null
++++ b/w32/src/shell32_ns.c
+@@ -0,0 +1,529 @@
++/* w32/src/shell32_ns.c — WR-1 (W32RUN_PLAN.md) the shell namespace.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * Closes SHELL32 "plan section 7": a minimal-but-real IShellFolder /
++ * IEnumIDList / PIDL namespace rooted at
++ *
++ *     Desktop  ->  My Computer  ->  C:  ->  the filesystem (CFSFolder)
++ *
++ * The filesystem folder enumerates the AuraLite VFS through the REAL
++ * FindFirstFileW/FindNextFileW (kernel32_fs.c), so the one drive, C:, maps to
++ * "/" exactly as every other path does. Scoped by measurement to the surface
++ * the pinned 7-Zip FM imports (SHGetDesktopFolder + PIDL info) — W32RUN_PLAN
++ * D-WR1: this surface, no more. The verbs a real consumer does not need on a
++ * single-user machine (CreateViewObject, GetUIObjectOf, BindToStorage,
++ * SetNameOf, Clone) fail clean with E_NOTIMPL — named, not faked (D-WR4).
++ *
++ * No foreign implementation code was consulted (see w32/LICENSING.md): the
++ * vtable shapes are from the documented shobjidl ABI (mingw-w64 headers /
++ * MSDN), which is a fact about an interface, the same class of fact
++ * docs/win32.md already records.
++ */
++
++#include "w32/shell32_priv.h"
++#include "w32/kernel32.h"        /* FindFirstFileW, WIN32_FIND_DATAW, attrs */
++
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++/* ---- HRESULTs (NS_ prefixed so a host build's <winerror.h> can't clash) -- */
++#define NS_S_OK            0
++#define NS_S_FALSE         1
++#define NS_E_NOTIMPL       0x80004001uL
++#define NS_E_NOINTERFACE   0x80004002uL
++#define NS_E_POINTER       0x80004003uL
++#define NS_E_OUTOFMEMORY   0x8007000EuL
++#define NS_E_INVALIDARG    0x80070057uL
++#define NS_E_FILENOTFOUND  0x80070002uL   /* HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND) */
++
++/* The documented IIDs, little-endian in memory. */
++const uint8_t W32_IID_IShellFolder[16] = {
++    0xE6, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
++};
++const uint8_t W32_IID_IEnumIDList[16] = {
++    0xF2, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
++};
++const uint8_t W32_IID_IUnknown[16] = {
++    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x46
++};
++
++/* ---- small wide-string helpers ---------------------------------------- */
++static size_t nx_wlen(const uint16_t *s) { size_t n = 0; while (s && s[n]) n++; return n; }
++static void   nx_wcpy(uint16_t *d, const uint16_t *s, size_t n) { for (size_t i = 0; i < n; i++) d[i] = s[i]; }
++static int    nx_a2w(const char *a, uint16_t *w, size_t cap) {
++    size_t i = 0;
++    for (; a[i] && i + 1 < cap; i++) w[i] = (uint8_t)a[i];
++    w[i] = 0;
++    return (int)i;
++}
++static uint16_t nx_lower(uint16_t c) { return (c >= 'A' && c <= 'Z') ? (uint16_t)(c + 32) : c; }
++static int nx_wieq(const uint16_t *a, const uint16_t *b) {
++    size_t i = 0;
++    for (;; i++) {
++        uint16_t ca = nx_lower(a[i]), cb = nx_lower(b[i]);
++        if (ca != cb) return 0;
++        if (!ca) return 1;
++    }
++}
++static int nx_iid_eq(const void *riid, const uint8_t iid[16]) {
++    return riid && memcmp(riid, iid, 16) == 0;
++}
++static int nx_is_sep(uint16_t c) { return c == '\\' || c == '/'; }
++
++/* ---- the PIDL model (byte-compatible with shell32.c's single-item form) - */
++/* Layout: { u16 cb, u16 kind, u16 units, path[units], u16 0(NUL), u16 0(term) }
++ * cb counts the bytes AFTER cb, exactly as SHGetSpecialFolderLocation builds
++ * them and SHGetPathFromIDListW decodes them. */
++static uint16_t *nx_pidl_new(uint16_t kind, const uint16_t *path) {
++    size_t units = path ? nx_wlen(path) : 0;
++    size_t cb = 2 + 2 + (units + 1) * 2 + 2;
++    uint16_t *p = (uint16_t *)malloc(cb + 2);
++    if (!p) return NULL;
++    p[0] = (uint16_t)cb;
++    p[1] = kind;
++    p[2] = (uint16_t)units;
++    if (units) nx_wcpy(p + 3, path, units);
++    p[3 + units] = 0;               /* path NUL */
++    p[3 + units + 1] = 0;           /* terminating empty item (cb = 0) */
++    return p;
++}
++static uint16_t *nx_pidl_clone(const uint16_t *p) {
++    if (!p) return NULL;
++    size_t total = (size_t)p[0] + 2;   /* cb field + cb bytes */
++    uint16_t *c = (uint16_t *)malloc(total);
++    if (c) memcpy(c, p, total);
++    return c;
++}
++
++int ns_pidl_to_path(const void *pidl, uint16_t *buf, size_t cap) {
++    if (!pidl || !buf || cap == 0) return -1;
++    const uint16_t *p = (const uint16_t *)pidl;
++    uint16_t cb = p[0];
++    if (cb < 8 || (cb & 1)) return -1;
++    uint16_t kind = p[1];
++    uint16_t units = p[2];
++    if (kind == W32_NS_PIDL_COMPUTER || units == 0) { buf[0] = 0; return 0; }
++    if ((size_t)units + 1 > cap) units = (uint16_t)(cap - 1);
++    nx_wcpy(buf, p + 3, units);
++    buf[units] = 0;
++    return (int)units;
++}
++
++/* ---- VFS existence / kind, over the REAL FindFirstFileW ----------------- */
++static int nx_query(const uint16_t *path, int *is_dir) {
++    size_t n = nx_wlen(path);
++    if (n == 0) return 0;
++    /* a drive root (C: or C:\) is a directory by construction */
++    if (n <= 3 && path[1] == ':') { if (is_dir) *is_dir = 1; return 1; }
++
++    uint16_t q[400];
++    if (n > 399) n = 399;
++    nx_wcpy(q, path, n); q[n] = 0;
++    if (nx_is_sep(q[n - 1])) { q[--n] = 0; if (n <= 2) { if (is_dir) *is_dir = 1; return 1; } }
++
++    W32_WIN32_FIND_DATAW fd;
++    W32_HANDLE h = FindFirstFileW(q, &fd);
++    if (h != W32_INVALID_HANDLE_VALUE) {
++        if (is_dir) *is_dir = (fd.dwFileAttributes & W32_FILE_ATTRIBUTE_DIRECTORY) != 0;
++        FindClose(h);
++        return 1;
++    }
++    /* fall back: enumerate the parent and match the leaf (some VFS FindFirst
++     * implementations only glob the last component) */
++    size_t s = n;
++    while (s > 0 && !nx_is_sep(q[s - 1])) s--;
++    if (s == 0) return 0;
++    uint16_t parent[400];
++    nx_wcpy(parent, q, s);
++    parent[s] = '*'; parent[s + 1] = 0;
++    const uint16_t *leaf = q + s;
++    W32_HANDLE h2 = FindFirstFileW(parent, &fd);
++    if (h2 == W32_INVALID_HANDLE_VALUE) return 0;
++    int found = 0;
++    do {
++        if (nx_wieq(fd.cFileName, leaf)) {
++            found = 1;
++            if (is_dir) *is_dir = (fd.dwFileAttributes & W32_FILE_ATTRIBUTE_DIRECTORY) != 0;
++            break;
++        }
++    } while (FindNextFileW(h2, &fd));
++    FindClose(h2);
++    return found;
++}
++static int nx_path_exists(const uint16_t *p) { return nx_query(p, NULL); }
++static int nx_path_is_dir(const uint16_t *p) { int d = 0; if (!nx_query(p, &d)) return 0; return d; }
++
++/* ---- the IEnumIDList object -------------------------------------------- */
++typedef struct {
++    const W32_IEnumIDListVtbl *vtbl;
++    W32_DWORD refs;
++    uint16_t **items;      /* owned pidls */
++    size_t count, pos;
++} ns_enum;
++
++static const W32_IEnumIDListVtbl g_enum_vtbl;
++
++static ns_enum *nx_enum_new(uint16_t **items, size_t n) {
++    ns_enum *e = (ns_enum *)calloc(1, sizeof *e);
++    if (!e) return NULL;
++    e->vtbl = &g_enum_vtbl;
++    e->refs = 1;
++    e->items = items;
++    e->count = n;
++    e->pos = 0;
++    return e;
++}
++
++static W32_LONG W32ABI en_qi(void *self, const void *riid, void **out) {
++    if (!out) return NS_E_POINTER;
++    *out = NULL;
++    if (nx_iid_eq(riid, W32_IID_IEnumIDList) || nx_iid_eq(riid, W32_IID_IUnknown)) {
++        *out = self; ((ns_enum *)self)->refs++; return NS_S_OK;
++    }
++    return NS_E_NOINTERFACE;
++}
++static W32_DWORD W32ABI en_addref(void *self) { return ++((ns_enum *)self)->refs; }
++static W32_DWORD W32ABI en_release(void *self) {
++    ns_enum *e = (ns_enum *)self;
++    if (--e->refs == 0) {
++        for (size_t i = 0; i < e->count; i++) free(e->items[i]);
++        free(e->items);
++        free(e);
++        return 0;
++    }
++    return e->refs;
++}
++static W32_LONG W32ABI en_next(void *self, W32_UINT celt, void **rgelt, W32_UINT *fetched) {
++    ns_enum *e = (ns_enum *)self;
++    if (!rgelt) return NS_E_POINTER;
++    W32_UINT got = 0;
++    while (got < celt && e->pos < e->count) {
++        uint16_t *c = nx_pidl_clone(e->items[e->pos]);
++        if (!c) break;
++        rgelt[got++] = c;
++        e->pos++;
++    }
++    if (fetched) *fetched = got;
++    return (got == celt) ? NS_S_OK : NS_S_FALSE;
++}
++static W32_LONG W32ABI en_skip(void *self, W32_UINT celt) {
++    ns_enum *e = (ns_enum *)self;
++    while (celt && e->pos < e->count) { e->pos++; celt--; }
++    return celt ? NS_S_FALSE : NS_S_OK;
++}
++static W32_LONG W32ABI en_reset(void *self) { ((ns_enum *)self)->pos = 0; return NS_S_OK; }
++static W32_LONG W32ABI en_clone(void *self, void **out) { (void)self; if (out) *out = NULL; return NS_E_NOTIMPL; }
++
++static const W32_IEnumIDListVtbl g_enum_vtbl = {
++    en_qi, en_addref, en_release, en_next, en_skip, en_reset, en_clone
++};
++
++/* ---- the IShellFolder object ------------------------------------------- */
++enum { NS_DESKTOP = 0, NS_COMPUTER = 1, NS_FS = 2 };
++
++typedef struct {
++    const W32_IShellFolderVtbl *vtbl;
++    W32_DWORD refs;
++    int kind;
++    uint16_t base[300];    /* Win path for NS_FS; empty for desktop/computer */
++} ns_folder;
++
++static const W32_IShellFolderVtbl g_folder_vtbl;
++
++static ns_folder *nx_folder_new(int kind, const uint16_t *base) {
++    ns_folder *f = (ns_folder *)calloc(1, sizeof *f);
++    if (!f) return NULL;
++    f->vtbl = &g_folder_vtbl;
++    f->refs = 1;
++    f->kind = kind;
++    if (base) { size_t n = nx_wlen(base); if (n > 299) n = 299; nx_wcpy(f->base, base, n); f->base[n] = 0; }
++    return f;
++}
++
++static W32_LONG W32ABI fld_qi(void *self, const void *riid, void **out) {
++    if (!out) return NS_E_POINTER;
++    *out = NULL;
++    if (nx_iid_eq(riid, W32_IID_IShellFolder) || nx_iid_eq(riid, W32_IID_IUnknown)) {
++        *out = self; ((ns_folder *)self)->refs++; return NS_S_OK;
++    }
++    return NS_E_NOINTERFACE;
++}
++static W32_DWORD W32ABI fld_addref(void *self) { return ++((ns_folder *)self)->refs; }
++static W32_DWORD W32ABI fld_release(void *self) {
++    ns_folder *f = (ns_folder *)self;
++    if (--f->refs == 0) { free(f); return 0; }
++    return f->refs;
++}
++
++static int nx_push(uint16_t ***arr, size_t *n, size_t *cap, uint16_t *item) {
++    if (!item) return 0;
++    if (*n == *cap) {
++        size_t nc = *cap ? *cap * 2 : 8;
++        uint16_t **na = (uint16_t **)realloc(*arr, nc * sizeof(uint16_t *));
++        if (!na) { free(item); return 0; }
++        *arr = na; *cap = nc;
++    }
++    (*arr)[(*n)++] = item;
++    return 1;
++}
++
++static W32_LONG W32ABI fld_enum(void *self, W32_HWND hwnd, W32_DWORD flags, void **ppenum) {
++    (void)hwnd;
++    ns_folder *f = (ns_folder *)self;
++    if (!ppenum) return NS_E_POINTER;
++    *ppenum = NULL;
++
++    uint16_t **items = NULL;
++    size_t n = 0, cap = 0;
++
++    if (f->kind == NS_DESKTOP) {
++        nx_push(&items, &n, &cap, nx_pidl_new(W32_NS_PIDL_COMPUTER, NULL));
++    } else if (f->kind == NS_COMPUTER) {
++        uint16_t drive[] = { 'C', ':', '\\', 0 };
++        nx_push(&items, &n, &cap, nx_pidl_new(W32_NS_PIDL_FS, drive));
++    } else { /* NS_FS: read the directory */
++        int want_folders = (flags & W32_SHCONTF_FOLDERS) || flags == 0;
++        int want_files   = (flags & W32_SHCONTF_NONFOLDERS) || flags == 0;
++        uint16_t pattern[320];
++        size_t bl = nx_wlen(f->base);
++        if (bl > 317) bl = 317;
++        nx_wcpy(pattern, f->base, bl);
++        size_t k = bl;
++        if (k == 0 || !nx_is_sep(pattern[k - 1])) pattern[k++] = '\\';
++        pattern[k++] = '*';
++        pattern[k] = 0;
++
++        W32_WIN32_FIND_DATAW fd;
++        W32_HANDLE h = FindFirstFileW(pattern, &fd);
++        if (h != W32_INVALID_HANDLE_VALUE) {
++            do {
++                const uint16_t *nm = fd.cFileName;
++                if (nm[0] == '.' && (nm[1] == 0 || (nm[1] == '.' && nm[2] == 0))) continue;
++                int is_dir = (fd.dwFileAttributes & W32_FILE_ATTRIBUTE_DIRECTORY) != 0;
++                if (is_dir && !want_folders) continue;
++                if (!is_dir && !want_files) continue;
++
++                uint16_t full[400];
++                size_t fb = nx_wlen(f->base);
++                if (fb > 397) fb = 397;
++                nx_wcpy(full, f->base, fb);
++                size_t fk = fb;
++                if (fk == 0 || !nx_is_sep(full[fk - 1])) full[fk++] = '\\';
++                size_t nl = nx_wlen(nm);
++                if (fk + nl >= 400) nl = 399 - fk;
++                nx_wcpy(full + fk, nm, nl);
++                full[fk + nl] = 0;
++                nx_push(&items, &n, &cap, nx_pidl_new(W32_NS_PIDL_FS, full));
++            } while (FindNextFileW(h, &fd));
++            FindClose(h);
++        }
++    }
++
++    ns_enum *e = nx_enum_new(items, n);
++    if (!e) {
++        for (size_t i = 0; i < n; i++) free(items[i]);
++        free(items);
++        return NS_E_OUTOFMEMORY;
++    }
++    *ppenum = e;
++    return NS_S_OK;
++}
++
++static W32_LONG W32ABI fld_bind(void *self, const void *pidl, void *pbc,
++                                const void *riid, void **ppv) {
++    (void)self; (void)pbc;
++    if (!ppv) return NS_E_POINTER;
++    *ppv = NULL;
++    if (!pidl) return NS_E_INVALIDARG;
++    const uint16_t *p = (const uint16_t *)pidl;
++    uint16_t kind = p[1];
++    ns_folder *child = NULL;
++    if (kind == W32_NS_PIDL_COMPUTER) {
++        child = nx_folder_new(NS_COMPUTER, NULL);
++    } else if (kind == W32_NS_PIDL_FS) {
++        uint16_t path[320];
++        if (ns_pidl_to_path(pidl, path, 320) <= 0) return NS_E_INVALIDARG;
++        child = nx_folder_new(NS_FS, path);
++    } else {
++        return NS_E_INVALIDARG;
++    }
++    if (!child) return NS_E_OUTOFMEMORY;
++    W32_LONG hr = fld_qi(child, riid, ppv);
++    fld_release(child);
++    return hr;
++}
++
++static W32_LONG W32ABI fld_bindstorage(void *self, const void *pidl, void *pbc,
++                                       const void *riid, void **ppv) {
++    (void)self; (void)pidl; (void)pbc; (void)riid;
++    if (ppv) *ppv = NULL;
++    return NS_E_NOTIMPL;   /* no IStorage on the single-user VFS (named) */
++}
++
++static W32_LONG W32ABI fld_compare(void *self, intptr_t lparam,
++                                   const void *p1, const void *p2) {
++    (void)self; (void)lparam;
++    uint16_t a[320], b[320];
++    a[0] = 0; b[0] = 0;
++    ns_pidl_to_path(p1, a, 320);
++    ns_pidl_to_path(p2, b, 320);
++    int c = 0;
++    for (size_t i = 0;; i++) {
++        uint16_t ca = nx_lower(a[i]), cb = nx_lower(b[i]);
++        if (ca != cb) { c = (ca < cb) ? -1 : 1; break; }
++        if (!ca) break;
++    }
++    return (W32_LONG)(int16_t)c;   /* HRESULT: the low word carries the order */
++}
++
++static W32_LONG W32ABI fld_createview(void *self, W32_HWND hwnd,
++                                      const void *riid, void **ppv) {
++    (void)self; (void)hwnd; (void)riid;
++    if (ppv) *ppv = NULL;
++    return NS_E_NOTIMPL;   /* the shell view is a GUI object — not this layer */
++}
++
++static W32_LONG W32ABI fld_getattrs(void *self, W32_UINT cidl,
++                                    const void **apidl, W32_UINT *inout) {
++    (void)self;
++    if (!inout) return NS_E_POINTER;
++    W32_UINT req = *inout;
++    W32_UINT common = 0xFFFFFFFFu;
++    for (W32_UINT i = 0; i < cidl; i++) {
++        const uint16_t *p = (const uint16_t *)apidl[i];
++        W32_UINT a = 0;
++        uint16_t kind = p ? p[1] : 0;
++        if (kind == W32_NS_PIDL_COMPUTER) {
++            a = W32_SFGAO_FOLDER | W32_SFGAO_HASSUBFOLDER |
++                W32_SFGAO_FILESYSANCESTOR | W32_SFGAO_BROWSABLE;
++        } else {
++            uint16_t path[320];
++            ns_pidl_to_path(p, path, 320);
++            a = W32_SFGAO_FILESYSTEM;
++            if (nx_path_is_dir(path))
++                a |= W32_SFGAO_FOLDER | W32_SFGAO_FILESYSANCESTOR |
++                     W32_SFGAO_HASSUBFOLDER | W32_SFGAO_BROWSABLE;
++            else
++                a |= W32_SFGAO_STREAM | W32_SFGAO_CANRENAME | W32_SFGAO_CANDELETE;
++        }
++        common &= a;
++    }
++    if (cidl == 0) common = 0;
++    *inout = req & common;
++    return NS_S_OK;
++}
++
++static W32_LONG W32ABI fld_getuiobject(void *self, W32_HWND hwnd, W32_UINT cidl,
++                                       const void **apidl, const void *riid,
++                                       W32_UINT *reserved, void **ppv) {
++    (void)self; (void)hwnd; (void)cidl; (void)apidl; (void)riid; (void)reserved;
++    if (ppv) *ppv = NULL;
++    return NS_E_NOTIMPL;   /* icons/context menus are GUI objects (named) */
++}
++
++static W32_LONG W32ABI fld_getname(void *self, const void *pidl,
++                                   W32_UINT flags, W32_STRRET *sr) {
++    (void)self;
++    if (!sr) return NS_E_POINTER;
++    if (!pidl) return NS_E_INVALIDARG;
++    const uint16_t *p = (const uint16_t *)pidl;
++    uint16_t out[320];
++    out[0] = 0;
++
++    if (p[1] == W32_NS_PIDL_COMPUTER) {
++        nx_a2w("Computer", out, 320);
++    } else {
++        uint16_t path[320];
++        int r = ns_pidl_to_path(pidl, path, 320);
++        if (r < 0) return NS_E_INVALIDARG;
++        size_t n = nx_wlen(path);
++        if (flags & W32_SHGDN_FORPARSING) {
++            nx_wcpy(out, path, n); out[n] = 0;
++        } else if (n > 0 && nx_is_sep(path[n - 1])) {
++            /* a drive root "C:\" displays as "C:" */
++            size_t e = n - 1;
++            nx_wcpy(out, path, e); out[e] = 0;
++        } else {
++            size_t s = n;
++            while (s > 0 && !nx_is_sep(path[s - 1])) s--;
++            nx_wcpy(out, path + s, n - s); out[n - s] = 0;
++        }
++    }
++
++    size_t on = nx_wlen(out);
++    uint16_t *copy = (uint16_t *)malloc((on + 1) * 2u);
++    if (!copy) return NS_E_OUTOFMEMORY;
++    nx_wcpy(copy, out, on); copy[on] = 0;
++    sr->uType = W32_STRRET_WSTR;
++    sr->pOleStr = copy;
++    return NS_S_OK;
++}
++
++static W32_LONG W32ABI fld_setname(void *self, W32_HWND hwnd, const void *pidl,
++                                   const uint16_t *name, W32_UINT flags,
++                                   void **ppidlOut) {
++    (void)self; (void)hwnd; (void)pidl; (void)name; (void)flags;
++    if (ppidlOut) *ppidlOut = NULL;
++    return NS_E_NOTIMPL;   /* rename lives on SHFileOperationW, not here */
++}
++
++static W32_LONG W32ABI fld_parse(void *self, W32_HWND hwnd, void *pbc,
++                                 uint16_t *name, W32_UINT *eaten,
++                                 void **ppidl, W32_UINT *attrs) {
++    (void)hwnd; (void)pbc;
++    ns_folder *f = (ns_folder *)self;
++    if (!ppidl) return NS_E_POINTER;
++    *ppidl = NULL;
++    if (!name || !name[0]) return NS_E_INVALIDARG;
++
++    uint16_t full[400];
++    int absolute = (name[0] && name[1] == ':') || nx_is_sep(name[0]);
++    if (f->kind == NS_FS && !absolute) {
++        size_t bl = nx_wlen(f->base);
++        if (bl > 397) bl = 397;
++        nx_wcpy(full, f->base, bl);
++        size_t k = bl;
++        if (k == 0 || !nx_is_sep(full[k - 1])) full[k++] = '\\';
++        size_t nl = nx_wlen(name);
++        if (k + nl >= 400) nl = 399 - k;
++        nx_wcpy(full + k, name, nl);
++        full[k + nl] = 0;
++    } else {
++        size_t nl = nx_wlen(name);
++        if (nl > 399) nl = 399;
++        nx_wcpy(full, name, nl); full[nl] = 0;
++    }
++
++    if (!nx_path_exists(full)) return NS_E_FILENOTFOUND;
++
++    uint16_t *p = nx_pidl_new(W32_NS_PIDL_FS, full);
++    if (!p) return NS_E_OUTOFMEMORY;
++    *ppidl = p;
++    if (eaten) *eaten = (W32_UINT)nx_wlen(name);
++    if (attrs) {
++        const void *ap[1] = { p };
++        W32_UINT a = *attrs;
++        fld_getattrs(self, 1, ap, &a);
++        *attrs = a;
++    }
++    return NS_S_OK;
++}
++
++static const W32_IShellFolderVtbl g_folder_vtbl = {
++    fld_qi, fld_addref, fld_release,
++    fld_parse, fld_enum, fld_bind, fld_bindstorage, fld_compare,
++    fld_createview, fld_getattrs, fld_getuiobject, fld_getname, fld_setname
++};
++
++/* ---- the SHGetDesktopFolder body -------------------------------------- */
++W32_LONG ns_get_desktop_folder(void **out) {
++    if (!out) return NS_E_POINTER;
++    ns_folder *f = nx_folder_new(NS_DESKTOP, NULL);
++    if (!f) { *out = NULL; return NS_E_OUTOFMEMORY; }
++    *out = f;
++    return NS_S_OK;
++}
+diff --git a/w32/tests/wr1_shellns.c b/w32/tests/wr1_shellns.c
+new file mode 100644
+index 0000000..defb580
+--- /dev/null
++++ b/w32/tests/wr1_shellns.c
+@@ -0,0 +1,232 @@
++/* w32/tests/wr1_shellns.c — W32RUN_PLAN.md phase WR-1 guest fixture.
++ * SPDX-License-Identifier: Apache-2.0
++ *
++ * The CI-automatable twin of the SHELL32 namespace gate.  A single mingw-w64
++ * TU linked -nostdlib with --entry=winstart (no CRT, no main) that drives the
++ * exact IShellFolder / IEnumIDList / PIDL surface the pinned 7zFM.exe imports
++ * (SHGetDesktopFolder + the PIDL info calls; W32RUN_PLAN D-WR1: this surface,
++ * no more), through the documented COM vtable — the same call path a real
++ * consumer takes.  It walks the namespace the implementation builds:
++ *
++ *     Desktop  ->  My Computer  ->  C:  ->  the filesystem (CFSFolder)
++ *
++ *   DESKTOP        SHGetDesktopFolder hands back a live IShellFolder; QI for
++ *       IShellFolder and IUnknown both succeed.
++ *   MY COMPUTER    EnumObjects yields at least one child; GetDisplayNameOf
++ *       (SHGDN_NORMAL) is non-empty; GetAttributesOf reports SFGAO_FOLDER.
++ *   DRIVE          BindToObject(My Computer) -> a folder that enumerates the
++ *       drive; its parsing name resolves to a "C:"-shaped path.
++ *   FILESYSTEM     BindToObject(C:) -> the CFSFolder; EnumObjects lists the
++ *       real VFS root through FindFirstFileW; a directory child reports
++ *       SFGAO_FOLDER|SFGAO_FILESYSTEM and its parsing name is absolute.
++ *   PARSE          ParseDisplayName of an absolute path that exists returns a
++ *       PIDL; a path that does not exist fails clean (no fault).
++ *   FAIL-CLEAN     CreateViewObject (a GUI object — a documented non-goal on
++ *       this layer) returns E_NOTIMPL, named, not a fault.
++ *
++ * Prints WR1-SHELLNS-OK and exits 78 on a clean run; FAIL-<mark> +
++ * WR1-SHELLNS-FAIL / exit 1 otherwise.  Markers are greppable by
++ * tests/integration/cases/test_wr1_shell_namespace.sh.
++ *
++ * SPDX-License-Identifier: Apache-2.0 */
++
++#include <windows.h>
++#include <shlobj.h>
++
++/* -nostdlib: the compiler may still emit these for copies/inits/zeroing. */
++void *memset(void *d, int c, unsigned long long n) {
++    volatile unsigned char *p = (volatile unsigned char *)d;
++    while (n-- > 0) *p++ = (unsigned char)c;
++    return d;
++}
++void *memcpy(void *d, const void *s, unsigned long long n) {
++    volatile unsigned char *p = (volatile unsigned char *)d;
++    volatile const unsigned char *q = (volatile const unsigned char *)s;
++    while (n-- > 0) *p++ = *q++;
++    return d;
++}
++
++static HANDLE out;
++static DWORD  written;
++static int    fails;
++
++static void say(const char *s) {
++    DWORD n = 0;
++    while (s[n]) n++;
++    WriteFile(out, s, n, &written, NULL);
++}
++static void mark_fail(const char *m) { say("FAIL-"); say(m); say("\r\n"); fails++; }
++#define CHECK(cond, mark) do { if (!(cond)) mark_fail(mark); } while (0)
++
++static int wlen(const WCHAR *s) { int n = 0; while (s && s[n]) n++; return n; }
++
++/* Pull a display name out of a STRRET (our namespace always returns WSTR, but
++ * a faithful consumer handles the other arms too). Returns non-zero length. */
++static int name_len(STRRET *sr, const ITEMIDLIST *pidl) {
++    if (sr->uType == STRRET_WSTR) {
++        int n = wlen(sr->pOleStr);
++        if (sr->pOleStr) CoTaskMemFree(sr->pOleStr);
++        return n;
++    }
++    if (sr->uType == STRRET_CSTR) { int n = 0; while (sr->cStr[n]) n++; return n; }
++    if (sr->uType == STRRET_OFFSET) {
++        const WCHAR *p = (const WCHAR *)((const BYTE *)pidl + sr->uOffset);
++        return wlen(p);
++    }
++    return 0;
++}
++
++/* Copy the WSTR of a STRRET into buf (namespace always returns WSTR here). */
++static void name_copy(STRRET *sr, WCHAR *buf, int cap) {
++    int i = 0;
++    if (sr->uType == STRRET_WSTR && sr->pOleStr) {
++        for (; sr->pOleStr[i] && i + 1 < cap; i++) buf[i] = sr->pOleStr[i];
++        CoTaskMemFree(sr->pOleStr);
++    }
++    buf[i] = 0;
++}
++
++void __stdcall winstart(void) {
++    HRESULT hr;
++    IShellFolder *desktop = NULL, *computer = NULL, *drive = NULL;
++    IEnumIDList  *e = NULL;
++    LPITEMIDLIST  pidl = NULL;
++    ULONG fetched = 0;
++
++    out   = GetStdHandle(STD_OUTPUT_HANDLE);
++    fails = 0;
++    say("WR1: SHELL32 namespace fixture start\r\n");
++
++    CoInitialize(NULL);
++
++    /* --- DESKTOP: a live IShellFolder + working QueryInterface --- */
++    hr = SHGetDesktopFolder(&desktop);
++    CHECK(hr == S_OK && desktop != NULL, "getdesktop");
++    if (!desktop) { say("WR1-SHELLNS-FAIL\r\n"); ExitProcess(1); }
++
++    {
++        IUnknown *unk = NULL;
++        hr = desktop->lpVtbl->QueryInterface(desktop, &IID_IShellFolder, (void **)&unk);
++        CHECK(hr == S_OK && unk != NULL, "qi-ishellfolder");
++        if (unk) unk->lpVtbl->Release(unk);
++        unk = NULL;
++        hr = desktop->lpVtbl->QueryInterface(desktop, &IID_IUnknown, (void **)&unk);
++        CHECK(hr == S_OK && unk != NULL, "qi-iunknown");
++        if (unk) unk->lpVtbl->Release(unk);
++    }
++
++    /* --- MY COMPUTER: enumerate the desktop, one browsable folder child --- */
++    LPITEMIDLIST comp = NULL;
++    hr = desktop->lpVtbl->EnumObjects(desktop, NULL,
++                                      SHCONTF_FOLDERS, &e);
++    CHECK(hr == S_OK && e != NULL, "desktop-enum");
++    if (e) {
++        hr = e->lpVtbl->Next(e, 1, &pidl, &fetched);
++        CHECK(fetched == 1 && pidl != NULL, "desktop-enum-next");
++        comp = pidl; pidl = NULL;
++        e->lpVtbl->Release(e); e = NULL;
++    }
++    if (comp) {
++        STRRET sr;
++        hr = desktop->lpVtbl->GetDisplayNameOf(desktop, comp, SHGDN_NORMAL, &sr);
++        CHECK(hr == S_OK && name_len(&sr, comp) > 0, "computer-name");
++
++        ULONG attrs = SFGAO_FOLDER | SFGAO_HASSUBFOLDER;
++        hr = desktop->lpVtbl->GetAttributesOf(desktop, 1,
++                                              (LPCITEMIDLIST *)&comp, &attrs);
++        CHECK(hr == S_OK && (attrs & SFGAO_FOLDER), "computer-attrs");
++    }
++
++    /* --- DRIVE: bind My Computer, enumerate to the C: drive --- */
++    LPITEMIDLIST drivepidl = NULL;
++    if (comp) {
++        hr = desktop->lpVtbl->BindToObject(desktop, comp, NULL,
++                                           &IID_IShellFolder, (void **)&computer);
++        CHECK(hr == S_OK && computer != NULL, "bind-computer");
++    }
++    if (computer) {
++        hr = computer->lpVtbl->EnumObjects(computer, NULL,
++                                           SHCONTF_FOLDERS | SHCONTF_NONFOLDERS, &e);
++        CHECK(hr == S_OK && e != NULL, "computer-enum");
++        if (e) {
++            hr = e->lpVtbl->Next(e, 1, &pidl, &fetched);
++            CHECK(fetched == 1 && pidl != NULL, "computer-enum-next");
++            drivepidl = pidl; pidl = NULL;
++            e->lpVtbl->Release(e); e = NULL;
++        }
++        if (drivepidl) {
++            STRRET sr; WCHAR nm[64];
++            hr = computer->lpVtbl->GetDisplayNameOf(computer, drivepidl,
++                                                    SHGDN_FORPARSING, &sr);
++            CHECK(hr == S_OK, "drive-parsename-rc");
++            name_copy(&sr, nm, 64);
++            CHECK(nm[0] == L'C' && nm[1] == L':', "drive-parsename-shape");
++        }
++    }
++
++    /* --- FILESYSTEM: bind C:, enumerate the real VFS root --- */
++    if (computer && drivepidl) {
++        hr = computer->lpVtbl->BindToObject(computer, drivepidl, NULL,
++                                            &IID_IShellFolder, (void **)&drive);
++        CHECK(hr == S_OK && drive != NULL, "bind-drive");
++    }
++    if (drive) {
++        int seen = 0, sawdir = 0;
++        hr = drive->lpVtbl->EnumObjects(drive, NULL,
++                                        SHCONTF_FOLDERS | SHCONTF_NONFOLDERS, &e);
++        CHECK(hr == S_OK && e != NULL, "fs-enum");
++        while (e && e->lpVtbl->Next(e, 1, &pidl, &fetched) == S_OK && fetched == 1) {
++            seen++;
++            ULONG attrs = SFGAO_FOLDER | SFGAO_FILESYSTEM;
++            drive->lpVtbl->GetAttributesOf(drive, 1,
++                                           (LPCITEMIDLIST *)&pidl, &attrs);
++            if ((attrs & SFGAO_FOLDER) && (attrs & SFGAO_FILESYSTEM)) {
++                STRRET sr; WCHAR nm[MAX_PATH];
++                if (drive->lpVtbl->GetDisplayNameOf(drive, pidl,
++                                                    SHGDN_FORPARSING, &sr) == S_OK) {
++                    name_copy(&sr, nm, MAX_PATH);
++                    if (nm[0] == L'C' && nm[1] == L':') sawdir = 1;
++                }
++            }
++            CoTaskMemFree(pidl); pidl = NULL;
++        }
++        if (e) { e->lpVtbl->Release(e); e = NULL; }
++        CHECK(seen > 0, "fs-enum-nonempty");
++        CHECK(sawdir, "fs-dir-absolute-parsename");
++
++        /* --- PARSE: an absolute path that exists round-trips to a PIDL --- */
++        LPITEMIDLIST parsed = NULL;
++        ULONG eaten = 0, pattrs = 0;
++        WCHAR root[] = L"C:\\";
++        hr = drive->lpVtbl->ParseDisplayName(drive, NULL, NULL, root,
++                                             &eaten, &parsed, &pattrs);
++        CHECK(hr == S_OK && parsed != NULL, "parse-root");
++        if (parsed) CoTaskMemFree(parsed);
++
++        WCHAR nope[] = L"C:\\this_path_does_not_exist_wr1.zzz";
++        parsed = NULL;
++        hr = drive->lpVtbl->ParseDisplayName(drive, NULL, NULL, nope,
++                                             &eaten, &parsed, &pattrs);
++        CHECK(hr != S_OK && parsed == NULL, "parse-miss-failclean");
++
++        /* --- FAIL-CLEAN: the GUI view object is a documented non-goal --- */
++        void *view = (void *)1;
++        hr = drive->lpVtbl->CreateViewObject(drive, NULL, &IID_IUnknown, &view);
++        CHECK(hr == E_NOTIMPL && view == NULL, "createview-notimpl");
++    }
++
++    /* --- release the whole graph --- */
++    if (drivepidl) CoTaskMemFree(drivepidl);
++    if (comp) CoTaskMemFree(comp);
++    if (drive) drive->lpVtbl->Release(drive);
++    if (computer) computer->lpVtbl->Release(computer);
++    if (desktop) desktop->lpVtbl->Release(desktop);
++    CoUninitialize();
++
++    if (fails == 0) {
++        say("WR1-SHELLNS-OK\r\n");
++        ExitProcess(78);
++    }
++    say("WR1-SHELLNS-FAIL\r\n");
++    ExitProcess(1);
++}

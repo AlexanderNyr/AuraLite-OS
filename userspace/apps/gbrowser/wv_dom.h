@@ -2,7 +2,8 @@
  * wv_dom.h — DOM builder for the AuraLite web view (WEBVIEW_PLAN W2).
  *
  * Design constraints from the plan (D3, §2):
- *   - The user stack is 64 KiB.  The builder is iterative: an explicit
+ *   - The user stack was 64 KiB when the plan fixed this constraint (D3, §2);
+ *     it is 4 MiB today.  The builder is iterative: an explicit
  *     open-element stack (an index array inside the caller-provided arena)
  *     with a HARD DEPTH CAP.  When the cap is reached, deeper elements are
  *     appended without nesting and `truncated` is set — a 10 000-deep

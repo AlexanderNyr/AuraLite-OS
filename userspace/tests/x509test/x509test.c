@@ -3,7 +3,7 @@
  * The full RFC/field battery runs host-side (tests/unit/test_atls_x509.c).
  * THIS program exists because the N2 test gate demands the hostile cases
  * be run "in QEMU where the 64 KB limit is real": the parser faces the
- * guest's actual 64 KiB user stack and the kernel's guard pages, so any
+ * guest's actual user stack and the kernel's guard pages, so any
  * recursion over attacker-supplied nesting shows up as a SIGSEGV on the
  * guard page instead of silently passing on the host's 8 MiB stack.
  *
@@ -156,7 +156,7 @@ static void test_depth_gate(void) {
 }
 
 int main(void) {
-    printf("[x509test] in-guest X.509 gate (INTERNET_PLAN N2, 64 KiB stack)\n");
+    printf("[x509test] in-guest X.509 gate (INTERNET_PLAN N2, real user stack)\n");
     test_embedded_certs();
     test_truncation_sweep();
     test_bit_flips();

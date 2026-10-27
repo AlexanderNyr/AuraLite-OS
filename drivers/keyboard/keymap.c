@@ -43,8 +43,9 @@ const struct keymap keymap_us = {
  * AltGr are plain ASCII and therefore visible even through the legacy fd-0
  * line reader.  Umlauts/ß/§/°/µ are CP437 bytes > 0x7E: they reach
  * /dev/tty0 readers and the GUI, but the shell's fd-0 path drops them (see
- * keymap.h).  ´ is a dead key on hardware; with no dead-key support yet the
- * key emits nothing unshifted and an ASCII backquote shifted.  AltGr+E (€)
+ * keymap.h).  ´ is a dead key on hardware; RESIDUE2 T4 arms it on the plain
+ * unshifted layer (see the .dead side table below) and Shift still emits an
+ * ASCII backquote.  AltGr+E (€)
  * has no CP437 representation and is deliberately unmapped. */
 
 const struct keymap keymap_de = {

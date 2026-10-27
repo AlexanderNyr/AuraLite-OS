@@ -5,7 +5,7 @@
  * HTML tokeniser states with deliberate simplifications documented in
  * wv_html.h.  Everything is iterative; the only "buffers" are fixed-size
  * locals (a few KB total) and the caller-provided arena, so neither the
- * 64 KiB user stack nor memory as a whole can be exhausted by input.
+ * user stack nor memory as a whole can be exhausted by input.
  *
  * Tolerance rules honoured throughout:
  *   - EOF in any state terminates with whatever was accumulated (a token

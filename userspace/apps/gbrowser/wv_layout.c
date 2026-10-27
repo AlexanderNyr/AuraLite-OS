@@ -3,7 +3,7 @@
  *
  * Iterative DOM → display list.  The tree walk is a (node, phase) stack;
  * block and inline contexts are explicit stacks.  No recursion, no heap:
- * every working structure is a caller-provided fixed array, so the 64 KiB
+ * every working structure is a caller-provided fixed array, so the
  * user stack and the memory budget are both safe by construction.
  *
  * UA stylesheet: the browser defaults that make bare HTML readable, until

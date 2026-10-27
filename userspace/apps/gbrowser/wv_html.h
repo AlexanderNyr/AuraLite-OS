@@ -2,7 +2,8 @@
  * wv_html.h — HTML tokeniser for the AuraLite web view (WEBVIEW_PLAN W1).
  *
  * Design constraints from the plan (D3, §2):
- *   - The user stack is 64 KiB.  This tokeniser is a TABLE-DRIVEN STATE
+ *   - The user stack was 64 KiB when the plan fixed this constraint (D3, §2);
+ *     `USER_STACK_SIZE` is 4 MiB today.  This tokeniser is a TABLE-DRIVEN STATE
  *     MACHINE with an explicit loop: no recursion anywhere, so a hostile
  *     document cannot overflow the stack.
  *   - Bounded memory by construction: the caller supplies fixed-size

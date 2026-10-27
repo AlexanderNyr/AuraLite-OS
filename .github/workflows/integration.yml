@@ -240,7 +240,7 @@ jobs:
         run: bash tests/integration/x86_cpumax_smoke.sh
 
       # The suite used to run HERE as one ~2 h step; it now
-      # runs as 13 parallel thematic shards in the integration-cases
+      # runs as 15 parallel thematic shards in the integration-cases
       # matrix job below (measured 2 h 08 m at the last single-job
       # run -- longer than every other job combined).  What stays in
       # THIS job is the partition check: every registered case must

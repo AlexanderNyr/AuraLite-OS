@@ -6,7 +6,8 @@
  * both sides testable — a layout failure says *what* moved, in text.
  *
  * Design constraints from the plan:
- *   - The user stack is 64 KiB.  The tree walk is ITERATIVE (an explicit
+ *   - The user stack was 64 KiB when the plan fixed this constraint; it is
+ *     4 MiB today.  The tree walk is ITERATIVE (an explicit
  *     walk stack of (node, phase) pairs inside the caller-provided
  *     arena), and block/inline contexts live in caller arrays with a
  *     depth cap — layout recursion, the classic way to hit the limit, is

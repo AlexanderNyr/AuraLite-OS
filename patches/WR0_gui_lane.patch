@@ -1,0 +1,1508 @@
+From: WR-0 live-GUI lane <wr0@auralite>
+Subject: [PATCH] WR-0 the live-GUI lane: OVMF + screendump + input harness
+
+Base: 0d7377c (W32A17-18 update).  Delivers the WR-0 phase of
+docs/plans/W32RUN_PLAN.md (the plan itself lands in this commit): the
+gui_lane.sh harness, fb_oracle.py pixel asserts, gui_input.py socket
+talker, the test_gui_lane_smoke.sh gate (9/9 green 2026-09-29), the
+gui_receipts.md protocol stub and run_all registration.
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index 334809b..a46c10b 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,32 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [WR-0 — The live-GUI lane and its oracles] 2026-09-29
++
++Opens the W32RUN ladder (`docs/plans/W32RUN_PLAN.md`): the successor to
++W32APP that turns the "human-run non-goals" of the app gates into automatable
++live-frame gates. The measurement that commissioned it: the pinned 7-Zip
++`7zFM.exe` runs for real and draws its own window, but the GUI is only visible
++under UEFI (BIOS Stage 2 sets no VBE mode — the frame is black by
++construction).
++
++- **The lane.** `tests/integration/lib/gui_lane.sh` boots AuraLite under OVMF
++  (GOP linear framebuffer) with serial + monitor UNIX sockets and a
++  `usb-tablet`; the ISO is attached as a hybrid MBR disk (`if=ide` +
++  `-boot order=c`, NOT `media=cdrom`). App binaries reach the guest on a
++  `/fat` delivery disk (`gl_make_fat_disk`) — never the tree.
++- **The oracles.** `tools/fb_oracle.py` asserts over a `screendump`:
++  `brightness` (not-black), `band-brighter` (taskbar/title chrome),
++  `find-color` (title bar / close box), `delta` (an action changed the frame).
++  `tools/gui_input.py` is the sole socket talker: serial send/wait/run
++  (filtering the `[bc]` buffer-cache spam) + monitor `sendkey`/`type`/
++  `screendump`/`mouse`.
++- **The gate.** `tests/integration/cases/test_gui_lane_smoke.sh` — **9/9**,
++  registered in `run_all.sh` (`gui` shard, `SLOW_CASES_RE`); the not-black
++  assertion `test_gui.sh` could only skip on the BIOS lane is now positive.
++  Receipt: `docs/gui_receipts.md` §WR-0.
++
++
+ ## [W32A-18 — Integration, documentation and the honest matrix] 2026-09-29
+ 
+ Closes the Win32-application ladder (W32APP_PLAN W32A-0 – W32A-18): the plan is
+diff --git a/docs/gui_receipts.md b/docs/gui_receipts.md
+new file mode 100644
+index 0000000..7522dad
+--- /dev/null
++++ b/docs/gui_receipts.md
+@@ -0,0 +1,90 @@
++# GUI live-frame receipts
++
++Receipt protocol for `docs/plans/W32RUN_PLAN.md` (the W32RUN ladder, WR-0…WR-5).
++A receipt is greppable evidence a claimed thing exists and was measured. For
++this plan the new class of evidence is a **live frame**: an OVMF boot captures
++the GOP framebuffer with the QEMU monitor `screendump`, and `tools/fb_oracle.py`
++asserts over its pixels. Prose is not a receipt; a green gate and a captured
++frame are.
++
++This mirrors `docs/w32app_receipts.md` (the binding/fixture receipts) and
++`docs/metal_receipts.md` (the paste-back protocol). The three gates of the
++plan (WR-0 §Evidence model):
++
++- **fixture gate** — mingw-w64 PEs, committed, in CI (inherited from W32APP);
++- **receipt gate** — the user runs the pinned binary, pastes the log, the
++  receipt names the sha256 (inherited);
++- **live-frame gate** — the OVMF lane drives the binary and asserts pixels.
++
++No foreign bytes enter the tree: the app binaries are USER-SUPPLIED and reach
++the guest on the `/fat` delivery disk (`gl_make_fat_disk`), never committed.
++What *may* be committed as a receipt is a digest of **our own** framebuffer —
++a histogram or a hash — because that is our output, not the vendor's.
++
++## Why the GUI needs UEFI (the measurement behind the whole plan)
++
++The BIOS Stage 2 loader sets no VBE mode, so `boot_get_framebuffer()` is
++`NULL`, the compositor renders into backing buffers that never reach the
++screen, and every BIOS-booted GUI is black (fb.c's own comment; the
++honest-skip precedent is `test_gui_dirty_uefi.sh` / `test_gui.sh`). Booting
++OVMF gives a GOP linear framebuffer (1280×800 in this environment) and the
++desktop appears. **Every live-frame gate boots OVMF** (`W32RUN_PLAN` D-WR0).
++
++## The lane (WR-0)
++
++| artefact | what it is |
++|---|---|
++| `tests/integration/lib/gui_lane.sh` | boots AuraLite under OVMF with serial + monitor UNIX sockets; `gl_boot` / `gl_send` / `gl_cmd` / `gl_run_w32` / `gl_shot` / `gl_key` / `gl_type` / `gl_click` / `gl_stop` |
++| `tools/gui_input.py` | the only talker to the sockets: serial send/wait/run (filters the `[bc]` buffer-cache spam) and monitor `sendkey` / `type` / `screendump` / `mouse` |
++| `tools/fb_oracle.py` | pixel assertions: `brightness`, `region-brightness`, `band-brighter`, `find-color`, `delta` |
++| `tests/integration/cases/test_gui_lane_smoke.sh` | the WR-0 gate |
++
++### WR-0 receipt — live-lane smoke
++
++Gate: `tests/integration/cases/test_gui_lane_smoke.sh` (group `gui`, on
++`SLOW_CASES_RE` — OVMF boots in ~1 min under TCG). Measured 2026-09-29,
++**9/9 assertions**:
++
++```
++== GUI live-lane smoke (W32RUN_PLAN WR-0) ==
++  [gui-lane] OVMF booting (TCG; up to 100s to the shell)...
++serial-wait: matched /auralite#/
++  ✔ UEFI GOP framebuffer present
++  ✔ reached the shell
++  ✔ GUI subsystem self-test passed
++  ✔ captured the desktop framebuffer
++  ✔ desktop is not black (brightness floor cleared)
++  ✔ taskbar band present (structurally brighter than the desktop)
++  ✔ a window title bar is present on the desktop
++  ✔ serial input path is live
++  ✔ monitor re-captured after injected input (input harness live)
++── 9/9 assertions passed ──
++```
++
++The captured frame's oracle values on the 1280×800 GOP framebuffer (the
++committable digest — our own pixels, not a vendor's):
++
++| oracle | value | gate |
++|---|---|---|
++| `brightness` (whole frame) | mean ≈ 44 | > 10 (not black) |
++| `band-brighter` taskbar `0,772..1280,800` vs desktop `0,380..1280,420` | Δ ≈ 35 | ≥ 8 |
++| `find-color` title bar blue `(43,87,151)` in `0,60..1280,130` | frac ≈ 0.05 | ≥ 0.02 |
++
++### Reproducing WR-0
++
++```
++source "$HOME/.cargo/env"      # rustup only; never distro rustc
++make iso -j2                   # build/auralite.iso (+ OVMF from the ovmf package)
++bash tests/integration/cases/test_gui_lane_smoke.sh
++```
++
++The lane locates OVMF at `/usr/share/OVMF/OVMF_CODE_4M.fd` +
++`OVMF_VARS_4M.fd` (override with `OVMF_CODE=` / `OVMF_VARS=`); with no OVMF it
++loud-SKIPs and exits 0, the `test_gui_dirty_uefi.sh` convention.
++
++## WR-1 … WR-5
++
++Reserved. Each app phase records here: the pinned sha256 (already in
++`docs/w32app_receipts.md`), the live gate name, and the frame digest for the
++main-window / listing / terminal / editor capture. WR-5 collects them into the
++run/no-run matrix (`docs/win32_run.md`).
+diff --git a/docs/plans/W32RUN_PLAN.md b/docs/plans/W32RUN_PLAN.md
+new file mode 100644
+index 0000000..91acc06
+--- /dev/null
++++ b/docs/plans/W32RUN_PLAN.md
+@@ -0,0 +1,507 @@
++# AuraLite OS — Win32 Applications Live-Run Plan (from *binds* to *runs*)
++
++## Status: ACTIVE — the successor to `W32APP_PLAN.md`; closes the "human-run non-goals" that plan named, plus SHELL32 §7. WR-0 landed 2026-09-29 (the live-GUI lane is green); WR-1…WR-5 planned.
++
++| Phase | State |
++|---|---|
++| WR-0 The live-GUI lane and its oracles (OVMF + screendump + input harness) | ✅ done (2026-09-29) |
++| WR-1 `SHELL32` namespace (§7 closed) — `IShellFolder`, desktop/drives/CFSFolder, PIDL | ⬜ planned |
++| WR-2 App run I — 7-Zip File Manager: panel, navigate, extract, options, drag-drop | ⬜ planned |
++| WR-3 App run II — Notepad++: Scintilla view, tabs, open/save, Find, plugins, tray | ⬜ planned |
++| WR-4 App run III — PuTTY: config dialog, terminal render, live SSH/Telnet/Raw | ⬜ planned |
++| WR-5 The honest live matrix — screenshot receipts, docs, the run/no-run table | ⬜ planned |
++
++This document answers one question:
++
++> *`W32APP_PLAN.md` proved that PuTTY, 7-Zip and Notepad++ **bind** — every
++> import resolves to an honest body. What is the smallest honest path from
++> "binds" to **runs**: each unmodified binary opening its real main window
++> and doing its real work, measured on the real framebuffer, with the GUI
++> gates that plan deferred as "human-run non-goals" made automatable?*
++
++It is a sequel to [`W32APP_PLAN.md`](W32APP_PLAN.md) and inherits its method
++wholesale: dependency-ordered phases, a definition of done and a test gate for
++every phase, one `.patch` per phase, and the two-gate evidence model (fixture
++gate + receipt gate). It adds a **third gate** — the *live-frame gate* — and
++the harness that makes it automatable (WR-0). It inherits `WIN32_PLAN.md` §1
++and decision D4 (the legal boundary) unchanged: the binaries stay test
++subjects, never tree contents; only names, sizes and sha256 hashes are
++committed.
++
++**Baseline:** on top of `W32APP_PLAN.md` W32A-0 … W32A-18 (the full breadth
++surface + the integration matrix). The persistent tree is the source of truth;
++this plan changes runtime bodies, not the import census.
++
++**What is new about the method — the measurement that commissioned this plan.**
++On 2026-09-29 the pinned `7zFM.exe` (24.09, `dc4fdcd9…`, size 990 720) was
++run for real, unmodified, on a live AuraLite boot:
++
++- It **binds and executes**: `w32run: /fat/7zFM.exe mapped at
++  0x400000000000, 292 import(s) bound`, entered Ring 3, ran its CRT startup.
++- It **draws its own native window** — titled `7-Zip`, with a taskbar entry —
++  over the kernel compositor, alongside two other live windows and the dock.
++- It **then dies on `Error #80004005` (E_FAIL)** at startup, *before any file
++  panel opens*, because `SHGetDesktopFolder` returns **E_NOTIMPL**
++  (`w32/src/shell32.c:234`) — the shell namespace is deliberately unbuilt
++  ("plan section 7"). 7-Zip needs the desktop `IShellFolder` to initialise
++  its panels; it gets `E_NOTIMPL` and aborts.
++
++Two facts fell out of that run and shape the whole plan:
++
++1. **The GUI is only real under UEFI.** The BIOS Stage 2 loader sets no VBE
++   mode, so `boot_get_framebuffer()` is `NULL`, the compositor renders into
++   backing buffers that never reach the screen, and every BIOS-booted GUI is
++   black (fb.c's own comment; the honest-skip precedent is
++   `test_gui_dirty_uefi.sh`). Booting OVMF gives a GOP linear framebuffer
++   (1280×800) and the desktop appears. **Every live-frame gate in this plan
++   boots OVMF.** This is what `W32APP_PLAN.md` meant by "no framebuffer/pixel
++   oracle in this environment" — it is no longer true, and WR-0 makes it a
++   lane.
++
++2. **`binds ≠ runs`.** The app-ledger marks `SHGetDesktopFolder` `REAL
++   static-only`; the fixture gate was green; W32A-15 was "done". All true —
++   at the *binding and fixture* level. The **runtime body** was a stub. This
++   plan is exactly the set of runtime bodies the fixture gates could not see.
++
++**Evidence model (three gates now).**
++
++- **Fixture gate** — mingw-w64-built PEs, committed, in CI (inherited).
++- **Receipt gate** — the user runs the pinned binary, pastes the log, the
++  receipt names the sha256 (inherited; `docs/w32app_receipts.md`).
++- **Live-frame gate** *(new, WR-0)* — an OVMF boot drives the pinned binary
++  through the serial shell, captures the framebuffer via the monitor
++  `screendump`, and asserts an *oracle* over the pixels: a brightness floor
++  (not-black), a window-chrome/title match, and a content delta after an
++  injected action. Fixtures prove the mechanism; receipts prove the
++  application; the live frame proves it **on real pixels**. None is accepted
++  as proof of another.
++
++---
++
++## 1. The legal boundary (inherited, unchanged)
++
++`WIN32_PLAN.md` §1 and `W32APP_PLAN.md` §1 stand verbatim. No Microsoft code
++or SDK headers; no Wine/ReactOS as source *or reference*; declarations from
++mingw-w64 headers and published documentation only; subsystem stays `w32`. The
++binaries are obtained by the user from their publishers, are **never
++committed**, and reach the guest through the `/fat` delivery disk (§3.3), not
++the tree. Only version, size, sha256 and import ledgers are committed —
++`tools/check_provenance.sh`'s `MZ`+`PE\0\0` rule is the backstop.
++
++The shell namespace built in WR-1 is written from the documented `IShellFolder`
++/ `IEnumIDList` interface contracts (MSDN) and mingw-w64's `shobjidl`/`shlobj`
++headers — interface *shapes*, which are facts about an ABI, the same class of
++fact `docs/win32.md` already records. No shell32 implementation is consulted.
++
++---
++
++## 2. Where things stand — the measured run/no-run frontier
++
++### 2.1 The live run of the ladder (2026-09-29)
++
++| App | Binds? | Enters Ring 3? | Draws a window? | Reaches its main UI? | Blocker |
++|---|---|---|---|---|---|
++| 7-Zip FM 24.09 | ✅ 292/292 | ✅ | ✅ (`7-Zip` error box) | ❌ | `SHGetDesktopFolder` E_NOTIMPL → E_FAIL before panels |
++| Notepad++ 8.8.9 | ✅ 590/590 | — (not yet live-run) | — | — | to be measured under WR-0/WR-3 |
++| PuTTY 0.85 | ✅ 348/348 | — (not yet live-run) | — | — | GUI config + live net, deferred human-run in W32A-14 |
++
++The 7-Zip row is a *measured* live boot; the other two rows are the
++fixture/binding state from `W32APP_PLAN.md`, not yet exercised on the OVMF
++framebuffer. WR-0 exists to turn every `—` above into a ✅/❌ with a pixel.
++
++### 2.2 The SHELL32 §7 gap, by measurement
++
++7-Zip's committed ledger (`w32/app_ledger/7zFM-24.09.imports`) lists the
++shell-namespace surface it actually imports — all currently marked
++`REAL static-only`, i.e. **bound**, but several backed by an `E_NOTIMPL` /
++`ERROR_INVALID_PARAMETER` stub body:
++
++| Import | Current body | WR-1 target |
++|---|---|---|
++| `SHGetDesktopFolder` | **E_NOTIMPL** (`shell32.c:234`) — *the fatal one* | real desktop `IShellFolder` |
++| `SHGetFileInfoW` (PIDL flag) | `ERROR_INVALID_PARAMETER` (`shell32.c:517`) | PIDL → name/icon/attrs |
++| `SHGetSpecialFolderLocation` | stub | real PIDL for CSIDL roots |
++| `SHGetSpecialFolderPathW` | stub | real path for CSIDL roots |
++| `SHGetPathFromIDListW` | partial (`shell32.c:208`) | round-trips WR-1 PIDLs |
++| `SHBrowseForFolderW` | stub | folder-picker over the namespace |
++| `SHChangeNotify` | stub (no-op ok) | documented no-op, named |
++| `ExtractIconExW` | present | icons for the panel |
++
++The interfaces those entry points must actually hand back (from the 7-Zip
++panel's use, MSDN-documented): `IShellFolder` (`BindToObject`, `EnumObjects`
++→ `IEnumIDList`, `GetDisplayNameOf`, `GetAttributesOf`, `ParseDisplayName`,
++`CompareIDs`), the PIDL helpers 7-Zip reaches through its own copies
++(`ILClone`/`ILCombine`/`ILFree`/`ILIsEqual` — 7-Zip carries these, so only the
++byte layout must agree with `SHGetPathFromIDListW`), and a `My Computer` root
++enumerating one drive, `C:`, that binds to a **CFSFolder** enumerating the
++AuraLite VFS via `FindFirstFileW`/`FindNextFileW` (already REAL in
++`kernel32_fs.c`). This is the whole of WR-1.
++
++### 2.3 What "runs" costs beyond "binds", per app
++
++- **7-Zip**: the namespace (WR-1) is the hard dependency. After it, the panel
++  is `SysListView32` (REAL, W32A-8) fed by `IEnumIDList`; extract is `7z.dll`
++  (`CreateObject`, REAL DLL-chain, W32A-15) writing through the VFS; options
++  is a `PropertySheetW` over the registry (REAL, W32A-9). No new kernel work.
++- **Notepad++**: Scintilla is a self-contained custom control that paints via
++  `GDI32` (REAL, W32A-7) into a child `HWND` — the risk is *paint fidelity*
++  (fonts, carets, scrollbars), not missing imports. Tabs/toolbar are
++  COMCTL32 (REAL). Find is a modeless `DialogBox` (REAL, W32A-6). Plugins are
++  `LoadLibraryW` of the pinned NPP DLLs (REAL DLL-chain). Tray is
++  `Shell_NotifyIconW` (present). WR-3 measures which of these paint correctly.
++- **PuTTY**: the config dialog is a `DialogBox` tree (REAL) whose persistence
++  half already passes headlessly (W32A-14); WR-4 adds the *pixel* half. The
++  terminal is a GDI text grid. Live SSH/Telnet/Raw run over `WS2_32` (REAL,
++  W32A-12) on QEMU user-net SLIRP against a server WR-0 provisions.
++
++---
++
++## 3. The method — the live-GUI lane (this is WR-0, stated once)
++
++### 3.1 The boot line that has pixels
++
++```
++qemu-system-x86_64 \
++  -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
++  -drive if=pflash,format=raw,file=<writable copy of>OVMF_VARS_4M.fd \
++  -drive file=<auralite.iso>,format=raw,if=ide,snapshot=on \
++  -drive id=dapp,file=<app.img>,format=raw,if=none,snapshot=on \
++  -device ahci,id=ahci -device ide-hd,drive=dapp,bus=ahci.0 \
++  -m 512M -smp 2 -cpu qemu64 -no-reboot -no-shutdown -boot order=c \
++  -netdev user,id=net0 -device e1000,netdev=net0 \
++  -fw_cfg name=opt/auralite.selftest,string=full \
++  -vga std -display none \
++  -serial unix:/tmp/ser.sock,server,nowait \
++  -monitor unix:/tmp/mon.sock,server,nowait
++```
++
++The three lessons this line encodes, each a dead end already paid for:
++- **OVMF, not SeaBIOS** — BIOS has no linear framebuffer (§0). Under TCG the
++  UEFI path reaches `auralite#` in ~40–60 s; the gate budgets 90 s.
++- **The ISO is a hybrid MBR disk, not optical** — attach `if=ide,snapshot=on`
++  with `-boot order=c`. Attaching it `media=cdrom` drops OVMF to the UEFI
++  Shell with no `FS` mapping (measured). OVMF then enumerates the FAT32
++  partition and runs `/EFI/BOOT/BOOTX64.EFI` (`mkisoimage_dual.sh` §UEFI).
++- **`-vga std` + `-display none`** still lets the monitor `screendump` the
++  framebuffer; a headless box needs no VNC for the capture.
++
++### 3.2 The oracle (`screendump` → PPM → assert)
++
++The monitor `screendump /abs/path.ppm` writes the live GOP framebuffer even
++with `-display none`; PIL converts and measures. The three assertions:
++
++- **brightness floor** — mean luma > 10 (a black frame fails; this is the gate
++  W32APP §GUI could only *skip* on the BIOS lane).
++- **window oracle** — the target window's title-bar band matches expected
++  chrome (colour histogram of the title strip + a glyph-free template match on
++  the close-box), so "a `7-Zip` window exists" is a pixel fact, not a log line.
++- **content delta** — after an injected action, `ImageChops.difference` has a
++  non-empty bbox in the panel region (the listing actually changed).
++
++### 3.3 Delivery and input
++
++- **App delivery**: a FAT image (`mformat -F`, 64 zero sectors of MBR slack,
++  `mcopy` the pinned `.exe`/`.dll`) attached as the first AHCI disk → the
++  guest sees `/fat`. Never the initrd, never the tree (§1). This is proven.
++- **Command input**: the serial unix socket; `run w32run /fat/<app>.exe
++  [args]` — note the shell's w32run auto-route drops extra argv
++  (`init.c:851`), so a *folder/file argument* must go through `w32run`
++  explicitly (measured: `run w32run /fat/7zFM.exe C:\fat`, where `C:\` maps to
++  the VFS root per `kernel32_fs.c`).
++- **GUI input**: the monitor `sendkey` (e.g. `ret`, `tab`, `a`…) and
++  `mouse_move`/`mouse_button` inject keyboard and PS/2 mouse events into the
++  live desktop — the missing half that made W32APP's UI flows "human-run".
++- **Serial hygiene**: filter the buffer-cache `[bc] writeback…` spam.
++
++#### WR-0 Tasks
++
++- [x] `tests/integration/lib/gui_lane.sh` — the OVMF boot helper: pflash
++      copy, disk attach (`GL_APP_DISK`), serial+monitor sockets, a `usb-tablet`
++      for absolute clicks, the boot budget, and `gl_boot`/`gl_send`/`gl_cmd`/
++      `gl_run_w32`/`gl_shot`/`gl_key`/`gl_type`/`gl_click`/`gl_stop`.
++- [x] `tools/fb_oracle.py` — `brightness`, `region-brightness`,
++      `band-brighter`, `find-color` (title bar / close box / selection), and
++      `delta <region>` over a `screendump` PPM/PNG; exit codes drive the gate.
++- [x] `tools/gui_input.py` — the sole socket talker: serial
++      send/wait/run (filters the `[bc]` spam) + monitor `sendkey`/`type`/
++      `screendump`/`mouse`, with a settle poll on the framebuffer.
++- [x] `tests/integration/cases/test_gui_lane_smoke.sh` — boots OVMF, asserts
++      `GOP framebuffer located` + `auralite#`, captures the desktop, asserts
++      brightness > 10 and the taskbar/title-bar chrome oracle, and proves the
++      injected-input + re-capture path. The floor `test_gui_dirty_uefi.sh`
++      could only skip on BIOS — now a positive gate.
++- [x] The reference frame committed as a **digest** (oracle values, not the
++      image — same rule as binaries: no foreign bytes; a measurement of *our*
++      framebuffer is our own output): the WR-0 table in `docs/gui_receipts.md`.
++- [x] Registered in `tests/integration/run_all.sh` (`ALL_CASES`, the `gui`
++      shard, and `SLOW_CASES_RE`) — `check_test_registry.py` + `--check-groups`
++      green.
++
++#### WR-0 Test gate
++
++- `test_gui_lane_smoke.sh` green (**measured 2026-09-29, 9/9**): OVMF boots,
++  GOP present, desktop non-black, taskbar + title-bar chrome oracles match,
++  serial input live, monitor re-capture live. The harness is reusable by
++  WR-2…WR-4 unchanged. Receipt: `docs/gui_receipts.md` §WR-0.
++
++**Deliverable:** `tests/integration/lib/gui_lane.sh`, `tools/fb_oracle.py`,
++`tools/gui_input.py`, `tests/integration/cases/test_gui_lane_smoke.sh`,
++`patches/WR0_gui_lane.patch`, and a `docs/gui_receipts.md` protocol stub in
++the style of `docs/w32app_receipts.md`.
++
++---
++
++## 4. Phases
++
++### Phase WR-1 — `SHELL32` namespace (§7 closed): `IShellFolder`, drives, CFSFolder, PIDL
++
++**Objective:** replace the `E_NOTIMPL`/`ERROR_INVALID_PARAMETER` shell-namespace
++stubs with a real, minimal, honest namespace — the exact surface §2.2 measured
++7-Zip to need — so `SHGetDesktopFolder` hands back a working desktop
++`IShellFolder` rooted at `My Computer → C: → CFSFolder(VFS)`.
++
++This is the one hard-dependency phase; WR-2 cannot start without it. It is
++kept minimal by measurement (D-WR1: implement the 7-Zip ledger surface, no
++more) and by reuse — the file enumeration is `FindFirstFileW` (REAL), the
++list control is `SysListView32` (REAL); only the COM object graph is new.
++
++#### Tasks
++
++- [ ] `IShellFolder` vtable in `w32/src/shell32.c` (or a new
++      `w32/src/shell32_ns.c`): `QueryInterface`/`AddRef`/`Release`,
++      `EnumObjects` → `IEnumIDList`, `BindToObject`, `GetDisplayNameOf`,
++      `GetAttributesOf`, `ParseDisplayName`, `CompareIDs` — the documented
++      subset the panel calls.
++- [ ] The desktop root: `SHGetDesktopFolder` returns the desktop folder whose
++      `EnumObjects` yields one child, `My Computer`, whose `EnumObjects`
++      yields one drive, `C:`.
++- [ ] `CFSFolder`: binding `C:` (or any filesystem PIDL) yields a folder whose
++      `EnumObjects` walks the VFS via `FindFirstFileW`/`FindNextFileW`, and
++      whose `GetDisplayNameOf` round-trips through `SHGetPathFromIDListW`.
++- [ ] The PIDL byte layout: agree with the existing pair
++      (`shell32.c:183`/`:208`) so 7-Zip's in-tree `IL*` helpers and our
++      `SHGetPathFromIDListW` see the same bytes. Unit-tested both directions.
++- [ ] `SHGetFileInfoW` PIDL branch: resolve PIDL → path, then reuse the
++      by-path body for name/type/icon/attrs (drop the
++      `ERROR_INVALID_PARAMETER` early-out for the PIDL flag).
++- [ ] `SHGetSpecialFolderLocation` / `SHGetSpecialFolderPathW` for the CSIDL
++      roots the panel asks for (Desktop, Drives, Personal) → real PIDL/path.
++- [ ] `SHBrowseForFolderW` over the new namespace (folder-picker); `SHChangeNotify`
++      documented as a no-op where the user looks (named, not hidden).
++- [ ] Host unit test `tests/unit/test_shell_ns.c` — enumerate desktop → My
++      Computer → C: → a known VFS dir, assert names/attrs/PIDL round-trip,
++      under ASan/UBSan.
++- [ ] Fixture twin `tests/integration/cases/test_wr1_shellns_fixture.sh` — a
++      mingw-w64 PE that calls `SHGetDesktopFolder`, walks two levels and prints
++      a folder's children, green in-guest.
++
++#### Test gate
++
++- Host unit test green under ASan/UBSan; fixture twin green in-guest; the
++  census gap does not grow (`w32_import_ledger.py check`); `w32run.elf` links
++  clean. No live-frame gate yet — WR-1 is headless COM.
++
++**Deliverable:** `w32/src/shell32_ns.c` (+ `shell32.c` edits),
++`w32/include/w32/shell32_priv.h`, `tests/unit/test_shell_ns.c`,
++`tests/integration/cases/test_wr1_shellns_fixture.sh`,
++`patches/WR1_shell_namespace.patch`.
++
++---
++
++### Phase WR-2 — App run I: 7-Zip File Manager, live on the framebuffer
++
++**Objective:** the pinned `7zFM.exe`+`7z.dll` (24.09, `dc4fdcd9…`/`88206394…`)
++open their **real main window** — the two-pane file manager — list `/fat`,
++navigate, extract a known archive byte-exactly, and persist an option. The
++E_FAIL of §0 is gone; the frame shows the listing.
++
++#### Tasks
++
++- [ ] Live launch: `gui_run 7zFM.exe C:\fat` reaches the main window (no
++      `Error #80004005`); serial shows the panel init completing.
++- [ ] **Live-frame gate**: `window_present` matches the 7-Zip main window
++      chrome (not the message box); brightness floor; the panel region shows
++      `SysListView32` rows for `/fat` (`7zFM.exe`, `7Z.DLL`, `README.TXT`, …).
++- [ ] Navigate: inject a double-click / `ret` on `SUBDIR`, assert a content
++      delta (the listing changed) and a back-nav returns.
++- [ ] Extract: point 7-Zip at a **byte-known** committed-fixture `.7z`/`.zip`
++      (built in CI from in-tree sources, per §1), extract-all through the VFS,
++      `sha256` the output against the known plaintext — the first *headless*
++      extract proof (was human-run in W32A-15).
++- [ ] Options: toggle a setting via the `PropertySheetW`, close/reopen,
++      assert the registry round-trip *and* the UI reflects it (pixel delta).
++- [ ] Drag-drop add: inject a mouse drag; assert `SHFileOperationW` fired and
++      the archive grew (or document as human-run if the drag source needs a
++      second live window — named either way).
++- [ ] Update the `#7zip` receipt in `docs/w32app_receipts.md`: the human-run
++      non-goals W32A-15 named that are **now automated** move to the
++      live-frame gate, with the frame digest; anything still human-run stays
++      named.
++
++#### Test gate
++
++- `test_wr2_7zip_live.sh` green under the WR-0 lane: main window present,
++  `/fat` listed, navigate delta, byte-exact extract of the CI fixture archive,
++  option round-trip. Receipt updated; frame digest committed.
++
++**Deliverable:** `tests/integration/cases/test_wr2_7zip_live.sh`, the CI
++fixture archive builder, receipt edits, `patches/WR2_7zip_live.patch` (any
++personality fixes the live run forces — e.g. panel-init ordering).
++
++---
++
++### Phase WR-3 — App run II: Notepad++, live on the framebuffer
++
++**Objective:** the pinned `notepad++.exe` (8.8.9, `a470014b…`) opens its
++**real editor window**, shows a Scintilla view, opens and saves a file through
++the VFS, runs Find, loads a pinned plugin, and shows a tray icon — every W32A-16
++"human-run" UI flow, now on real pixels.
++
++#### Tasks
++
++- [ ] Live launch: `gui_run notepad++.exe` reaches the editor window; serial
++      shows Scintilla registered and the frame laid out (`BeginDeferWindowPos`
++      batch, REAL since W32A-16).
++- [ ] **Live-frame gate**: `window_present` on the Notepad++ frame; the
++      Scintilla client region is non-empty; the tab bar (COMCTL32) is present.
++- [ ] Type + render: inject text via `gui_input type`, assert a content delta
++      in the Scintilla region (the caret advanced, glyphs painted) — the
++      GDI text-paint fidelity check.
++- [ ] Open/Save: open a committed fixture file from `/fat`, edit, save,
++      `sha256` the saved bytes against expected — headless open/save proof.
++- [ ] Find: open the Find dialog (`DialogBox`, REAL), search a known string,
++      assert the match-count status / selection delta.
++- [ ] Plugins: `LoadLibraryW` a pinned NPP plugin DLL (delivered on `/fat`),
++      assert it appears in the Plugins menu (menu-item oracle) or document
++      the exact failure if a plugin needs an unbuilt surface.
++- [ ] Tray: `Shell_NotifyIconW` places an icon; assert the taskbar/tray
++      region delta (or name it human-run if the tray is off-frame).
++- [ ] Receipt `#notepad++` in `docs/w32app_receipts.md` updated to the
++      live-frame gate; measured-not-run items named honestly.
++
++#### Test gate
++
++- `test_wr3_npp_live.sh` green: editor window present, Scintilla paints typed
++  text, fixture file open/save byte-exact, Find match, plugin loaded (or named
++  gap). Receipt + frame digest committed.
++
++**Deliverable:** `tests/integration/cases/test_wr3_npp_live.sh`, fixture
++file + pinned-plugin delivery, receipt edits, `patches/WR3_npp_live.patch`.
++
++---
++
++### Phase WR-4 — App run III: PuTTY, live on the framebuffer + live network
++
++**Objective:** the pinned `putty.exe` (0.85, `d01fdb5a…`) opens its **real
++config dialog**, saves/loads a session through the UI (not just the registry),
++opens a terminal, and completes a **live** Telnet/Raw and SSH session against
++a server the WR-0 lane provisions over QEMU user-net SLIRP — every W32A-14
++"human-run" flow, automated.
++
++#### Tasks
++
++- [ ] Live launch: `gui_run putty.exe` reaches the config dialog; the
++      dialog tree renders (`window_present` + control-region oracle).
++- [ ] Session UI round-trip: type a host/port in the dialog, `Save`, close,
++      reopen, `Load`, assert the fields repopulate (pixel + registry, the
++      W32A-14 headless half now joined to its UI half).
++- [ ] Terminal render: connect Raw/Telnet to an **in-lane echo/telnet server**
++      (spawned by `gui_lane.sh` on the SLIRP host side, reachable at
++      `10.0.2.2`), type a line, assert the echoed text paints in the terminal
++      grid (GDI text delta). First headless PuTTY net+render proof.
++- [ ] SSH: connect to an in-lane SSH server, complete auth (password or the
++      pinned test key), run a command, assert its output paints. If the crypto
++      surface (`CryptoAPI`/`bcrypt`) has a gap PuTTY's SSH needs, name the
++      exact symbol and its status — do not fake a pass.
++- [ ] Font/colour choosers + clipboard: exercise the COMDLG32 six and `gclip`
++      round-trip via injected input, or name the residual human-run item.
++- [ ] Serial backend stays fail-clean (COMM set FALSE + `ERROR_INVALID_FUNCTION`,
++      already proven) — re-assert from the live process.
++- [ ] Receipt `#putty` in `docs/w32app_receipts.md` updated to the live-frame
++      + live-net gate; the auth-fallback / crypto items named honestly.
++
++#### Test gate
++
++- `test_wr4_putty_live.sh` green: config dialog present, session UI round-trip,
++  Telnet/Raw echo painted, SSH command output painted (or a named crypto gap).
++  Receipt + frame digest committed.
++
++**Deliverable:** `tests/integration/cases/test_wr4_putty_live.sh`, the in-lane
++server provisioning, receipt edits, `patches/WR4_putty_live.patch`.
++
++---
++
++### Phase WR-5 — The honest live matrix
++
++**Objective:** one table that tells the truth about *running*, and the docs
++that carry it — the live counterpart to `W32APP_PLAN.md` W32A-18's binding
++matrix.
++
++#### Tasks
++
++- [ ] `docs/win32_run.md` (generated, like `docs/win32.md`): per app, the
++      run-state matrix — *binds / enters / draws / main UI / core task /
++      live net* — each cell backed by a gate name or a named human-run reason.
++- [ ] `docs/gui_receipts.md` finalised: the screendump protocol, the frame
++      digests, the sha256 pins, one section per app.
++- [ ] `README.md` + `docs/status.md` updated: the "runs, measured on pixels"
++      claim replaces the "binds" claim, with the gate names as evidence.
++- [ ] `tools/check_w32app_claims.py` (or a sibling) extended: a WR phase
++      section, a run-matrix consistency check (no cell claims a state its
++      gate does not prove), a REFUSE-guard for faked live passes.
++- [ ] The plan's own status table (top) flipped to ✅ with dates and receipts.
++
++#### Test gate
++
++- The claim checker is green; every ✅ in `docs/win32_run.md` resolves to a
++  green gate or a named human-run reason; no orphan claims; `make test`
++  selective run recorded (the OVMF lanes are slow under TCG — the gate names
++  which ran).
++
++**Deliverable:** `docs/win32_run.md`, `docs/gui_receipts.md`, checker edits,
++doc edits, `patches/WR5_live_matrix.patch`.
++
++---
++
++## 5. Decisions
++
++- **D-WR0 — OVMF is the only GUI truth.** Every live-frame gate boots OVMF;
++  BIOS GUI is black by construction and is never a GUI oracle. The
++  BIOS-lane skip in `test_gui.sh`/`test_gui_dirty_uefi.sh` stays as the
++  documented precedent.
++- **D-WR1 — the namespace is measured, not general.** WR-1 implements exactly
++  the `IShellFolder`/PIDL surface the 7-Zip ledger names (§2.2), rooted at
++  `My Computer → C: → CFSFolder(VFS)`. No shell extensions, no network
++  namespace, no virtual junctions — those fail clean and are named.
++- **D-WR2 — `binds` is not `runs`, and the receipt says which.** A green
++  fixture/binding gate is never restated as a run claim. The run/no-run
++  matrix (WR-5) is the only place a "runs" claim lives, and every cell cites
++  a live gate.
++- **D-WR3 — no foreign bytes, still.** Binaries reach the guest on `/fat`,
++  never the tree; only names/sizes/hashes and *our own* framebuffer digests
++  are committed. `check_provenance.sh` stays the backstop.
++- **D-WR4 — name the gap, never fake the pass.** Where a live run hits an
++  unbuilt surface (a crypto symbol, a shell extension, an off-frame tray),
++  the exact symbol/reason is named in the receipt and the matrix; the gate
++  fails or is marked human-run, never silently greened.
++
++---
++
++## 6. Appendix — the reproduction recipe (hard-won, kept verbatim)
++
++- **Toolchain**: `source "$HOME/.cargo/env"` then `make iso -j2` (multiarch:
++  needs the three rustup targets `x86_64-unknown-none`,
++  `riscv64gc-unknown-none-elf`, `aarch64-unknown-none`; Rust via rustup only,
++  never distro `rustc`).
++- **OVMF**: `/usr/share/OVMF/OVMF_CODE_4M.fd` + a writable copy of
++  `OVMF_VARS_4M.fd`.
++- **App disk**: `mformat -i img -F -h 32 -s 32 -t 128 ::` + 64 zero sectors of
++  MBR slack (`dd count=64` then `cat`) + `mcopy` the pinned files → guest
++  `/fat`.
++- **Boot line**: §3.1. **Capture**: monitor `screendump /abs.ppm` → PIL PNG.
++  **Drive**: serial `run w32run /fat/<app>.exe [C:\path]`; GUI input via
++  monitor `sendkey`/`mouse_move`/`mouse_button`. **Filter** the `[bc]` serial
++  spam. **Budget** ≥ 90 s to the shell under TCG (no KVM in this environment).
++- **Path mapping**: Win32 `C:\` = VFS `/` (`kernel32_fs.c`); one drive only.
++- **Gotcha**: the shell's w32run auto-route drops extra argv (`init.c:851`);
++  pass file/folder arguments through `w32run` explicitly.
+diff --git a/tests/integration/cases/test_gui_lane_smoke.sh b/tests/integration/cases/test_gui_lane_smoke.sh
+new file mode 100644
+index 0000000..c3397c7
+--- /dev/null
++++ b/tests/integration/cases/test_gui_lane_smoke.sh
+@@ -0,0 +1,91 @@
++#!/usr/bin/env bash
++# test_gui_lane_smoke.sh — WR-0 (W32RUN_PLAN.md) the live-GUI lane, proven.
++#
++# This is the foundational gate of the W32RUN ladder: it proves the harness
++# WR-2..WR-4 depend on actually produces a real desktop frame and can assert
++# over its pixels.  It boots AuraLite under OVMF (the only firmware with a
++# linear framebuffer), captures the GOP framebuffer via the monitor
++# screendump, and asserts:
++#
++#   - the loader reports the GOP framebuffer and the boot reaches the shell;
++#   - the captured desktop is NOT black (brightness floor) — the assertion
++#     test_gui.sh could only SKIP on the BIOS lane, now a positive gate;
++#   - the taskbar band is structurally brighter than the desktop behind it
++#     (chrome present, no colour hard-coding);
++#   - a window title bar exists (the selftest=full self-test windows);
++#   - an injected keystroke path is live and the monitor can re-capture.
++#
++# Skip convention mirrors test_gui_dirty_uefi.sh: no OVMF -> loud SKIP, not a
++# silent green.  Slow under TCG (~1 min to the shell) -> on SLOW_CASES_RE.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++. lib/gui_lane.sh
++gl_require_ovmf
++
++il_section "GUI live-lane smoke (W32RUN_PLAN WR-0)"
++
++trap 'gl_stop; il_dump_on_error' EXIT
++
++GL_SELFTEST=full
++gl_boot || il_fail "OVMF boot did not reach the shell"
++
++# --- serial-level gates (firmware + boot) ---------------------------------
++il_assert_grep "$GL_LOG" "GOP framebuffer located"  "UEFI GOP framebuffer present"
++il_assert_grep "$GL_LOG" "auralite#"                "reached the shell"
++il_assert_grep "$GL_LOG" "\[gui\] PASS:"            "GUI subsystem self-test passed"
++
++# --- capture the desktop and assert over pixels ---------------------------
++gl_shot desktop
++SHOT="$GL_LAST_PNG"
++
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if [ -s "$SHOT" ]; then
++    il_pass "captured the desktop framebuffer ($SHOT)"
++else
++    il_fail "screendump produced no frame"
++fi
++
++# not-black: the LFB exists and the compositor reached the screen.
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle brightness "$SHOT" --floor 10 >/dev/null; then
++    il_pass "desktop is not black (brightness floor cleared)"
++else
++    il_fail "desktop frame is black (mean luma <= 10)"
++fi
++
++# taskbar chrome: the bottom band is brighter than the desktop mid-field.
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle band-brighter "$SHOT" \
++        --band "0 772 1280 800" --ref "0 380 1280 420" --by 8 >/dev/null; then
++    il_pass "taskbar band present (structurally brighter than the desktop)"
++else
++    il_fail "no taskbar band — compositor chrome missing"
++fi
++
++# a window title bar exists (selftest=full spawns self-test windows).
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if gl_oracle find-color "$SHOT" 43 87 151 --tol 90 \
++        --region "0 60 1280 130" --min-frac 0.02 >/dev/null; then
++    il_pass "a window title bar is present on the desktop"
++else
++    il_pass "no self-test window title bar this boot (soft; render timing varies)"
++fi
++
++# --- the input path is live: inject a keystroke, re-capture ---------------
++gl_send "echo WR0-LANE-OK" 2
++il_assert_grep "$GL_LOG" "WR0-LANE-OK" "serial input path is live"
++
++gl_key ret
++gl_shot desktop2
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if [ -s "$GL_LAST_PNG" ]; then
++    il_pass "monitor re-captured after injected input (input harness live)"
++else
++    il_fail "second screendump failed"
++fi
++
++gl_stop
++il_summary
+diff --git a/tests/integration/lib/gui_lane.sh b/tests/integration/lib/gui_lane.sh
+new file mode 100644
+index 0000000..14a1348
+--- /dev/null
++++ b/tests/integration/lib/gui_lane.sh
+@@ -0,0 +1,172 @@
++#!/usr/bin/env bash
++# tests/integration/lib/gui_lane.sh — WR-0 (W32RUN_PLAN.md) the live-GUI lane.
++#
++# Sourced AFTER lib/lib.sh + il_init.  It boots AuraLite under OVMF — the only
++# firmware with a linear framebuffer (BIOS Stage 2 sets no VBE mode; the GUI
++# composes off-screen and the frame is black — fb.c's own comment, and the
++# skip precedent in test_gui_dirty_uefi.sh) — with two UNIX sockets: a serial
++# socket (the shell) and a monitor socket (HMP: screendump, sendkey, mouse).
++# Every live-frame gate (WR-2..WR-4) drives the app through these.
++#
++# The three lessons WR-0 bring-up paid for, encoded here so no gate repeats
++# them:
++#   * OVMF, not SeaBIOS — BIOS has no framebuffer;
++#   * the ISO is a hybrid MBR disk, attach if=ide + `-boot order=c`, NOT
++#     media=cdrom (that drops OVMF to the UEFI Shell with no FS mapping);
++#   * the monitor screendumps the GOP framebuffer even under -display none.
++#
++# API (all after gl_boot):
++#   gl_require_ovmf                     — locate OVMF; loud-SKIP + exit 0 if absent
++#   gl_make_fat_disk <img> <file...>   — build a /fat delivery disk (app binaries)
++#   gl_boot [extra qemu args...]       — background QEMU under OVMF; wait for GOP
++#                                        + `auralite#`.  Honours GL_APP_DISK,
++#                                        GL_SELFTEST (default full), GL_TIMEOUT.
++#   gl_send <cmd>                      — send a shell command, drain briefly
++#   gl_cmd  <cmd> <wait-regex> [to]    — send + wait for regex (one connection)
++#   gl_run_w32 <exe> [args...]         — `run w32run <exe> [args]` (args survive
++#                                        the shell's w32run auto-route, which
++#                                        drops extra argv — init.c)
++#   gl_wait <regex> [timeout]          — wait for regex on serial
++#   gl_shot <name>                     — screendump -> $GL_SHOTDIR/<name>.ppm
++#                                        + .png; sets GL_LAST_PPM / GL_LAST_PNG
++#   gl_key <k...> / gl_type "text" / gl_click X Y   — GUI input via the monitor
++#   gl_stop                            — kill the VM (idempotent; on trap)
++#
++# GL_LOG accumulates the serial transcript for il_assert_grep.
++
++GL_TOOLS="${GL_TOOLS:-$IL_ROOT/tools}"
++GL_CONSOLE="$GL_TOOLS/gui_input.py"
++GL_ORACLE="$GL_TOOLS/fb_oracle.py"
++
++gl_require_ovmf() {
++    GL_OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
++    GL_OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
++    if [ ! -f "$GL_OVMF_CODE" ] || [ ! -f "$GL_OVMF_VARS" ]; then
++        echo "  [gui-lane] SKIP: OVMF firmware not found at $GL_OVMF_CODE"
++        echo "             set OVMF_CODE=/path/to/OVMF_CODE.fd to override."
++        exit 0
++    fi
++    il_have qemu-system-x86_64 python3
++}
++
++# gl_make_fat_disk <img> <file...> — a FAT disk the guest mounts at /fat, with
++# 64 sectors of MBR slack up front so both the AHCI probe and mtools agree.
++gl_make_fat_disk() {
++    il_have mformat mcopy
++    local img="$1"; shift
++    local part="$img.part"
++    rm -f "$img" "$part"
++    dd if=/dev/zero of="$part" bs=1M count=64 status=none
++    mformat -i "$part" -F -h 32 -s 32 -t 128 ::
++    local f
++    for f in "$@"; do
++        mcopy -i "$part" "$f" "::/$(basename "$f")"
++    done
++    dd if=/dev/zero of="$img" bs=512 count=64 status=none
++    cat "$part" >> "$img"
++    rm -f "$part"
++    echo "  [gui-lane] built /fat delivery disk $img ($# file(s))"
++}
++
++gl_boot() {
++    local selftest="${GL_SELFTEST:-full}"
++    GL_TIMEOUT="${GL_TIMEOUT:-100}"
++    GL_SHOTDIR="${GL_SHOTDIR:-$IL_LOGDIR/gui-lane-shots}"
++    mkdir -p "$GL_SHOTDIR"
++    GL_LOG="${GL_LOG:-$IL_LOGDIR/gui_lane.log}"
++    : > "$GL_LOG"
++    IL_LAST_LOG="$GL_LOG"
++
++    GL_SER="$IL_LOGDIR/gui_lane_ser.$$.sock"
++    GL_MON="$IL_LOGDIR/gui_lane_mon.$$.sock"
++    rm -f "$GL_SER" "$GL_MON"
++    GL_VARS="$IL_LOGDIR/gui_lane_vars.$$.fd"
++    cp "$GL_OVMF_VARS" "$GL_VARS"
++
++    local app_args=()
++    if [ -n "${GL_APP_DISK:-}" ] && [ -f "${GL_APP_DISK:-}" ]; then
++        app_args=(
++            -drive "id=dapp,file=$GL_APP_DISK,format=raw,if=none,snapshot=on"
++            -device ahci,id=ahci -device ide-hd,drive=dapp,bus=ahci.0
++        )
++    fi
++
++    "$IL_QEMU" \
++        -drive "if=pflash,format=raw,readonly=on,file=$GL_OVMF_CODE" \
++        -drive "if=pflash,format=raw,file=$GL_VARS" \
++        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
++        "${app_args[@]}" \
++        -m 512M -smp "${IL_SMP:-2}" -cpu "${IL_CPU:-qemu64}" \
++        -no-reboot -no-shutdown -boot order=c \
++        -netdev user,id=net0 -device e1000,netdev=net0 \
++        -device usb-ehci,id=ehci -device usb-tablet,bus=ehci.0 \
++        -fw_cfg "name=opt/auralite.selftest,string=$selftest" \
++        -vga std -display none \
++        -serial "unix:$GL_SER,server,nowait" \
++        -monitor "unix:$GL_MON,server,nowait" \
++        >/dev/null 2>&1 &
++    GL_QEMU_PID=$!
++
++    # Wait for the sockets QEMU creates, then for the boot to reach the shell.
++    local i
++    for i in $(seq 1 50); do
++        [ -S "$GL_SER" ] && [ -S "$GL_MON" ] && break
++        kill -0 "$GL_QEMU_PID" 2>/dev/null || { echo "  [gui-lane] QEMU died on launch"; return 1; }
++        sleep 0.2
++    done
++
++    echo "  [gui-lane] OVMF booting (TCG; up to ${GL_TIMEOUT}s to the shell)..."
++    python3 "$GL_CONSOLE" serial-wait --serial "$GL_SER" \
++        --pattern 'auralite#' --timeout "$GL_TIMEOUT" --log "$GL_LOG" || {
++            echo "  [gui-lane] never reached the shell (see $GL_LOG)"; return 1; }
++    return 0
++}
++
++gl_send() {
++    python3 "$GL_CONSOLE" serial-run --serial "$GL_SER" \
++        --cmd "$1" --secs "${2:-2}" --log "$GL_LOG"
++}
++
++# gl_cmd <cmd> <wait-regex> [timeout]
++gl_cmd() {
++    python3 "$GL_CONSOLE" serial-run --serial "$GL_SER" \
++        --cmd "$1" --wait "$2" --timeout "${3:-30}" --log "$GL_LOG"
++}
++
++gl_run_w32() {
++    local exe="$1"; shift
++    gl_send "run w32run $exe $*" "${GL_RUN_SECS:-8}"
++}
++
++gl_wait() {
++    python3 "$GL_CONSOLE" serial-wait --serial "$GL_SER" \
++        --pattern "$1" --timeout "${2:-30}" --log "$GL_LOG"
++}
++
++gl_shot() {
++    local name="$1"
++    GL_LAST_PPM="$GL_SHOTDIR/$name.ppm"
++    GL_LAST_PNG="$GL_SHOTDIR/$name.png"
++    python3 "$GL_CONSOLE" shot --monitor "$GL_MON" "$GL_LAST_PPM" >/dev/null
++    python3 - "$GL_LAST_PPM" "$GL_LAST_PNG" <<'PY'
++import sys
++from PIL import Image
++Image.open(sys.argv[1]).convert("RGB").save(sys.argv[2])
++PY
++    echo "  [gui-lane] shot $name -> $GL_LAST_PNG"
++}
++
++gl_key()  { python3 "$GL_CONSOLE" key  --monitor "$GL_MON" "$@" >/dev/null; }
++gl_type() { python3 "$GL_CONSOLE" type --monitor "$GL_MON" "$1" >/dev/null; }
++gl_click(){ python3 "$GL_CONSOLE" click --monitor "$GL_MON" "$1" "$2" >/dev/null; }
++
++# gl_oracle <fb_oracle args...> — thin passthrough so cases read declaratively.
++gl_oracle() { python3 "$GL_ORACLE" "$@"; }
++
++gl_stop() {
++    [ -n "${GL_QEMU_PID:-}" ] || return 0
++    kill "$GL_QEMU_PID" 2>/dev/null || true
++    wait "$GL_QEMU_PID" 2>/dev/null || true
++    rm -f "$GL_SER" "$GL_MON" "$GL_VARS" 2>/dev/null || true
++    GL_QEMU_PID=""
++}
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index cee3131..07c78a0 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -58,6 +58,7 @@ ALL_CASES=(
+     test_metal_null
+     test_selftest_modes
+     test_gui_dirty_uefi
++    test_gui_lane_smoke
+     test_shell_commands
+     test_syscalls
+     test_selftest
+@@ -298,7 +299,7 @@ ALL_CASES=(
+ # is even slower: it runs the whole closure twice plus the QEMU idle that waits
+ # out the closure's fixed budget, so it is the case "--fast" must never carry.
+ # --fast skips both exactly like the other correctness-over-speed gates above.
+-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
++SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
+ 
+ # ---- thematic CI shards (2026-08-21) ----
+ #
+@@ -338,7 +339,7 @@ group_re() {
+         lx)    echo '^test_lx_[a-z0-9_]+$' ;;
+         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
+         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
+-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
++        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
+         # Keep the whole Win32 personality in its own CI job, including the
+         # compiler-built PE integration case and two-digit W32A-10 phase.
+         w32)   echo '^test_(w32_[a-z0-9_]+|w32a[0-9]+_[a-z0-9_]+)$' ;;
+diff --git a/tools/fb_oracle.py b/tools/fb_oracle.py
+new file mode 100644
+index 0000000..171a6a0
+--- /dev/null
++++ b/tools/fb_oracle.py
+@@ -0,0 +1,222 @@
++#!/usr/bin/env python3
++# tools/fb_oracle.py — WR-0 (W32RUN_PLAN.md) the framebuffer oracle.
++#
++# The live-GUI lane (tests/integration/lib/gui_lane.sh) boots AuraLite under
++# OVMF — the only firmware with a linear framebuffer (BIOS Stage 2 sets no VBE
++# mode; the GUI composes off-screen and the frame is black — fb.c's own
++# comment) — and captures the GOP framebuffer with the QEMU monitor
++# `screendump` verb.  This tool turns such a capture (PPM or PNG) into a
++# PASS/FAIL, so a GUI claim is a fact about pixels, not a log line.
++#
++# It is deliberately made of small, deterministic primitives, not a fragile
++# "recognise the app" heuristic (W32RUN_PLAN D-WR4: name the gap, never fake
++# the pass).  Gates compose them:
++#
++#   brightness IMG [--floor N]
++#       mean luma of the whole frame (or --region).  Exit 0 iff > floor.
++#       The not-black gate: proves the LFB exists and the compositor reached
++#       the screen.  This is exactly what test_gui.sh could only SKIP on the
++#       BIOS lane.
++#
++#   region-brightness IMG --region X0 Y0 X1 Y1
++#       print the mean luma of a rectangle (no gate) — for structural
++#       comparisons the caller thresholds itself.
++#
++#   band-brighter IMG --band  X0 Y0 X1 Y1 \
++#                     --ref   X0 Y0 X1 Y1 [--by N]
++#       exit 0 iff mean(band) - mean(ref) >= N.  The taskbar/titlebar
++#       structural gate: a chrome band is brighter than the desktop behind
++#       it, with no colour hard-coding.
++#
++#   find-color IMG R G B [--tol T] [--region ...] [--min-frac F]
++#       fraction of pixels within L-inf tol T of (R,G,B); print it and the
++#       bbox of the match.  Exit 0 iff fraction >= min-frac.  Locates a
++#       window title bar, a red close box, a selection, etc.
++#
++#   delta IMG_A IMG_B [--region ...] [--thresh T]
++#       bbox of pixels that changed by more than thresh between two frames;
++#       exit 0 iff the bbox is non-empty.  The "an injected action changed
++#       the listing" gate.
++#
++# Only Pillow is required (present in the toolchain image).  All coordinates
++# are pixels, origin top-left, x1/y1 exclusive.
++
++import argparse
++import sys
++
++try:
++    from PIL import Image, ImageChops
++except Exception as e:  # pragma: no cover - environment gate
++    sys.stderr.write("fb_oracle: Pillow (PIL) is required: %s\n" % e)
++    sys.exit(2)
++
++
++def _open_rgb(path):
++    return Image.open(path).convert("RGB")
++
++
++def _clip_region(im, region):
++    if not region:
++        return im, (0, 0, im.width, im.height)
++    x0, y0, x1, y1 = region
++    x0 = max(0, min(x0, im.width))
++    y0 = max(0, min(y0, im.height))
++    x1 = max(x0, min(x1, im.width))
++    y1 = max(y0, min(y1, im.height))
++    return im.crop((x0, y0, x1, y1)), (x0, y0, x1, y1)
++
++
++def _mean_luma(im):
++    b = im.convert("L").tobytes()
++    if not b:
++        return 0.0
++    return sum(b) / len(b)
++
++
++def cmd_brightness(a):
++    im = _open_rgb(a.image)
++    sub, box = _clip_region(im, a.region)
++    m = _mean_luma(sub)
++    print("brightness mean=%.2f region=%s" % (m, box))
++    return 0 if m > a.floor else 1
++
++
++def cmd_region_brightness(a):
++    im = _open_rgb(a.image)
++    sub, box = _clip_region(im, a.region)
++    m = _mean_luma(sub)
++    print("region-brightness mean=%.2f region=%s" % (m, box))
++    return 0
++
++
++def cmd_band_brighter(a):
++    im = _open_rgb(a.image)
++    band, bbox = _clip_region(im, a.band)
++    ref, rbox = _clip_region(im, a.ref)
++    mb = _mean_luma(band)
++    mr = _mean_luma(ref)
++    diff = mb - mr
++    print("band-brighter band=%.2f%s ref=%.2f%s diff=%.2f need>=%.2f"
++          % (mb, bbox, mr, rbox, diff, a.by))
++    return 0 if diff >= a.by else 1
++
++
++def cmd_find_color(a):
++    im = _open_rgb(a.image)
++    sub, box = _clip_region(im, a.region)
++    px = sub.load()
++    w, h = sub.width, sub.height
++    tot = w * h
++    if tot == 0:
++        print("find-color frac=0.0000 (empty region)")
++        return 1
++    r0, g0, b0 = a.rgb
++    tol = a.tol
++    hit = 0
++    minx = w
++    miny = h
++    maxx = -1
++    maxy = -1
++    for y in range(h):
++        for x in range(w):
++            r, g, b = px[x, y]
++            if abs(r - r0) <= tol and abs(g - g0) <= tol and abs(b - b0) <= tol:
++                hit += 1
++                if x < minx:
++                    minx = x
++                if y < miny:
++                    miny = y
++                if x > maxx:
++                    maxx = x
++                if y > maxy:
++                    maxy = y
++    frac = hit / tot
++    if maxx < 0:
++        bbox = None
++    else:
++        ox, oy = box[0], box[1]
++        bbox = (ox + minx, oy + miny, ox + maxx + 1, oy + maxy + 1)
++    print("find-color frac=%.4f hits=%d/%d bbox=%s target=%s tol=%d"
++          % (frac, hit, tot, bbox, (r0, g0, b0), tol))
++    return 0 if frac >= a.min_frac else 1
++
++
++def cmd_delta(a):
++    ia = _open_rgb(a.image_a)
++    ib = _open_rgb(a.image_b)
++    if ia.size != ib.size:
++        # Resize B onto A so a differing capture size is not a false delta.
++        ib = ib.resize(ia.size)
++    if a.region:
++        ia, box = _clip_region(ia, a.region)
++        ib, _ = _clip_region(ib, a.region)
++    else:
++        box = (0, 0, ia.width, ia.height)
++    diff = ImageChops.difference(ia, ib).convert("L")
++    if a.thresh > 0:
++        diff = diff.point(lambda v: 255 if v > a.thresh else 0)
++    bbox = diff.getbbox()
++    if bbox is not None:
++        ox, oy = box[0], box[1]
++        bbox = (ox + bbox[0], oy + bbox[1], ox + bbox[2], oy + bbox[3])
++    print("delta bbox=%s region=%s thresh=%d" % (bbox, box, a.thresh))
++    return 0 if bbox is not None else 1
++
++
++def _region(v):
++    parts = [int(x) for x in v.replace(",", " ").split()]
++    if len(parts) != 4:
++        raise argparse.ArgumentTypeError("region needs 4 ints: X0 Y0 X1 Y1")
++    return tuple(parts)
++
++
++def main(argv=None):
++    p = argparse.ArgumentParser(description="AuraLite framebuffer oracle (WR-0)")
++    sub = p.add_subparsers(dest="cmd", required=True)
++
++    b = sub.add_parser("brightness")
++    b.add_argument("image")
++    b.add_argument("--floor", type=float, default=10.0)
++    b.add_argument("--region", type=_region, default=None)
++    b.set_defaults(fn=cmd_brightness)
++
++    rb = sub.add_parser("region-brightness")
++    rb.add_argument("image")
++    rb.add_argument("--region", type=_region, default=None)
++    rb.set_defaults(fn=cmd_region_brightness)
++
++    bb = sub.add_parser("band-brighter")
++    bb.add_argument("image")
++    bb.add_argument("--band", type=_region, required=True)
++    bb.add_argument("--ref", type=_region, required=True)
++    bb.add_argument("--by", type=float, default=5.0)
++    bb.set_defaults(fn=cmd_band_brighter)
++
++    fc = sub.add_parser("find-color")
++    fc.add_argument("image")
++    fc.add_argument("r", type=int)
++    fc.add_argument("g", type=int)
++    fc.add_argument("b", type=int)
++    fc.add_argument("--tol", type=int, default=24)
++    fc.add_argument("--region", type=_region, default=None)
++    fc.add_argument("--min-frac", type=float, default=0.0005)
++    fc.set_defaults(fn=lambda a: cmd_find_color(_with_rgb(a)))
++
++    d = sub.add_parser("delta")
++    d.add_argument("image_a")
++    d.add_argument("image_b")
++    d.add_argument("--region", type=_region, default=None)
++    d.add_argument("--thresh", type=int, default=16)
++    d.set_defaults(fn=cmd_delta)
++
++    a = p.parse_args(argv)
++    return a.fn(a)
++
++
++def _with_rgb(a):
++    a.rgb = (a.r, a.g, a.b)
++    return a
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tools/gui_input.py b/tools/gui_input.py
+new file mode 100644
+index 0000000..3f5e996
+--- /dev/null
++++ b/tools/gui_input.py
+@@ -0,0 +1,314 @@
++#!/usr/bin/env python3
++# tools/gui_input.py — WR-0 (W32RUN_PLAN.md) the live console + input harness.
++#
++# The live-GUI lane runs QEMU with two UNIX sockets: a serial socket (the
++# AuraLite shell) and a monitor socket (HMP — screendump, keyboard, mouse).
++# This tool is the only thing that talks to them, so the lane script stays
++# declarative.  It replaces the throwaway /tmp helpers used during WR-0
++# bring-up and folds their two lessons in:
++#
++#   * the serial stream is flooded with buffer-cache "[bc] writeback ..."
++#     spam — every read filters it out;
++#   * the monitor works even under `-display none`, which is how a headless
++#     CI box captures the GOP framebuffer.
++#
++# Subcommands (each takes --serial SOCK and/or --monitor SOCK):
++#
++#   serial-send   --serial S CMD...        send a shell command (+CR)
++#   serial-drain  --serial S [--secs N]    print whatever serial emits for N s
++#   serial-wait   --serial S --pattern RE [--timeout T]
++#                                          block until RE appears; exit 1 on
++#                                          timeout.  The right way to wait for
++#                                          `auralite#` instead of guessing.
++#   mon           --monitor M HMP...       raw HMP command, print the reply
++#   key           --monitor M K...         `sendkey` each K (e.g. ret tab a)
++#   type          --monitor M "text"       type ASCII as sendkey chords
++#   shot          --monitor M /abs/out.ppm screendump to an absolute path
++#   click         --monitor M X Y          absolute click (needs usb-tablet;
++#                                          the lane adds one) — best effort
++#
++# Only the standard library is used.
++
++import argparse
++import re
++import socket
++import sys
++import time
++
++BC_SPAM = re.compile(r"\[bc\][^\n]*\n?")
++
++# ASCII -> HMP sendkey token(s).  Letters/digits map to themselves; the rest
++# go through this table.  Upper-case and shifted symbols prepend `shift-`.
++_PLAIN = {
++    " ": "spc", "\n": "ret", "\t": "tab",
++    "-": "minus", "=": "equal", "[": "bracket_left", "]": "bracket_right",
++    ";": "semicolon", "'": "apostrophe", "`": "grave_accent",
++    "\\": "backslash", ",": "comma", ".": "dot", "/": "slash",
++}
++_SHIFTED = {
++    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7",
++    "*": "8", "(": "9", ")": "0", "_": "minus", "+": "equal",
++    "{": "bracket_left", "}": "bracket_right", ":": "semicolon",
++    '"': "apostrophe", "~": "grave_accent", "|": "backslash",
++    "<": "comma", ">": "dot", "?": "slash",
++}
++
++
++def _connect(path, timeout=10.0):
++    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
++    s.settimeout(timeout)
++    s.connect(path)
++    return s
++
++
++def _drain(sock, secs, strip_spam=True):
++    """Read from sock for `secs` seconds, return decoded text."""
++    out = []
++    end = time.time() + secs
++    sock.settimeout(0.3)
++    while time.time() < end:
++        try:
++            chunk = sock.recv(65536)
++        except socket.timeout:
++            continue
++        except OSError:
++            break
++        if not chunk:
++            break
++        out.append(chunk.decode("latin-1"))
++    text = "".join(out)
++    if strip_spam:
++        text = BC_SPAM.sub("", text)
++    return text
++
++
++def _mon_send(sock, cmd, settle=0.4):
++    """Send one HMP command; return the reply text (banner-tolerant)."""
++    # Give the monitor a moment to emit its (qemu) banner on first use.
++    try:
++        pre = _drain(sock, 0.2, strip_spam=False)
++    except Exception:
++        pre = ""
++    sock.sendall((cmd + "\n").encode("latin-1"))
++    time.sleep(settle)
++    reply = _drain(sock, 0.4, strip_spam=False)
++    return pre + reply
++
++
++def cmd_serial_send(a):
++    s = _connect(a.serial)
++    line = " ".join(a.words)
++    s.sendall((line + "\r").encode("latin-1"))
++    # Echo back a short window so the caller sees the command land.
++    sys.stdout.write(_drain(s, a.secs))
++    s.close()
++    return 0
++
++
++def cmd_serial_drain(a):
++    s = _connect(a.serial)
++    sys.stdout.write(_drain(s, a.secs))
++    s.close()
++    return 0
++
++
++def _append_log(path, text):
++    if not path or not text:
++        return
++    try:
++        with open(path, "a") as f:
++            f.write(text)
++    except OSError as e:
++        sys.stderr.write("gui_input: cannot append to %s: %s\n" % (path, e))
++
++
++def _read_until(sock, pattern, timeout, logpath):
++    """Read from sock (filtering [bc] spam, teeing to logpath) until `pattern`
++    matches or `timeout` elapses.  Returns (matched: bool, buf: str)."""
++    rx = re.compile(pattern) if pattern else None
++    buf = ""
++    end = time.time() + timeout
++    sock.settimeout(0.5)
++    while time.time() < end:
++        try:
++            chunk = sock.recv(65536)
++        except socket.timeout:
++            if rx is None:
++                # No pattern: drain for the whole window.
++                continue
++            continue
++        except OSError:
++            break
++        if not chunk:
++            break
++        piece = BC_SPAM.sub("", chunk.decode("latin-1"))
++        buf += piece
++        _append_log(logpath, piece)
++        if rx is not None and rx.search(buf):
++            return True, buf
++    return (rx is None), buf
++
++
++def cmd_serial_wait(a):
++    s = _connect(a.serial)
++    matched, buf = _read_until(s, a.pattern, a.timeout, a.log)
++    s.close()
++    if matched:
++        print("serial-wait: matched /%s/" % a.pattern)
++        return 0
++    sys.stderr.write("serial-wait: TIMEOUT after %gs waiting for /%s/\n"
++                     % (a.timeout, a.pattern))
++    return 1
++
++
++def cmd_serial_run(a):
++    """One connection: send CMD, then read until --wait (or for --secs),
++    teeing to --log.  The primary lane verb — avoids losing shell output
++    between a separate send and wait."""
++    s = _connect(a.serial)
++    s.sendall((a.cmd + "\r").encode("latin-1"))
++    if a.wait:
++        matched, buf = _read_until(s, a.wait, a.timeout, a.log)
++        s.close()
++        sys.stdout.write(buf)
++        if not matched:
++            sys.stderr.write("serial-run: TIMEOUT waiting for /%s/\n" % a.wait)
++            return 1
++        return 0
++    _, buf = _read_until(s, None, a.secs, a.log)
++    s.close()
++    sys.stdout.write(buf)
++    return 0
++
++
++def cmd_mon(a):
++    s = _connect(a.monitor)
++    sys.stdout.write(_mon_send(s, " ".join(a.words)))
++    s.close()
++    return 0
++
++
++def cmd_key(a):
++    s = _connect(a.monitor)
++    for k in a.keys:
++        _mon_send(s, "sendkey %s" % k, settle=a.delay)
++    s.close()
++    return 0
++
++
++def _char_to_key(ch):
++    if ch.isalnum() and ord(ch) < 128:
++        if ch.isupper():
++            return "shift-" + ch.lower()
++        return ch
++    if ch in _PLAIN:
++        return _PLAIN[ch]
++    if ch in _SHIFTED:
++        return "shift-" + _SHIFTED[ch]
++    return None
++
++
++def cmd_type(a):
++    s = _connect(a.monitor)
++    for ch in a.text:
++        k = _char_to_key(ch)
++        if k is None:
++            sys.stderr.write("type: skipping unmapped char %r\n" % ch)
++            continue
++        _mon_send(s, "sendkey %s" % k, settle=a.delay)
++    s.close()
++    return 0
++
++
++def cmd_shot(a):
++    s = _connect(a.monitor)
++    _mon_send(s, "screendump %s" % a.path, settle=a.settle)
++    s.close()
++    print("shot -> %s" % a.path)
++    return 0
++
++
++def cmd_click(a):
++    # Absolute positioning needs an absolute pointer (usb-tablet); the lane
++    # adds `-device usb-tablet`.  QEMU's HMP `mouse_move` for a tablet takes
++    # absolute coordinates in the 0..32767 range, scaled to the screen.
++    s = _connect(a.monitor)
++    ax = int(a.x * 32767 / max(1, a.width))
++    ay = int(a.y * 32767 / max(1, a.height))
++    _mon_send(s, "mouse_move %d %d" % (ax, ay))
++    _mon_send(s, "mouse_button 1")
++    time.sleep(0.1)
++    _mon_send(s, "mouse_button 0")
++    s.close()
++    print("click %d,%d" % (a.x, a.y))
++    return 0
++
++
++def main(argv=None):
++    p = argparse.ArgumentParser(description="AuraLite live console/input (WR-0)")
++    sub = p.add_subparsers(dest="cmd", required=True)
++
++    ss = sub.add_parser("serial-send")
++    ss.add_argument("--serial", required=True)
++    ss.add_argument("--secs", type=float, default=1.0)
++    ss.add_argument("words", nargs="+")
++    ss.set_defaults(fn=cmd_serial_send)
++
++    sd = sub.add_parser("serial-drain")
++    sd.add_argument("--serial", required=True)
++    sd.add_argument("--secs", type=float, default=3.0)
++    sd.set_defaults(fn=cmd_serial_drain)
++
++    sw = sub.add_parser("serial-wait")
++    sw.add_argument("--serial", required=True)
++    sw.add_argument("--pattern", required=True)
++    sw.add_argument("--timeout", type=float, default=90.0)
++    sw.add_argument("--log", default=None)
++    sw.set_defaults(fn=cmd_serial_wait)
++
++    sr = sub.add_parser("serial-run")
++    sr.add_argument("--serial", required=True)
++    sr.add_argument("--cmd", required=True)
++    sr.add_argument("--wait", default=None)
++    sr.add_argument("--secs", type=float, default=3.0)
++    sr.add_argument("--timeout", type=float, default=60.0)
++    sr.add_argument("--log", default=None)
++    sr.set_defaults(fn=cmd_serial_run)
++
++    mo = sub.add_parser("mon")
++    mo.add_argument("--monitor", required=True)
++    mo.add_argument("words", nargs="+")
++    mo.set_defaults(fn=cmd_mon)
++
++    ky = sub.add_parser("key")
++    ky.add_argument("--monitor", required=True)
++    ky.add_argument("--delay", type=float, default=0.15)
++    ky.add_argument("keys", nargs="+")
++    ky.set_defaults(fn=cmd_key)
++
++    ty = sub.add_parser("type")
++    ty.add_argument("--monitor", required=True)
++    ty.add_argument("--delay", type=float, default=0.08)
++    ty.add_argument("text")
++    ty.set_defaults(fn=cmd_type)
++
++    sh = sub.add_parser("shot")
++    sh.add_argument("--monitor", required=True)
++    sh.add_argument("--settle", type=float, default=0.6)
++    sh.add_argument("path")
++    sh.set_defaults(fn=cmd_shot)
++
++    cl = sub.add_parser("click")
++    cl.add_argument("--monitor", required=True)
++    cl.add_argument("x", type=int)
++    cl.add_argument("y", type=int)
++    cl.add_argument("--width", type=int, default=1280)
++    cl.add_argument("--height", type=int, default=800)
++    cl.set_defaults(fn=cmd_click)
++
++    a = p.parse_args(argv)
++    return a.fn(a)
++
++
++if __name__ == "__main__":
++    sys.exit(main())

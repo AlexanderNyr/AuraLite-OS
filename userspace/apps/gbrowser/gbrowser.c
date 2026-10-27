@@ -1,10 +1,11 @@
 /*
- * gbrowser.c — AuraLite OS GUI browser (the web view), Phase W0 (WEBVIEW_PLAN.md).
+ * gbrowser.c — AuraLite OS GUI browser (the web view), WEBVIEW_PLAN W0–W8
+ * complete (docs/gbrowser.md).
  *
- * Phase W0 is the scaffold: a window, an event loop, a pixel buffer, and the
- * presentation path the renderer will use for the life of this program —
- * pixels written into a buffer, presented with ag_blit().  There is no HTML,
- * no layout and no painting yet; what this phase proves is the plumbing and
+ * W0 was the scaffold: a window, an event loop, a pixel buffer, and the
+ * presentation path the renderer has used for the life of this program —
+ * pixels written into a buffer, presented with ag_blit().  It shipped with
+ * no HTML, no layout and no painting; what it proved is the plumbing and
  * the cost of the plumbing, measured rather than guessed.
  *
  * The window itself states the plan's limitations (D6/W0 objective): no
@@ -18,7 +19,7 @@
  *     closed".  The integration test writes it so this program cannot
  *     hang CI.
  *   - All user-space allocations come from the heap: the user stack is
- *     64 KiB and the page buffer must not live on it.
+ *     4 MiB and the page buffer must not live on it.
  */
 
 #include <stdio.h>
@@ -630,7 +631,7 @@ static int follow_link(int n) {
 }
 
 /* Tokenise + build DOM + layout + paint context, once.  All working
- * arenas are static (bounded) — nothing on the 64 KiB user stack. */
+ * arenas are static (bounded) — nothing on the 4 MiB user stack. */
 static void page_build(void) {
     static wv_token_t   tt[2048];
     static wv_attr_t    ta[2048];
@@ -878,7 +879,7 @@ static void scroll_to(int new_scroll) {
 int main(void) {
     printf("[gbrowser] starting W0 scaffold\n");
 
-    /* The page buffer goes on the heap, not the 64 KiB user stack. */
+    /* The page buffer goes on the heap, not the 4 MiB user stack. */
     page = malloc((size_t)VIEW_W * VIEW_H * sizeof(uint32_t));
     if (!page) {
         printf("[gbrowser] FAIL: cannot allocate %d x %d page buffer\n",
@@ -950,7 +951,7 @@ int main(void) {
     /* ---- Phase W2 smoke: the DOM builder runs in-guest too. ------------
      * Two checks: the plan's sibling-paragraph rule and the 10 000-deep
      * document, which must hit the depth cap WITHOUT overflowing the real
-     * 64 KiB user stack (the point of the plan's W2 gate). */
+     * user stack (the plan's W2 gate, written against the then-64 KiB one). */
     {
         static wv_dom_node_t dn[256];
         static wv_attr_t     da[512];
@@ -975,8 +976,9 @@ int main(void) {
 
     {
         /* 10 000 nested <div>s: tokeniser arena on the heap (20 001
-         * tokens), DOM with a depth cap of 512.  On the 64 KiB user stack
-         * this must not overflow — that is the W2 QEMU gate. */
+         * tokens), DOM with a depth cap of 512.  On the user stack
+         * this must not overflow — that is the W2 QEMU gate (the stack
+         * was 64 KiB then). */
         size_t doc_len = 10000 * 5 + 10000 * 6;
         char *doc = malloc(doc_len);
         if (!doc) {
@@ -1019,7 +1021,7 @@ int main(void) {
 
     /* ---- Phase W3 smoke: block layout runs in-guest too. ----------------
      * Builds the 5 000-box document from the plan's gate, lays it out and
-     * measures the cost — on the real 64 KiB user stack, with the real
+     * measures the cost — on the real user stack, with the real
      * clock. */
     {
         size_t doc_len = 5000 * 12;

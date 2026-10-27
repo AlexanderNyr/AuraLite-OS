@@ -4,7 +4,7 @@ The pinned `notepad++.exe` 8.8.9 (`a470014b…`, 8365216 B) runs on real pixels:
 frame, byte-exact typing, VFS open/save. Gate:
 `tests/integration/cases/test_wr3_npp_live.sh`. Patch: `patches/WR3_npp_live.patch`.
 
-## Fixes landed (11)
+## Fixes landed (13)
 
 1. **fat32 `find_free_run` 0x00 barrier** (`kernel/fs/fat32.c`): a create whose
    tail free run sat past the first 0x00 wrote *behind* the terminator, so

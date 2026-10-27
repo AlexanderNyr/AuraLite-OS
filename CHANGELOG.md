@@ -2,6 +2,168 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Documentation refresh — CHANGELOG caught up to `da89be4`, stale-comment sweep] 2026-10-23
+
+The file is caught up with the twelve commits since the last record, via git
+history: `d77fd22`'s documentation pass and `e6bed05` were already written up
+in the 2026-10-09 entry below and the WR-2 interaction-gate entry; the five
+entries under this one cover the rest — `2a03ea9` + `68db807` (WR-2 menus),
+the `518bef0`…`4450da7` WR-3 series, `74c2b9b` (WR-4), `c8ec68e` (WR-5) and
+`da89be4` (CI fix).
+
+- **Stale comments retired** (the leftover "Known and not changed" list of
+  the 2026-10-09 entry): `drivers/keyboard/keymap.c` no longer claims "no
+  dead-key support yet" — RESIDUE2 T4 arms the German ´/^ composition on the
+  plain layer; `lib/libgl/src/auraglx.c` now describes the compositor as
+  event-driven at ~100 Hz, not "100 FPS"; `.github/workflows/integration.yml`
+  now says 15 thematic shards, not 13; and the web-view sources now say what
+  is true — the `gbrowser.c` W0 header (WEBVIEW_PLAN W0–W8 complete,
+  `docs/gbrowser.md`) and the W1–W3 design-constraint headers
+  (`wv_html.h`/`wv_dom.h`/`wv_layout.h` plus the `.c` comments) report the
+  4 MiB `USER_STACK_SIZE` (raised in `25321ba`), keeping 64 KiB as history
+  where a gate or the plan's D3 constraint is quoted; the `[x509test]`
+  banner no longer claims a 64 KiB stack. The golden demo-page text and its
+  `test_wv_paint` pin are deliberately untouched.
+- **Counts refreshed:** `tests/integration/RESULTS.md` registers 214 cases,
+  not 212; `docs/WR3_WORKLOG.md`'s fixes header matches its list again (13,
+  not 11).
+- **Open bug now listed:** TODO.md §Input names the unbounded i8042
+  output-buffer drain in `keyboard_init()` (`drivers/keyboard/keyboard.c`),
+  which the previous audit found but never put in the ledger.
+- **Left as-is on purpose:** `AURALITE_VERSION` stays `0.0.1` (a release
+  decision, not a docs one); P-384 chain validation stays a documented
+  feature gap (`tls.md`). Historical records stay unchanged:
+  `docs/BL*_REPORT.md`, `docs/*_receipts.md`, `docs/plans/`, worklog bodies,
+  and the older entries in this file.
+
+## [CI fix `da89be4` — WR-4/WR-5 drift: red tests, stale ratchets, broken partition] 2026-10-23
+
+**CI fix** (commit `da89be4`, 10 files): the 2026-10-22/23 WR-4/WR-5 work
+left the verification surface behind the code; every ratchet class below was
+red or drifted before this commit.
+
+- **Tests vs the code they pin:** `test_w32_a5` drains the recorder before
+  zeroing it (WR-4's `DefWindowProcW` caption repaint queues a `WM_PAINT`
+  that the next case's assertion then observed); `test_w32_a12_ws2_32`
+  asserts WR-4 FIX30c's `FD_READ` delivery bitmask (`0x01`), not the retired
+  bit index — what `ws2_pump` actually delivers.
+- **Ratchets:** `tools/check_width_sweep.py` baseline 402 → 403 (WR-4's
+  `gui_syscalls.c` copy bound); residue baseline `docs/plans/W32RUN_PLAN.md`
+  6 → 7 (WR-4's orphan-on-close lifecycle follow-up marker), with the
+  matching same-commit ledger row in `docs/residue_ledger.md`.
+- **Shard partition:** `wr4_putty_live` registered in `group_re()`
+  (`w32-apps`) — without it `run_all.sh --check-groups` refused the case
+  outright ("matches 0 group(s)").
+- **Legacy gate + counts:** `scripts/ci_test.sh` expectations catch up with
+  the tree (pmm 1000 → 100 frames, heap 10 000 → 500 cycles, the embedded
+  init's `[boot] starting init` receipt, the init shell line, `[tcp-x5]` with
+  16 connections, `[gui] v2.0`); case counts 212 → 214 in `README.md`,
+  `tests/integration/README.md`, a `run_all.sh` comment and workflow
+  comments.
+
+Gates behind this commit: `make test-unit` green (223 checks),
+`scripts/ci_test.sh` PASS, `--check-groups` 214/15 OK,
+`test_boot_to_shell` 17/17.
+
+## [WR-5 — the honest live matrix `c8ec68e`] 2026-10-23
+
+WR-5 closed the ladder with one table that tells the truth about *running*
+(commit `c8ec68e`, 19 files):
+
+- **`docs/win32_run.md`, generated:** `tools/gen_w32_run_matrix.py` renders
+  per app the run-state matrix — binds / enters / draws / main UI / core
+  task / live net — each cell backed by a gate name or a named human-run
+  reason; its `--check` runs among the unit gates.
+- **The WR-4 live gate lands:** `tests/integration/cases/test_wr4_putty_live.sh`
+  drives the pinned PuTTY over two OVMF boots — config dialog, Raw terminal,
+  live SSH through `tests/integration/wr4_ssh_server.py` (+ the
+  `wr4_echo_server.py` twin) — 14/14, plan-recorded. Provenance patches
+  arrive as `patches/WR3_npp_live.patch`, `patches/WR4_putty_live.patch`,
+  `patches/WR5_live_matrix.patch`.
+- **Claims machinery:** `tools/check_w32app_claims.py` gains the WR-phase
+  done-ness section, a run-matrix consistency check and a REFUSE guard for
+  faked live passes; `docs/gui_receipts.md` is finalised (screendump
+  protocol, frame digests, sha256 pins); README and `docs/status.md` switch
+  from "binds" claims to "runs, measured on pixels", with gate names as
+  evidence.
+- **Honest correction:** the plan's status table flips to terminal states —
+  WR-4 included, and WR-4 flips to 🟨 PARTIAL, not ✅: Telnet, the Load
+  button, font/colour, clipboard, serial and the orphan-on-close lifecycle
+  stay named gaps.
+
+## [WR-4 — PuTTY live: dialog, terminal and net fixes `74c2b9b`] 2026-10-22
+
+The PuTTY personality work turned lab findings into fixes (commit
+`74c2b9b`, 12 files; lab ladder lab1–lab18 with receipts in
+`docs/WR4_WORKLOG.md`):
+
+- **Fixes 1–3 (worklog):** builtin modules answer path-bearing loads —
+  PuTTY builds `C:\win\sys\ws2_32.dll` from `GetSystemDirectoryA`, which the
+  bare-name W32A-14 twin never did, so the gate was green while the app died
+  with "Unable to load any WinSock library"; `DefDlgProc` forwards
+  unhandled messages to `DefWindowProc`; window-class names compare
+  case-insensitively.
+- **Later labs:** `MapDialogRect` honours dialog-template units (fix #4);
+  long session/window titles render (fix #5); `TVI_ROOT` is no longer
+  truncated to 32 bit in the tree view (fix #6).
+- **Also in the diff:** standard-control painters and the caption repaint,
+  the `ws2_32` receive path (FIX30c's `FD_READ` bitmask + FIX30f's edge
+  re-arm after a short `recv`), and tcp/diskfs/socket size-enforcement
+  touch-ups. The WR-4 gate itself (`test_wr4_putty_live.sh`) lands with
+  WR-5 on the next day.
+
+## [WR-3 — Notepad++ live: frame, byte-exact typing, save round-trip] 2026-10-19
+
+The WR-3 series (`518bef0`, `76c4abf`, `630c933`, `1a6d7f0`, `4450da7`)
+lands the pinned Notepad++ 8.8.9 on real pixels: window frame, byte-exact
+typing and a VFS open/save round-trip, gated by
+`tests/integration/cases/test_wr3_npp_live.sh` — 17/17, plan-recorded —
+grew across the series.
+
+- **Thirteen fixes, full diagnoses in `docs/WR3_WORKLOG.md`:** the fat32
+  `0x00`-barrier free-run scan; `WM_SIZE`/`WM_MOVE` gating on show/hide;
+  GDI window-origin translation; stdio/heap locks; the GDI object lock;
+  `TCM_GETROWCOUNT = 1`; `GUI_OP_SET_HOLE`; `CreateBitmap` WORD stride;
+  cooked-key → VK translation with delivery-time chord state (fast Shift
+  chords); the bounded `*M_GETITEMA` helper; standard-control style-word
+  validation (NPP's autocomplete `ListBox`); and the killer — `GetMonitorInfo`
+  now honours `cbSize`: the struct lacked the leading field, every field
+  shifted by 4, and AutoComplete's 104-byte EX tail landed on NPP's /GS
+  cookie (`0xc0000409` = UCRT `__report_gsfailure`, proved live over
+  gdbstub).
+- **`1a6d7f0` bugfix:** the SEH layer (`w32_seh.c`, the A4 raise/try/unwind
+  asm and `test_w32_a4equiv`) reworked mid-series.
+- Named gaps stay named (Find/open dialog, plugins, tray); the plan flips
+  WR-3 to PARTIAL 2026-10-19.
+
+## [WR-2 — menu bar and accelerators `2a03ea9` (+ `68db807` receipts)] 2026-10-11
+
+The WR-2 menu half closes the "no menu bar" gap named by the
+interaction-gate entry below (commits `2a03ea9`, receipts `68db807`):
+
+- **The bar half closed 2026-10-11:** `RegisterClassW` remembers
+  `lpszMenuName` (`ui_class_set_menu`), `CreateWindowExW` resolves it via
+  `LoadMenuW` and attaches with `SetMenu`; `SM_CYMENU` returns the real
+  `UI_MENU_BAR_H` (20) and the client shrinks to match; a frame fully
+  covered by children gets its bar stamped in `EndPaint`/`DrawMenuBar`
+  (`w32_win_menu_bar_changed`); child y offsets carry the parent-client
+  offset (`w32_win_client_dy`). Verified by a rendered frame
+  (`docs/wr2-visual/menubar_left.png`, File Edit View Favorites Tools Help)
+  and by the live gate, whose pane coordinates shifted exactly +20 —
+  plan-recorded at 24/24.
+- **Menus and accelerators behind the bar:** popup menus, resource pickup
+  (`w32_rsrc.c`) and the dialog engine grow (`w32_dlg.c` +299,
+  `user32_win.c` +320, `kernel/gui/gui.c` popup support); new host tests
+  `tests/unit/test_w32_menu.c` (359 lines) and `tests/unit/test_w32_accel.c`
+  (289 lines, 11 checks) — `TranslateAcceleratorW` now matches the whole
+  chord, so `Alt+F12 → 736` no longer fires on a bare F12; hold-menu probe
+  `tools/wr2_hold_menu.py`.
+- **Named, not faked:** the popup half stays a gap — `TrackPopupMenu` sends
+  `WM_INITMENUPOPUP` but paints no dropdown, so Tools > Options is
+  mouse-unreachable (gate `il_skip`); the clean-extract and drag-drop gaps
+  from the entry below also stay. Receipts: `docs/w32app_receipts.md` §WR-2
+  plus `docs/wr2-visual/popup_*.png` (`68db807`).
+
 ## [Bugfix update `518e989` and documentation refresh] 2026-10-09
 
 **Bugfix update** (upstream commit `518e989`, 20 files).  Checked in this

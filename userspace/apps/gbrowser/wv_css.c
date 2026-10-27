@@ -282,7 +282,7 @@ int wv_css_build(wv_css_t *css, const wv_dom_t *d) {
     if (!css->rules) return -1;
 
     /* walk the DOM for <style> elements and parse each text child in
-     * place — NO large stack buffers (the user stack is 64 KiB), so a
+     * place — NO large stack buffers (the user stack is 4 MiB), so a
      * stylesheet is parsed per text node.  A rule whose braces straddle
      * two text nodes is not merged (documented simplification; real
      * <style> bodies are single text nodes). */

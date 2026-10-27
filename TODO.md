@@ -578,6 +578,13 @@ build when a box and the plan disagree.
   Proven live through real PS/2 `sendkey` presses
   (`test_deadkeys.sh` 11/11, QEMU 9/10 key-name portable).
   (class: input)
+- **`keyboard_init()` drains the i8042 output buffer without a bound.**
+  `drivers/keyboard/keyboard.c` runs `while (inb(KB_STATUS) & 0x01) inb(KB_DATA);`
+  right after printing `[kbd] default layout …`; a status bit that stays high
+  (faulty controller) would hang the boot there forever.  Not reproducible on
+  QEMU — the defect is the missing bound, not an observed hang.  Flagged as an
+  open bug by the documentation audit in the 2026-10-09 CHANGELOG entry.
+  (class: input)
 
 ### USB / devices
 
