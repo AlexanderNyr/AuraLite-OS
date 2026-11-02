@@ -306,7 +306,11 @@ int gl_virgl_canned_setup(uint32_t w, uint32_t h, uint32_t *d, uint32_t cap) {
     pk_bind(d, &n, VIRGL_OBJECT_SHADER,          VIRGL_CANNED_VS);
     pk_bind(d, &n, VIRGL_OBJECT_SHADER,          VIRGL_CANNED_FS);
 
-    { uint32_t s[5] = { 0 };
+    /* s[0] is the handle; the 5-dword surface payload is s[1..5], so the
+     * array needs six slots.  With s[5] the payload read ran one dword past
+     * the end (gcc 15 -Warray-bounds: "forming offset [20, 23] is out of
+     * the bounds [0, 20] of object 's'"). */
+    { uint32_t s[6] = { 0 };
       s[0] = VIRGL_SURFACE_HANDLE; s[1] = vg.res;
       s[2] = VIRGL_PIPE_FORMAT_B8G8R8X8_UNORM;
       pk_create_object(d, &n, VIRGL_OBJECT_SURFACE, 5, s[0], s + 1); }

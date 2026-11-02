@@ -160,7 +160,7 @@ deps-check:
 	@# kernelrv needs no new tools at all; only *running* it does.
 	@if ! command -v qemu-system-riscv64 >/dev/null 2>&1; then \
 		echo "[deps] optional tool absent: qemu-system-riscv64 (rv64 boot tests will skip)"; \
-		echo "[deps] Debian/Ubuntu: sudo apt install qemu-system-misc"; \
+		echo "[deps] Debian: sudo apt install qemu-system-misc; Ubuntu 26.04+: sudo apt install qemu-system-riscv"; \
 	fi
 	@# ARM64_PLAN A0: qemu-system-aarch64 is OPTIONAL, the same pattern --
 	@# clang/lld already cross-compile to aarch64, so building kernela64

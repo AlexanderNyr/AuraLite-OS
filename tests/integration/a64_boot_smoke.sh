@@ -104,8 +104,12 @@ assert_grep "$LOG" "Unknown/Undefined instruction at elr=0xFFFFFFC0" \
                                                                    "deliberate fault NAMED with elr -- and the elr is HIGHER-HALF (link/boot agree)"
 assert_grep "$LOG" "\[isr\]  PASS: undefined instruction named and resumed" \
                                                                    "fault RESUMED past (isr gate)"
-assert_grep "$LOG" "unaligned load on MAPPED Device RAM not faulted by TCG" \
-                                                                   "TCG's mapped-Device alignment behaviour pinned (A3 measured fact)"
+# The kernel prints exactly one of two PASS lines, depending on whether the
+# QEMU in use models the alignment fault (QEMU 10.2 began to, measured in
+# CI run 109896571757 with the old "not faulted" pin failing).  Either
+# outcome is a recorded fact; the gate fails only if neither line appears.
+assert_grep "$LOG" "unaligned load on \(MAPPED\|mapped\) Device RAM \(not faulted by TCG\|faulted (TCG began modelling it\)" \
+                                                                   "TCG's mapped-Device alignment behaviour recorded (A3 measured fact, either QEMU polarity)"
 assert_grep "$LOG" "\[timer\] PASS: [0-9]* ticks observed at 100 Hz" \
                                                                    "virtual timer ticks at 100 Hz from CNTFRQ_EL0 (INTID 27 = PPI 11 + 16)"
 assert_grep "$LOG" "\[gic\]  PASS: claim/complete round-trip"       "GICv2 IAR/EOIR flow tracks the ticks"

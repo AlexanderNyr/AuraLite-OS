@@ -189,11 +189,14 @@ def claims():
          "resume execute-from-data)",
          "a64_setjmp" in vecs and "a64_longjmp_entry" in trapc and
          "trap_run_fault_probe_a64" in pagec),
-        ("A3: the TCG mapped-Device alignment behaviour is pinned, "
-         "with the strict-align consequence named",
+        ("A3: the TCG mapped-Device alignment behaviour is recorded for "
+         "both QEMU polarities, with the strict-align consequence named",
          "strict-align stays" in read("kernel", "arch", "aarch64",
                                       "main_a64.c") and
-         "not faulted by TCG" in smoke),
+         "TCG began modelling it" in read("kernel", "arch", "aarch64",
+                                          "main_a64.c") and
+         "not faulted by TCG" in smoke and
+         "faulted (TCG began modelling it" in smoke),
         ("A3: the smoke gates pmm/vmm/heap and all three fault probes",
          "store to .text faulted" in smoke and
          "execute-from-data faulted" in smoke and

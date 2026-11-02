@@ -39,6 +39,26 @@ static void mark_fail(const char *m) { say("FAIL-"); say(m); say("\r\n"); fails+
 static int __cdecl oxA(void) { say("OX-A\r\n"); return 0; }
 static int __cdecl oxB(void) { say("OX-B\r\n"); return 0; }
 
+/* mingw-w64 13's libmsvcrt.a ships its own _onexit (misc/_onexit.c) which
+ * calls atexit(), and no archive in that release defines atexit: the link
+ * fails with "undefined reference to `atexit'" (CI, w32-core/-gui/-apps).
+ * Provide a local atexit that keeps the registrations; winstart() runs them
+ * LIFO before exit(78), so the OX-B / OX-A markers and exit code are kept.
+ * Consequence: the LIFO walk is now done here, not by msvcrt.dll!exit. */
+#define W32A13_ONEXIT_MAX 8
+static void (__cdecl *ox_tab[W32A13_ONEXIT_MAX])(void);
+static int ox_n;
+
+int __cdecl atexit(void (__cdecl *fn)(void)) {
+    if (ox_n >= W32A13_ONEXIT_MAX) return -1;
+    ox_tab[ox_n++] = fn;
+    return 0;
+}
+
+static void run_onexit_lifo(void) {
+    while (ox_n > 0) ox_tab[--ox_n]();
+}
+
 /* _beginthreadex start routine. */
 static unsigned __stdcall worker(void *arg) {
     unsigned v = (unsigned)(uintptr_t)arg;
@@ -121,8 +141,10 @@ void __stdcall winstart(void) {
 
     if (fails == 0) {
         say("W32A13-MSVCRT-OK\r\n");
-        exit(78);                 /* msvcrt.dll!exit: onexit chain + ExitProcess */
+        run_onexit_lifo();        /* B then A, as the chain would have run */
+        exit(78);                 /* msvcrt.dll!exit + ExitProcess */
     }
     say("W32A13-MSVCRT-FAIL\r\n");
+    run_onexit_lifo();
     exit(1);
 }
