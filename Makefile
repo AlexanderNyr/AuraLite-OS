@@ -3233,9 +3233,9 @@ $(LX_LUA_STAMP): Makefile
 	    echo "$(LX_LUA_SHA)  $(LX_LUA_TGZ)" | sha256sum -c --status >/dev/null 2>&1; }; then \
 	    :; \
 	elif command -v curl >/dev/null 2>&1; then \
-	    curl -fsSL "$(LX_LUA_URL)" -o $(LX_LUA_TGZ); \
+	    curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 5 "$(LX_LUA_URL)" -o $(LX_LUA_TGZ); \
 	elif command -v wget >/dev/null 2>&1; then \
-	    wget -q -O $(LX_LUA_TGZ) "$(LX_LUA_URL)"; \
+	    wget -q -T 20 -t 3 -O $(LX_LUA_TGZ) "$(LX_LUA_URL)"; \
 	fi
 	@if [ -s $(LX_LUA_BIN) ]; then \
 	    :; \

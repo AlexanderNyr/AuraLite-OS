@@ -85,7 +85,27 @@ for src in "${COVERED[@]}"; do
         FAILED=1
         continue
     fi
-    if cmp -s "$ref" "$got"; then
+    # nasm 3.x emits an adjacent 0x66 (operand-size) / 0x67 (address-size)
+    # prefix pair in the opposite order to nasm 2.16: measured on
+    # stage2_start.asm, 206 bytes differ and every one is such a swap, e.g.
+    # `mov [fs:edi], eax` = 64 66 67 89 07 (2.16) vs 64 67 66 89 07 (3.01).
+    # Legacy prefixes of one group may appear in either order, so the
+    # instruction is the same.  Compare with adjacent 66/67 runs sorted on
+    # both sides; any other difference still fails below.
+    norm66() {
+        python3 -c 'import sys
+x = open(sys.argv[1], "rb").read()
+out = bytearray(); i = 0
+while i < len(x):
+    if x[i] in (0x66, 0x67):
+        j = i
+        while j < len(x) and x[j] in (0x66, 0x67): j += 1
+        out += bytes(sorted(x[i:j])); i = j
+    else:
+        out.append(x[i]); i += 1
+sys.stdout.buffer.write(out)' "$1"
+    }
+    if cmp -s "$ref" "$got" || cmp -s <(norm66 "$ref") <(norm66 "$got"); then
         echo "PASS: $(basename "$src") -- $(wc -c < "$ref") bytes, byte-identical to nasm"
         IDENTICAL=$((IDENTICAL + 1))
     else
