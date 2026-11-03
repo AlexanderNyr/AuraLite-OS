@@ -7,7 +7,10 @@ on:
 
 jobs:
   qemu-integration:
-    runs-on: ubuntu-latest
+    # Pinned to 24.04 (noble).  ubuntu-latest moves to Ubuntu 26.04 from 2026-10-19
+    # (actions/runner-images#14748).  This suite was green on 24.04 (b7ffdd5) and red
+    # on 26.04 with unchanged commit contents.
+    runs-on: ubuntu-24.04
     # 4 hours.  The suite registers 214 cases across separate parallel CI
     # shards; this job runs boot smoke tests and host unit checks.  QEMU
     # guests wait on serial output, so wall-clock time scales with
@@ -278,7 +281,7 @@ jobs:
   # fail-fast is off: one shard's failure must not cancel the others,
   # or a bad net case would hide a good usb run's evidence.
   integration-cases:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -527,7 +530,7 @@ jobs:
   # not block.  The libc work DOOM prompted is covered for free by
   # `make test-unit` in the job above, and the kernel work by the AHCI step.
   doom:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Raised to 4 hours alongside the main gate.  This job clones an engine
     # and downloads a 22 MB IWAD, so it is the most likely to stall on a slow
     # third-party endpoint; continue-on-error means a stall here reports but
@@ -582,7 +585,7 @@ jobs:
   # attributable at a glance -- the two kernels share contracts, not
   # artefacts, and their failures deserve separate lines in the matrix.
   i386-parity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
@@ -665,7 +668,7 @@ jobs:
   # job for the same reason i386-parity is one: a red X must name its
   # architecture without anyone reading logs.
   riscv-parity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -680,15 +683,14 @@ jobs:
           # multilib and NOT the cross gcc; each width gets its own
           # toolchain in its own job and the conflict never meets.
           sudo apt-get install -y --no-install-recommends \
-            clang lld nasm qemu-system-x86 qemu-system-riscv qemu-user e2fsprogs \
+            clang lld nasm qemu-system-x86 qemu-system-misc qemu-user e2fsprogs \
             gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
             python3 make gcc llvm \
             mtools dosfstools xorriso git
-          # Ubuntu 26.04 (resolute) moved the riscv64 emulator out of
-          # qemu-system-misc into its own qemu-system-riscv package.  The
-          # misc package installs fine but has no qemu-system-riscv64
-          # binary (run 109896571757, riscv-parity: exit 127).  Assert
-          # rather than assume:
+          # On 24.04 (noble, the pinned runner) qemu-system-misc carries
+          # qemu-system-riscv64.  Ubuntu 26.04 moved that emulator into
+          # qemu-system-riscv (run 109896571757, riscv-parity: exit 127).
+          # Assert rather than assume:
           qemu-system-riscv64 --version
 
       # [AMEND-6], back-ported to the job that taught the lesson: the
@@ -765,7 +767,7 @@ jobs:
           if-no-files-found: ignore
 
   aarch64-parity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
