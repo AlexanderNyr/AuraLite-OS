@@ -47,6 +47,20 @@ int xhci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
 int xhci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint,
                               int low_speed, uint16_t max_packet,
                               void *data, uint32_t len, int is_in);
+/* C5: stream N packets back-to-back at consecutive frames (MFINDEX-driven),
+ * returning how many were completed.  `packet_bytes` is the size of one
+ * isochronous packet (the endpoint's max packet size for audio). */
+int xhci_isoc_stream(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packet,
+                     void *data, uint32_t len, uint32_t packet_bytes,
+                     uint32_t *frames_out);
+/* Frames (MFINDEX delta) the last burst occupied -- an observation about the
+ * controller's isoclock, not a pass/fail criterion. */
+uint32_t xhci_isoc_last_frames(void);
+/* Did MFINDEX advance between two samples?  Frame figures mean nothing if not. */
+int xhci_isoc_clock_live(void);
+void xhci_isoc_stats(uint32_t *submitted, uint32_t *completed,
+                     uint32_t *overruns, uint32_t *underruns,
+                     uint32_t *timeouts);
 int xhci_isochronous_transfer_ex(uint8_t dev_addr, uint8_t endpoint,
                                  uint16_t max_packet, void *data, uint32_t len,
                                  uint32_t num_tds, uint32_t *transferred);

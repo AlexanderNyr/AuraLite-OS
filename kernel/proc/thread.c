@@ -17,6 +17,7 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/slab.h"
 #include "kernel/mm/vma.h"
+#include "kernel/mm/aspace.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/spinlock.h"
@@ -601,6 +602,22 @@ static void close_process_fds(tcb_t *t) {
 }
 
 static void zombie_enqueue(tcb_t *t) {
+    /* RESIDUE3 C2: an ADOPTED thread has no waiter by construction (see
+     * orphan_adopted in thread.h), so it enters the zombie list already
+     * collected.  This is what makes "every zombie is reaped" true for
+     * thread groups whose leader dies first. */
+    if (t && t->orphan_adopted) t->waited = 1;
+    /* RESIDUE3 C2: the same rule for CLONE_VM threads.  do_waitpid() matches
+     * children only, and clone() threads are deliberately NOT linked into the
+     * parent/child table; pthread_join() in libc/pthread synchronises on the
+     * CLONE_CHILD_CLEARTID futex and never issues a wait — so a pthread
+     * zombie has NO waiter by construction and, left un-collected, took a TCB
+     * plus a 32 KiB kernel stack with it.  Measured on the C2 branch before
+     * this line: /tests/fpustress left four pthread TCBs queued and never
+     * reaped (the old `!z->is_pthread` guard in thread_reap_zombies hid it by
+     * skipping the free instead of doing it).  Their address space is
+     * released by the refcount when the LAST member goes. */
+    if (t && t->is_pthread) t->waited = 1;
     uint64_t flags = spinlock_acquire_irqsave(&zombie_lock);
     t->next = zombie_head;
     zombie_head = t;
@@ -652,7 +669,23 @@ void thread_reap_zombies(void) {
         tcb_t *z = reap;
         reap = z->next;
         uint64_t reaped_frames = 0;
-        if (z->pml4_phys && !z->is_pthread) {
+        /* RESIDUE3 C2: EVERY dead thread drops its address-space reference —
+         * the old `!z->is_pthread` guard was the whole defect.  clone(CLONE_VM)
+         * threads share one PML4 with their group, so the free belongs to the
+         * LAST owner, whichever thread that turns out to be; skipping pthreads
+         * here meant the group's page tables were released only when the
+         * non-pthread TCB happened to be reaped last.  aspace_put() answers
+         * "was I the last owner?" and the free below runs only then. */
+        unsigned zrefs_after = 0;
+        int      z_owns_last = 0;
+        if (z->pml4_phys) {
+            uint64_t kpml4 = paging_get_kernel_pml4();
+            if (z->pml4_phys != kpml4) {
+                z_owns_last = aspace_put(z->pml4_phys);
+                zrefs_after = (unsigned)aspace_refs(z->pml4_phys);
+            }
+        }
+        if (z->pml4_phys && z_owns_last) {
             /* Full user-half reaping.  A zombie is not running anywhere, but
              * with SMP the CPU doing the reaping may itself be executing on
              * the zombie's CR3 from kernel context (e.g. the thread exited on
@@ -666,7 +699,12 @@ void thread_reap_zombies(void) {
                 if (cur_cr3 == z->pml4_phys) {
                     paging_switch_to(kpml4);
                 }
-                vma_free_all(&z->vma_list);
+                /* VMA ownership stays per-process: a CLONE_VM sibling points
+                 * at the group leader's list, so only a non-pthread TCB frees
+                 * it (the documented residue in clone.c stands). */
+                if (!z->is_pthread) {
+                    vma_free_all(&z->vma_list);
+                }
                 reaped_frames = paging_free_address_space(z->pml4_phys);
                 /* The freed frames go straight back to the PMM and can be
                  * re-allocated at once; other CPUs may still hold this dead
@@ -688,9 +726,19 @@ void thread_reap_zombies(void) {
         if (z->parent) {
             proc_children_unlink(z->parent, z);
         }
-        kprintf("[thread] reaped '%s' (tid %llu, %llu frames)\n",
+        /* RESIDUE3 C2: one line per reaped thread, always with its frame
+         * count — for a shared address space the line says so and names the
+         * owners still alive, which is what makes "every zombie was reaped"
+         * checkable from the log instead of inferable from the code. */
+        /* The log line is an INTERFACE: test_memory_reaping.sh parses the
+         * frame count out of it.  The new field is therefore appended in a
+         * way that keeps the frame count readable, and that case's two
+         * patterns were moved in the same commit (a format change the test
+         * does not see is a silent gate). */
+        kprintf("[thread] reaped '%s' (tid %llu, %llu frames, aspace refs %llu)\n",
                 z->name, (unsigned long long)z->id,
-                (unsigned long long)reaped_frames);
+                (unsigned long long)reaped_frames,
+                (unsigned long long)zrefs_after);
         thread_deregister_tcb(z);
         thread_free_kernel_stack(z);
         /* W32A-14: drop this thread's reference to the group's shared break
@@ -775,8 +823,12 @@ void thread_exit_with_code(int code) {
                 c->parent = init_task;
                 c->sibling = init_task->child_head;
                 init_task->child_head = c;
+                c->orphan_adopted = 1;
                 adopted++;
-                /* Adopted zombies stay un-waited so init can collect them. */
+                /* An ALREADY-dead orphan cannot be waited for by pid — init
+                 * never spawned it — so it is collected now instead of
+                 * staying on a list nobody will ever scan.  (RESIDUE3 C2) */
+                if (c->state == THREAD_DEAD) c->waited = 1;
             }
             c = next;
         }

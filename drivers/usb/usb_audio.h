@@ -68,6 +68,9 @@ int usb_audio_set_volume(usb_audio_device_t *aud, int16_t vol);
 int usb_audio_set_mute(usb_audio_device_t *aud, int mute);
 int usb_audio_device_count(void);
 void usb_audio_self_test(void);
+/* C5: stream a generated 440 Hz sine through the isoc path and return the
+ * number of packets that completed (0 when no USB audio OUT stream exists). */
+uint32_t usb_audio_stream_selftest(void);
 
 extern usb_audio_device_t usb_audio_devices[USB_AUDIO_MAX_DEVICES];
 

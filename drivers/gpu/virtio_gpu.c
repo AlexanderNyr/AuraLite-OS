@@ -465,6 +465,90 @@ static void write_driver_features(uint64_t f) {
     common_cfg->driver_feature = (uint32_t)(f >> 32);
 }
 
+#include "kernel/arch/arch.h"   /* RESIDUE3 C4: MSI, via the width seam */
+
+/* ---------------------------------------------------------------------
+ * RESIDUE3 C4 (RES-36): message-signalled interrupts for the control queue.
+ * Same shape as virtio-blk's attach: the shared walker in
+ * kernel/arch/x86_64/msi.c does the capability parsing and the MSI-X table
+ * programming, this file only supplies the transport accessors.
+ * --------------------------------------------------------------------- */
+static uint32_t gpu_msi_vector;
+static volatile uint32_t gpu_msi_irqs;
+
+static void virtio_gpu_msi_handler(void *cookie) {
+    (void)cookie;
+    if (isr_cfg) (void)*isr_cfg;      /* read-to-clear retires the message */
+    gpu_msi_irqs++;
+}
+
+static uint8_t  gmsi_cfg8 (void *ctx, uint16_t off) { (void)ctx; return pci_read8_at((uint8_t)off); }
+static uint16_t gmsi_cfg16(void *ctx, uint16_t off) { (void)ctx; return pci_read16_at((uint8_t)off); }
+static uint32_t gmsi_cfg32(void *ctx, uint16_t off) {
+    (void)ctx;
+    return pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
+}
+static void gmsi_w16(void *ctx, uint16_t off, uint16_t v) {
+    (void)ctx;
+    uint32_t cur = pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
+    uint32_t sh = (off & 2) * 8;
+    uint32_t nv = (cur & ~(0xFFFFu << sh)) | ((uint32_t)v << sh);
+    pci_config_write(pci_bus, pci_dev, pci_func, off & 0xFC, nv);
+}
+static void gmsi_w32(void *ctx, uint16_t off, uint32_t v) {
+    (void)ctx;
+    pci_config_write(pci_bus, pci_dev, pci_func, off & 0xFC, v);
+}
+static volatile uint8_t *gmsi_bar(void *ctx, uint8_t bar, uint32_t off, uint32_t len) {
+    (void)ctx;
+    uint64_t va = map_bar_region(bar, off, len ? len : 0x1000);
+    return va ? (volatile uint8_t *)(uintptr_t)va : 0;
+}
+
+static void virtio_gpu_msi_attach(void) {
+    msi_pci_io_t io;
+    memset(&io, 0, sizeof(io));
+    io.ctx = 0;
+    io.cfg8 = gmsi_cfg8; io.cfg16 = gmsi_cfg16; io.cfg32 = gmsi_cfg32;
+    io.w16 = gmsi_w16; io.w32 = gmsi_w32; io.bar_map = gmsi_bar;
+
+    uint32_t vec = 0;
+    int rc = msi_attach_pci(&io, virtio_gpu_msi_handler, 0, "virtio-gpu", &vec);
+    if (rc != 0) {
+        if (rc == -1)
+            kprintf("[msi] virtio-gpu: no MSI/MSI-X capability -- "
+                    "INTx/polling path\n");
+        else if (msi_enabled())
+            kprintf("[msi] virtio-gpu: attach refused (see above) -- "
+                    "INTx/polling path\n");
+        return;
+    }
+    gpu_msi_vector = vec;
+
+    /* Table INDEX, not the x86 vector -- see MSI_TABLE_ENTRY in msi.h. */
+    common_cfg->queue_select = 0;
+    common_cfg->queue_msix_vector = (uint16_t)MSI_TABLE_ENTRY;
+    uint16_t got = common_cfg->queue_msix_vector;
+    if (got == 0xFFFF) {
+        kprintf("[msi] virtio-gpu: device refused queue 0 entry %u "
+                "(NO_VECTOR); keeping INTx\n", (unsigned)MSI_TABLE_ENTRY);
+        gpu_msi_vector = 0;
+        return;
+    }
+    kprintf("[msi] virtio-gpu: queue 0 -> table entry %u (readback %u), "
+            "x86 vector %u\n", (unsigned)MSI_TABLE_ENTRY, (unsigned)got,
+            (unsigned)vec);
+}
+
+/* The receipt: printed once, after a command has actually completed and the
+ * counter shows the message arrived.  A grace spin is needed because the
+ * message can trail the used-ring write. */
+static void virtio_gpu_msi_receipt(void) {
+    if (!gpu_msi_vector || gpu_msi_irqs == 0) return;
+    kprintf("[msi] virtio-gpu: %u interrupt(s) delivered on vector %u\n",
+            (unsigned)gpu_msi_irqs, (unsigned)gpu_msi_vector);
+}
+
 static int setup_control_queue(void) {
     common_cfg->queue_select = 0;
     uint16_t qsz = common_cfg->queue_size;
@@ -772,6 +856,9 @@ int virtio_gpu_init(void) {
 
     uint64_t dev_features = read_device_features();
     uint64_t wanted = (1ULL << VIRTIO_F_VERSION_1);
+    /* VIRTIO_PCI_F_MSI_X (bit 27): accept it when offered so queue_msix_vector
+     * is meaningful; declining leaves the INTx line in charge. */
+    wanted |= dev_features & (1ULL << 27);
     if (dev_features & (1ULL << VIRTIO_GPU_F_VIRGL)) {
         info.virgl_supported = 1;
         wanted |= (1ULL << VIRTIO_GPU_F_VIRGL);
@@ -792,6 +879,11 @@ int virtio_gpu_init(void) {
     }
 
     common_cfg->device_status |= VIRTIO_STATUS_DRIVER_OK;
+
+    /* C4: attach before the first command, so the very first completion is
+     * the one that proves the vector works. */
+    virtio_gpu_msi_attach();
+
     if (get_display_info() != 0) {
         kprintf("[virtio-gpu] control queue ready, display-info command failed\n");
     }
@@ -804,6 +896,15 @@ int virtio_gpu_init(void) {
         else
             kprintf("[virtio-gpu] default VirGL context create failed\n");
     }
+    if (gpu_msi_vector) {
+        for (uint32_t i = 0; i < 200000 && gpu_msi_irqs == 0; i++)
+            __asm__ volatile ("pause");
+        if (gpu_msi_irqs == 0)
+            kprintf("[msi] virtio-gpu: no message received on vector %u "
+                    "(commands polled to completion)\n", (unsigned)gpu_msi_vector);
+    }
+    virtio_gpu_msi_receipt();
+
     init_result = 0;
     return init_result;
 }

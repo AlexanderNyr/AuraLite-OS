@@ -350,7 +350,10 @@ def claims():
             "| RES-49 | M | PENDING-USER@Y7 |" in ledger and
             "| RES-50 | N | RE-AFFIRMED@Y7 |" in ledger and
             "| RES-51 | N | RE-AFFIRMED@Y7 |" in ledger and
-            "| RES-52 | S | HANDED-OFF@Y7 |" in ledger and
+            # RES-52 was HANDED-OFF@Y7 at Y7 close; RESIDUE3 C7 landed
+            # window scaling and the row flipped to DONE@C7.  The claim
+            # tracks the tree, so it follows the row.
+            "| RES-52 | S | DONE@C7 |" in ledger and
             "| RES-53 | W | DONE |" in ledger and
             "atls_rsa_verify_pss_sha256" in
             read("lib", "libatls", "src", "atls_rsa.c")))

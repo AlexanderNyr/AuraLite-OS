@@ -1,0 +1,18 @@
+# tools/plan_tables_baseline.txt - the plan-table debt ratchet (RESIDUE3 C0).
+#
+# Every line is one LIVE violation of tools/check_plan_tables.py, in the
+# order that checker prints them.  The pin behaves like
+# tools/residue_baseline.txt: a violation that is not listed fails the
+# build, and a listed violation that has been fixed ALSO fails until this
+# file moves in the same commit.  C1 (the reconciliation) drives every
+# line here to zero and deletes the file's body - the ratchet only shrinks
+# through a landed phase.
+#
+# Rule key: r1 orphan residue - r2 stale box tag - r3 closure claim -
+#           r4 table drift
+#
+# BODY EMPTY since RESIDUE3 C1 (2026-11-03): the sixteen pinned
+# violations were all repaired - three ledger rows flipped, two plan
+# tables repaired, seven boxes re-tagged.  The file stays so the ratchet
+# keeps a home: the first new violation is red again, and the pin only
+# moves with a landed phase.

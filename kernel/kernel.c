@@ -25,6 +25,8 @@
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
+#include "kernel/mm/aspace.h"
+#include "kernel/lib/abi_probe.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/execpolicy.h"   /* RESIDUE2 T4: policy resolves via VFS */
 #include "kernel/net/netdev.h"      /* RESIDUE2 T5: the idle RX drain */
@@ -73,6 +75,7 @@
 #include "drivers/bluetooth/bt.h"
 #include "drivers/wifi/wifi.h"
 #include "drivers/timer/pit.h"
+#include "kernel/arch/arch.h"   /* RESIDUE3 C4: MSI, via the width seam */
 #include "drivers/vm/virtual_drivers.h"
 #include "drivers/virtio_blk/virtio_blk.h"
 #include "kernel/audio/audio.h"
@@ -293,6 +296,19 @@ void kmain(boot_info_t *boot_info) {
                 fscheck_source());
     }
 
+    /* RESIDUE3 C4 (RES-36): the MSI switch, read with the other knobs so
+     * every device probed later sees the final answer. */
+    {
+        extern void fwcfg_msi_probe(void);
+        fwcfg_msi_probe();
+        /* The cause, not just the state: the disabled lane used to print
+         * "DISABLED (build default on)", which reads like a contradiction. */
+        kprintf("[msi] message-signalled interrupts: %s (%s)\n",
+                msi_enabled() ? "ENABLED" : "DISABLED",
+                msi_enabled() ? "build default on"
+                              : "fw_cfg opt/auralite.msi=off");
+    }
+
     kprintf("[boot] initialising physical memory manager...\n");
     pmm_init();
     /* HW H3 follow-up: the fb console's RAM shadow needs frames; arm
@@ -435,6 +451,17 @@ void kmain(boot_info_t *boot_info) {
         kprintf("[net] network unavailable; continuing boot without online self-tests\n");
     }
 
+    /* C7: the 1 MiB window-scaling lane.  It runs whenever fw_cfg asks for
+     * it (opt/auralite.tcp_ws=big:clamped) and prints nothing otherwise.
+     * Deliberately OUTSIDE the net_status==0 branch above: the lane's peer is
+     * a real Linux host on a TAP link, which serves no DHCP — so the guest
+     * reaches it through the static fallback, exactly the case that branch
+     * skips. */
+    {
+        extern void tcp_ws_lane_boot_probe(void);
+        tcp_ws_lane_boot_probe();
+    }
+
     /* F2 (FSFULL_PLAN.md): the buffer cache is created BEFORE any
      * filesystem touches a device, so exFAT/NTFS (which already read
      * through bc_get) and now ext4/btrfs/f2fs (which read through the
@@ -461,6 +488,19 @@ void kmain(boot_info_t *boot_info) {
     /* VirtIO Block driver. */
     if (virtio_blk_init() == 0) {
         kprintf("[boot] virtio-blk initialized\n");
+    }
+
+    /* RESIDUE3 C7b: NVMe.  Probed AFTER the other block drivers on purpose:
+     * blkdev ids follow registration order, and the filesystem mount order
+     * below ("second disk -> /ext2") is what makes an NVMe namespace the
+     * disk a boot mounts when one is attached. */
+    {
+        extern int nvme_init(void);
+        extern void nvme_self_test(void);
+        if (nvme_init() == 0) {
+            kprintf("[boot] nvme initialized\n");
+            nvme_self_test();
+        }
     }
 
     /* ext2 prefers the *second* disk so /fat and /ext2 stay independent.
@@ -606,7 +646,10 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[boot] initialising USB full class drivers (string, hub, isoc)...\n");
     usb_string_self_test();
     usb_hub_self_test();
-    usb_isoc_self_test();
+    /* C5: the isoc self-test is an AGGREGATE now -- it reports what the
+     * streaming proof completed -- so it must run after the producer.  The
+     * audio driver's streaming receipt is issued further down, so the call
+     * moved there; see the [usb] audio block below. */
 
     kprintf("[boot] initialising USB Mass Storage (BBB + SCSI)...\n");
     msc_init();
@@ -619,6 +662,14 @@ void kmain(boot_info_t *boot_info) {
     kprintf("[boot] initialising USB Audio (UAC1/UAC2 isoc)...\n");
     usb_audio_init();
     usb_audio_self_test();
+    /* C5: prove that isochronous frames actually move, then let the isoc
+     * self-test aggregate what was counted. */
+    {
+        extern uint32_t usb_audio_stream_selftest(void);
+        extern void usb_isoc_note_stream(uint32_t);
+        usb_isoc_note_stream(usb_audio_stream_selftest());
+        usb_isoc_self_test();
+    }
 
     kprintf("[boot] initialising USB Printer (7/1/x bulk)...\n");
     usb_printer_init();
@@ -688,6 +739,27 @@ void kmain(boot_info_t *boot_info) {
     /* Phase 15: per-process address spaces — self-test. */
     kprintf("[boot] testing per-process address spaces...\n");
     process_self_test();
+
+    /* RESIDUE3 C2: the two accounting receipts the phase owes.  The heap's
+     * large-page census prints what ORDER the kernel allocations actually
+     * use (and the 1 GiB refusal as a number), and the address-space table
+     * prints its live census so "every zombie was reaped" is a boot line
+     * rather than a reading of the code. */
+    kheap_largepage_report();
+    kprintf("[aspace] live %llu, shared %llu, last-puts %llu, double-puts %llu, "
+            "untracked %llu; zombies queued %llu, reaped %llu\n",
+            (unsigned long long)aspace_live_spaces(),
+            (unsigned long long)aspace_shared_spaces(),
+            (unsigned long long)aspace_last_puts(),
+            (unsigned long long)aspace_double_puts(),
+            (unsigned long long)aspace_untracked_puts(),
+            (unsigned long long)thread_zombies_queued_total(),
+            (unsigned long long)thread_zombies_reaped_total());
+
+    /* RESIDUE3 C2: arm the ABI probe.  The IRQ half fires on the next timer
+     * tick, the syscall half on the shell's first system call; both print a
+     * PASS line that test_stack_alignment.sh pins. */
+    abi_probe_arm();
 
     kprintf("[boot] starting init shell (Ring 3)...\n");
     user_mode_self_test();

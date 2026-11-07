@@ -8,6 +8,16 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/arch/arch.h"
+#if defined(__i386__)
+/* RESIDUE3 C3 / RES-11: the 32-bit kernel cannot reach the LFB through its
+ * direct map (that covers phys [0, 896 MiB); the VBE framebuffer sits at
+ * 0xFD000000), so fb_init maps it into a dedicated device-memory window.
+ * This declaration is the whole i386-side coupling of this file: WHICH
+ * window and WHICH page flags is a paging decision and lives in
+ * kernel/arch/i386/fbmap32.c. */
+void *fb32_map_fb(uint32_t phys, uint32_t len);
+#endif
+
 #if defined(__x86_64__)
 /* paging_map is x86_64-only.  Declared here instead of including
  * kernel/arch/x86_64/paging.h: that include is ratchet-2 (portable
@@ -100,7 +110,8 @@ static void fb_scroll(void) {
             uint32_t *dst = fb_shadow + (y - font_height) * pitch32;
             for (uint32_t x = 0; x < fb_width; x++) dst[x] = src[x];
         }
-        for (uint32_t y = fb_height - font_height; y < fb_height; y++) {
+        for (uint32_t y = (uint32_t)(fb_height - font_height);
+             y < fb_height; y++) {
             uint32_t *row = fb_shadow + y * pitch32;
             for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
         }
@@ -119,7 +130,8 @@ static void fb_scroll(void) {
         uint32_t *dst = fb_addr + (y - font_height) * pitch32;
         for (uint32_t x = 0; x < fb_width; x++) dst[x] = src[x];
     }
-    for (uint32_t y = fb_height - font_height; y < fb_height; y++) {
+    for (uint32_t y = (uint32_t)(fb_height - font_height);
+         y < fb_height; y++) {
         uint32_t *row = fb_addr + y * pitch32;
         for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
     }
@@ -219,24 +231,41 @@ void fb_init(void) {
     const struct psf_font *f = psf_get_font();
     if (!f) { fb_addr = NULL; return; }
     font_width = f->width; font_height = f->height;
-    /* boot_fb_t.phys_base is a raw physical address; add the HHDM
-     * offset so the framebuffer is accessible in kernel virtual space. */
+    /* boot_fb_t.phys_base is a raw physical address; each width reaches it
+     * its own way.  x86_64: through the HHDM, whose 4 GiB of 2 MiB leaves
+     * already cover the LFB.  i386: through the explicit device-memory
+     * window in fbmap32.c, because the direct map stops at 896 MiB. */
+#if defined(__i386__)
+    fb_addr = (uint32_t *)fb32_map_fb((uint32_t)fb->phys_base,
+                                      fb->pitch * fb->height);
+    if (!fb_addr) {
+        kprintf("[fb] FAIL: no i386 framebuffer window for phys 0x%x\n",
+                (unsigned)fb->phys_base);
+        return;
+    }
+#else
     fb_addr = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + fb->phys_base);
+#endif
     fb_width = fb->width; fb_height = fb->height; fb_pitch = fb->pitch;
     fb_r_shift = fb->red_shift;
     fb_g_shift = fb->green_shift;
     fb_b_shift = fb->blue_shift;
     fb_fg = make_color(220, 220, 220);
     fb_bg = make_color(16, 16, 28);
-    fb_cols = fb_width / font_width;
-    fb_rows = fb_height / font_height;
+    /* Width sweep (RES-11 adoption): fb_width/height are uint64_t because
+     * the x86_64 framebuffer path stores 64-bit geometry, but every
+     * geometry field in boot_fb_t is 32-bit and the cell counts are
+     * screen-sized, so these narrowings are lossless -- and now explicit,
+     * which is what the i386 -Wshorten-64-to-32 gate asks for. */
+    fb_cols = (int)(fb_width / font_width);
+    fb_rows = (int)(fb_height / font_height);
     fb_cursor_col = fb_cursor_row = 0;
     fb_clear();
 }
 
 void fb_clear(void) {
     if (!fb_addr) return;
-    uint32_t pitch32 = fb_pitch / 4;
+    uint32_t pitch32 = (uint32_t)(fb_pitch / 4);
     for (uint32_t y = 0; y < fb_height; y++) {
         uint32_t *row = fb_addr + y * pitch32;
         for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
@@ -263,6 +292,7 @@ void fb_vga_lock_mmio(void) {
 void fb_vga_lock_mmio(void) {}
 #endif
 
+int  fb_console_up(void)            { return fb_addr != NULL; }
 void fb_set_console_enabled(int on) { fb_console_on = on ? 1 : 0; }
 int  fb_console_enabled(void)       { return fb_console_on; }
 
@@ -305,6 +335,22 @@ void fb_arm_shadow(void) {
     }
     uint64_t bytes  = px * 4;
     uint64_t frames = (bytes + 4095) / 4096;
+#if defined(__i386__)
+    /* FINDING, recorded rather than hidden (RES-11): the i386 PMM has no
+     * contiguous multi-frame allocator (kernel/arch/i386/pmm32.h offers
+     * single frames only) and its direct map stops at 896 MiB, so this
+     * console runs SHADOWLESS -- scrolls move pixels in place. That is
+     * correct, just slower, and on this path there is no PAT/WC entry to
+     * make the write path cheaper anyway: the LFB window is plain
+     * uncached, so a shadow would only trade UC reads for UC writes.
+     * The receipt line below says so at boot instead of pretending the
+     * x86_64 H3 discipline was adopted. */
+    (void)frames;
+    kprintf("[fb] shadowless console (i386: no contiguous allocator, "
+            "no PAT); scrolls are in-place\n");
+    fb_shadow = NULL;
+    return;
+#endif
     paddr_t phys = pmm_alloc_contiguous(frames);
     if (!phys) {
         kprintf("[fb] no contiguous frames for the WC shadow; "

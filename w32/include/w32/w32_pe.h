@@ -191,6 +191,25 @@ int pe_exports(const pe_image_t *img, pe_export_t *out, size_t max,
 int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
                    size_t *count);
 
+/* Streaming form (RESIDUE3 C8): the SAME block walk, handed one relocation at
+ * a time and stored nowhere.
+ *
+ * This exists because the loader had a fixed `static pe_reloc_t relocs[16384]`
+ * buffer in two places, and Audacity 3.7.5 carries 90932 base relocations --
+ * the image died at "too many relocations" before import resolution began.
+ * A bigger buffer would have moved the number, not removed it: the array form
+ * can never be size-agnostic, and a whole-image copy costs `n * 8` bytes to
+ * apply fixups that are written straight into the mapped image anyway.
+ *
+ * `fn` returns 0 to continue and non-zero to stop; the walk ends there and
+ * *count reports how many relocations it reached.  PE_OK means the directory
+ * itself was well formed, whether or not the visitor stopped early --
+ * the visitor's own context says why it did. */
+typedef int (*pe_reloc_visit_fn)(void *ctx, uint32_t type, uint32_t rva);
+
+int pe_relocations_each(const pe_image_t *img, pe_reloc_visit_fn fn, void *ctx,
+                        size_t *count);
+
 /* One delay-load import (W32A-1).  Same shape as pe_import_t: the delay IAT
  * slot plays the role of the IAT, and the image's own __delayLoadHelper2
  * patches it on first call -- the loader never writes it. */

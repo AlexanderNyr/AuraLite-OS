@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 # tests/integration/lib/gui_lane.sh — WR-0 (W32RUN_PLAN.md) the live-GUI lane.
 #
-# Sourced AFTER lib/lib.sh + il_init.  It boots AuraLite under OVMF — the only
-# firmware with a linear framebuffer (BIOS Stage 2 sets no VBE mode; the GUI
-# composes off-screen and the frame is black — fb.c's own comment, and the
-# skip precedent in test_gui_dirty_uefi.sh) — with two UNIX sockets: a serial
-# socket (the shell) and a monitor socket (HMP: screendump, sendkey, mouse).
-# Every live-frame gate (WR-2..WR-4) drives the app through these.
+# Sourced AFTER lib/lib.sh + il_init.  It boots AuraLite with two UNIX
+# sockets: a serial socket (the shell) and a monitor socket (HMP:
+# screendump, sendkey, mouse).  Every live-frame gate (WR-2..WR-4) drives the
+# app through these.
+#
+# Firmware: gl_boot uses OVMF (GOP), which was the ONLY framebuffer source
+# until RESIDUE3 C3 / RES-12 taught BIOS Stage 2 to set a VBE mode.  Since
+# then a SeaBIOS boot has a 1024x768x32 linear framebuffer too, and
+# gl_boot_bios (below) is the second entry point: same monitor machinery,
+# no pflash, GL_QEMU_BIN selects qemu-system-x86_64 or qemu-system-i386.
 #
 # The three lessons WR-0 bring-up paid for, encoded here so no gate repeats
 # them:
-#   * OVMF, not SeaBIOS — BIOS has no framebuffer;
+#   * OVMF, not SeaBIOS — that used to be forced because a BIOS boot had no
+#     framebuffer at all.  RES-12 changed the fact, so both are supported
+#     now; gl_boot stays the OVMF path the existing gates were built on and
+#     gl_boot_bios is the VBE path those gates were protecting against;
 #   * the ISO is a hybrid MBR disk, attach if=ide + `-boot order=c`, NOT
 #     media=cdrom (that drops OVMF to the UEFI Shell with no FS mapping);
 #   * the monitor screendumps the GOP framebuffer even under -display none.
@@ -37,6 +44,10 @@
 # GL_LOG accumulates the serial transcript for il_assert_grep.
 
 GL_TOOLS="${GL_TOOLS:-$IL_ROOT/tools}"
+# RES-12: which QEMU binary the BIOS lane runs.  Default is the same one
+# lib.sh uses for every other case; test_i386_gui.sh sets it to
+# qemu-system-i386 to photograph the 32-bit console.
+GL_QEMU_BIN="${GL_QEMU_BIN:-$IL_QEMU}"
 GL_CONSOLE="$GL_TOOLS/gui_input.py"
 GL_ORACLE="$GL_TOOLS/fb_oracle.py"
 
@@ -153,6 +164,52 @@ gl_wait() {
         --pattern "$1" --timeout "${2:-30}" --log "$GL_LOG"
 }
 
+# gl_boot_bios <wait-regex> [extra qemu args...] — the RES-12 lane: SeaBIOS
+# + the VBE linear framebuffer Stage 2 now sets.  Same sockets and same
+# gl_shot/gl_send/gl_cmd machinery as gl_boot; the only differences are the
+# absent pflash drives and GL_QEMU_BIN (x86_64 or i386) plus the wait regex
+# the caller chooses (the 64-bit kernel reaches `auralite#`, the 32-bit one
+# stops at its console line).  `-vga std` is mandatory: `-vga none` has no
+# VBE and the whole point of the lane is the pixels.
+gl_boot_bios() {
+    local wait_re="$1"; shift || true
+    local selftest="${GL_SELFTEST:-fast}"
+    GL_TIMEOUT="${GL_TIMEOUT:-90}"
+    GL_SHOTDIR="${GL_SHOTDIR:-$IL_LOGDIR/gui-lane-shots}"
+    mkdir -p "$GL_SHOTDIR"
+    GL_LOG="${GL_LOG:-$IL_LOGDIR/gui_lane_bios.log}"
+    : > "$GL_LOG"
+    IL_LAST_LOG="$GL_LOG"
+    GL_SER="$IL_LOGDIR/gl_bios_ser.$$.sock"
+    GL_MON="$IL_LOGDIR/gl_bios_mon.$$.sock"
+    GL_QMP=""          # no QMP on this lane: no absolute pointer is needed
+    GL_VARS=""         # and no pflash
+    rm -f "$GL_SER" "$GL_MON"
+
+    "$GL_QEMU_BIN" \
+        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
+        -boot order=c -no-reboot -no-shutdown \
+        -m ${GL_QEMU_MEM:-512M} -smp "${IL_SMP:-2}" -cpu "${IL_CPU:-qemu64}" \
+        -fw_cfg "name=opt/auralite.selftest,string=$selftest" \
+        -vga std -display none \
+        -serial "unix:$GL_SER,server,nowait" \
+        -monitor "unix:$GL_MON,server,nowait" \
+        "$@" >/dev/null 2>&1 &
+    GL_QEMU_PID=$!
+
+    local i
+    for i in $(seq 1 50); do
+        [ -S "$GL_SER" ] && [ -S "$GL_MON" ] && break
+        kill -0 "$GL_QEMU_PID" 2>/dev/null || { echo "  [gui-lane] QEMU died on launch"; return 1; }
+        sleep 0.2
+    done
+    echo "  [gui-lane] BIOS/VBE booting ($GL_QEMU_BIN; up to ${GL_TIMEOUT}s)..."
+    python3 "$GL_CONSOLE" serial-wait --serial "$GL_SER" \
+        --pattern "$wait_re" --timeout "$GL_TIMEOUT" --log "$GL_LOG" || {
+            echo "  [gui-lane] never matched '$wait_re' (see $GL_LOG)"; return 1; }
+    return 0
+}
+
 gl_shot() {
     local name="$1"
     GL_LAST_PPM="$GL_SHOTDIR/$name.ppm"
@@ -180,6 +237,9 @@ gl_stop() {
     [ -n "${GL_QEMU_PID:-}" ] || return 0
     kill "$GL_QEMU_PID" 2>/dev/null || true
     wait "$GL_QEMU_PID" 2>/dev/null || true
-    rm -f "$GL_SER" "$GL_MON" "$GL_QMP" "$GL_VARS" 2>/dev/null || true
+    # The BIOS lane (gl_boot_bios) has neither QMP nor a pflash vars copy;
+    # set -u makes an unguarded reference a gate failure rather than a
+    # cleanup detail, which is how this was found.
+    rm -f "${GL_SER:-}" "${GL_MON:-}" "${GL_QMP:-}" "${GL_VARS:-}" 2>/dev/null || true
     GL_QEMU_PID=""
 }

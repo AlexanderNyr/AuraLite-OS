@@ -38,6 +38,184 @@ static const uint8_t VIRT_MAC[6]  = {0x02, 0x50, 0x41, 0x55, 0x01, 0x01};
 #define VIRT_AID_TX   0xC005
 #define VIRT_AID      (VIRT_AID_TX & 0x3FFF)
 
+
+/* ---- C6: the Ethernet-level AP ----------------------------------------- */
+#define VIRT_ETH_MAX   1600
+#define VIRT_RXQ_DEPTH 8
+#define VIRT_ETH_ARP   0x0806
+#define VIRT_ETH_IPV4  0x0800
+
+static uint32_t virt_ap_ip;               /* host order, 0 = not configured */
+static uint8_t  virt_rxq[VIRT_RXQ_DEPTH][VIRT_ETH_MAX];
+static uint16_t virt_rxq_len[VIRT_RXQ_DEPTH];
+static int virt_rxq_head, virt_rxq_tail, virt_rxq_count;
+static int virt_arp_rx, virt_icmp_rx, virt_foreign;
+static uint32_t virt_eth_bytes;           /* replied Ethernet bytes */
+static uint32_t virt_eth_frames;
+
+void wifi_virt_set_ap_ip(uint32_t ap_ip) { virt_ap_ip = ap_ip; }
+uint32_t wifi_virt_ap_ip(void) { return virt_ap_ip; }
+int wifi_virt_arp_replies(void) { return virt_arp_rx; }
+int wifi_virt_icmp_replies(void) { return virt_icmp_rx; }
+int wifi_virt_foreign_frames(void) { return virt_foreign; }
+
+void wifi_virt_eth_reset(void) {
+    virt_rxq_head = virt_rxq_tail = virt_rxq_count = 0;
+    virt_arp_rx = virt_icmp_rx = virt_foreign = 0;
+    virt_eth_bytes = virt_eth_frames = 0;
+}
+
+int wifi_virt_eth_pop(void *buf, uint32_t bufsize) {
+    if (!buf || virt_rxq_count == 0) return 0;
+    uint16_t n = virt_rxq_len[virt_rxq_tail];
+    if (n > bufsize) n = (uint16_t)bufsize;
+    memcpy(buf, virt_rxq[virt_rxq_tail], n);
+    virt_rxq_tail = (virt_rxq_tail + 1) % VIRT_RXQ_DEPTH;
+    virt_rxq_count--;
+    return (int)n;
+}
+
+static void virt_eth_queue(const uint8_t *frame, uint16_t len) {
+    if (len > VIRT_ETH_MAX) return;
+    if (virt_rxq_count == VIRT_RXQ_DEPTH) {
+        /* Full: drop the OLDEST.  A ping's reply is the newest frame and the
+         * one the stack is waiting for, so the queue must not prefer stale
+         * traffic -- dropping the newest would strand every waiter. */
+        virt_rxq_tail = (virt_rxq_tail + 1) % VIRT_RXQ_DEPTH;
+        virt_rxq_count--;
+        virt_foreign++;                 /* counted as a dropped frame */
+    }
+    memcpy(virt_rxq[virt_rxq_head], frame, len);
+    virt_rxq_len[virt_rxq_head] = len;
+    virt_rxq_head = (virt_rxq_head + 1) % VIRT_RXQ_DEPTH;
+    virt_rxq_count++;
+    virt_eth_frames++;
+    virt_eth_bytes += len;
+}
+
+/* Internet checksum (RFC 1071): the one the IP and ICMP headers carry. */
+static uint16_t virt_csum(const uint8_t *p, int len, uint32_t sum) {
+    for (int i = 0; i + 1 < len; i += 2)
+        sum += (uint32_t)((p[i] << 8) | p[i + 1]);
+    if (len & 1) sum += (uint32_t)(p[len - 1] << 8);
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return (uint16_t)~sum;
+}
+
+/* Build and queue an ARP reply to a request we just received. */
+static void virt_arp_reply(const uint8_t *eth) {
+    uint8_t out[42];
+    const uint8_t *req = eth + 14;             /* ARP payload */
+    memcpy(out, req + 8, 6);                   /* DA = requester's SHA */
+    memcpy(out + 6, AP_BSSID, 6);              /* SA = the AP */
+    out[12] = VIRT_ETH_ARP >> 8;
+    out[13] = VIRT_ETH_ARP & 0xFF;
+    uint8_t *r = out + 14;
+    r[0] = 0x00; r[1] = 0x01;                  /* htype ethernet */
+    r[2] = 0x08; r[3] = 0x00;                  /* ptype IPv4 */
+    r[4] = 6; r[5] = 4;                        /* hlen/plen */
+    r[6] = 0x00; r[7] = 0x02;                  /* oper = reply */
+    memcpy(r + 8, AP_BSSID, 6);                /* SHA = the AP */
+    r[14] = (uint8_t)(virt_ap_ip >> 24);       /* SPA = AP address */
+    r[15] = (uint8_t)(virt_ap_ip >> 16);
+    r[16] = (uint8_t)(virt_ap_ip >> 8);
+    r[17] = (uint8_t)(virt_ap_ip);
+    memcpy(r + 18, req + 8, 6);                /* THA = requester */
+    memcpy(r + 24, req + 14, 4);               /* TPA = requester's IP */
+    virt_arp_rx++;
+    virt_eth_queue(out, (uint16_t)sizeof(out));
+}
+
+/* Build and queue an ICMP echo reply for an echo request addressed to us. */
+static void virt_icmp_reply(const uint8_t *eth, int len) {
+    if (len < 14 + 20 + 8) return;
+    uint8_t out[VIRT_ETH_MAX];
+    const uint8_t *ip = eth + 14;
+    int ihl = (ip[0] & 0x0F) * 4;
+    if (ihl < 20 || len < 14 + ihl + 8) return;
+    int total = (ip[2] << 8) | ip[3];
+    if (total < ihl + 8 || 14 + total > len) total = len - 14;
+    int icmp_len = total - ihl;
+    if (icmp_len > VIRT_ETH_MAX - 14 - ihl) icmp_len = VIRT_ETH_MAX - 14 - ihl;
+
+    memcpy(out, eth + 6, 6);                   /* DA = original source */
+    memcpy(out + 6, AP_BSSID, 6);
+    out[12] = VIRT_ETH_IPV4 >> 8;
+    out[13] = VIRT_ETH_IPV4 & 0xFF;
+
+    uint8_t *oip = out + 14;
+    memcpy(oip, ip, (size_t)ihl);              /* header: addresses swapped */
+    memcpy(oip + 12, ip + 16, 4);              /* src = our IP */
+    memcpy(oip + 16, ip + 12, 4);              /* dst = the requester */
+    oip[8] = 64;                               /* ttl */
+    oip[10] = 0; oip[11] = 0;                  /* checksum recomputed */
+    oip[2] = (uint8_t)((ihl + icmp_len) >> 8);
+    oip[3] = (uint8_t)((ihl + icmp_len) & 0xFF);
+    uint16_t ipc = virt_csum(oip, ihl, 0);
+    oip[10] = (uint8_t)(ipc >> 8); oip[11] = (uint8_t)(ipc & 0xFF);
+
+    uint8_t *oicmp = oip + ihl;
+    memcpy(oicmp, ip + ihl, (size_t)icmp_len); /* payload copied verbatim */
+    oicmp[0] = 0;                              /* type = echo reply */
+    oicmp[1] = 0;
+    oicmp[2] = 0; oicmp[3] = 0;
+    uint16_t icc = virt_csum(oicmp, icmp_len, 0);
+    oicmp[2] = (uint8_t)(icc >> 8); oicmp[3] = (uint8_t)(icc & 0xFF);
+
+    virt_icmp_rx++;
+    virt_eth_queue(out, (uint16_t)(14 + ihl + icmp_len));
+}
+
+/* Handle one Ethernet frame the MAC layer carried up from a ToDS data
+ * frame: answer what is addressed to the AP, drop the rest. */
+static void virt_eth_input(const uint8_t *eth, int len) {
+    if (len < 14) return;
+    uint16_t type = (uint16_t)((eth[12] << 8) | eth[13]);
+    if (type == VIRT_ETH_ARP && len >= 14 + 28) {
+        const uint8_t *r = eth + 14;
+        if (((r[6] << 8) | r[7]) != 1) return;          /* requests only */
+        uint32_t tpa = ((uint32_t)r[24] << 24) | ((uint32_t)r[25] << 16) |
+                       ((uint32_t)r[26] << 8) | r[27];
+        if (virt_ap_ip && tpa == virt_ap_ip) virt_arp_reply(eth);
+        else virt_foreign++;
+        return;
+    }
+    if (type == VIRT_ETH_IPV4 && len >= 14 + 20) {
+        const uint8_t *ip = eth + 14;
+        int ihl = (ip[0] & 0x0F) * 4;
+        if (ihl < 20 || len < 14 + ihl) return;
+        uint32_t dst = ((uint32_t)ip[16] << 24) | ((uint32_t)ip[17] << 16) |
+                       ((uint32_t)ip[18] << 8) | ip[19];
+        if (ip[9] == 1 && dst == virt_ap_ip && len >= 14 + ihl + 8 &&
+            ip[ihl] == 8) {                              /* ICMP echo req */
+            virt_icmp_reply(eth, len);
+            return;
+        }
+        virt_foreign++;
+        return;
+    }
+    virt_foreign++;
+}
+
+/* Pull the Ethernet part out of a ToDS data frame (RA = AP, SA = us,
+ * DA = the final destination) and hand it to the AP. */
+static void virt_data_in(const struct wifi_mgmt_hdr *h, const uint8_t *frame,
+                         uint32_t len) {
+    const uint8_t *snap = frame + sizeof(*h);
+    if (len < sizeof(*h) + 8) return;
+    if (snap[0] != 0xAA || snap[1] != 0xAA || snap[2] != 0x03) return;
+
+    uint8_t eth[VIRT_ETH_MAX];
+    memcpy(eth, h->addr3, 6);                       /* DA */
+    memcpy(eth + 6, h->addr2, 6);                   /* SA */
+    eth[12] = snap[6];
+    eth[13] = snap[7];
+    uint32_t payload = len - (uint32_t)sizeof(*h) - 8;
+    if (payload > VIRT_ETH_MAX - 14) payload = VIRT_ETH_MAX - 14;
+    memcpy(eth + 14, snap + 8, payload);
+    virt_eth_input(eth, (int)(14 + payload));
+}
+
 uint32_t wifi_virt_data_bytes(void) { return virt_data_bytes; }
 int wifi_virt_data_frames(void) { return virt_data_frames; }
 
@@ -50,6 +228,10 @@ static int virt_tx_raw(const void *frame, uint32_t len) {
     if (h->fc.type == 2) {                    /* Data frame */
         virt_data_frames++;
         virt_data_bytes += len;
+        /* C6: a data frame carries an Ethernet frame to the AP; answer what
+         * is addressed to it (ARP for its address, ICMP echo to its
+         * address) and queue the reply for the netdev seam. */
+        virt_data_in(h, (const uint8_t *)frame, len);
         return (int)len;
     }
     if (h->fc.type != 0) return 0;            /* only mgmt answered */
@@ -129,8 +311,12 @@ static const wifi_driver_t virt_driver = {
     .get_mac     = virt_get_mac,
 };
 
+int wifi_virt_eth_frames(void) { return (int)virt_eth_frames; }
+uint32_t wifi_virt_eth_bytes(void) { return virt_eth_bytes; }
+
 void wifi_virt_register(void) {
     virt_data_bytes = 0;
     virt_data_frames = 0;
+    wifi_virt_eth_reset();
     wifi_register_driver(&virt_driver);
 }

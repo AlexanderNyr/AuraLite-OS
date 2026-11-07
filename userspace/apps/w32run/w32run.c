@@ -27,6 +27,7 @@
 #include <dirent.h>
 
 #include "w32/w32_pe.h"
+#include "w32/w32_reloc.h"
 #include "w32/w32_bind.h"
 #include "w32/w32_crt.h"
 #include "w32/w32_module.h"
@@ -175,22 +176,24 @@ int main(int argc, char **argv) {
         }
     }
 
-    /* Base relocations: this mapping is nowhere near the preferred base. */
-    static pe_reloc_t relocs[16384];
-    size_t nrel = 0;
-    rc = pe_relocations(&img, relocs, sizeof relocs / sizeof relocs[0], &nrel);
-    if (rc != PE_OK) die("bad relocation table");
-    if (nrel > sizeof relocs / sizeof relocs[0]) die("too many relocations");
-
-    unsigned long long delta = (unsigned long long)(unsigned long)base
-                             - img.image_base;
-    for (size_t i = 0; i < nrel; i++) {
-        if (relocs[i].type != PE_REL_DIR64) die("unsupported relocation type");
-        unsigned char *p = base + relocs[i].rva;
-        unsigned long long v = 0;
-        for (int k = 7; k >= 0; k--) v = (v << 8) | p[k];
-        v += delta;
-        for (int k = 0; k < 8; k++) p[k] = (unsigned char)((v >> (k * 8)) & 0xFF);
+    /* Base relocations: this mapping is nowhere near the preferred base.
+     *
+     * RESIDUE3 C8: applied by streaming the directory (w32/src/w32_reloc.c),
+     * not through a `static pe_reloc_t relocs[16384]` copy.  Audacity 3.7.5
+     * carries 90932 base relocations and died here on "too many
+     * relocations" before import resolution began; the buffer is gone, so the
+     * number is not a wall any more.  The count is printed because "it got
+     * past relocation" is a receipt the gap ledger can quote. */
+    {
+        w32_reloc_report_t rr;
+        char line[200];
+        if (w32_relocate_image(&img, base, (size_t)span, &rr) != 0) {
+            w32_reloc_describe(&rr, line, sizeof line);
+            fprintf(stderr, "w32run: %s\n", line);
+            die("relocation refused");
+        }
+        w32_reloc_describe(&rr, line, sizeof line);
+        fprintf(stderr, "w32run: %s\n", line);
     }
 
     /* W32A-4: register the exe with the module table so the unwinder's
@@ -200,17 +203,49 @@ int main(int argc, char **argv) {
                             buf, (size_t)total);
 
     /* Bind the imports.  An unresolved name is fatal and named. */
-    const char *mdll = 0, *mname = 0;
     size_t nimp = 0;
     { pe_import_t probe[1]; (void)pe_imports(&img, probe, 0, &nimp); }
-    rc = w32_bind_imports(buf, (size_t)total,
-                          (unsigned long long)(unsigned long)base, &mdll, &mname);
-    if (rc != 0) {
-        if (mdll && mname)
-            fprintf(stderr, "w32run: unresolved import %s!%s\n", mdll, mname);
-        else
+    /* RESIDUE3 C8: ONE bind, reported as a GAP LEDGER when it fails.
+     *
+     * The ledger pass is the bind: it walks every import, writes what resolves
+     * and records what does not, per module.  Running it *after* a strict bind
+     * (the first shape of this change) re-resolved every failing import on a
+     * second pass, and the loader's own diagnostics -- "forwarder exports are
+     * not supported" among them -- appeared twice in the log.  Two walks, one
+     * truth, one line: the ledger pass is the one that runs.
+     */
+    {
+        /* 16 KiB of name table: file-scope, not the guest stack. */
+        static w32_gap_t gap;
+        char line[200];
+        int gi;
+        rc = w32_bind_imports_gap(buf, (size_t)total,
+                                  (unsigned long long)(unsigned long)base, &gap);
+        if (rc < 0) {
             fprintf(stderr, "w32run: import binding failed (%d)\n", rc);
-        return 1;
+            return 1;
+        }
+        if (rc > 0) {
+            fprintf(stderr, "w32run: unresolved import %s!%s\n",
+                    gap.first_dll, gap.first_name);
+            for (gi = 0; gi < gap.modules; gi++)
+                fprintf(stderr, "w32run: gap  %-24s %ld symbol(s)\n",
+                        gap.dll[gi], gap.per_module[gi]);
+            w32_gap_describe(&gap, line, sizeof line);
+            fprintf(stderr, "w32run: %s\n", line);
+            /* Name them.  A count is a feeling; a list is a work item, and
+             * DOOM's Win32 build is the first program whose gap a phase has
+             * to answer symbol by symbol (DOOM_PLAN.md D7). */
+            for (gi = 0; gi < gap.listed; gi++) {
+                char gd[64], gn[64];
+                if (!w32_gap_at(&gap, gi, gd, sizeof gd, gn, sizeof gn)) break;
+                fprintf(stderr, "w32run:   missing %s!%s\n", gd, gn);
+            }
+            if (gap.listed < gap.symbols)
+                fprintf(stderr, "w32run:   ... %ld more not listed\n",
+                        gap.symbols - gap.listed);
+            return 1;
+        }
     }
 
     /* The CRT state the program will use.  argv is shifted so the .exe sees

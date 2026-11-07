@@ -452,6 +452,74 @@ way `make sdk-check` does for the native SDK.
 
 <!-- END GENERATED: w32 export table -->
 
+### The FAIL-CLEAN list, measured live (RESIDUE3 C8)
+
+Every one of those 35 functions is now called **by a real PE, by name, through
+`w32run`'s binder**, and the answer is checked against what this page says it
+should be: `w32/tests/w32c8_failclean.c` (guest fixture) +
+`tests/integration/cases/test_w32_failclean_live.sh` (gate). One receipt per
+function, in the log:
+
+```
+[w32] FAIL-CLEAN GetFileSecurityW -> FALSE (as documented: ERROR_NOT_SUPPORTED)
+[w32] FAIL-CLEAN LsaOpenPolicy    -> 0xC0000022 (as documented: STATUS_ACCESS_DENIED, no handle)
+[w32] FAIL-CLEAN PrintDlgW        -> FALSE (as documented: PDERR_NODEFAULTPRN, no printers)
+```
+
+Three of the 35 are **documented degradations rather than refusals**, and the
+receipt says which is which instead of flattening them into "failed":
+
+| Function | Measured answer | Why it is not a failure |
+|---|---|---|
+| `AdjustTokenPrivileges` | `TRUE` + `ERROR_NOT_ALL_ASSIGNED` | Windows' own contract for "nothing was assigned"; a backup-privilege plan falls back |
+| `DwmGetColorizationColor` | `S_OK`, `0xFF000000`, opaque | the documented constant when composition is off |
+| `IsNetworkAlive`, `IsDestinationReachableW` | a real reachability probe (FALSE on this guest: no route to `10.0.2.2:53`) | reporting reachability IS the behaviour; refusing would be the lie |
+
+### Two gates that were defending wrong answers (RESIDUE3 C8)
+
+Running the C8 shards turned up two fixtures whose assertions could not fail
+honestly, both older than the phase:
+
+* `test_w32a9_registry` hard-coded `E_NO_SUCH_PRIV 1530`, i.e. it **pinned the
+  wrong `ERROR_NO_SUCH_PRIVILEGE`** in place — a gate cannot catch a bug it
+  asserts. Now 1313, and 39/39.
+* `test_w32a5_user32win`'s MONITOR section read `rcMonitor.top`/`.right`
+  (offsets +8/+12 of `MONITORINFO`) and compared them against the *client*
+  rect's left/top, which can only agree by luck. It now compares against
+  `SM_CXSCREEN`/`SM_CYSCREEN`, and the shard's 6 cases are 27/27.
+
+### The `static-only` list, resolved live (RESIDUE3 C8)
+
+The app ledgers mark 1694 imports `static-only`: the personality binds them and
+no pinned application has been watched reaching them. `LoadLibraryA` +
+`GetProcAddress` is the shape those markers were untested against, so
+`tools/w32_static_slice.py` turns the markers into a guest table (1670 by name +
+24 ordinal = 820 distinct named pairs) and `w32/tests/w32c8_static_slice.c`
+walks it: 20/20 modules load, **820/820 pairs resolve**, a slice is *called*
+(9 argument-free stubs + 4 real implementations), `test_w32_static_slice` 38/38.
+
+What that measurement found: `LoadLibraryA("imm32.dll")`, `("ole32.dll")` and
+`("uxtheme.dll")` each answered **NULL** — modules this personality implements,
+exported by its static tables, and never registered as loadable, so IAT binding
+worked while the classic delay-load shape fell through to `MOD_NOT_FOUND`. The
+A-8 lesson happening a second time; fixed in `w32/src/w32_module.c`. It also
+cost two crashes to learn that "call every argument-free stub" is not a safe
+rule — CRT machinery and stubs shadowed by real implementations are not
+callable that way — which is why the call slice is now stubs nothing shadows.
+
+**What the measurement found.** `W32_ERROR_NO_SUCH_PRIVILEGE` was defined as
+**1530**; Windows defines `ERROR_NO_SUCH_PRIVILEGE` as **1313**, and 1530 is not
+a Windows error code at all. An application comparing `GetLastError()` against
+1313 (the documented constant) would have taken the wrong branch on the
+`LookupPrivilegeValueW` refusal — in a single-user personality whose whole
+purpose is honest failure. Fixed at `w32/include/w32/advapi32.h`; the live
+fixture is what found it, which is the argument for the box existing.  It had
+also been **pinned in place by a gate**: `w32/tests/w32a9_registry.asm` hard-coded
+`E_NO_SUCH_PRIV 1530`, so W32A-9 went on passing while this page promised 1313 to
+real applications. The asm fixture now reads 1313, and `test_w32a9_registry` is
+39/39 — a wrong constant that a gate defends is the worst kind, and it took a
+fixture that imports the function to see it.
+
 A function absent from this list is absent from the personality: a binary
 importing it fails at load with the name reported, rather than at the first
 call. That is deliberate — see "one bounded import set" (decision D7).

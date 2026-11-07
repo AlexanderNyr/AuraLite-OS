@@ -491,6 +491,15 @@ int usb_interrupt_transfer(usb_device_t *dev, uint8_t endpoint,
 int usb_isochronous_transfer(usb_device_t *dev, uint8_t endpoint,
                              void *data, uint32_t len, uint32_t *transferred);
 
+/* C5: an isochronous STREAM -- len/packet_bytes packets, each scheduled on its
+ * own frame.  Returns 0 and the number of packets that completed, or -1.  Only
+ * controllers with a frame-scheduled path (xHCI) implement this natively; the
+ * others are driven packet-by-packet through usb_isochronous_transfer(), which
+ * is named in the log rather than silently doing something weaker. */
+int usb_isochronous_stream(usb_device_t *dev, uint8_t endpoint,
+                           uint32_t packet_bytes, void *data, uint32_t len,
+                           uint32_t *packets_out);
+
 /* Sync frame */
 int usb_get_sync_frame(usb_device_t *dev, uint8_t endpoint, uint16_t *frame);
 

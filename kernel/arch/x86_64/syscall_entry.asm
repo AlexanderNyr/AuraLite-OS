@@ -136,6 +136,15 @@ syscall_entry:
     ; at [rsp+8] after the return address is pushed.  The seven saved SYSCALL
     ; registers leave RSP 8 mod 16, so this single slot also restores the
     ; required 16-byte pre-call alignment.
+    ; @abi-anchor: the kernel stack top this stub jumps to is 16-byte aligned
+    ;   by construction, not by luck -- set_syscall_stack() receives
+    ;   kernel_stack + THREAD_STACK_SIZE, where kernel_stack sits one guard
+    ;   page into a 4096-byte-stride slot region (thread_alloc_kernel_stack)
+    ;   and THREAD_STACK_SIZE is 32 KiB; set_syscall_stack() ASSERTs the
+    ;   alignment on every publication (kernel/arch/x86_64/syscall.c), and
+    ;   tools/check_abi_align.py models this file against that anchor.
+    ;   The seven saved SYSCALL words leave RSP 8 mod 16, so the argument slot
+    ;   below restores the phase to 0 before the call.
     mov  rax, [rsp + 48]
     sub  rsp, 8
     mov  [rsp], rax

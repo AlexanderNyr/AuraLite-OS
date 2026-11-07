@@ -1,6 +1,6 @@
 # AuraLite OS — DOOM Port Plan
 
-## Status: IN PROGRESS — D0 – D6 done, D7 remaining
+## Status: DONE — D0 – D7 complete (D7 measured 2026-11-05: the Win32 build loads and is refused by name)
 
 | Phase | State |
 |---|---|
@@ -11,7 +11,7 @@
 | D4 Getting the WAD to the program | ✅ done |
 | D5 Integration test and the loud skip | ✅ done |
 | D6 CI wiring | ✅ done |
-| D7 The Win32 personality port | ⬜ todo |
+| D7 The Win32 personality port | ✅ done — 52 named gaps, decisions recorded |
 
 **DOOM runs on AuraLite.** Freedoom Phase 1, in a compositor window, with the
 status bar, the HUD and the automap, driven by the keyboard through the same
@@ -401,16 +401,60 @@ reports without blocking.
 
 ---
 
-### Phase D7 — The Win32 personality port ⬜
+### Phase D7 — The Win32 personality port ✅ (measured 2026-11-05, RESIDUE3 C8)
 
 **Objective.** Run a *Win32* DOOM build through `w32run`.
 
-- [ ] Build `doomgeneric_win.c` with mingw-w64 against the W32 personality
-- [ ] Identify the missing `USER32`/`GDI32` entry points
-- [ ] Decide, per call, whether to implement or to refuse with a diagnostic
+- [x] Build `doomgeneric_win.c` with mingw-w64 against the W32 personality
+- [x] Identify the missing `USER32`/`GDI32` entry points
+- [x] Decide, per call, whether to implement or to refuse with a diagnostic
 
 This is a test of `WIN32_PLAN.md`'s output, not of DOOM. It is the natural next
 consumer of that work and it will find gaps, which is the point.
+
+**What landed.** `make doom-win` fetches upstream into `build/` (GPL-2.0, never
+committed), compiles the 80 engine sources plus upstream's own
+`doomgeneric_win.c` -- *their* platform layer, not AuraLite's -- with mingw-w64,
+and produces a 948 KiB Win32 CUI binary importing four DLLs
+(`GDI32 KERNEL32 msvcrt USER32`). Upstream spells the header `<Windows.h>`; the
+rule generates a one-file shim instead of patching GPL sources for a case.
+`test_doom_w32.sh` is **19/19**.
+
+The run, in order:
+
+```
+w32run: [w32] relocations: 1661 applied (DIR64), delta 0x3ffec0000000, no fixed cap
+w32run: gap  GDI32.dll                2 symbol(s)
+w32run: gap  KERNEL32.dll             1 symbol(s)
+w32run: gap  msvcrt.dll               48 symbol(s)
+w32run: gap  USER32.dll               1 symbol(s)
+w32run: [w32] gap: 4 module(s), 52 symbol(s) missing
+w32run:   missing GDI32.dll!StretchDIBits      <- and 51 more, one line each
+```
+
+So: the C8 streaming loader maps and relocates a real stranger's binary (the
+same loader that took Audacity's 90932 relocations), the binder resolves
+everything resolvable, and then the image is **refused** rather than run
+half-bound -- exit 1, no fault. DOOM does not reach its message loop, and the
+52 names are why.
+
+**The decisions.** One row per group; the count is the whole gap:
+
+| Symbols | Decision | Why |
+|---|---|---|
+| `msvcrt.dll` — 48 (stdio, string, ctype, stdlib, `_lock`/`_unlock`, `__iob_func`, `_initenv`, `signal`) | **implement**, as one block: forward to AuraLite's libc | The personality already owns a libc that `w32run` links against; this is a forwarding table plus the CRT's file-\* and locale state, not new semantics. It is the single largest item and the one that actually blocks DOOM. |
+| `GDI32.dll!StretchDIBits`, `SwapBuffers` | **implement** against the compositor's blit | DOOM's whole video path is these two: a DIB blit and a present. A stub here would be the success-shaped lie this project refuses. |
+| `KERNEL32.dll!VirtualQuery` | **implement** | It is a query over the personality's own region table; refusing it would be a lie about memory the program can already touch. |
+| `USER32.dll!AdjustWindowRect` | **implement** | Pure arithmetic over window metrics, and the metrics already exist (`GetSystemMetrics`). |
+
+Nothing in the gap is decided "refuse": every one of the 52 is implementable
+without inventing behaviour, which is why D7 stops at identification and hands
+a 52-item work list to the next W32 phase rather than a refactor.
+
+**What this phase did NOT do**, stated so the checkbox above is not read as
+more than it is: DOOM's engine has not printed a line, drawn a frame, or read
+the IWAD through the personality. The gate asserts the refusal, the exact
+list, and the absence of a fault.
 
 ---
 

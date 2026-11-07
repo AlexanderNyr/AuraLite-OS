@@ -58,6 +58,40 @@ static spinlock_t kheap_lock = SPINLOCK_UNLOCKED;
  * Returns 0 on success, non-zero if the region limit would be exceeded.
  */
 #define KHEAP_P2M  0x200000ULL
+
+/* RESIDUE3 C2: the large-page accounting the box asked for.  "The mm
+ * accounting must not lie about ORDER": these counters are incremented only
+ * where a 2 MiB leaf was actually installed (paging_map_2m returned 0) and
+ * decremented nowhere, so the printed ratio is a census of the heap's
+ * mappings, not an estimate.  They also make the 1 GiB refusal explicit:
+ * KHEAP_1G_REFUSED stays 0 forever because paging_map_1g() exists but is
+ * never called from the heap -- a heap expansion that asked for 1 GiB leaves
+ * would need 1 GiB of physically contiguous, 1 GiB-aligned RAM, which the
+ * PMM cannot promise at 512 MiB of total memory (the smallest configuration
+ * the tree boots).  The number is printed at boot so the refusal is visible
+ * rather than implied. */
+static uint64_t kheap_2m_leaves;
+static uint64_t kheap_4k_pages;
+static uint64_t kheap_order_refusals;   /* expansions that fell back to 4 KiB */
+
+uint64_t kheap_2m_leaf_count(void)  { return kheap_2m_leaves; }
+uint64_t kheap_4k_page_count(void)  { return kheap_4k_pages; }
+uint64_t kheap_order_refusals_total(void) { return kheap_order_refusals; }
+
+void kheap_largepage_report(void) {
+    uint64_t mapped_bytes = kheap_2m_leaves * KHEAP_P2M + kheap_4k_pages * PAGE_SIZE;
+    kprintf(HEAP_TAG "large-page audit: %llu x 2MiB + %llu x 4KiB = %llu KiB "
+            "(%llu%% of the heap rides 2MiB leaves); 1GiB leaves refused: %llu "
+            "request(s), heap VA window is 256 MiB < 1 GiB and the PMM cannot "
+            "promise a contiguous, aligned 1 GiB run at 512 MiB RAM\n",
+            (unsigned long long)kheap_2m_leaves,
+            (unsigned long long)kheap_4k_pages,
+            (unsigned long long)(mapped_bytes / 1024),
+            (unsigned long long)(mapped_bytes
+                ? (kheap_2m_leaves * KHEAP_P2M) * 100 / mapped_bytes : 0),
+            (unsigned long long)kheap_order_refusals);
+}
+
 static int kheap_expand(heap_t *h, uint64_t want) {
     if (want < EXPAND_MIN) {
         want = EXPAND_MIN;                    /* one 2 MiB page */
@@ -83,6 +117,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
         }
         paging_map(va_abs + mapped, phys,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
+        kheap_4k_pages++;
         mapped += PAGE_SIZE;
     }
 
@@ -94,6 +129,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
                           PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
                           PAGE_FLAG_NO_EXEC) == 0) {
             mapped += KHEAP_P2M;
+            kheap_2m_leaves++;
             continue;
         }
         if (phys != 0) {
@@ -103,6 +139,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
             for (uint64_t i = 0; i < KHEAP_P2M; i += PAGE_SIZE) {
                 pmm_free_frame(phys + i);
             }
+            kheap_order_refusals++;
         }
         break;
     }
@@ -119,6 +156,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
         }
         paging_map(va_abs + mapped, phys,
                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
+        kheap_4k_pages++;
         mapped += PAGE_SIZE;
     }
 

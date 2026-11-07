@@ -76,7 +76,12 @@ rm -f "$LOG32"
         -display none -serial stdio -no-reboot \
         > "$LOG32" 2>/dev/null || true
 
-assert_grep    "$LOG32" "VGA text console online"                      "i386: VGA console up (kprintf second sink)"
+# RESIDUE3 C3 / RES-11: the kprintf second sink is the FRAMEBUFFER now
+# whenever Stage 2 set a VBE mode (RES-12), and the VGA text console is the
+# fallback.  Both lines are asserted: the first is the console the operator
+# sees, the second proves the fallback is still armed underneath it.
+assert_grep    "$LOG32" "framebuffer console online"                    "i386: framebuffer console up (kprintf first sink)"
+assert_grep    "$LOG32" "VGA text console initialised as the fallback"  "i386: VGA text console armed as the fallback"
 assert_grep    "$LOG32" "PS/2 keyboard on IRQ 1"                       "i386: keyboard driver up"
 assert_grep    "$LOG32" "auralite# "                                   "i386: the auralite# prompt (the I5-deferred gate)"
 assert_grep    "$LOG32" "AuraLite OS i386 (protected mode"             "i386: uname round-trip"

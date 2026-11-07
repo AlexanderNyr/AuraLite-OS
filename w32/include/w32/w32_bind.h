@@ -45,4 +45,52 @@ void *w32_resolve(const char *dll, const char *name);
 int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
                      const char **missing_dll, const char **missing_name);
 
+/* ---- the gap ledger (RESIDUE3 C8) ---------------------------------------
+ *
+ * w32_bind_imports() stops at the FIRST unresolved import, which is the right
+ * behaviour for a loader (the image cannot run either way) and the wrong one
+ * for measurement: Audacity 3.7.5's bundle is 19 modules and 419 symbols away
+ * from running, and "the first one" is a sample of one.  This variant walks
+ * every import, binds what resolves, and records what does not, grouped per
+ * module — so a refusal can say "19 module(s), 419 symbol(s) missing" and name
+ * the modules, which is a number a later phase can be measured against.
+ *
+ * `first_dll`/`first_name` keep the old single-miss shape for the callers that
+ * report one line.
+ */
+#define W32_GAP_MODULES_MAX 32
+#define W32_GAP_NAME_MAX    64
+/* RESIDUE3 C8 / DOOM D7: counts answered "how bad", not "which".  The ledger
+ * keeps the first W32_GAP_LIST_MAX missing names as well, so a refusal can be
+ * read as a to-do list -- DOOM's Win32 build misses 52 symbols and every one
+ * of them is a decision. */
+#define W32_GAP_LIST_MAX    128
+
+typedef struct {
+    long symbols;                          /* total unresolved symbols        */
+    int  modules;                          /* distinct DLLs with >= 1 miss    */
+    int  overloaded;                       /* more distinct DLLs than the table */
+    char dll[W32_GAP_MODULES_MAX][W32_GAP_NAME_MAX];
+    long per_module[W32_GAP_MODULES_MAX];
+    char first_dll[W32_GAP_NAME_MAX];
+    char first_name[128];
+    int  listed;                           /* names kept in list[0..listed)   */
+    char list_dll[W32_GAP_LIST_MAX][W32_GAP_NAME_MAX];
+    char list_name[W32_GAP_LIST_MAX][W32_GAP_NAME_MAX];
+} w32_gap_t;
+
+/* 0 = every import bound.  1 = the image parsed and every resolvable import
+ * was bound, but `gap` records the ones that were not (the caller must refuse
+ * to run it).  <0 = the same parse/resource failures w32_bind_imports()
+ * returns. */
+int w32_bind_imports_gap(const uint8_t *image, size_t image_size, uint64_t base,
+                         w32_gap_t *gap);
+
+/* One human line: "[w32] gap: 19 module(s), 419 symbol(s) missing". */
+int w32_gap_describe(const w32_gap_t *gap, char *out, size_t n);
+
+/* One missing name: 1 = filled out, 0 = no more (index past `gap->listed`). */
+int w32_gap_at(const w32_gap_t *gap, int index, char *dll, size_t dn,
+               char *name, size_t nn);
+
 #endif /* AURALITE_W32_BIND_H */

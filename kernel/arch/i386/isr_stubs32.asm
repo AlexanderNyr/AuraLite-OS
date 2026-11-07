@@ -34,9 +34,19 @@ isr_common:
     mov  fs, ax
     mov  gs, ax
 
-    push esp                    ; cdecl arg: pointer to the frame
+    ; RESIDUE3 C2: the same dynamic realign the 64-bit isr_common_stub has
+    ; carried since RESIDUE2 T1.  pusha + the saved DS + this argument leave
+    ; ESP at an arbitrary 4-mod-16 phase (it depends on the interrupted ESP),
+    ; so an aligned SSE spill in isr_dispatch32's callees would #GP.  EBP is
+    ; already saved by pusha, so it can hold the frame pointer across the
+    ; alignment; EAX is saved there too and carries the argument.
+    mov  ebp, esp               ; remember the frame chain
+    mov  eax, esp               ; cdecl arg: pointer to the frame
+    and  esp, -16               ; 16-byte C-ABI alignment
+    sub  esp, 16
+    mov  [esp], eax
     call isr_dispatch32
-    add  esp, 4
+    mov  esp, ebp               ; restore the frame chain
 
     pop  eax                    ; restore DS
     mov  ds, ax

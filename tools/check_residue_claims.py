@@ -5,7 +5,7 @@ Seventh checker of the D8 family.  What is new here: the debt
 RATCHET.  The harvester's per-file marker counts are pinned in
 tools/residue_baseline.txt; any plan growing (or shedding) residue
 markers without moving the baseline AND the ledger in the same
-commit fails.  The ledger itself is arithmetic-checked: 48 rows,
+commit fails.  The ledger itself is arithmetic-checked: 61 rows,
 sequential unique ids, class totals, status totals.
 
 Usage:
@@ -19,8 +19,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-LEDGER_ROWS = 59
-CLASS_PIN = {"W": 35, "M": 7, "N": 4, "S": 13}
+LEDGER_ROWS = 62
+CLASS_PIN = {"W": 36, "M": 8, "N": 4, "S": 14}
 PHASE_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5", "R6",
                "R7", "R8", "R9", "R10", "R11", "R12"]
 
@@ -56,7 +56,10 @@ def claims():
     checks = []
 
     # --- the ledger's arithmetic --------------------------------------
-    rows = re.findall(r"^\| (RES-\d\d) \| (\w+) \| ([A-Z@R\d-]+) \|",
+    # The status cell allows a lowercase phase suffix: RESIDUE3 C5b closes
+    # RES-62 as DONE@C5b, and the old `[A-Z@R\d-]+` shape silently dropped that
+    # row from the count (61 of 62, S 13 of 14) instead of failing loudly.
+    rows = re.findall(r"^\| (RES-\d\d) \| (\w+) \| ([A-Za-z@\d-]+) \|",
                       ledger, re.M)
     ids = [r[0] for r in rows]
     checks.append((
@@ -317,15 +320,40 @@ def claims():
     # --- R12: close-out (when the plan says it landed) ------------------
     if re.search(r"^### R12[^\n]*✅ COMPLETE", plan, re.M):
         todo = read("TODO.md")
+        # Count the ROWS, not the string: the arithmetic prose below the
+        # table also names the status, and a substring count conflates the
+        # two.  The floor moves as successors close rows, each move
+        # recorded here in the same commit that moves it: R12 closed at
+        # seven (RES-11/12/36/38/39/46/47), GL2 L7 took RES-41 (DONE@L7),
+        # RESIDUE2 F7 took RES-46 (DONE@F7), RESIDUE3 C1 flipped
+        # RES-38/39 (DONE@T6) and RES-47 (DONE@T7), RESIDUE3 C3 took
+        # RES-12 (DONE@C3, VBE) and handed RES-11 on to its own C3b (the
+        # i386 compositor, HANDED-OFF@C3), and RESIDUE3 C4 took the LAST
+        # one — RES-36 (MSI/MSI-X, DONE@C4) — so the R12 set has now been
+        # empty for the first time in the ledger's history.  The clause is
+        # flipped rather than dropped: it used to assert "at least one R12
+        # hand-off is still tracked", which was the right assertion while
+        # one was; what it must assert now is the terminal state itself.
+        r12_rows = len(re.findall(
+            r"^\| RES-\d\d \| \w \| HANDED-OFF@R12 \|", ledger, re.M))
+        # Once the last hand-off closed (RES-36 at RESIDUE3 C4) the set is
+        # empty and MUST STAY empty: a new HANDED-OFF@R12 row would mean a
+        # closed plan reopened.  Every R12 row also carries its measured
+        # opener, which is what makes the emptiness checkable rather than
+        # hopeful.
+        # The R12 rows are gone by SUCCESSION, not by deletion: each one
+        # flipped to the phase that closed it, so the successors are what
+        # can be counted now (T6/T7 for RESIDUE2, C3/C4 for RESIDUE3).
+        r12_successors = len(re.findall(
+            r"^\| RES-\d\d \| \w \| DONE@(?:T6|T7|C3|C4) \|", ledger,
+            re.M))
         checks.append((
             "R12: the ledger is terminal — no row still promises "
-            "future work 'at R12', and every S hand-off carries a "
-            "measured opener",
+            "future work 'at R12' (the set is empty and stays empty), "
+            "and every R12 row carried a measured opener",
             "at R12" not in ledger and
             ledger.count("OPENER, measured") >= 8 and
-            # GL2 L7 closed RES-41 (DONE@L7), so seven remain: the R12
-            # count is a floor, not a pin on the exact number.
-            ledger.count("HANDED-OFF@R12") >= 7))
+            r12_rows == 0 and r12_successors >= 5))
         checks.append((
             "R12: TODO.md is kept IN FULL and annotated — the headline "
             "note names the ledger as the index, the file kept its "

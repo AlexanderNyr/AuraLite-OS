@@ -55,6 +55,7 @@ fi
 ALL_CASES=(
     test_boot_to_shell
     test_perf_smoke
+    test_i386_gui
     test_metal_null
     test_selftest_modes
     test_gui_dirty_uefi
@@ -103,6 +104,11 @@ ALL_CASES=(
     test_process_cleanup
     test_memory_reaping
     test_fork_cow
+    # RESIDUE3 C2: the kernel half.  test_aspace_refs is the refcounted
+    # address-space gate (pthread zombies reaped, last owner frees);
+    # test_stack_alignment is the in-guest half of the 16-byte C ABI.
+    test_aspace_refs
+    test_stack_alignment
     test_elf_permissions
     test_w32_pe_loader
     test_w32_kernel32
@@ -130,6 +136,9 @@ ALL_CASES=(
     test_w32a14_putty_fixture
     test_w32a15_7zip_fixture
     test_w32a16_npp_fixture
+    test_w32_scale
+    test_w32_failclean_live
+    test_w32_static_slice
     test_wr1_shell_namespace
     test_wr2_7zip_launch
     test_wr2_7zip_live
@@ -137,6 +146,7 @@ ALL_CASES=(
     test_wr4_putty_live
     test_ahci_large_read
     test_doom
+    test_doom_w32
     test_stack_guard
     test_panic_diag
     test_ist_double_fault
@@ -151,6 +161,7 @@ ALL_CASES=(
     test_fat32_persistence
     test_fat32_full
     test_ext2
+    test_nvme
     test_fs_stress
     test_irq_ap_wake
     test_fsformat_knob
@@ -195,6 +206,7 @@ ALL_CASES=(
     test_dns_cache
     test_dns_tcp
     test_ip_frag
+    test_msix
     test_e1000_irq
     test_e1000_idle_drain
     test_udp_blocking
@@ -211,6 +223,7 @@ ALL_CASES=(
     test_wifi_virtual_ap
     test_realweb_rustlang
     test_tcp_options
+    test_tcp_wscale
     test_ipv6_ping6
     test_tcp6
     test_https6
@@ -247,6 +260,9 @@ ALL_CASES=(
     test_xhci_bulk
     test_xhci_interrupt
     test_usb_hid_input
+    test_bt_hci_transport
+    test_usb_hid_report_ids
+    test_usb_ehci_split
     test_usb_hub_depth
     test_usb_hub_full
     test_usb_full_stack
@@ -322,9 +338,9 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
 GROUP_NAMES="core posix fs usb net gui w32-core w32-gui w32-apps selfhost-script selfhost-closure selfhost-img fsfull ota lx"
 group_re() {
     case "$1" in
-        core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
+        core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|aspace_refs|stack_alignment|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file|msix)$' ;;
         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|deadkeys|shell_all|sysmon_data|userspace_apps)$' ;;
-        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs|fscheck|bc_writeback|ahci_matrix)$' ;;
+        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs|fscheck|bc_writeback|ahci_matrix|nvme)$' ;;
         # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI
         # shard, mirroring the usb shard partition.  Kept separate from the
         # `fs` group so the multi-boot harnesses (each is several QEMU
@@ -342,9 +358,9 @@ group_re() {
         # there must be legible as such, not buried in a POSIX shard's
         # 30-case log.
         lx)    echo '^test_lx_[a-z0-9_]+$' ;;
-        usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+)$' ;;
-        net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net)$' ;;
-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom)$' ;;
+        usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+|bt_hci_transport)$' ;;
+        net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net|tcp_wscale)$' ;;
+        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui)$' ;;
         # ---- the Win32 personality: THREE shards (2026-09-30) ----
         #
         # It used to be one `w32` group and it had become the critical path
@@ -370,7 +386,11 @@ group_re() {
         # pattern-based on purpose: a new Win32 case must be placed by a
         # human into the shard whose budget it spends, and until it is, CI
         # refuses to run instead of silently dropping it.
-        w32-core) echo '^test_(w32_pe_loader|w32_kernel32|w32_crt|w32_loadlibrary|w32_integration|w32_a1_loader|w32_a2_kernel32|w32_a3|w32_a4_unwind|w32a9_registry|w32a13_msvcrt)$' ;;
+        # RESIDUE3 C8: the three loader/personality gates that measure the
+        # surface itself (relocation scale, the 35 FAIL-CLEAN functions, the
+        # 820 static-only pairs) ride with the loader shard -- they are about
+        # w32run's own machinery, not about an app's run states.
+        w32-core) echo '^test_(w32_pe_loader|w32_kernel32|w32_crt|w32_loadlibrary|w32_integration|w32_a1_loader|w32_a2_kernel32|w32_a3|w32_a4_unwind|w32a9_registry|w32a13_msvcrt|w32_scale|w32_failclean_live|w32_static_slice)$' ;;
         # 71+70+120+90+100+150+200+150+234+540+90 = 1815 s
         w32-gui)  echo '^test_(w32_user32|w32a5_user32win|w32a6_user32dlg|w32a7_gdi|w32a8_comctl32|w32a11_theme)$' ;;
         # 102+497+412+380+240+80 = 1711 s

@@ -30,6 +30,9 @@
 #include "kernel/arch/i386/user32.h"
 #include "kernel/arch/i386/initrd32.h"
 #include "kernel/arch/i386/vga32.h"
+#include "kernel/arch/i386/fbmap32.h"
+#include "drivers/framebuffer/fb.h"
+#include "kernel/boot_info.h"
 #include "kernel/arch/i386/kbd32.h"
 #include "kernel/arch/i386/ata32.h"
 #include "kernel/arch/i386/fsglue32.h"
@@ -75,6 +78,14 @@ static int boot_info_check(uint32_t phys)
     }
     kprintf32("[mm]    HHDM offset: %x (direct map, %u MiB)\n",
               KERNEL_VBASE_32, DIRECT_MAP_BYTES / (1024 * 1024));
+
+    /* RESIDUE3 C3 / RES-11: hand the SAME block to the shared accessor
+     * layer (kernel/boot_info.c, now a KERNEL32_SHARED row).  The pointer
+     * passed is the direct-mapped one, which is what the non-x86_64 branch
+     * of boot_info_init() stores verbatim -- so boot_get_framebuffer() and
+     * boot_get_hhdm_offset() work at 32 bits with no second copy of the
+     * struct and no width-specific accessor. */
+    boot_info_init((boot_info_t *)boot_info);
     return 0;
 }
 
@@ -232,10 +243,35 @@ void kmain32(uint32_t boot_info_phys)
         goto halt;
     }
 
-    /* ---- I7: the console grows a screen and a keyboard ---- */
-    vga32_init();
-    kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
-              "kprintf fans out to UART + VGA\n");
+    /* ---- I7 + RES-11: the console grows a screen and a keyboard ---- */
+    /* The framebuffer comes first: RES-12 makes Stage 2 set a VBE mode, so
+     * on any machine with a VBE BIOS the text buffer is invisible and the
+     * framebuffer is the only real screen.  vga32_init() still runs, but
+     * only owns the display when fb_init() found nothing -- kprintf32
+     * chooses between the two with fb_console_up(). */
+    fb_init();
+    if (fb_console_up()) {
+        boot_fb_t *fb = boot_get_framebuffer();
+        unsigned w = fb ? (unsigned)fb->width  : 0;
+        unsigned h = fb ? (unsigned)fb->height : 0;
+        unsigned p = fb ? (unsigned)fb->pitch  : 0;
+        kprintf32("[boot] framebuffer console online (%ux%ux32, pitch %u, "
+                  "%ux%u cells at %x)\n",
+                  w, h, p, w / 8, h / 16, FB32_WINDOW_BASE);
+        /* RES-11 finding, printed where an operator will see it: the i386
+         * console runs shadowless (no contiguous allocator, no PAT), so its
+         * scrolls move pixels in place.  Calling the shared arming routine
+         * is what emits that receipt -- it refuses on this width instead of
+         * silently pretending the x86_64 H3 discipline was adopted. */
+        fb_arm_shadow();
+        vga32_init();          /* kept warm: the fallback if fb dies */
+        kprintf32("[boot] VGA text console initialised as the fallback "
+                  "(80x25 at 0xB8000); kprintf prefers the framebuffer\n");
+    } else {
+        vga32_init();
+        kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
+                  "kprintf fans out to UART + VGA\n");
+    }
     kbd32_init();
 
     /* ---- I8: storage + network (the gates that moved from I7) ---- */

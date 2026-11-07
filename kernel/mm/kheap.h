@@ -44,4 +44,11 @@ void kheap_class_drain(void);
 /* Gate self-test: 10 000 alloc/free cycles with corruption + leak checks. */
 void kheap_self_test(void);
 
+
+/* RESIDUE3 C2: large-page accounting receipts (see kheap.c). */
+uint64_t kheap_2m_leaf_count(void);
+uint64_t kheap_4k_page_count(void);
+uint64_t kheap_order_refusals_total(void);
+void     kheap_largepage_report(void);
+
 #endif /* AURALITE_MM_KHEAP_H */

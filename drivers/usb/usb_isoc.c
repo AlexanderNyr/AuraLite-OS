@@ -95,9 +95,48 @@ int usb_isoc_transfer_simple(usb_device_t *dev, uint8_t ep, void *data, uint32_t
 }
 uint32_t usb_isoc_bandwidth_used(void) { return bandwidth_used; }
 uint32_t usb_isoc_max_bandwidth(void) { return max_bandwidth; }
+/* C5: how many packets the streaming proof actually completed.  Set by
+ * usb_isoc_note_stream(), which the audio driver calls with the count it got
+ * from usb_isochronous_stream().  The self-test below runs AFTER the audio
+ * self-test (kernel.c ordering), so this is populated by the time it prints —
+ * and when it is still zero, the SKIP is now an honest statement about THIS
+ * machine rather than a blanket admission about the framework. */
+static uint32_t frames_streamed;
+
+void usb_isoc_note_stream(uint32_t packets) {
+    frames_streamed += packets;
+}
+uint32_t usb_isoc_frames_streamed(void) { return frames_streamed; }
+
+int usb_isoc_stream(usb_device_t *dev, uint8_t ep, uint32_t packet_bytes,
+                    void *data, uint32_t len, uint32_t *packets_out) {
+    if (!dev || !data || len == 0) return -1;
+    if (bandwidth_used + 5 > max_bandwidth) {
+        kprintf("[isoc] bandwidth exceeded (used %d%%)\n", bandwidth_used);
+        return -1;
+    }
+    bandwidth_used += 5;
+    uint32_t pkts = 0;
+    int r = usb_isochronous_stream(dev, ep, packet_bytes, data, len, &pkts);
+    bandwidth_used -= 5;
+    if (r >= 0) frames_streamed += pkts;
+    if (packets_out) *packets_out = pkts;
+    return r;
+}
+
 void usb_isoc_self_test(void) {
-    kprintf("[isoc] self-test: framework limits only (no transfer is issued)\n");
+    kprintf("[isoc] self-test: framework limits and stream accounting\n");
     kprintf("[isoc]   max bandwidth %d%%, used %d%%\n", max_bandwidth, bandwidth_used);
-    
-    kprintf("[isoc] SKIP: no isochronous endpoint exercised (USB_PLAN.md U9)\n");
+    kprintf("[isoc]   streams completed: %u packet(s) this boot\n", frames_streamed);
+    if (frames_streamed > 0) {
+        /* The frame count itself was printed by the producer (usb_audio), with
+         * the over/underrun accounting next to it.  Repeating the numbers here
+         * would be a second source of truth for the same measurement. */
+        kprintf("[isoc] PASS: isochronous endpoint exercised (%u packet(s) "
+                "scheduled on frames; see the [isoc] PASS line above)\n",
+                frames_streamed);
+    } else {
+        kprintf("[isoc] SKIP: no isochronous endpoint exercised on this machine "
+                "(no USB audio stream; attach `-device usb-audio,audiodev=...`)\n");
+    }
 }

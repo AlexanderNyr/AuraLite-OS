@@ -80,6 +80,10 @@ wifi_state_t wifi_get_state(void);
 /* Get the BSSID of the current connection. */
 int wifi_get_bssid(uint8_t bssid[6]);
 
+/* Our own MAC as reported by the driver at registration (C6: the netdev seam
+ * needs it before any association exists). */
+int wifi_get_mac(uint8_t mac[6]);
+
 /* Send a data frame (Ethernet → 802.11 conversion).
  * Wraps the payload in an 802.11 data frame header. */
 int wifi_send_data(const void *eth_frame, uint32_t len);

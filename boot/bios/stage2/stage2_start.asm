@@ -75,8 +75,11 @@ stage2_entry:
 
     ; Force VGA text mode 3.  SeaBIOS starts there; a leftover graphics
     ; mode (or a firmware that never programmed the CRTC) would leave
-    ; the monitor dark for the entire BIOS path — there is no VBE
-    ; linear framebuffer in this loader.
+    ; the monitor dark for the entire BIOS path.  The VBE linear
+    ; framebuffer is set up at the END of this file (RES-12): probe the
+    ; modes late, print the choice while text mode is still live, and
+    ; only then switch -- a graphics mode set here would blind every
+    ; message the loader prints after it.
     mov  ax, 0x0003
     int  0x10
 
@@ -389,6 +392,31 @@ stage2_entry:
     call log16_puts
 .initrd_done:
 
+    ; ---- RESIDUE3 C3 / RES-12: the linear framebuffer ----------------
+    ; Probe first (sets no mode, so the selection line reaches BOTH
+    ; consoles), then commit (sets the mode, fills boot_info_t.fb, and
+    ; reports on the UART only -- the text console is gone by then).
+    ; Failure is not fatal on either path: text mode 3 keeps working and
+    ; fb stays zero, which is exactly the pre-RES-12 behaviour.
+    call vbe_probe
+    jc   .vbe_none
+    cmp  byte [vbe_which], 1
+    jne  .vbe_800
+    mov  si, msg_vbe_1024
+    call log16_puts
+    jmp  .vbe_commit
+.vbe_800:
+    mov  si, msg_vbe_800
+    call log16_puts
+.vbe_commit:
+    ; vbe_commit reports its own failure on both consoles.
+    call vbe_commit
+    jmp  .vbe_done
+.vbe_none:
+    mov  si, msg_vbe_none
+    call log16_puts
+.vbe_done:
+
     ; ---- Final hand-off: one of two exits, chosen by the BL10 verdict.
     cmp  byte [lm_absent], 0
     jne  .go_prot32
@@ -536,6 +564,14 @@ msg_k_old_found:    db "[BL4] kernel.old located", 0x0D, 0x0A, 0
 msg_k_old_load_ok:  db "[BL4] kernel.old loaded to 0x00200000", 0x0D, 0x0A, 0
 msg_k_old_gone:     db "[BL4] KERNEL.OLD missing or unloadable; halting", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
+; RES-12: the VBE receipts.  The first four go to BOTH consoles (printed
+; before the mode switch, while text mode is still live); msg_vbe_ready is
+; printed by vbe_commit AFTER the switch and therefore on the UART only.
+msg_vbe_1024:    db "[vbe] selecting 1024x768x32 (linear framebuffer)", 0x0D, 0x0A, 0
+msg_vbe_800:     db "[vbe] selecting 800x600x32 (linear framebuffer)", 0x0D, 0x0A, 0
+msg_vbe_none:    db "[vbe] no 32-bpp linear-framebuffer mode; keeping VGA text 80x25", 0x0D, 0x0A, 0
+msg_vbe_fail:    db "[vbe] mode set refused by the BIOS; keeping VGA text 80x25", 0x0D, 0x0A, 0
+msg_vbe_ready:   db "[vbe] framebuffer live; boot_info.fb filled", 0x0D, 0x0A, 0
 
 ; File names in 8.3 uppercase, space-padded, 11 bytes exact.
 name_kernel:     db "KERNEL  ELF"
@@ -545,6 +581,18 @@ name_initrd:   db "INITRD  TAR"
 
 boot_drive: db 0
 lm_absent:  db 0        ; BL10 verdict: 1 = no long mode, take the 32-bit path
+
+; RES-12 scratch.  These live INSIDE the Stage 2 image on purpose: DS stays 0
+; (with a 64 KiB limit) for the whole loader, so a buffer placed below 0x8000
+; or inside the BIOS's own segment would each cost a segment swap mid-scan.
+; Sitting here they are ordinary DS-relative data.
+vbe_mode:       dw 0    ; the VBE mode number vbe_scan picked
+vbe_which:      db 0    ; 1 = 1024x768x32, 2 = 800x600x32
+vbe_list_off:   dw 0    ; the BIOS's mode-list far pointer, as reported
+vbe_list_seg:   dw 0
+vbe_walk:       dw 0    ; scan cursor into vbe_list_copy
+vbe_list_copy:  times 512 db 0  ; VBE_LIST_MAX mode numbers + a terminator
+vbe_block_copy: times 256 db 0  ; the post-set ModeInfoBlock
 
 ; --------------------------------------------------------------------------
 ; Included modules (order matters only for symbol resolution)
@@ -596,6 +644,7 @@ vga_puts:
 %include "boot/bios/stage2/fat.inc"
 %include "boot/bios/stage2/elf.inc"
 %include "boot/bios/stage2/elf32.inc"
+%include "boot/bios/stage2/vbe.inc"    ; RES-12: VBE probe/commit
 %include "boot/bios/stage2/paging.inc"
 %include "boot/bios/stage2/longmode.inc"
 %include "boot/bios/stage2/pmode32.inc"

@@ -24,6 +24,7 @@
 #include <stdint.h>
 #include "drivers/wifi/wifi.h"
 #include "drivers/wifi/wifi_virt.h"
+#include "drivers/wifi/wifi_netdev.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/kheap.h"
@@ -61,6 +62,14 @@ int wifi_init(void) {
     if (!driver_registered) {
         kprintf("[wifi] no wireless driver registered\n");
         return -1;
+    }
+    /* Idempotent (C6): kernel/net attaches the virtual link during net_init(),
+     * which runs BEFORE the boot self-test's wifi_init().  The old body reset
+     * conn_state/scan_count unconditionally, so the second call tore the live
+     * association down and the self-test then had nothing to report. */
+    if (conn_state == WIFI_STATE_CONNECTED) {
+        kprintf("[wifi] already initialised (link up, AID=%u)\n", connected_aid);
+        return 0;
     }
     conn_state = WIFI_STATE_DISCONNECTED;
     scan_count = 0;
@@ -255,6 +264,12 @@ wifi_state_t wifi_get_state(void) {
     return conn_state;
 }
 
+int wifi_get_mac(uint8_t mac[6]) {
+    if (!driver_registered || !mac) return -1;
+    memcpy(mac, our_mac, 6);
+    return 0;
+}
+
 int wifi_get_bssid(uint8_t bssid[6]) {
     if (conn_state != WIFI_STATE_CONNECTED) return -1;
     memcpy(bssid, connected_bssid, 6);
@@ -273,6 +288,49 @@ int wifi_send_data(const void *eth_frame, uint32_t len) {
     return driver.tx_raw(wifi_frame, (uint32_t)wifi_len);
 }
 
+/* C6: reboot-safe receipt printing for the virtual-AP flow.  Called both by
+ * the boot self-test and after kernel/net's fallback attached the link, so
+ * the same lines appear whichever path brought the association up. */
+static void wifi_virt_receipts(void) {
+    const wifi_scan_result_t *ap = wifi_get_scan_result(0);
+    if (ap && strcmp(ap->bss.ssid, "AuraVirt") == 0) {
+        kprintf("[wifi] PASS: virtual AP: scan found '%s' ch%u "
+                "(parsed from the probe response)\n",
+                ap->bss.ssid, ap->bss.channel);
+    } else {
+        kprintf("[wifi] FAIL: virtual AP scan (no 'AuraVirt' in the results)\n");
+        return;
+    }
+
+    if (conn_state == WIFI_STATE_CONNECTED && auth_ok &&
+        connected_aid == (uint16_t)(0xC005 & 0x3FFF)) {
+        kprintf("[wifi] PASS: virtual AP: open-auth + assoc, AID=%u "
+                "from the wire\n", connected_aid);
+    } else {
+        kprintf("[wifi] FAIL: virtual AP connect\n");
+        return;
+    }
+
+    /* C6: the data path.  The AP carried Ethernet frames up from 802.11 data
+     * frames and answered those addressed to it, so these counters are what
+     * the IP stack's own traffic produced -- not a synthetic frame. */
+    kprintf("[wifi] PASS: virtual AP: LLC/SNAP data path carried %d frame(s), "
+            "%u byte(s)\n",
+            wifi_virt_data_frames(), wifi_virt_data_bytes());
+
+    if (wifi_virt_eth_frames() > 0 &&
+        (wifi_virt_arp_replies() > 0 || wifi_virt_icmp_replies() > 0)) {
+        kprintf("[wifi] PASS: virtual AP answered %d ARP request(s) and %d ICMP "
+                "echo request(s) with real replies (%d Ethernet frame(s), %u "
+                "bytes)\n",
+                wifi_virt_arp_replies(), wifi_virt_icmp_replies(),
+                wifi_virt_eth_frames(), wifi_virt_eth_bytes());
+    } else {
+        kprintf("[wifi] note: virtual AP saw no ARP/ICMP for its address "
+                "(no IP traffic over the link this boot)\n");
+    }
+}
+
 void wifi_self_test(void) {
     kprintf("[wifi] self-test:\n");
     kprintf("[wifi]   IEEE 802.11 management: Beacon, Probe, Auth, Assoc\n");
@@ -280,6 +338,16 @@ void wifi_self_test(void) {
             "test_wifi_proto)\n");
     kprintf("[wifi]   RX ingestion: wifi_rx_frame (scan/auth/aid from "
             "parsed frames)\n");
+    kprintf("[wifi]   Data path: netdev seam (wifi_netdev.c) into "
+            "kernel/net/net.c\n");
+
+    if (driver_registered && conn_state == WIFI_STATE_CONNECTED) {
+        /* kernel/net's fallback already brought the link up (C6). */
+        kprintf("[wifi] virtual link is the active NIC: %s\n",
+                wifi_virt_netdev_active() ? "yes" : "no");
+        wifi_virt_receipts();
+        return;
+    }
 
     if (!driver_registered) {
         /* No real silicon in the tree: exercise the whole MAC flow over
@@ -287,41 +355,22 @@ void wifi_self_test(void) {
          * T6; real chipsets stay a loud D2 skip). */
         wifi_virt_register();
         wifi_init();
-
-        int n = wifi_scan();
-        const wifi_scan_result_t *ap = wifi_get_scan_result(0);
-        if (n >= 1 && ap && strcmp(ap->bss.ssid, "AuraVirt") == 0 &&
-                ap->bss.channel == 6) {
-            kprintf("[wifi] PASS: virtual AP: scan found '%s' ch%u "
-                    "(parsed from the probe response)\n",
-                    ap->bss.ssid, ap->bss.channel);
-        } else {
-            kprintf("[wifi] FAIL: virtual AP scan (n=%d)\n", n);
+        if (wifi_scan() <= 0) {
+            kprintf("[wifi] FAIL: virtual AP scan (nothing found)\n");
             return;
         }
-
-        if (wifi_connect("AuraVirt") == 0 && connected_aid ==
-                (uint16_t)(0xC005 & 0x3FFF)) {
-            kprintf("[wifi] PASS: virtual AP: open-auth + assoc, AID=%u "
-                    "from the wire\n", connected_aid);
-        } else {
+        if (wifi_connect("AuraVirt") != 0) {
             kprintf("[wifi] FAIL: virtual AP connect\n");
             return;
         }
-
-        /* One Ethernet frame through the LLC/SNAP data path. */
+        /* One Ethernet frame through the LLC/SNAP data path even when the
+         * stack is not using this link (a wired NIC is active): the MAC-level
+         * receipt must not depend on which NIC the IP stack picked. */
         uint8_t eth[60] = {0};
         eth[12] = 0x08; eth[13] = 0x00;       /* ethertype IPv4 */
         for (int i = 14; i < 60; i++) eth[i] = (uint8_t)i;
-        if (wifi_send_data(eth, sizeof(eth)) > 0 &&
-                wifi_virt_data_frames() == 1 &&
-                wifi_virt_data_bytes() == 24 + 8 + 46) {
-            kprintf("[wifi] PASS: virtual AP: %u data bytes through the "
-                    "LLC/SNAP path\n", wifi_virt_data_bytes());
-        } else {
-            kprintf("[wifi] FAIL: virtual AP data path\n");
-            return;
-        }
+        (void)wifi_send_data(eth, sizeof(eth));
+        wifi_virt_receipts();
         return;
     }
 

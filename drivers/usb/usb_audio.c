@@ -1,12 +1,30 @@
 /* usb_audio.c — Full USB Audio driver (UAC1 + UAC2) */
 #include "drivers/usb/usb_audio.h"
 #include "drivers/usb/usb_core.h"
+#include "drivers/usb/xhci.h"   /* C5: isoc stream statistics */
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/boot_info.h"
 
 usb_audio_device_t usb_audio_devices[USB_AUDIO_MAX_DEVICES];
+
+/* A quarter-wave sine table in Q15.  64 entries is coarse for audio and
+ * perfectly fine for proving that samples move: the point of the C5 receipt
+ * is the frame count, not the fidelity. */
+static const int16_t sin_q15[64] = {
+        0,   3212,   6393,   9512,  12539,  15446,  18204,  20787,
+    23170,  25329,  27245,  28905,  30273,  31356,  32137,  32609,
+    32767,  32609,  32137,  31356,  30273,  28905,  27245,  25329,
+    23170,  20787,  18204,  15446,  12539,   9512,   6393,   3212,
+        0,  -3212,  -6393,  -9512, -12539, -15446, -18204, -20787,
+   -23170, -25329, -27245, -28905, -30273, -31356, -32137, -32609,
+   -32767, -32609, -32137, -31356, -30273, -28905, -27245, -25329,
+   -23170, -20787, -18204, -15446, -12539,  -9512,  -6393,  -3212,
+};
+static int16_t sine_table_16(uint32_t phase) {
+    return sin_q15[(phase >> 10) & 63];
+}
 
 static int audio_class_request(usb_device_t *dev, uint8_t iface, uint8_t req,
                                uint16_t value, uint16_t index, void *data, uint16_t len, int dir_in) {
@@ -173,6 +191,96 @@ int usb_audio_read(usb_audio_device_t *aud, void *data, uint32_t frames) {
     }
     return -1;
 }
+/* C5: the streaming proof.  A 440 Hz sine, packetised at the endpoint's own
+ * max packet size, pushed through the isochronous path and COUNTED -- this is
+ * the receipt that flips `[isoc] SKIP: no isochronous endpoint exercised`
+ * into a frame count.  Everything here is generated in the guest: no audio
+ * backend is required, and `-audiodev none` is enough, because what is being
+ * proven is that the host controller schedules packets on frames.
+ *
+ * Returns the number of packets that completed (0 if there is nothing to
+ * stream to, which is not an error -- a machine without USB audio simply has
+ * no isoc endpoint to exercise). */
+uint32_t usb_audio_stream_selftest(void) {
+    usb_audio_device_t *aud = NULL;
+    int stream_idx = -1;
+    /* Two passes: an xHCI device first, because that is the controller with a
+     * frame-scheduled stream path.  A machine with one OHCI audio device and
+     * one xHCI audio device (the self-test lane attaches exactly that) would
+     * otherwise prove whichever happened to enumerate first, and the two are
+     * not the same claim. */
+    for (int pass = 0; pass < 2 && !aud; pass++) {
+        for (int i = 0; i < USB_AUDIO_MAX_DEVICES && !aud; i++) {
+            if (!usb_audio_devices[i].in_use || !usb_audio_devices[i].dev) continue;
+            int is_xhci = (usb_audio_devices[i].dev->controller == USB_CTRL_XHCI);
+            if ((pass == 0) != (is_xhci != 0)) continue;
+            for (int j = 0; j < usb_audio_devices[i].num_streams; j++) {
+                if (usb_audio_devices[i].streams[j].isoc_out_ep) {
+                    aud = &usb_audio_devices[i];
+                    stream_idx = j;
+                    break;
+                }
+            }
+        }
+    }
+    if (!aud) {
+        kprintf("[isoc] no USB audio OUT stream on this machine: nothing to stream "
+                "(attach `-device usb-audio,audiodev=...`)\n");
+        return 0;
+    }
+    usb_audio_stream_t *st = &aud->streams[stream_idx];
+    uint32_t pkt = st->max_packet ? st->max_packet : 192;
+    /* 24 packets = 24 ms of full-speed audio: long enough for the frame
+     * accounting to mean something, short enough not to stall a boot. */
+    const uint32_t npkts = 24;
+    uint32_t bytes = pkt * npkts;
+    static int16_t sine_buf[24 * 256];         /* worst case: 24 x 256 B */
+    if (bytes > sizeof(sine_buf)) bytes = sizeof(sine_buf);
+
+    /* 440 Hz at the device's rate, 16-bit stereo (what UAC1 audio offers):
+     * one packet is one frame of USB time. */
+    uint32_t rate = aud->current_rate ? aud->current_rate : 44100;
+    uint32_t frames_per_pkt = pkt / 4;          /* 2 channels x 2 bytes */
+    if (frames_per_pkt == 0) frames_per_pkt = 1;
+    for (uint32_t i = 0; i < bytes / 2; i++) {
+        /* integer sine table access, no libm in the kernel */
+        uint32_t frame = i / 2;
+        uint32_t phase = (uint32_t)((frame * 440u * 65536u) / rate) % 65536u;
+        sine_buf[i] = (int16_t)(sine_table_16(phase) / 2);
+    }
+
+    int started = usb_audio_start_stream(aud, (uint8_t)stream_idx);
+    if (started < 0) {
+        kprintf("[isoc] FAIL: could not select alt 1 on stream %d (IF %d)\n",
+                stream_idx, st->interface_number);
+        return 0;
+    }
+
+    uint32_t packets = 0;
+    int r = usb_isochronous_stream(aud->dev, st->isoc_out_ep, pkt,
+                                   sine_buf, bytes, &packets);
+    aud->frames_played += (uint32_t)frames_per_pkt * packets;
+    usb_audio_stop_stream(aud, (uint8_t)stream_idx);
+
+    uint32_t sub = 0, comp = 0, over = 0, under = 0, tmo = 0;
+    xhci_isoc_stats(&sub, &comp, &over, &under, &tmo);
+    if (r >= 0 && packets > 0) {
+        kprintf("[isoc] PASS: %u packet(s) streamed on %s ep 0x%02x "
+                "(%u B/packet, 440 Hz sine, %u frames of audio)\n",
+                packets,
+                (aud->dev->controller == USB_CTRL_XHCI) ? "xHCI" : "USB",
+                st->isoc_out_ep, pkt, (unsigned)(frames_per_pkt * packets));
+        kprintf("[isoc]   frames: scheduled %u, completed %u, lost(overrun) %u, "
+                "empty bursts %u, timeouts %u, isoclock frame(s) elapsed %u%s\n",
+                sub, comp, over, under, tmo, xhci_isoc_last_frames(),
+                xhci_isoc_clock_live() ? "" : " (MFINDEX FROZEN)");
+    } else {
+        kprintf("[isoc] FAIL: stream did not complete (%d), %u/%u packet(s)\n",
+                r, packets, npkts);
+    }
+    return packets;
+}
+
 int usb_audio_set_volume(usb_audio_device_t *aud, int16_t vol) {
     if (!aud) return -1;
     aud->volume = vol;

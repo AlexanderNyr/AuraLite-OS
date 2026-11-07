@@ -17,6 +17,7 @@
 #include <stdint.h>
 #include "drivers/usb/ehci.h"
 #include "drivers/usb/usb_core.h"   /* U7: TT hub address/port for split transactions */
+#include "drivers/usb/ehci_qh.h"     /* C5b: QH capability words, host-tested */
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/cpu.h"
@@ -84,6 +85,8 @@
 #define PORTSC_LS_MASK       0x3
 #define PORTSC_LS_KSTATE     0x1          /* K-state = low-speed */
 #define PORTSC_LS_JSTATE     0x2          /* J-state = full/high-speed */
+#define PORTSC_PSPD_SHIFT    26           /* Port Speed (bits 26-27) */
+#define PORTSC_PSPD_MASK     0x3          /* 0=full, 1=low, 2=high (EHCI 1.0 t.2-16) */
 
 /* CONFIGFLAG */
 #define CONFIGFLAG_FLAG      (1u << 0)    /* Configure Flag */
@@ -253,10 +256,29 @@ static int ehci_port_reset(int port) {
  * In EHCI, if the port is still owned by EHCI after reset, it's high-speed.
  * If the line status was K-state (low-speed) before reset, the port should be
  * released to the companion controller. */
-static const char *ehci_port_speed(int port) {
-    /* After a successful EHCI reset, the device is high-speed. */
-    return "high-speed";
+/* Port speed from PORTSC.PSPD, valid once the port is enabled (EHCI 1.0
+ * table 2-16).  This used to be a stub that returned "high-speed" for every
+ * port, which was right for the only case the code had ever seen and wrong
+ * for the case that matters: a full-speed device on a high-speed root port
+ * (QEMU attaches one happily) is *not* high-speed, and its queue head must
+ * say so or the controller drives it with high-speed timing. */
+uint8_t ehci_port_speed_code(int port) {
+    uint32_t ps = port_sc(port);
+    if (!(ps & PORTSC_CCS)) return 0xFF;
+    return (uint8_t)((ps >> PORTSC_PSPD_SHIFT) & PORTSC_PSPD_MASK);
 }
+
+static const char *ehci_port_speed(int port) {
+    switch (ehci_port_speed_code(port)) {
+    case 0:  return "full-speed";
+    case 1:  return "low-speed";
+    case 2:  return "high-speed";
+    default: return "unknown-speed";
+    }
+}
+
+/* U7-compatible string used from the scan path; keeps the old name usable. */
+static const char *ehci_port_speed_str(int port) { return ehci_port_speed(port); }
 
 /* Release a port to the companion controller (for low/full-speed devices). */
 static void ehci_release_port(int port) {
@@ -418,7 +440,8 @@ found:
 
             /* Attempt high-speed reset. */
             if (ehci_port_reset(i) == 0) {
-                kprintf("[ehci] port %d: %s device\n", i, ehci_port_speed(i));
+                kprintf("[ehci] port %d: %s device (PSPD=%u)\n", i,
+                        ehci_port_speed_str(i), (unsigned)ehci_port_speed_code(i));
                 port_count++;
             } else {
                 kprintf("[ehci] port %d: reset failed (releasing to companion)\n", i);
@@ -480,7 +503,7 @@ static int ehci_run_async(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packe
     qh->next_qh = async_qh_phys | QH_TYPE_QH;
     qh->ep_caps1 = ((uint32_t)(dev_addr & 0x7F) << QH_CAP1_DEVADDR_SHIFT) |
                    ((uint32_t)(endpoint & 0x0F) << QH_CAP1_EPNUM_SHIFT) |
-                   (QH_CAP1_EPS_HIGH << QH_CAP1_EPS_SHIFT) |
+                   ((uint32_t)EHCI_QH_SPEED_HIGH << QH_CAP1_EPS_SHIFT) |
                    QH_CAP1_DTC |
                    ((uint32_t)max_packet << QH_CAP1_MPL_SHIFT);
     qh->ep_caps2 = (1u << QH_CAP2_MULT_SHIFT);
@@ -704,40 +727,45 @@ int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
         ep->qtd_phys   = (uint32_t)qtd_phys;
         ep->buf_phys   = (uint32_t)buf_phys;
         ep->interval   = 8;                 /* 8 frames = 8 ms, ample for HID */
-        ep->speed      = low_speed ? QH_CAP1_EPS_LOW : QH_CAP1_EPS_HIGH;
+        ep->speed      = low_speed ? EHCI_QH_SPEED_LOW : EHCI_QH_SPEED_HIGH;
 
         /* A device reached through a TT reports its hub; usb_core records
-         * the parent hub address and port for exactly this purpose. */
+         * the parent hub address and port for exactly this purpose.  The
+         * endpoint speed comes from the enumerated device when it is known:
+         * a full-speed device on a high-speed root port has no TT (so no
+         * split) but is still full-speed, and the QH has to say so. */
         usb_device_t *ud = usb_find_device_by_address(dev_addr);
-        if (ud && ud->parent_hub_addr) {
-            ep->hub_addr = ud->parent_hub_addr;
-            ep->hub_port = ud->parent_hub_port;
-            if (!low_speed) ep->speed = QH_CAP1_EPS_FULL;
+        if (ud) {
+            if (ud->speed == USB_SPEED_LOW)      ep->speed = EHCI_QH_SPEED_LOW;
+            else if (ud->speed == USB_SPEED_FULL) ep->speed = EHCI_QH_SPEED_FULL;
+            else                                 ep->speed = EHCI_QH_SPEED_HIGH;
+            if (ud->parent_hub_addr) {
+                ep->hub_addr = ud->parent_hub_addr;
+                ep->hub_port = ud->parent_hub_port;
+            }
         }
+
+        /* The two capability words are built by ehci_qh.c, which is unit
+         * tested on the host against EHCI 1.0 §3.6/§4.12 (C5b).  Nothing
+         * about the encoding lives here any more. */
+        ehci_qh_params_t qp;
+        memset(&qp, 0, sizeof(qp));
+        qp.dev_addr   = (uint8_t)(dev_addr & 0x7F);
+        qp.ep_num     = (uint8_t)(endpoint & 0x0F);
+        qp.speed      = ep->speed;
+        qp.max_packet = ep->max_packet;
+        qp.hub_addr   = ep->hub_addr;
+        qp.hub_port   = ep->hub_port;
+        qp.mult       = 1;
+        qp.start_microframe = 0;    /* start-split in micro-frame 0 */
+        ehci_qh_caps_t caps;
+        ehci_qh_build_caps(&qp, &caps);
 
         volatile struct ehci_qh *qh =
             (volatile struct ehci_qh *)(uintptr_t)(hhdm + qh_phys);
         memset((void *)qh, 0, sizeof(*qh));
-        qh->ep_caps1 = ((uint32_t)(dev_addr & 0x7F) << QH_CAP1_DEVADDR_SHIFT) |
-                       ((uint32_t)(endpoint & 0x0F) << QH_CAP1_EPNUM_SHIFT) |
-                       ((uint32_t)ep->speed << QH_CAP1_EPS_SHIFT) |
-                       QH_CAP1_DTC |
-                       ((uint32_t)ep->max_packet << QH_CAP1_MPL_SHIFT);
-
-        /* ep_caps2: interrupt schedule mask (S-mask) in bits 0-7, split
-         * completion mask (C-mask) in bits 8-15, hub address in 16-22, hub
-         * port in 23-29, Mult in 30-31. */
-        uint32_t smask = 0x01;              /* start in microframe 0 */
-        uint32_t cmask = 0;
-        if (ep->hub_addr) {
-            /* Split: complete in microframes 2,3,4 (EHCI 1.0 s.4.12.3). */
-            cmask = 0x1C;
-        }
-        qh->ep_caps2 = smask |
-                       (cmask << 8) |
-                       ((uint32_t)ep->hub_addr << 16) |
-                       ((uint32_t)ep->hub_port << 23) |
-                       (1u << QH_CAP2_MULT_SHIFT);
+        qh->ep_caps1 = caps.ep_caps1;
+        qh->ep_caps2 = caps.ep_caps2;
         qh->next_qh = QH_TERMINATE;         /* end of this frame's chain */
         qh->next_qtd = QTD_TERMINATE;
         qh->alt_next_qtd = QTD_TERMINATE;
@@ -745,10 +773,20 @@ int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
         ehci_intr_arm(ep);
         ehci_periodic_link(ep->qh_phys, ep->interval);
 
+        /* Receipt: the split decision and the masks it produced.  A machine
+         * with a real TT would show split=yes here; QEMU cannot build one
+         * (its only hub is full-speed and refuses a high-speed bus), so the
+         * encoding itself is what tests/unit/test_usb_ehci_qh.c pins. */
         kprintf("[ehci] interrupt endpoint 0x%02x dev=%u on periodic schedule "
-                "(interval=%u frames, maxpkt=%u%s)\n",
+                "(interval=%u frames, maxpkt=%u, eps=%u, split=%s%s, "
+                "S-mask=0x%02x C-mask=0x%02x)\n",
                 endpoint, dev_addr, ep->interval, ep->max_packet,
-                ep->hub_addr ? ", split via TT" : "");
+                (unsigned)qp.speed, caps.is_split ? "yes" : "no",
+                caps.is_split ? " via TT" : "",
+                (unsigned)caps.s_mask, (unsigned)caps.c_mask);
+        if (caps.is_split)
+            kprintf("[ehci]   TT: hub address %u port %u (EHCI 1.0 §4.12 split)\n",
+                    (unsigned)ep->hub_addr, (unsigned)ep->hub_port);
         return 0;                            /* nothing delivered yet */
     }
 

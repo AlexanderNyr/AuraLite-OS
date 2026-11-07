@@ -39,5 +39,10 @@ int usb_isoc_transfer_simple(usb_device_t *dev, uint8_t ep, void *data, uint32_t
 uint32_t usb_isoc_bandwidth_used(void);
 uint32_t usb_isoc_max_bandwidth(void);
 void usb_isoc_self_test(void);
+/* C5: the streaming path and its accounting. */
+int usb_isoc_stream(usb_device_t *dev, uint8_t ep, uint32_t packet_bytes,
+                    void *data, uint32_t len, uint32_t *packets_out);
+void usb_isoc_note_stream(uint32_t packets);
+uint32_t usb_isoc_frames_streamed(void);
 
 #endif

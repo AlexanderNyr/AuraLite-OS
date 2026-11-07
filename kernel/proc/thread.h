@@ -208,6 +208,16 @@ typedef struct tcb {
     uint64_t  join_value;          /* pthread_exit() value */
     int       is_pthread;          /* 1 = userspace thread */
     uint64_t clear_tid_addr;      /* *ctid = 0 + futex_wake on exit */
+    /* RESIDUE3 C2: this TCB was reparented to init (PID 1) when its own parent
+     * exited, and PID 1 in this tree is a shell that only ever waits for the
+     * children IT spawned.  Without this flag such a thread became an
+     * unreapable zombie: measured on the C2 branch, running /tests/fpustress
+     * (4 pthreads) left FOUR TCBs + 4 x 32 KiB kernel stacks queued and never
+     * reaped (boot log: "zombies queued 8, reaped 4").  An adopted thread is
+     * therefore auto-collected at exit: `waited` is set before the reaper can
+     * see it.  Live orphans keep their place on init's child list (so a
+     * shell-side waitpid still works if one is ever issued). */
+    int       orphan_adopted;
 
     /* ---- LX_COMPAT L1: process personality ----
      * Which syscall NUMBER MAP this process speaks.  PERSONA_NATIVE (0)

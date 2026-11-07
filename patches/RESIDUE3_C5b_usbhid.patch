@@ -1,0 +1,2709 @@
+diff --git a/Makefile b/Makefile
+index 0cf9df9..ec2d206 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3782,6 +3782,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_permissions \
+                 $(BUILD_DIR)/test_aspace \
+                 $(BUILD_DIR)/test_msi_caps \
++                $(BUILD_DIR)/test_usb_hid_report \
++                $(BUILD_DIR)/test_usb_ehci_qh \
++                $(BUILD_DIR)/test_usb_msc_csw \
+                 $(BUILD_DIR)/test_cow \
+                 $(BUILD_DIR)/test_slab \
+                 $(BUILD_DIR)/test_virgl \
+@@ -5579,6 +5582,26 @@ $(BUILD_DIR)/test_msi_caps: tests/unit/test_msi_caps.c drivers/pci/msi_caps.c \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/pci/msi_caps.c -o $@
+ 
++# RESIDUE3 C5b: the HID report-descriptor parser, compiled from the SAME
++# translation unit the kernel links (drivers/usb/hid_report.c).  Descriptors
++# are byte arrays in the test, so the parser is exercised, not a mock of it.
++$(BUILD_DIR)/test_usb_hid_report: tests/unit/test_usb_hid_report.c \
++                                  drivers/usb/hid_report.c drivers/usb/hid_report.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/usb/hid_report.c -o $@
++
++# RESIDUE3 C5b: EHCI queue-head capability words (split-transaction fields).
++$(BUILD_DIR)/test_usb_ehci_qh: tests/unit/test_usb_ehci_qh.c \
++                              drivers/usb/ehci_qh.c drivers/usb/ehci_qh.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/usb/ehci_qh.c -o $@
++
++# RESIDUE3 C5b: USB BOT command-status wrapper (short / over-long / stale tag).
++$(BUILD_DIR)/test_usb_msc_csw: tests/unit/test_usb_msc_csw.c \
++                               drivers/usb/msc_csw.c drivers/usb/msc_csw.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/usb/msc_csw.c -o $@
++
+ $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/TODO.md b/TODO.md
+index a70416f..ac34ae0 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -636,14 +636,19 @@ build when a box and the plan disagree.
+   the guest), so the burst is issued SIA with MFINDEX accounting — both
+   numbers are in the code.  The HID-breadth half of the same narrowing
+   did NOT land: it is RES-62 / C5b.) (class: USB) (RESIDUE3 C5)
+-- **USB HID generic support is partial.** Boot keyboard/mouse works through UHCI,
+-  OHCI, high-speed EHCI and xHCI; generic keyboard and mouse/tablet report
+-  descriptors are parsed for common QEMU-tested layouts. Full HID collections/usages
+-  and EHCI full/low-speed split transactions remain future work — measured at
+-  RESIDUE3 C5 and now owned by **RES-62 (C5b)**: the parser keeps one
+-  `report_id` global and tags no field (a two-report-ID descriptor collapses
+-  onto the last ID), and no case puts an FS/LS device behind a high-speed hub
+-  on EHCI, so `ehci.c`'s TT fields are unexercised rather than absent.
++- **USB HID generic support covers report IDs, not every usage.** Boot
++  keyboard/mouse works through UHCI, OHCI, EHCI and xHCI; generic report
++  descriptors are parsed by `drivers/usb/hid_report.c`, which carries a
++  `report_id` per field and a bit cursor per report, so a descriptor with IDs 1
++  and 2 decodes each report against its own layout (**Done, RESIDUE3 C5b,
++  2026-11-04**: 8/8 host cases, a kernel selftest over a two-ID descriptor, and
++  the LED-output-report bug that made a 8-byte input report look 10 bytes long
++  is fixed and pinned). What is still not there, and is named rather than
++  implied: the EHCI split-transaction path for an FS/LS device behind a
++  high-speed hub is verified as an encoding (`drivers/usb/ehci_qh.c`, 9/9 host
++  cases) plus a runtime log line, never as a transfer — QEMU has no high-speed
++  hub (its `usb-hub` is full-speed and refuses a high-speed bus, asserted by
++  `test_usb_ehci_split.sh`), so no TT has ever been seen on silicon here.
+ - **Bluetooth and Wi-Fi have no silicon.** Both protocol stacks are
+   now pure, host-pinned and complete at the wire level (bt_hci.h,
+   wifi_proto.h; RESIDUE2 T6): the BT transport rides the
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 7453c40..f232bc9 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04; C5 (isochronous streaming) landed 2026-11-04 with its HID/EHCI survivors carried to C5b, 6/11. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
++## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04; C5 (isochronous streaming) landed 2026-11-04 with its HID/EHCI survivors carried to C5b, which landed 2026-11-04 as well: 7/11. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+@@ -11,7 +11,7 @@
+ | C3b — the i386 compositor: `wm.c`/`gui.c` on 32 bits | ⬜ planned — blocked on the i386 process/scheduler surface (blocker list in §C3) | `patches/RESIDUE3_C3b_compositor.patch` |
+ | C4 — MSI/MSI-X on virtio (RES-36) | ✅ done (2026-11-04) | `patches/RESIDUE3_C4_msix.patch` |
+ | C5 — USB: isochronous streaming and HID breadth (RES-38 survivors) | ✅ done (2026-11-04) — isoc streaming + the short-CSW line; HID breadth and the EHCI split series are C5b | `patches/RESIDUE3_C5_usb.patch` |
+-| C5b — USB survivors: HID report IDs, EHCI split transactions, the short-CSW case (RES-62) | ⬜ planned — openers measured in §C5 | `patches/RESIDUE3_C5b_usbhid.patch` |
++| C5b — USB survivors: HID report IDs, EHCI split transactions, the short-CSW case (RES-62) | ✅ done (2026-11-04) — report-ID parser + kernel selftest, PSPD/HOST-tested QH caps, CSW validator; the TT *device* case is impossible on QEMU and says so | `patches/RESIDUE3_C5b_usbhid.patch` |
+ | C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39 survivors) | ⬜ planned | `patches/RESIDUE3_C6_wireless.patch` |
+ | C7 — network: window scaling (RES-52) and the NIC/storage successor of RES-46 | ⬜ planned | `patches/RESIDUE3_C7_net.patch` |
+ | C8 — Win32: the dynamic-scale loader, live FAIL-CLEAN receipts, DOOM D7 (RES-57/58/59) | ⬜ planned | `patches/RESIDUE3_C8_w32.patch` |
+@@ -769,25 +769,96 @@ USB sweep are untouched by this phase and re-run green.
+ 
+ ### C5b — USB survivors: HID report IDs, EHCI split transactions, the short-CSW case (RES-62)
+ 
+-**Status:** ⬜ planned
++**Status:** ✅ done (2026-11-04) — RES-62 flips `DONE@C5b`.  One bullet's
++device case was replaced by measurement: QEMU has no multi-report-ID HID device
++and no high-speed hub, so both were rebuilt as host tests plus a kernel
++selftest, and the gaps are asserted rather than papered over.
++
++**Objective:** take the three measured survivors of C5, with the openers C5
++wrote down.
++
++**Result — what actually had to be fixed, in the order it was measured:**
+ 
+-**Objective:** take the three measured survivors of C5.
+-
+-- [ ] Per-field report IDs in `hid.c` (or in an extracted
+-      `drivers/usb/hid_report.{h,c}`, host-tested the way `msi_caps` is), with
+-      a synthetic multi-report-ID fixture asserting collections, usage pages
+-      and per-report bit offsets.
+-- [ ] An integration case with a real multi-report-ID device
+-      (`usb-tablet` + `usb-kbd`) asserting the parsed fields match the reports
+-      the device sends.
+-- [ ] EHCI split transactions: an FS/LS device behind a high-speed hub on
+-      EHCI (`-device usb-hub` under an EHCI controller), asserting the TT
+-      fields actually schedule the periodic transfer.
+-- [ ] A case (host fixture) for `[msc] short CSW`.
+-
+-**Definition of done:** RES-62 closes with a HID case that fails against
+-today's parser and passes after, and an EHCI split case that exercises the TT
+-path.
++1. **The parser moved out of `hid.c`** into `drivers/usb/hid_report.{h,c}`:
++   a per-report bit cursor, a `report_id` on every field, `report_ids[]` /
++   `report_bits[]` / `report_bits_max` per descriptor, and `hid_report_body()`
++   to split the ID prefix off an incoming report.  Before this, `hid.c` kept
++   **one** `report_id` global: a descriptor with IDs 1 and 2 parsed into a
++   single blob, so report 1 was dropped or decoded with report 2's layout.
++2. **A bug the extraction found on its own.** `hid_report_wire_len()` counted
++   output-report bits as input bits.  A Report ID is shared by the input,
++   output and feature reports of that ID (HID 1.11 §6.2.2.7) but the lengths
++   are separate, so QEMU's keyboard (8 input bytes + an 8-bit LED report under
++   no ID at all) computed a **10-byte** wire length for a **9-byte** endpoint
++   in the first cut.  Input bits only, now — and `test_usb_hid_report.c` pins
++   it with a QEMU-shaped descriptor.
++3. **The driver polls what the descriptor asked for**, and logs both numbers:
++   `poll_len` (from the descriptor) and `ep_maxpkt` (from the endpoint).  A
++   device may over-allocate a packet (QEMU's tablet asks 8, sends 6); the
++   failing direction — a descriptor that claims more than one packet can
++   carry — gets its own `[hid] note:` line.
++4. **EHCI port speed was a stub.** `ehci_port_speed()` returned
++   `"high-speed"` for every port and `usb_enumerate_all()` passed
++   `USB_SPEED_HIGH` unconditionally, so a **full-speed** device on a
++   high-speed root port was enumerated as high-speed and its queue head said
++   `eps=high`.  `PORTSC.PSPD` is decoded now (0=full, 1=low, 2=high), the
++   speed travels into enumeration and into the QH: QEMU's keyboard on EHCI
++   reports `[ehci] port 0: full-speed device (PSPD=0)` and the QH says
++   `eps=0, split=no`.
++5. **The QH capability words are built by a host-tested module.**
++   `drivers/usb/ehci_qh.{h,c}` owns the bit positions from EHCI 1.0 §3.6 and
++   §4.12 (address, endpoint, EPS, DTC, MPL, S-mask, C-mask, TT address/port,
++   Mult) and `ehci.c` only allocates, links and polls.  Writing the test found
++   a real defect in the old inline code: a start-split in micro-frame 7
++   produced an **empty C-mask**, so that endpoint could never complete.  The
++   mask now wraps past bit 7 and the test sweeps all eight start phases.
++6. **The CSW check left `msc.c`** for `drivers/usb/msc_csw.{h,c}`: length
++   first (13 bytes exactly, short and over-long are separate results), then
++   little-endian decode of the signature, the tag, the remaining-byte count and the status byte — explicitly decoded
++   rather than memcpy'd into a packed struct, because this kernel also builds
++   for big-endian-capable targets.  `msc.c` prints the result names instead of
++   re-deriving them.
++
++**Receipts (QEMU 10.0.13, measured 2026-11-04):**
++
++| Claim | Receipt |
++|-------|---------|
++| a two-report-ID descriptor keeps both IDs and both body lengths | `[hid] selftest: two-ID descriptor -> ids=2 (1,2) input bits: r1=64 r2=4 wire=9` |
++| output bits do not lengthen the input report | `[hid] selftest: QEMU-shaped keyboard -> report_id=none input bits=64 wire=8` |
++| the split, the per-report decode and the unknown-ID rejection all hold in the kernel build | `[hid] selftest: PASS report-ID split and per-report decoding` |
++| the parser agrees with the three devices QEMU does send | `[hid] parsed generic keyboard report: fields=14 input_bits=64 report_id=none`, `pointer report: fields=8 input_bits=32`, `pointer report: fields=6 input_bits=48` |
++| poll length vs endpoint capacity, both named | `keyboard ready: ... poll_len=8 ep_maxpkt=8`, `mouse ready: ... poll_len=4 ep_maxpkt=4`, `generic-mouse ready: ... poll_len=6 ep_maxpkt=8` |
++| EHCI decodes the port speed instead of assuming it | `[ehci] port 0: full-speed device (PSPD=0)`, `[usb] device at addr 1: ... speed=full (12 Mbps)` |
++| the QH carries the right speed and no phantom split | `[ehci] interrupt endpoint 0x81 dev=1 on periodic schedule (interval=8 frames, maxpkt=8, eps=0, split=no, S-mask=0x01 C-mask=0x00)` |
++| the test discriminates (fails on the pre-C5b parser) | `tests/unit/test_usb_hid_report_negcontrol.sh` → `negcontrol: PASS — the pre-C5b parser fails 5 check(s) in the same test` |
++
++**Test gates:** `test_usb_hid_report_ids` **13/13**, `test_usb_ehci_split`
++**11/11**, `test_usb_hid_input` **9/9** (unchanged after the rewiring),
++`test_usb_msc_hotplug` **8/8**; host unit `test_usb_hid_report` **8/8**,
++`test_usb_ehci_qh` **9/9**, `test_usb_msc_csw` **10/10**, all three registered
++in `make test-unit`.  Registry: 220 integration cases, all registered.
++
++**Two bullets changed shape after measurement — recorded, not hidden:**
++
++- *"An integration case with a real multi-report-ID device (`usb-tablet` +
++  `usb-kbd`)"* — **no QEMU HID device declares a Report ID item at all.**
++  Dumping the descriptors usb-kbd, usb-tablet and usb-mouse actually send
++  (C5b measurement) shows zero `0x85` items.  The case that exists therefore
++  asserts the two things that are real: a kernel-side selftest over a two-ID
++  descriptor carried in-tree, and, per device, the parsed input length against
++  the endpoint packet size.
++- *"EHCI split transactions … asserting the TT fields actually schedule the
++  periodic transfer"* — **QEMU cannot build the topology.**  Its only hub is
++  `usb-hub`, a full-speed device, and QEMU refuses it on a high-speed bus:
++  `Warning: speed mismatch trying to attach usb device "QEMU USB Hub" (full
++  speed) to bus "e.0", port "1" (high speed)`.  `test_usb_ehci_split.sh`
++  asserts that refusal (rc≠0, message, verbatim command line), so the missing
++  device case is a measured property of the emulator; the TT encoding itself
++  is pinned bit by bit in `test_usb_ehci_qh.c` and the split decision is
++  printed by `ehci.c` on every periodic endpoint.  On real hardware with a TT
++  the log shows `split=yes via TT` plus a `TT: hub address N port M` line;
++  **that path has not been seen on silicon** — it is the one part of C5b whose
++  receipt is an encoding plus a log, not a transfer.
+ 
+ ---
+ 
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index 748a7bb..57c8687 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -73,7 +73,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-59 | S | HANDED-OFF@W32U | the Audacity Outcome-B walls — the §6 scale/shape/runtime risk materialised (W32APP_PLAN W32A-17) | OPENER, measured: `w32/app_ledger/audacity-3.7.5.gap` records 3 fatal walls (90932 relocations vs w32run's 16384 buffer; a 117-DLL bundled graph; a 19-module/419-symbol gap = UCRT api-set 302 + winmm 74); W32U's first phase is the dynamic-scale loader |
+ | RES-60 | W | DONE@C5 | Frame-accurate isochronous STREAMING — xHCI ISOCH TRBs (type 5) plus a device that consumes them (RES-38's narrowed survivor; TODO.md's isoc box) | OPENER, measured: test_usb_isoc printed `[isoc] SKIP: no isochronous endpoint exercised`; xhci.c carried rings and no ISOCH TRB type. CLOSED at RESIDUE3 C5 (2026-11-04): the TRB path is wired (usb_isochronous_transfer routed xHCI isoc to a BULK transfer and never called xhci_isochronous_transfer), the endpoint is configured as ISOCH (1/5) instead of INTERRUPT (3/7), a 24-packet burst of a generated 440 Hz sine through QEMU `usb-audio` completes 24/24 with 1152 frames of audio and 0 lost, and the case flips SKIP→PASS with the count. Measured on the way, and recorded rather than hidden: pinning packets to frames (base+i) delivered 1/24 because QEMU's isoclock runs far ahead of the guest, so the burst is issued SIA with MFINDEX-based accounting. The narrowed survivors — HID report-ID breadth, EHCI split-transaction series, a short-CSW case — move to RES-62 / C5b | `[isoc] PASS: 24 packet(s) streamed on xHCI ep 0x01 (192 B/packet, 440 Hz sine, 1152 frames of audio)` + `frames: scheduled 24, completed 24, lost(overrun) 0, empty bursts 0, timeouts 0`; test_usb_isoc 11/11 |
+ | RES-61 | M | PENDING-USER@C1 | Bluetooth / Wi-Fi silicon attach — the narrowed survivor of RES-39; RESIDUE3 C6 proves the controller path against QEMU's `usb-bt-dongle` and the virtual AP, the chip itself is metal | OPENER, measured: bt_init() prints `[bt] PASS: HCI protocol layer ready (no controller detected)` — the transport is proved, the controller is absent | C6's dongle lane green in QEMU + the user's adapter paste-back (the RES-30/32/33/48 discipline: pending-user is a status, not a failure) |
+-| RES-62 | S | HANDED-OFF@C5 | USB survivors C5 did not take: HID report-ID breadth (full report descriptors, multi-report-ID devices), the EHCI split-transaction series for full/low-speed devices behind a high-speed hub, and an integration case for the short-CSW line | OPENER, measured 2026-11-04: hid.c's parser keeps ONE `report_id` global and tags no field, so a descriptor with report IDs 1 and 2 collapses every field onto the last ID; `test_usb_hub*` cases attach their hub on xHCI (`usb-hub,bus=xhci.0`) and no case puts an FS/LS device behind a high-speed hub, so ehci.c's TT fields (S-mask/C-mask/hub_addr) are unexercised; msc.c's short-CSW line landed at C5 and has no case | owned by RESIDUE3 C5b |
++| RES-62 | S | DONE@C5b | USB survivors C5 did not take: HID report-ID breadth (full report descriptors, multi-report-ID devices), the EHCI split-transaction series for full/low-speed devices behind a high-speed hub, and a case for the short-CSW line | OPENER, measured 2026-11-04: hid.c's parser kept ONE `report_id` global and tagged no field, so a descriptor with report IDs 1 and 2 collapsed every field onto the last ID; `test_usb_hub*` attached its hub on xHCI and no case put an FS/LS device behind a high-speed hub, so ehci.c's TT fields were unexercised; msc.c's short-CSW line had no case. CLOSED at RESIDUE3 C5b (2026-11-04): the parser is `drivers/usb/hid_report.{h,c}` (per-field `report_id`, per-report bit cursor, `hid_report_body()` prefix split) with 8/8 host cases and a kernel selftest that passes over a two-ID descriptor; writing the wire-length test found that output-report bits were being counted as input bits (QEMU's 8-byte keyboard computed as 10 bytes), which is fixed and pinned; EHCI now decodes PORTSC.PSPD instead of returning "high-speed" for every port, and the QH capability words come from `drivers/usb/ehci_qh.{h,c}` (9/9 host cases) whose C-mask test found an empty mask for a micro-frame-7 start; the CSW check is `drivers/usb/msc_csw.{h,c}` (10/10 host cases) with short and over-long as separate results. Two plan bullets changed shape after measurement and say so in §C5b: no QEMU HID device declares a Report ID at all, and QEMU has no high-speed hub (its `usb-hub` is full-speed and refuses a high-speed bus), so the TT path is verified as an encoding plus a runtime log line, never as a transfer | `[hid] selftest: two-ID descriptor -> ids=2 (1,2) input bits: r1=64 r2=4 wire=9` + `[hid] selftest: PASS report-ID split and per-report decoding`; `[ehci] port 0: full-speed device (PSPD=0)` + `(interval=8 frames, maxpkt=8, eps=0, split=no, S-mask=0x01 C-mask=0x00)`; test_usb_hid_report_ids 13/13, test_usb_ehci_split 11/11, test_usb_hid_input 9/9; unit hid_report 8/8, ehci_qh 9/9, msc_csw 10/10, negcontrol catches the pre-C5b parser |
+ 
+ ## Arithmetic (checker-enforced)
+ 
+@@ -92,6 +92,17 @@ RESIDUE2 T3: RES-07 → DONE@T3 (narrowed close recorded in the row); OPEN then
+ RESIDUE3 C5: RES-60 → DONE@C5 (isoc streaming proved on QEMU usb-audio);
+ +1 row RES-62 (HID report-ID breadth / EHCI split series / short-CSW case,
+ HANDED-OFF@C5 → C5b), which is where the S pin goes 13 → 14.
++RESIDUE3 C5b: RES-62 → DONE@C5b (HID report-ID parser extracted and host
++tested, PORTSC.PSPD decoded, QH capability words host tested, CSW validator
++host tested).  No new rows: the one part of C5b that did NOT get a device
++receipt — the EHCI split-transaction path behind a TT — is named inside the
++row and in §C5b rather than opened as fresh debt, because it is verified as an
++encoding plus a runtime log and QEMU cannot build the topology (its `usb-hub`
++is full-speed and refuses a high-speed bus).  Table arithmetic unchanged:
++62 rows, W 36 · M 8 · N 4 · S 14.  Same commit: the row regex in
++`tools/check_residue_claims.py` learned the lowercase phase suffix
++(`DONE@C5b`); without it the row silently fell out of the count — 61 of 62 and
++S 13 of 14 — instead of failing.
+ Harvest baseline lives in `tools/residue_baseline.txt` (the
+ harvester's own regex is the metric; the §2 draft quoted counts
+ from a wider grep that included "blocked" — superseded).  A marker
+diff --git a/drivers/usb/ehci.c b/drivers/usb/ehci.c
+index 760b7aa..fa966d3 100644
+--- a/drivers/usb/ehci.c
++++ b/drivers/usb/ehci.c
+@@ -17,6 +17,7 @@
+ #include <stdint.h>
+ #include "drivers/usb/ehci.h"
+ #include "drivers/usb/usb_core.h"   /* U7: TT hub address/port for split transactions */
++#include "drivers/usb/ehci_qh.h"     /* C5b: QH capability words, host-tested */
+ #include "drivers/pci/pci.h"
+ #include "kernel/arch/x86_64/paging.h"
+ #include "kernel/arch/x86_64/cpu.h"
+@@ -84,6 +85,8 @@
+ #define PORTSC_LS_MASK       0x3
+ #define PORTSC_LS_KSTATE     0x1          /* K-state = low-speed */
+ #define PORTSC_LS_JSTATE     0x2          /* J-state = full/high-speed */
++#define PORTSC_PSPD_SHIFT    26           /* Port Speed (bits 26-27) */
++#define PORTSC_PSPD_MASK     0x3          /* 0=full, 1=low, 2=high (EHCI 1.0 t.2-16) */
+ 
+ /* CONFIGFLAG */
+ #define CONFIGFLAG_FLAG      (1u << 0)    /* Configure Flag */
+@@ -253,11 +256,30 @@ static int ehci_port_reset(int port) {
+  * In EHCI, if the port is still owned by EHCI after reset, it's high-speed.
+  * If the line status was K-state (low-speed) before reset, the port should be
+  * released to the companion controller. */
++/* Port speed from PORTSC.PSPD, valid once the port is enabled (EHCI 1.0
++ * table 2-16).  This used to be a stub that returned "high-speed" for every
++ * port, which was right for the only case the code had ever seen and wrong
++ * for the case that matters: a full-speed device on a high-speed root port
++ * (QEMU attaches one happily) is *not* high-speed, and its queue head must
++ * say so or the controller drives it with high-speed timing. */
++uint8_t ehci_port_speed_code(int port) {
++    uint32_t ps = port_sc(port);
++    if (!(ps & PORTSC_CCS)) return 0xFF;
++    return (uint8_t)((ps >> PORTSC_PSPD_SHIFT) & PORTSC_PSPD_MASK);
++}
++
+ static const char *ehci_port_speed(int port) {
+-    /* After a successful EHCI reset, the device is high-speed. */
+-    return "high-speed";
++    switch (ehci_port_speed_code(port)) {
++    case 0:  return "full-speed";
++    case 1:  return "low-speed";
++    case 2:  return "high-speed";
++    default: return "unknown-speed";
++    }
+ }
+ 
++/* U7-compatible string used from the scan path; keeps the old name usable. */
++static const char *ehci_port_speed_str(int port) { return ehci_port_speed(port); }
++
+ /* Release a port to the companion controller (for low/full-speed devices). */
+ static void ehci_release_port(int port) {
+     uint32_t ps = port_sc(port);
+@@ -418,7 +440,8 @@ found:
+ 
+             /* Attempt high-speed reset. */
+             if (ehci_port_reset(i) == 0) {
+-                kprintf("[ehci] port %d: %s device\n", i, ehci_port_speed(i));
++                kprintf("[ehci] port %d: %s device (PSPD=%u)\n", i,
++                        ehci_port_speed_str(i), (unsigned)ehci_port_speed_code(i));
+                 port_count++;
+             } else {
+                 kprintf("[ehci] port %d: reset failed (releasing to companion)\n", i);
+@@ -480,7 +503,7 @@ static int ehci_run_async(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packe
+     qh->next_qh = async_qh_phys | QH_TYPE_QH;
+     qh->ep_caps1 = ((uint32_t)(dev_addr & 0x7F) << QH_CAP1_DEVADDR_SHIFT) |
+                    ((uint32_t)(endpoint & 0x0F) << QH_CAP1_EPNUM_SHIFT) |
+-                   (QH_CAP1_EPS_HIGH << QH_CAP1_EPS_SHIFT) |
++                   ((uint32_t)EHCI_QH_SPEED_HIGH << QH_CAP1_EPS_SHIFT) |
+                    QH_CAP1_DTC |
+                    ((uint32_t)max_packet << QH_CAP1_MPL_SHIFT);
+     qh->ep_caps2 = (1u << QH_CAP2_MULT_SHIFT);
+@@ -704,40 +727,45 @@ int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
+         ep->qtd_phys   = (uint32_t)qtd_phys;
+         ep->buf_phys   = (uint32_t)buf_phys;
+         ep->interval   = 8;                 /* 8 frames = 8 ms, ample for HID */
+-        ep->speed      = low_speed ? QH_CAP1_EPS_LOW : QH_CAP1_EPS_HIGH;
++        ep->speed      = low_speed ? EHCI_QH_SPEED_LOW : EHCI_QH_SPEED_HIGH;
+ 
+         /* A device reached through a TT reports its hub; usb_core records
+-         * the parent hub address and port for exactly this purpose. */
++         * the parent hub address and port for exactly this purpose.  The
++         * endpoint speed comes from the enumerated device when it is known:
++         * a full-speed device on a high-speed root port has no TT (so no
++         * split) but is still full-speed, and the QH has to say so. */
+         usb_device_t *ud = usb_find_device_by_address(dev_addr);
+-        if (ud && ud->parent_hub_addr) {
+-            ep->hub_addr = ud->parent_hub_addr;
+-            ep->hub_port = ud->parent_hub_port;
+-            if (!low_speed) ep->speed = QH_CAP1_EPS_FULL;
++        if (ud) {
++            if (ud->speed == USB_SPEED_LOW)      ep->speed = EHCI_QH_SPEED_LOW;
++            else if (ud->speed == USB_SPEED_FULL) ep->speed = EHCI_QH_SPEED_FULL;
++            else                                 ep->speed = EHCI_QH_SPEED_HIGH;
++            if (ud->parent_hub_addr) {
++                ep->hub_addr = ud->parent_hub_addr;
++                ep->hub_port = ud->parent_hub_port;
++            }
+         }
+ 
++        /* The two capability words are built by ehci_qh.c, which is unit
++         * tested on the host against EHCI 1.0 §3.6/§4.12 (C5b).  Nothing
++         * about the encoding lives here any more. */
++        ehci_qh_params_t qp;
++        memset(&qp, 0, sizeof(qp));
++        qp.dev_addr   = (uint8_t)(dev_addr & 0x7F);
++        qp.ep_num     = (uint8_t)(endpoint & 0x0F);
++        qp.speed      = ep->speed;
++        qp.max_packet = ep->max_packet;
++        qp.hub_addr   = ep->hub_addr;
++        qp.hub_port   = ep->hub_port;
++        qp.mult       = 1;
++        qp.start_microframe = 0;    /* start-split in micro-frame 0 */
++        ehci_qh_caps_t caps;
++        ehci_qh_build_caps(&qp, &caps);
++
+         volatile struct ehci_qh *qh =
+             (volatile struct ehci_qh *)(uintptr_t)(hhdm + qh_phys);
+         memset((void *)qh, 0, sizeof(*qh));
+-        qh->ep_caps1 = ((uint32_t)(dev_addr & 0x7F) << QH_CAP1_DEVADDR_SHIFT) |
+-                       ((uint32_t)(endpoint & 0x0F) << QH_CAP1_EPNUM_SHIFT) |
+-                       ((uint32_t)ep->speed << QH_CAP1_EPS_SHIFT) |
+-                       QH_CAP1_DTC |
+-                       ((uint32_t)ep->max_packet << QH_CAP1_MPL_SHIFT);
+-
+-        /* ep_caps2: interrupt schedule mask (S-mask) in bits 0-7, split
+-         * completion mask (C-mask) in bits 8-15, hub address in 16-22, hub
+-         * port in 23-29, Mult in 30-31. */
+-        uint32_t smask = 0x01;              /* start in microframe 0 */
+-        uint32_t cmask = 0;
+-        if (ep->hub_addr) {
+-            /* Split: complete in microframes 2,3,4 (EHCI 1.0 s.4.12.3). */
+-            cmask = 0x1C;
+-        }
+-        qh->ep_caps2 = smask |
+-                       (cmask << 8) |
+-                       ((uint32_t)ep->hub_addr << 16) |
+-                       ((uint32_t)ep->hub_port << 23) |
+-                       (1u << QH_CAP2_MULT_SHIFT);
++        qh->ep_caps1 = caps.ep_caps1;
++        qh->ep_caps2 = caps.ep_caps2;
+         qh->next_qh = QH_TERMINATE;         /* end of this frame's chain */
+         qh->next_qtd = QTD_TERMINATE;
+         qh->alt_next_qtd = QTD_TERMINATE;
+@@ -745,10 +773,20 @@ int ehci_interrupt_transfer(uint8_t dev_addr, uint8_t endpoint,
+         ehci_intr_arm(ep);
+         ehci_periodic_link(ep->qh_phys, ep->interval);
+ 
++        /* Receipt: the split decision and the masks it produced.  A machine
++         * with a real TT would show split=yes here; QEMU cannot build one
++         * (its only hub is full-speed and refuses a high-speed bus), so the
++         * encoding itself is what tests/unit/test_usb_ehci_qh.c pins. */
+         kprintf("[ehci] interrupt endpoint 0x%02x dev=%u on periodic schedule "
+-                "(interval=%u frames, maxpkt=%u%s)\n",
++                "(interval=%u frames, maxpkt=%u, eps=%u, split=%s%s, "
++                "S-mask=0x%02x C-mask=0x%02x)\n",
+                 endpoint, dev_addr, ep->interval, ep->max_packet,
+-                ep->hub_addr ? ", split via TT" : "");
++                (unsigned)qp.speed, caps.is_split ? "yes" : "no",
++                caps.is_split ? " via TT" : "",
++                (unsigned)caps.s_mask, (unsigned)caps.c_mask);
++        if (caps.is_split)
++            kprintf("[ehci]   TT: hub address %u port %u (EHCI 1.0 §4.12 split)\n",
++                    (unsigned)ep->hub_addr, (unsigned)ep->hub_port);
+         return 0;                            /* nothing delivered yet */
+     }
+ 
+diff --git a/drivers/usb/ehci.h b/drivers/usb/ehci.h
+index e6e34d1..4a78e7c 100644
+--- a/drivers/usb/ehci.h
++++ b/drivers/usb/ehci.h
+@@ -28,6 +28,9 @@ int ehci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint,
+                               int low_speed, uint16_t max_packet,
+                               void *data, uint32_t len, int is_in);
+ int ehci_split_transaction_setup(uint8_t hub_addr, uint8_t hub_port, uint8_t dev_addr, uint8_t endpoint);
++/* RESIDUE3 C5b: PORTSC.PSPD, 0=full 1=low 2=high, 0xFF when nothing is
++ * connected.  Used by usb_core so an EHCI port is not assumed high-speed. */
++uint8_t ehci_port_speed_code(int port);
+ void ehci_self_test(void);
+ 
+ #endif
+diff --git a/drivers/usb/ehci_qh.c b/drivers/usb/ehci_qh.c
+new file mode 100644
+index 0000000..e480850
+--- /dev/null
++++ b/drivers/usb/ehci_qh.c
+@@ -0,0 +1,79 @@
++/* ehci_qh.c — EHCI queue-head capability words (RESIDUE3 C5b).
++ *
++ * Bit positions are from EHCI 1.0 §3.6 (queue head layout) and §4.12
++ * (split transactions).  They are written as named shifts rather than
++ * literals so the unit test can assert both the value and the position.
++ */
++#include "drivers/usb/ehci_qh.h"
++
++/* ep_caps1 (Endpoint Characteristics) */
++#define QH1_DEVADDR_SHIFT  0     /* bits 0-6   */
++#define QH1_DEVADDR_MASK   0x7Fu
++#define QH1_EPNUM_SHIFT    8     /* bits 8-11  */
++#define QH1_EPNUM_MASK     0x0Fu
++#define QH1_EPS_SHIFT      12    /* bits 12-13 */
++#define QH1_DTC            (1u << 14)
++#define QH1_MPL_SHIFT      16    /* bits 16-26 */
++#define QH1_MPL_MASK       0x7FFu
++
++/* ep_caps2 (Endpoint Capabilities) */
++#define QH2_SMASK_SHIFT    0     /* bits 0-7   */
++#define QH2_CMASK_SHIFT    8     /* bits 8-15  */
++#define QH2_HUBADDR_SHIFT  16    /* bits 16-22 */
++#define QH2_HUBADDR_MASK   0x7Fu
++#define QH2_HUBPORT_SHIFT  23    /* bits 23-29 */
++#define QH2_HUBPORT_MASK   0x7Fu
++#define QH2_MULT_SHIFT     30    /* bits 30-31 */
++
++/* Complete-split microframes: three consecutive ones, starting after the
++ * start-split.  EHCI 1.0 §4.12.3.2 requires at least one C-mask bit and lets a
++ * complete-split fall in the following micro-frame; when the start lands late
++ * in the frame the mask wraps to bits 0.. (which the controller reads as the
++ * next frame's first micro-frames) rather than dropping the C-split entirely.
++ * Dropping it was a real bug in the first cut of this function: a start in
++ * micro-frame 7 produced an empty C-mask and the endpoint never completed. */
++#define QH2_CMASK_RUN      0x07u
++
++int ehci_qh_needs_split(uint8_t speed, uint8_t hub_addr) {
++    if (hub_addr == 0) return 0;
++    return (speed == EHCI_QH_SPEED_FULL || speed == EHCI_QH_SPEED_LOW) ? 1 : 0;
++}
++
++void ehci_qh_build_caps(const ehci_qh_params_t *p, ehci_qh_caps_t *out) {
++    if (!p || !out) return;
++
++    uint32_t caps1 = ((uint32_t)(p->dev_addr & QH1_DEVADDR_MASK) << QH1_DEVADDR_SHIFT) |
++                     ((uint32_t)(p->ep_num   & QH1_EPNUM_MASK)   << QH1_EPNUM_SHIFT) |
++                     ((uint32_t)(p->speed & 0x3u)                << QH1_EPS_SHIFT) |
++                     QH1_DTC |
++                     ((uint32_t)(p->max_packet & QH1_MPL_MASK)   << QH1_MPL_SHIFT);
++
++    uint8_t mult = p->mult ? p->mult : 1;
++    uint8_t s_mask = (uint8_t)(1u << (p->start_microframe & 0x7u));
++    uint8_t c_mask = 0;
++    uint32_t hub_addr = 0, hub_port = 0;
++    int split = ehci_qh_needs_split(p->speed, p->hub_addr);
++
++    if (split) {
++        /* Start-splits live in the S-mask; complete-splits follow it, in the
++         * three micro-frames after the start, wrapping past bit 7. */
++        uint8_t base = (uint8_t)((p->start_microframe + 1u) & 0x7u);
++        c_mask = (uint8_t)(((QH2_CMASK_RUN << base) |
++                            (QH2_CMASK_RUN >> (8u - base))) & 0xFFu);
++        c_mask &= (uint8_t)~s_mask;
++        hub_addr = p->hub_addr & QH2_HUBADDR_MASK;
++        hub_port = p->hub_port & QH2_HUBPORT_MASK;
++    }
++
++    uint32_t caps2 = ((uint32_t)s_mask          << QH2_SMASK_SHIFT) |
++                     ((uint32_t)c_mask          << QH2_CMASK_SHIFT) |
++                     (hub_addr                  << QH2_HUBADDR_SHIFT) |
++                     (hub_port                  << QH2_HUBPORT_SHIFT) |
++                     ((uint32_t)(mult & 0x3u)   << QH2_MULT_SHIFT);
++
++    out->ep_caps1 = caps1;
++    out->ep_caps2 = caps2;
++    out->is_split = split;
++    out->s_mask   = s_mask;
++    out->c_mask   = c_mask;
++}
+diff --git a/drivers/usb/ehci_qh.h b/drivers/usb/ehci_qh.h
+new file mode 100644
+index 0000000..b8d0df8
+--- /dev/null
++++ b/drivers/usb/ehci_qh.h
+@@ -0,0 +1,69 @@
++/* ehci_qh.h — EHCI queue-head capability words, built as pure data.
++ *
++ * WHY THIS IS A SEPARATE MODULE (RESIDUE3 C5b).
++ *
++ * A queue head for a full- or low-speed endpoint that sits behind a
++ * high-speed hub has to carry split-transaction fields: the transaction
++ * translator's address and port, a start-split mask and a complete-split
++ * mask (EHCI 1.0 §4.12).  Get one of those bit positions wrong and the
++ * controller schedules nothing, or schedules a transfer the hub never
++ * forwards — silently, because the QH is opaque 32-byte words in memory.
++ *
++ * Those words are pure arithmetic over the endpoint's parameters, so they
++ * are built here, in a translation unit with no register access and no
++ * allocation, and unit-tested on the host against the bit positions in the
++ * specification (tests/unit/test_usb_ehci_qh.c).  ehci.c keeps the parts that
++ * need hardware: allocation, linking and polling.
++ *
++ * Measured limitation, stated rather than hidden (C5b): QEMU's only USB hub,
++ * `usb-hub`, is a full-speed device and refuses to attach to a high-speed bus,
++ * so an FS/LS device behind a TT on EHCI cannot be constructed there:
++ *
++ *   qemu-system-x86_64: -device usb-hub,bus=e.0,port=1: Warning: speed
++ *   mismatch trying to attach usb device "QEMU USB Hub" (full speed) to bus
++ *   "e.0", port "1" (high speed)
++ *
++ * The split path is therefore verified at the encoding level (here) and its
++ * decision is logged by ehci.c on every periodic endpoint; on QEMU the
++ * integration case can only assert the non-split branch.
++ */
++#ifndef AURALITE_DRIVERS_USB_EHCI_QH_H
++#define AURALITE_DRIVERS_USB_EHCI_QH_H
++
++#include <stdint.h>
++
++/* EPS encoding, EHCI 1.0 table 3-2 (QH ep_caps1 bits 12-13). */
++typedef enum {
++    EHCI_QH_SPEED_FULL = 0,
++    EHCI_QH_SPEED_LOW  = 1,
++    EHCI_QH_SPEED_HIGH = 2,
++} ehci_qh_speed_t;
++
++typedef struct {
++    uint8_t  dev_addr;        /* 0-127, QH bits 0-6 */
++    uint8_t  ep_num;          /* 0-15,  QH bits 8-11 */
++    uint8_t  speed;           /* ehci_qh_speed_t, QH bits 12-13 */
++    uint16_t max_packet;      /* QH bits 16-26, 11 bits */
++    uint8_t  hub_addr;        /* TT address; 0 = attached directly */
++    uint8_t  hub_port;        /* TT port number (1-based) */
++    uint8_t  mult;            /* QH bits 30-31; 0 is treated as 1 */
++    uint8_t  start_microframe;/* S-mask bit, 0-7 */
++} ehci_qh_params_t;
++
++typedef struct {
++    uint32_t ep_caps1;
++    uint32_t ep_caps2;
++    int      is_split;        /* 1 when the TT fields are populated */
++    uint8_t  s_mask;          /* echo of the encoded masks, for receipts */
++    uint8_t  c_mask;
++} ehci_qh_caps_t;
++
++/* Fill `out` from `p`.  Always writes both words; nothing here can fail. */
++void ehci_qh_build_caps(const ehci_qh_params_t *p, ehci_qh_caps_t *out);
++
++/* True when this endpoint needs split transactions: full/low speed AND
++ * reached through a transaction translator.  A full-speed device on a
++ * high-speed root port has no TT and cannot be split. */
++int ehci_qh_needs_split(uint8_t speed, uint8_t hub_addr);
++
++#endif /* AURALITE_DRIVERS_USB_EHCI_QH_H */
+diff --git a/drivers/usb/hid.c b/drivers/usb/hid.c
+index 5decf84..eb69e4a 100644
+--- a/drivers/usb/hid.c
++++ b/drivers/usb/hid.c
+@@ -7,6 +7,7 @@
+ 
+ #include <stdint.h>
+ #include "drivers/usb/hid.h"
++#include "drivers/usb/hid_report.h"   /* C5b: descriptors, with report IDs */
+ #include "drivers/usb/usb_core.h"
+ #include "drivers/keyboard/keyboard.h"
+ #include "drivers/mouse/mouse.h"
+@@ -24,41 +25,10 @@
+ #define HID_REQ_SET_PROTOCOL    0x0B
+ #define HID_BOOT_PROTOCOL       0x00
+ 
+-#define HID_USAGE_PAGE_GENERIC  0x01
+-#define HID_USAGE_PAGE_BUTTON   0x09
+-#define HID_USAGE_PAGE_KEYBOARD 0x07
+-#define HID_USAGE_MOUSE         0x02
+-#define HID_USAGE_POINTER       0x01
+-#define HID_USAGE_KEYBOARD      0x06
+-#define HID_USAGE_X             0x30
+-#define HID_USAGE_Y             0x31
+-#define HID_USAGE_WHEEL         0x38
+-
+-#define HID_FIELD_MAX           32
++/* The usage-page constants, the field limit and HID_REPORT_DESC_MAX live in
++ * hid_report.h now (C5b): the parser is a module with its own host tests, and
++ * this file is one of its callers. */
+ #define HID_REPORT_MAX          64
+-#define HID_REPORT_DESC_MAX     256
+-
+-typedef struct {
+-    uint16_t usage_page;
+-    uint16_t usage;
+-    uint16_t usage_min;
+-    uint16_t usage_max;
+-    uint16_t bit_offset;
+-    uint8_t  size;
+-    int32_t  logical_min;
+-    int32_t  logical_max;
+-    uint8_t  flags;
+-} hid_field_t;
+-
+-typedef struct {
+-    int is_mouse;
+-    int is_keyboard;
+-    int has_report_id;
+-    uint8_t report_id;
+-    uint16_t report_bits;
+-    hid_field_t fields[HID_FIELD_MAX];
+-    uint8_t field_count;
+-} hid_report_parser_t;
+ 
+ typedef struct {
+     int          in_use;
+@@ -75,7 +45,7 @@ typedef struct {
+     uint8_t      last_key_count;
+     int          generic;  /* 0=boot, 1=generic pointer, 2=generic keyboard */
+     int          logged_first; /* first pointer report already printed */
+-    hid_report_parser_t parser;
++    hid_report_t parser;
+ } hid_dev_t;
+ 
+ static hid_dev_t hid_devs[USB_HID_MAX_DEVICES];
+@@ -104,143 +74,11 @@ static int hid_get_report_descriptor(usb_device_t *dev, uint8_t iface,
+     return usb_control_transfer(dev, &setup, buf, len);
+ }
+ 
+-static int32_t sign_extend(uint32_t v, uint8_t bits) {
+-    if (bits == 0 || bits >= 32) return (int32_t)v;
+-    uint32_t sign = 1u << (bits - 1);
+-    if (v & sign) v |= (~0u << bits);
+-    return (int32_t)v;
+-}
+-
+-static uint32_t get_bits(const uint8_t *buf, uint16_t bit, uint8_t size) {
+-    uint32_t v = 0;
+-    for (uint8_t i = 0; i < size && i < 32; i++) {
+-        uint16_t b = bit + i;
+-        if (buf[b >> 3] & (1u << (b & 7))) v |= (1u << i);
+-    }
+-    return v;
+-}
+-
+-static int32_t get_field_value(const uint8_t *buf, const hid_field_t *f) {
+-    uint32_t raw = get_bits(buf, f->bit_offset, f->size);
+-    if (f->logical_min < 0) return sign_extend(raw, f->size);
+-    return (int32_t)raw;
+-}
+-
+-static int item_sdata(const uint8_t *p, int size) {
+-    if (size == 0) return 0;
+-    if (size == 1) return (int8_t)p[0];
+-    if (size == 2) return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+-    return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+-                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
+-}
+-static uint32_t item_udata(const uint8_t *p, int size) {
+-    if (size == 0) return 0;
+-    if (size == 1) return p[0];
+-    if (size == 2) return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+-}
+-
+-static int parse_hid_report(hid_report_parser_t *rp, const uint8_t *d, uint16_t len) {
+-    memset(rp, 0, sizeof(*rp));
+-    uint16_t usage_page = 0;
+-    int32_t logical_min = 0, logical_max = 1;
+-    uint8_t report_size = 0, report_count = 0, report_id = 0;
+-    uint16_t bitpos = 0;
+-    uint16_t usages[32];
+-    uint8_t usage_count = 0;
+-    uint16_t usage_min = 0, usage_max = 0;
+-    int have_range = 0;
+-    int mouse_collection = 0;
+-
+-    for (uint16_t off = 0; off < len;) {
+-        uint8_t b = d[off++];
+-        if (b == 0xFE) { if (off + 2 > len) break; uint8_t n = d[off]; off += 2 + n; continue; }
+-        int sz = b & 3; if (sz == 3) sz = 4;
+-        int type = (b >> 2) & 3;
+-        int tag = (b >> 4) & 0xF;
+-        if (off + sz > len) break;
+-        const uint8_t *payload = d + off;
+-        uint32_t uval = item_udata(payload, sz);
+-        int32_t sval = item_sdata(payload, sz);
+-        off += sz;
+-
+-        if (type == 1) { /* global */
+-            switch (tag) {
+-            case 0x0: usage_page = (uint16_t)uval; break;
+-            case 0x1: logical_min = sval; break;
+-            case 0x2: logical_max = sval; break;
+-            case 0x7: report_size = (uint8_t)uval; break;
+-            case 0x8:
+-                report_id = (uint8_t)uval;
+-                rp->has_report_id = 1;
+-                rp->report_id = report_id;
+-                bitpos = 8;
+-                break;
+-            case 0x9: report_count = (uint8_t)uval; break;
+-            default: break;
+-            }
+-        } else if (type == 2) { /* local */
+-            switch (tag) {
+-            case 0x0:
+-                if (usage_count < 32) usages[usage_count++] = (uint16_t)uval;
+-                if (usage_page == HID_USAGE_PAGE_GENERIC &&
+-                    (uval == HID_USAGE_MOUSE || uval == HID_USAGE_POINTER))
+-                    rp->is_mouse = 1;
+-                if (usage_page == HID_USAGE_PAGE_GENERIC && uval == HID_USAGE_KEYBOARD)
+-                    rp->is_keyboard = 1;
+-                break;
+-            case 0x1: usage_min = (uint16_t)uval; have_range = 1; break;
+-            case 0x2: usage_max = (uint16_t)uval; have_range = 1; break;
+-            default: break;
+-            }
+-        } else if (type == 0) { /* main */
+-            if (tag == 0xA) { /* Collection */
+-                if (usage_page == HID_USAGE_PAGE_GENERIC && usage_count &&
+-                    (usages[usage_count - 1] == HID_USAGE_MOUSE ||
+-                     usages[usage_count - 1] == HID_USAGE_POINTER))
+-                    mouse_collection++;
+-                usage_count = 0; have_range = 0;
+-            } else if (tag == 0xC) {
+-                if (mouse_collection > 0) mouse_collection--;
+-            } else if (tag == 0x8) { /* Input */
+-                uint8_t flags = (uint8_t)uval;
+-                for (uint8_t i = 0; i < report_count; i++) {
+-                    uint16_t usage = 0;
+-                    if (i < usage_count) usage = usages[i];
+-                    else if (have_range && usage_min + i <= usage_max) usage = usage_min + i;
+-                    if (!(flags & 0x01) && rp->field_count < HID_FIELD_MAX) {
+-                        hid_field_t *f = &rp->fields[rp->field_count++];
+-                        f->usage_page = usage_page;
+-                        f->usage = usage;
+-                        f->usage_min = have_range ? usage_min : usage;
+-                        f->usage_max = have_range ? usage_max : usage;
+-                        f->bit_offset = bitpos;
+-                        f->size = report_size;
+-                        f->logical_min = logical_min;
+-                        f->logical_max = logical_max;
+-                        f->flags = flags;
+-                        if (usage_page == HID_USAGE_PAGE_GENERIC &&
+-                            (usage == HID_USAGE_X || usage == HID_USAGE_Y || usage == HID_USAGE_WHEEL))
+-                            rp->is_mouse = 1;
+-                        if (usage_page == HID_USAGE_PAGE_BUTTON) rp->is_mouse = 1;
+-                        if (usage_page == HID_USAGE_PAGE_KEYBOARD) rp->is_keyboard = 1;
+-                    }
+-                    bitpos += report_size;
+-                }
+-                usage_count = 0; have_range = 0;
+-            } else if (tag == 0x9 || tag == 0xB) { /* Output/Feature */
+-                bitpos += (uint16_t)report_size * report_count;
+-                usage_count = 0; have_range = 0;
+-            }
+-        }
+-    }
+-    rp->report_bits = bitpos;
+-    return ((rp->is_mouse || rp->is_keyboard) && rp->field_count > 0) ? 0 : -1;
+-}
+-
+-static int report_contains_key(const uint8_t *report, uint8_t usage) {
+-    for (int i = 2; i < 8; i++) if (report[i] == usage) return 1;
++/* Boot-protocol report layout: byte 2..9 are held keys, byte 0 is modifiers.
++ * (Generic reports use the descriptor parser instead; this helper stayed here
++ * with the boot decoder when the parser moved out to hid_report.c.) */
++static int report_contains_key(const uint8_t *r, uint8_t usage) {
++    for (uint8_t i = 2; i < 8; i++) if (r[i] == usage) return 1;
+     return 0;
+ }
+ 
+@@ -284,19 +122,27 @@ static int key_array_contains(const uint8_t *arr, uint8_t n, uint8_t usage) {
+     return 0;
+ }
+ 
++
+ static void process_generic_keyboard_report(hid_dev_t *h, const uint8_t *r, uint32_t len) {
+-    hid_report_parser_t *rp = &h->parser;
+-    if (rp->has_report_id) {
+-        if (len == 0 || r[0] != rp->report_id) return;
+-    }
++    hid_report_t *rp = &h->parser;
++    /* C5b: split the report-ID prefix off first, then decode against the
++     * fields of THAT report only.  The old code compared the incoming ID with
++     * the single ID the descriptor declared last, so on a two-ID device it
++     * dropped report 1 entirely (or, worse, decoded it with report 2's
++     * layout). */
++    uint32_t body_len = 0;
++    uint8_t rid = 0;
++    const uint8_t *body = hid_report_body(rp, r, len, &body_len, &rid);
++    if (!body || body_len == 0) return;
+     uint8_t mods = 0;
+     uint8_t keys[16];
+     uint8_t key_count = 0;
+ 
+     for (uint8_t i = 0; i < rp->field_count; i++) {
+-        hid_field_t *f = &rp->fields[i];
++        hid_report_field_t *f = &rp->fields[i];
++        if (f->report_id != rid) continue;
+         if (f->usage_page != HID_USAGE_PAGE_KEYBOARD) continue;
+-        int32_t v = get_field_value(r, f);
++        int32_t v = hid_report_field_value(body, f);
+         if ((f->flags & 0x02) && f->usage >= 0xE0 && f->usage <= 0xE7) {
+             if (v) mods |= (uint8_t)(1u << (f->usage - 0xE0));
+         } else if (!(f->flags & 0x02)) {
+@@ -330,17 +176,19 @@ static void process_generic_keyboard_report(hid_dev_t *h, const uint8_t *r, uint
+ }
+ 
+ static void process_generic_mouse_report(hid_dev_t *h, const uint8_t *r, uint32_t len) {
+-    hid_report_parser_t *rp = &h->parser;
+-    if (rp->has_report_id) {
+-        if (len == 0 || r[0] != rp->report_id) return;
+-    }
++    hid_report_t *rp = &h->parser;
++    uint32_t body_len = 0;
++    uint8_t rid = 0;
++    const uint8_t *body = hid_report_body(rp, r, len, &body_len, &rid);
++    if (!body || body_len == 0) return;
+     uint8_t buttons = 0;
+     int have_x = 0, have_y = 0, rel = 0;
+     int32_t x = 0, y = 0, wheel = 0;
+     int32_t xmin = 0, xmax = 32767, ymin = 0, ymax = 32767;
+     for (uint8_t i = 0; i < rp->field_count; i++) {
+-        hid_field_t *f = &rp->fields[i];
+-        int32_t v = get_field_value(r, f);
++        hid_report_field_t *f = &rp->fields[i];
++        if (f->report_id != rid) continue;
++        int32_t v = hid_report_field_value(body, f);
+         if (f->usage_page == HID_USAGE_PAGE_BUTTON && f->usage >= 1 && f->usage <= 8) {
+             if (v) buttons |= (uint8_t)(1u << (f->usage - 1));
+         } else if (f->usage_page == HID_USAGE_PAGE_GENERIC && f->usage == HID_USAGE_X) {
+@@ -459,10 +307,19 @@ static int add_hid_device(usb_device_t *dev) {
+     if (rlen == 0 || rlen > HID_REPORT_DESC_MAX) rlen = HID_REPORT_DESC_MAX;
+     memset(desc, 0, sizeof(desc));
+     if (hid_get_report_descriptor(dev, h->interface_number, desc, rlen) >= 0 &&
+-        parse_hid_report(&h->parser, desc, rlen) == 0) {
++        hid_report_parse(&h->parser, desc, rlen) == 0) {
+         parsed = 1;
+-        uint16_t bytes = (h->parser.report_bits + 7) / 8;
++        uint16_t bytes = hid_report_wire_len(&h->parser);
+         if (bytes > 0 && bytes < HID_REPORT_MAX) h->report_len = bytes;
++        /* Cross-check against the endpoint.  A device is free to allocate a
++         * larger wMaxPacketSize than its descriptor needs (QEMU's tablet asks
++         * for 8 and sends 6), so only the failing direction is notable: a
++         * descriptor that claims more input than one packet can carry would
++         * silently truncate every report.  Measured at C5b: kbd 8/8,
++         * mouse 4/4, tablet 6 of 8. */
++        if (dev->interrupt_max_packet && bytes > dev->interrupt_max_packet)
++            kprintf("[hid] note: addr %d descriptor wire length %u > endpoint maxpkt %u\n",
++                    dev->address, (unsigned)bytes, (unsigned)dev->interrupt_max_packet);
+         if (h->parser.is_keyboard) {
+             h->generic = 2;
+             kind = "keyboard";
+@@ -470,9 +327,21 @@ static int add_hid_device(usb_device_t *dev) {
+             h->generic = 1;
+             kind = (dev->interface_protocol == HID_PROTO_MOUSE) ? "mouse" : "generic-mouse";
+         }
+-        kprintf("[hid] parsed generic %s report: fields=%u bits=%u report_id=%u\n",
++        /* C5b receipt: name the report IDs the descriptor declared, not just
++         * the one a single-value parser happened to end on.  A descriptor with
++         * no Report ID item reports "none" -- its slot 0 is synthetic and
++         * saying "report_id(s)=1 (0)" would read like a declared ID 0. */
++        kprintf("[hid] parsed generic %s report: fields=%u input_bits=%u ",
+                 h->parser.is_keyboard ? "keyboard" : "pointer",
+-                h->parser.field_count, h->parser.report_bits, h->parser.report_id);
++                h->parser.field_count, h->parser.report_bits_max);
++        if (!h->parser.has_report_id) {
++            kprintf("report_id=none\n");
++        } else {
++            kprintf("report_id(s)=%u", (unsigned)h->parser.report_id_count);
++            for (uint8_t ri = 0; ri < h->parser.report_id_count; ri++)
++                kprintf("%s%u", ri ? "," : " (", h->parser.report_ids[ri]);
++            kprintf(")\n");
++        }
+     }
+ 
+     if (!parsed) {
+@@ -496,12 +365,164 @@ static int add_hid_device(usb_device_t *dev) {
+     }
+ 
+     hid_count++;
+-    kprintf("[hid] %s ready: addr=%d iface=%d ep=0x%02x maxpkt=%u interval=%ums\n",
++    /* Report both numbers: the length we poll with (from the descriptor when
++     * it parsed, from the endpoint otherwise) and the endpoint's own capacity.
++     * Printing one number called it "maxpkt" and hid which was which. */
++    kprintf("[hid] %s ready: addr=%d iface=%d ep=0x%02x poll_len=%u ep_maxpkt=%u interval=%ums\n",
+             kind, dev->address, h->interface_number, h->ep_in,
+-            (unsigned)h->report_len, (unsigned)h->interval_ms);
++            (unsigned)h->report_len, (unsigned)dev->interrupt_max_packet,
++            (unsigned)h->interval_ms);
+     return 0;
+ }
+ 
++/* ---------------------------------------------------------------------------
++ * RESIDUE3 C5b selftest: report IDs.
++ *
++ * WHY A SELFTEST AND NOT JUST A DEVICE CASE.
++ *
++ * The host unit test (tests/unit/test_usb_hid_report.c) covers the parser
++ * against eight descriptors, including two-ID ones.  What it cannot show is
++ * that the *kernel build* reaches those code paths: drivers/usb/hid_report.c
++ * is compiled twice (host, freestanding kernel) and the kernel copy could in
++ * principle differ.  It also cannot show that the driver's contract -- body
++ * after the prefix, fields addressed per report -- holds for descriptors the
++ * kernel actually parses at boot.
++ *
++ * Why not a device: as of QEMU 8 none of usb-kbd, usb-mouse, usb-tablet or
++ * usb-wacom-tablet declares a Report ID item.  Dumping the descriptors these
++ * three devices really send (C5b measurement) shows zero `0x85` items, so a
++ * "multi-report-ID device" case on stock QEMU would be a test of nothing.
++ * The descriptors below are therefore carried in the kernel, and the real
++ * devices are asserted a different way: the parsed input length must equal
++ * the endpoint's wMaxPacketSize, which is checked on every attach.
++ * ------------------------------------------------------------------------ */
++static const uint8_t hid_st_2id_desc[] = {
++    0x05, 0x01,        /* Usage Page (Generic Desktop) */
++    0x09, 0x06,        /* Usage (Keyboard) */
++    0xA1, 0x01,        /* Collection (Application) */
++    0x85, 0x01,        /*   Report ID (1) */
++    0x05, 0x07,        /*   Usage Page (Keyboard) */
++    0x19, 0xE0, 0x29, 0xE7,       /*   Usage Min/Max (modifiers) */
++    0x15, 0x00, 0x25, 0x01,       /*   Logical Min/Max */
++    0x75, 0x01, 0x95, 0x08,       /*   Report Size 1, Count 8 */
++    0x81, 0x02,                   /*   Input (Data,Var,Abs) */
++    0x95, 0x01, 0x75, 0x08, 0x81, 0x01,  /* 1 reserved byte */
++    0x95, 0x06, 0x75, 0x08,
++    0x15, 0x00, 0x25, 0x65,
++    0x05, 0x07, 0x19, 0x00, 0x29, 0x65,
++    0x81, 0x00,                   /*   Input (Data,Array) */
++    0x85, 0x02,        /*   Report ID (2) */
++    0x05, 0x0C,        /*   Usage Page (Consumer) */
++    0x0A, 0xE9, 0x00,             /*   Usage (Volume Increment) */
++    0x15, 0x00, 0x25, 0x01,
++    0x75, 0x01, 0x95, 0x01,
++    0x81, 0x02,                   /*   Input (Data,Var,Abs) */
++    0x0A, 0xEA, 0x00, 0x81, 0x02, /*   Usage (Volume Decrement) */
++    0x0A, 0xE2, 0x00, 0x81, 0x02, /*   Usage (Mute) */
++    0x0A, 0xCD, 0x00, 0x81, 0x02, /*   Usage (Play/Pause) */
++    0xC0,              /* End Collection */
++};
++
++/* QEMU's usb-kbd descriptor, byte for byte (measured, C5b): no Report ID, and
++ * an LED output report between two input items.  The output bits must not be
++ * folded into the input length -- that was the bug the host test now pins. */
++static const uint8_t hid_st_kbd_desc[] = {
++    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x75, 0x01, 0x95, 0x08, 0x05, 0x07,
++    0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x81, 0x02, 0x95, 0x01,
++    0x75, 0x08, 0x81, 0x01, 0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01,
++    0x29, 0x05, 0x91, 0x02, 0x95, 0x01, 0x75, 0x03, 0x91, 0x01, 0x95, 0x06,
++    0x75, 0x08, 0x15, 0x00, 0x25, 0xFF, 0x05, 0x07, 0x19, 0x00, 0x29, 0xFF,
++    0x81, 0x00, 0xC0,
++};
++
++static int hid_selftest_fail;
++
++static void hid_st_check(int ok, const char *what) {
++    if (!ok) {
++        hid_selftest_fail++;
++        kprintf("[hid] selftest: FAIL %s\n", what);
++    }
++}
++
++void usb_hid_report_selftest(void) {
++    static hid_report_t r;
++    hid_selftest_fail = 0;
++
++    /* --- one descriptor, two report IDs ------------------------------- */
++    if (hid_report_parse(&r, hid_st_2id_desc, sizeof(hid_st_2id_desc)) != 0) {
++        kprintf("[hid] selftest: FAIL two-ID descriptor did not parse\n");
++        return;
++    }
++    kprintf("[hid] selftest: two-ID descriptor -> ids=%u (",
++            (unsigned)r.report_id_count);
++    for (uint8_t i = 0; i < r.report_id_count; i++)
++        kprintf("%s%u", i ? "," : "", r.report_ids[i]);
++    kprintf(") input bits: r1=%u r2=%u wire=%u\n",
++            (unsigned)hid_report_bits(&r, 1), (unsigned)hid_report_bits(&r, 2),
++            (unsigned)hid_report_wire_len(&r));
++    hid_st_check(r.report_id_count == 2, "two report IDs declared");
++    hid_st_check(hid_report_bits(&r, 1) == 64, "report 1 is 8 bytes of input");
++    hid_st_check(hid_report_bits(&r, 2) == 4, "report 2 is four 1-bit inputs");
++    hid_st_check(hid_report_wire_len(&r) == 9, "wire length = 8 + ID byte");
++
++    /* --- the split: report 1 keeps its 8-byte body -------------------- */
++    uint8_t rep1[9] = { 0x01, 0x02, 0x00, 0x04, 0, 0, 0, 0, 0 }; /* LShift + 'a' */
++    uint32_t blen = 0; uint8_t rid = 0;
++    const uint8_t *body = hid_report_body(&r, rep1, sizeof(rep1), &blen, &rid);
++    hid_st_check(body != NULL && blen == 8 && rid == 1, "report 1 body after prefix");
++    if (body) {
++        /* Modifier LShift is bit 1 of the body; 'a' (0x04) is key slot 0,
++         * i.e. body bits 16..23 -> body byte 2. */
++        int32_t mod = 0, key = 0;
++        for (uint8_t i = 0; i < r.field_count; i++) {
++            hid_report_field_t *f = &r.fields[i];
++            if (f->report_id != 1 || f->usage_page != HID_USAGE_PAGE_KEYBOARD) continue;
++            int32_t v = hid_report_field_value(body, f);
++            if ((f->flags & 0x02) && f->usage == 0xE1) mod = v;
++            if (!(f->flags & 0x02) && v == 0x04) key = v;
++        }
++        hid_st_check(mod == 1, "LShift decoded from report 1 body bit 1");
++        hid_st_check(key == 0x04, "'a' keycode read from the array field");
++    }
++
++    /* --- report 2 is a different layout and must not decode as keys ---- */
++    uint8_t rep2[2] = { 0x02, 0x05 };   /* ID 2: mute=1, vol+=0 */
++    body = hid_report_body(&r, rep2, sizeof(rep2), &blen, &rid);
++    hid_st_check(body != NULL && blen == 1 && rid == 2, "report 2 body after prefix");
++    if (body) {
++        int32_t mute = -1;
++        for (uint8_t i = 0; i < r.field_count; i++) {
++            hid_report_field_t *f = &r.fields[i];
++            if (f->report_id != 2) continue;
++            if (f->usage == 0xE2) mute = hid_report_field_value(body, f);
++        }
++        hid_st_check(mute == 1, "Mute bit read from report 2, not from report 1");
++    }
++
++    /* --- a report ID the descriptor never declared is not a report ----- */
++    uint8_t rep9[4] = { 0x09, 0x01, 0x02, 0x03 };
++    rid = 0x7F; blen = 0;
++    hid_st_check(hid_report_body(&r, rep9, sizeof(rep9), &blen, &rid) == NULL,
++                 "unknown report ID rejected");
++    hid_st_check(blen == 0 && rid == 0, "rejection clears body length and ID");
++
++    /* --- QEMU keyboard shape: output bits are not input bits ---------- */
++    if (hid_report_parse(&r, hid_st_kbd_desc, sizeof(hid_st_kbd_desc)) != 0) {
++        kprintf("[hid] selftest: FAIL QEMU-shaped descriptor did not parse\n");
++        return;
++    }
++    kprintf("[hid] selftest: QEMU-shaped keyboard -> report_id=%s input bits=%u wire=%u\n",
++            r.has_report_id ? "yes" : "none", (unsigned)r.report_bits_max,
++            (unsigned)hid_report_wire_len(&r));
++    hid_st_check(r.report_bits_max == 64, "8 mods + 1 reserved + 6 keys = 64 bits");
++    hid_st_check(hid_report_wire_len(&r) == 8, "LED output bits not folded in");
++
++    if (hid_selftest_fail == 0)
++        kprintf("[hid] selftest: PASS report-ID split and per-report decoding\n");
++    else
++        kprintf("[hid] selftest: FAIL %d check(s)\n", hid_selftest_fail);
++}
++
+ int usb_hid_attach_device(void *usb_dev) {
+     usb_device_t *dev = (usb_device_t *)usb_dev;
+     if (!dev || !dev->in_use || dev->interface_class != USB_CLASS_HID) return -1;
+@@ -512,6 +533,7 @@ int usb_hid_init(void) {
+     memset(hid_devs, 0, sizeof(hid_devs));
+     hid_count = 0;
+     kprintf("[hid] initialising USB HID keyboard/mouse driver...\n");
++    usb_hid_report_selftest();
+     for (int i = 0; i < USB_MAX_DEVICES; i++) {
+         usb_device_t *dev = &usb_devices[i];
+         if (!dev->in_use || dev->interface_class != USB_CLASS_HID) continue;
+diff --git a/drivers/usb/hid_report.c b/drivers/usb/hid_report.c
+new file mode 100644
+index 0000000..0aa3072
+--- /dev/null
++++ b/drivers/usb/hid_report.c
+@@ -0,0 +1,235 @@
++/* hid_report.c — USB HID report-descriptor parser (RESIDUE3 C5b, RES-62).
++ *
++ * Moved out of hid.c and made report-ID-aware.  The parsing rules implemented
++ * here are the ones the driver actually needs (HID 1.11 §6.2.2):
++ *
++ *   - short items only (long items, prefix 0xFE, are skipped);
++ *   - global items: usage page, logical min/max, report size/count, report ID;
++ *   - local items: usages, usage ranges (consumed at the next main item);
++ *   - main items: Collection, End Collection, Input, Output, Feature.
++ *
++ * Report IDs are the reason this got its own file: on a Report ID item the bit
++ * cursor is per-report, so each report starts its own layout, and every field
++ * remembers which report it belongs to.
++ */
++#include "drivers/usb/hid_report.h"
++
++#include <stdint.h>
++
++#include "kernel/lib/string.h"
++
++static int32_t item_sdata(const uint8_t *p, int size) {
++    if (size == 0) return 0;
++    if (size == 1) return (int8_t)p[0];
++    if (size == 2) return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
++    return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
++}
++
++static uint32_t item_udata(const uint8_t *p, int size) {
++    if (size == 0) return 0;
++    if (size == 1) return p[0];
++    if (size == 2) return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++static int32_t sign_extend(uint32_t v, uint8_t bits) {
++    if (bits == 0 || bits >= 32) return (int32_t)v;
++    uint32_t sign = 1u << (bits - 1);
++    if (v & sign) v |= (~0u << bits);
++    return (int32_t)v;
++}
++
++static uint32_t get_bits(const uint8_t *buf, uint16_t bit, uint8_t size) {
++    uint32_t v = 0;
++    for (uint8_t i = 0; i < size && i < 32; i++) {
++        uint16_t b = (uint16_t)(bit + i);
++        if (buf[b >> 3] & (1u << (b & 7))) v |= (1u << i);
++    }
++    return v;
++}
++
++/* Index into the report_id[] arrays, creating the entry if it is new. */
++static int report_slot(hid_report_t *r, uint8_t report_id) {
++    for (uint8_t i = 0; i < r->report_id_count; i++)
++        if (r->report_ids[i] == report_id) return i;
++    if (r->report_id_count >= HID_REPORT_ID_MAX) return -1;
++    int slot = r->report_id_count++;
++    r->report_ids[slot] = report_id;
++    r->report_bits[slot] = 0;
++    return slot;
++}
++
++int hid_report_parse(hid_report_t *r, const uint8_t *d, uint16_t len) {
++    if (!r || !d || len == 0) return -1;
++    memset(r, 0, sizeof(*r));
++
++    uint16_t usage_page = 0;
++    int32_t logical_min = 0, logical_max = 1;
++    uint8_t report_size = 0, report_count = 0;
++    uint8_t cur_id = 0;            /* 0 = no Report ID item seen yet */
++    /* -1 until a report is actually being filled: a descriptor that never
++     * declares a Report ID gets its slot created at the end, so a two-ID
++     * descriptor does not also carry a phantom id-0 entry. */
++    int cur_slot = -1;
++    uint16_t bitpos = 0;           /* inside the CURRENT report */
++    uint16_t usages[32];
++    uint8_t usage_count = 0;
++    uint16_t usage_min = 0, usage_max = 0;
++    int have_range = 0;
++    int mouse_collection = 0;
++
++    for (uint16_t off = 0; off < len;) {
++        uint8_t b = d[off++];
++        /* Long item: bTag(1) bType(1) bSize(1) then bSize data bytes. */
++        if (b == 0xFE) {
++            if (off + 2 > len) break;
++            uint8_t n = d[off + 1];
++            off = (uint16_t)(off + 2 + n);
++            continue;
++        }
++        int sz = b & 3;
++        if (sz == 3) sz = 4;
++        int type = (b >> 2) & 3;
++        int tag = (b >> 4) & 0xF;
++        if (off + sz > len) break;          /* truncated item: stop cleanly */
++        const uint8_t *payload = d + off;
++        uint32_t uval = item_udata(payload, sz);
++        int32_t sval = item_sdata(payload, sz);
++        off = (uint16_t)(off + sz);
++
++        if (type == 1) { /* global */
++            switch (tag) {
++            case 0x0: usage_page = (uint16_t)uval; break;
++            case 0x1: logical_min = sval; break;
++            case 0x2: logical_max = sval; break;
++            case 0x7: report_size = (uint8_t)uval; break;
++            case 0x9: report_count = (uint8_t)uval; break;
++            case 0x8: { /* Report ID: a new report starts here */
++                /* Persist the size of the report we are leaving. */
++                if (cur_slot >= 0) r->report_bits[cur_slot] = bitpos;
++                cur_id = (uint8_t)uval;
++                r->has_report_id = 1;
++                cur_slot = report_slot(r, cur_id);
++                bitpos = (cur_slot >= 0) ? r->report_bits[cur_slot] : 0;
++                break;
++            }
++            default: break;
++            }
++        } else if (type == 2) { /* local */
++            switch (tag) {
++            case 0x0:
++                if (usage_count < 32) usages[usage_count++] = (uint16_t)uval;
++                if (usage_page == HID_USAGE_PAGE_GENERIC &&
++                    (uval == HID_USAGE_MOUSE || uval == HID_USAGE_POINTER))
++                    r->is_mouse = 1;
++                if (usage_page == HID_USAGE_PAGE_GENERIC && uval == HID_USAGE_KEYBOARD)
++                    r->is_keyboard = 1;
++                break;
++            case 0x1: usage_min = (uint16_t)uval; have_range = 1; break;
++            case 0x2: usage_max = (uint16_t)uval; have_range = 1; break;
++            default: break;
++            }
++        } else if (type == 0) { /* main */
++            if (tag == 0xA) { /* Collection */
++                if (usage_page == HID_USAGE_PAGE_GENERIC && usage_count &&
++                    (usages[usage_count - 1] == HID_USAGE_MOUSE ||
++                     usages[usage_count - 1] == HID_USAGE_POINTER))
++                    mouse_collection++;
++                usage_count = 0; have_range = 0;
++            } else if (tag == 0xC) { /* End Collection */
++                if (mouse_collection > 0) mouse_collection--;
++                usage_count = 0; have_range = 0;
++            } else if (tag == 0x8) { /* Input */
++                uint8_t flags = (uint8_t)uval;
++                for (uint8_t i = 0; i < report_count; i++) {
++                    uint16_t usage = 0;
++                    if (i < usage_count) usage = usages[i];
++                    else if (have_range && usage_min + i <= usage_max) usage = (uint16_t)(usage_min + i);
++                    if (!(flags & 0x01) && r->field_count < HID_REPORT_FIELD_MAX) {
++                        hid_report_field_t *f = &r->fields[r->field_count++];
++                        f->usage_page = usage_page;
++                        f->usage = usage;
++                        f->usage_min = have_range ? usage_min : usage;
++                        f->usage_max = have_range ? usage_max : usage;
++                        f->bit_offset = bitpos;
++                        f->size = report_size;
++                        f->logical_min = logical_min;
++                        f->logical_max = logical_max;
++                        f->flags = flags;
++                        f->report_id = cur_id;
++                        if (usage_page == HID_USAGE_PAGE_GENERIC &&
++                            (usage == HID_USAGE_X || usage == HID_USAGE_Y ||
++                             usage == HID_USAGE_WHEEL))
++                            r->is_mouse = 1;
++                        if (usage_page == HID_USAGE_PAGE_BUTTON) r->is_mouse = 1;
++                        if (usage_page == HID_USAGE_PAGE_KEYBOARD) r->is_keyboard = 1;
++                    }
++                    /* Padding (constant) fields advance the cursor too. */
++                    bitpos = (uint16_t)(bitpos + report_size);
++                }
++                usage_count = 0; have_range = 0;
++            } else if (tag == 0x9 || tag == 0xB) { /* Output / Feature */
++                /* Do NOT advance the input cursor.  A Report ID is shared by
++                 * the input, output and feature reports of that ID (HID 1.11
++                 * §6.2.2.7), but each has its own length: QEMU's keyboard has
++                 * 8 input bytes and an 8-bit LED output report, both under ID
++                 * 1.  Folding the LED bits in made the wire length 10 bytes
++                 * for a 9-byte endpoint.  Only input bits count here. */
++                usage_count = 0; have_range = 0;
++            }
++        }
++    }
++    {
++        int slot = (cur_slot >= 0) ? cur_slot : report_slot(r, 0);
++        if (slot >= 0) r->report_bits[slot] = bitpos;
++    }
++    for (uint8_t i = 0; i < r->report_id_count; i++)
++        if (r->report_bits[i] > r->report_bits_max) r->report_bits_max = r->report_bits[i];
++    return ((r->is_mouse || r->is_keyboard) && r->field_count > 0) ? 0 : -1;
++}
++
++int hid_report_has_id(const hid_report_t *r, uint8_t report_id) {
++    if (!r) return 0;
++    for (uint8_t i = 0; i < r->report_id_count; i++)
++        if (r->report_ids[i] == report_id) return 1;
++    return 0;
++}
++
++uint16_t hid_report_bits(const hid_report_t *r, uint8_t report_id) {
++    if (!r) return 0;
++    for (uint8_t i = 0; i < r->report_id_count; i++)
++        if (r->report_ids[i] == report_id) return r->report_bits[i];
++    return 0;
++}
++
++uint16_t hid_report_wire_len(const hid_report_t *r) {
++    if (!r) return 0;
++    uint16_t body = (uint16_t)((r->report_bits_max + 7) / 8);
++    return (uint16_t)(body + (r->has_report_id ? 1 : 0));
++}
++
++const uint8_t *hid_report_body(const hid_report_t *r, const uint8_t *report,
++                               uint32_t len, uint32_t *body_len,
++                               uint8_t *id_out) {
++    if (body_len) *body_len = 0;
++    if (id_out) *id_out = 0;
++    if (!r || !report || len == 0) return 0;
++    if (!r->has_report_id) {
++        if (body_len) *body_len = len;
++        return report;
++    }
++    if (len < 2) return 0;                 /* an ID with no body */
++    if (!hid_report_has_id(r, report[0])) return 0;
++    if (id_out) *id_out = report[0];
++    if (body_len) *body_len = len - 1;
++    return report + 1;
++}
++
++int32_t hid_report_field_value(const uint8_t *body, const hid_report_field_t *f) {
++    if (!body || !f) return 0;
++    uint32_t raw = get_bits(body, f->bit_offset, f->size);
++    if (f->logical_min < 0) return sign_extend(raw, f->size);
++    return (int32_t)raw;
++}
+diff --git a/drivers/usb/hid_report.h b/drivers/usb/hid_report.h
+new file mode 100644
+index 0000000..4fe4512
+--- /dev/null
++++ b/drivers/usb/hid_report.h
+@@ -0,0 +1,99 @@
++/* hid_report.h — USB HID report-descriptor parser (RESIDUE3 C5b, RES-62).
++ *
++ * Why this is its own module: the parser is pure data-in/data-out, and it is
++ * the part of HID that keeps being wrong.  Living inside hid.c it was only
++ * ever exercised by whatever QEMU happened to attach, which is how it ended up
++ * carrying ONE global `report_id` for a descriptor that may declare eight.
++ * Here it is host-testable against fixtures (tests/unit/test_usb_hid_report.c)
++ * and the driver is one more user of it.
++ *
++ * What "report ID" means: a HID descriptor may tag items with `Report ID`
++ * (global item 0x85).  When it does, every input report starts with a byte
++ * naming which report it is, and each report has its OWN bit layout starting
++ * after that byte.  A parser that keeps one ID and one running bit offset
++ * silently folds every report onto whichever ID was declared last -- so a
++ * keyboard-with-consumer-controls device decodes as if all its fields were one
++ * report.  Fields here carry their report ID, and offsets are relative to
++ * their own report's body.
++ */
++#ifndef AURALITE_DRIVERS_USB_HID_REPORT_H
++#define AURALITE_DRIVERS_USB_HID_REPORT_H
++
++#include <stdint.h>
++
++#define HID_REPORT_FIELD_MAX    32
++#define HID_REPORT_ID_MAX       8      /* distinct Report IDs tracked */
++#define HID_REPORT_DESC_MAX     256
++
++/* Usage pages / usages this tree cares about (the rest are parsed and
++ * reported, not interpreted). */
++#define HID_USAGE_PAGE_GENERIC  0x01
++#define HID_USAGE_PAGE_BUTTON   0x09
++#define HID_USAGE_PAGE_KEYBOARD 0x07
++#define HID_USAGE_MOUSE         0x02
++#define HID_USAGE_POINTER       0x01
++#define HID_USAGE_KEYBOARD      0x06
++#define HID_USAGE_X             0x30
++#define HID_USAGE_Y             0x31
++#define HID_USAGE_WHEEL         0x38
++
++typedef struct {
++    uint16_t usage_page;
++    uint16_t usage;
++    uint16_t usage_min;
++    uint16_t usage_max;
++    /* Bit offset INSIDE the report this field belongs to, i.e. counted from
++     * the byte after the report-ID prefix. */
++    uint16_t bit_offset;
++    uint8_t  size;
++    int32_t  logical_min;
++    int32_t  logical_max;
++    uint8_t  flags;         /* main-item flags: bit0 constant, bit1 variable,
++                             * bit2 relative */
++    uint8_t  report_id;     /* 0 when the descriptor declares no Report ID */
++} hid_report_field_t;
++
++typedef struct {
++    int      is_mouse;
++    int      is_keyboard;
++    int      has_report_id;
++    uint8_t  report_ids[HID_REPORT_ID_MAX];
++    uint8_t  report_id_count;
++    /* Body size in bits of each tracked report's INPUT report, parallel to
++     * report_ids[].  The prefix byte is NOT included, and output/feature
++     * reports are NOT folded in even when they share the same Report ID
++     * (HID 1.11 §6.2.2.7: the ID is shared, the lengths are not). */
++    uint16_t report_bits[HID_REPORT_ID_MAX];
++    /* Largest body, in bits -- what a caller must be prepared to receive. */
++    uint16_t report_bits_max;
++    hid_report_field_t fields[HID_REPORT_FIELD_MAX];
++    uint8_t  field_count;
++} hid_report_t;
++
++/* Parse a report descriptor.  Returns 0 when the descriptor yields at least
++ * one field of a kind this driver interprets (keyboard or pointer), -1
++ * otherwise -- same contract the in-driver parser had. */
++int hid_report_parse(hid_report_t *r, const uint8_t *desc, uint16_t len);
++
++/* Bytes a caller should ask the device for: the largest body plus the report-ID
++ * prefix when the descriptor uses one. */
++uint16_t hid_report_wire_len(const hid_report_t *r);
++
++/* Split an incoming report into its body.  On success returns a pointer into
++ * `report` past the ID prefix and writes the body length and the report ID.
++ * Returns NULL when the report is empty or names an ID the descriptor never
++ * declared. */
++const uint8_t *hid_report_body(const hid_report_t *r, const uint8_t *report,
++                               uint32_t len, uint32_t *body_len,
++                               uint8_t *id_out);
++
++/* Body size in bits of a report ID (0 when unknown). */
++uint16_t hid_report_bits(const hid_report_t *r, uint8_t report_id);
++
++/* Value of one field, read from the report BODY (no ID prefix). */
++int32_t hid_report_field_value(const uint8_t *body, const hid_report_field_t *f);
++
++/* 1 when the descriptor declares this report ID. */
++int hid_report_has_id(const hid_report_t *r, uint8_t report_id);
++
++#endif /* AURALITE_DRIVERS_USB_HID_REPORT_H */
+diff --git a/drivers/usb/msc.c b/drivers/usb/msc.c
+index df1f21b..7ad5936 100644
+--- a/drivers/usb/msc.c
++++ b/drivers/usb/msc.c
+@@ -13,6 +13,7 @@
+ 
+ #include <stdint.h>
+ #include "drivers/usb/msc.h"
++#include "drivers/usb/msc_csw.h"   /* C5b: CSW validation, host-tested */
+ #include "drivers/usb/usb_core.h"
+ #include "drivers/usb/uhci.h"
+ #include "drivers/usb/ohci.h"
+@@ -45,24 +46,9 @@ struct msc_cbw {
+ #pragma pack(pop)
+ #endif
+ 
+-/* ---- CSW (Command Status Wrapper) — 13 bytes ---- */
+-#define CSW_SIGNATURE  0x53425355   /* "USBS" */
+-#define CSW_STATUS_OK  0x00
+-#define CSW_STATUS_FAILED 0x01
+-#define CSW_STATUS_PHASE  0x02
+-
+-#if defined(__TINYC__)
+-#pragma pack(push, 1)
+-#endif
+-struct msc_csw {
+-    uint32_t dCSWSignature;
+-    uint32_t dCSWTag;
+-    uint32_t dCSWDataResidue;
+-    uint8_t  bCSWStatus;
+-} __attribute__((packed));
+-#if defined(__TINYC__)
+-#pragma pack(pop)
+-#endif
++/* The CSW struct and its signature live in msc_csw.h now (C5b): the check
++ * is length-first and decodes little-endian explicitly, and it is unit tested
++ * on the host. */
+ 
+ /* ---- SCSI commands ---- */
+ #define SCSI_INQUIRY      0x12
+@@ -218,35 +204,45 @@ static int msc_exec_scsi(const uint8_t *scsi_cmd, uint8_t cmd_len,
+      * message "bad CSW signature 0x0", which names the symptom one layer away
+      * from the cause.  The byte count is now checked first and the shortfall
+      * is what gets printed. */
+-    struct msc_csw csw;
+-    memset(&csw, 0, sizeof(csw));
+-    int csw_bytes = msc_bulk(msc_dev->bulk_in_ep, &csw, sizeof(csw));
++    uint8_t csw_raw[MSC_CSW_LEN + 1];   /* one spare byte: over-long is its
++                                         * own error, see msc_csw.h */
++    memset(csw_raw, 0, sizeof(csw_raw));
++    int csw_bytes = msc_bulk(msc_dev->bulk_in_ep, csw_raw, (uint32_t)MSC_CSW_LEN);
+     if (csw_bytes < 0) {
+         kprintf("[msc] CSW transfer failed\n");
+         return -1;
+     }
+-    if ((uint32_t)csw_bytes != sizeof(csw)) {
++
++    /* C5b: the length-first, little-endian check lives in msc_csw.c, which
++     * tests/unit/test_usb_msc_csw.c drives with byte arrays -- including the
++     * 4-byte answer that used to be reported as "bad CSW signature 0x0". */
++    msc_csw_check_t csw;
++    msc_csw_validate(csw_raw, csw_bytes, tag, &csw);
++    switch (csw.result) {
++    case MSC_CSW_OK:
++        return 0;
++    case MSC_CSW_SHORT:
+         kprintf("[msc] short CSW: %d byte(s), want %u (BOT 6.2.3) -- the "
+-                "signature check below cannot be trusted on a truncated "
+-                "wrapper\n", csw_bytes, (unsigned)sizeof(csw));
++                "signature check cannot be trusted on a truncated wrapper\n",
++                csw_bytes, (unsigned)MSC_CSW_LEN);
+         return -1;
+-    }
+-
+-    if (csw.dCSWSignature != CSW_SIGNATURE) {
+-        kprintf("[msc] bad CSW signature 0x%x\n", csw.dCSWSignature);
++    case MSC_CSW_LONG:
++        kprintf("[msc] over-long CSW: %d byte(s), want %u (BOT 6.2.3)\n",
++                csw_bytes, (unsigned)MSC_CSW_LEN);
+         return -1;
+-    }
+-    if (csw.dCSWTag != tag) {
++    case MSC_CSW_BAD_SIGNATURE:
++        kprintf("[msc] bad CSW signature 0x%x\n", (unsigned)csw.signature);
++        return -1;
++    case MSC_CSW_BAD_TAG:
+         kprintf("[msc] CSW tag mismatch got 0x%x want 0x%x\n",
+-                csw.dCSWTag, tag);
++                (unsigned)csw.tag, (unsigned)tag);
+         return -1;
+-    }
+-    if (csw.bCSWStatus != CSW_STATUS_OK) {
++    case MSC_CSW_BAD_STATUS:
+         kprintf("[msc] SCSI command 0x%02x failed (CSW status=%u residue=%u)\n",
+-                scsi_cmd[0], csw.bCSWStatus, csw.dCSWDataResidue);
++                scsi_cmd[0], (unsigned)csw.status, (unsigned)csw.residue);
+         return -1;
+     }
+-    return 0;
++    return -1;
+ }
+ 
+ static int msc_probe_device(usb_device_t *dev, int hotplug) {
+diff --git a/drivers/usb/msc_csw.c b/drivers/usb/msc_csw.c
+new file mode 100644
+index 0000000..c66b0a9
+--- /dev/null
++++ b/drivers/usb/msc_csw.c
+@@ -0,0 +1,50 @@
++/* msc_csw.c — USB BOT command-status-wrapper validation (RESIDUE3 C5b). */
++#include "drivers/usb/msc_csw.h"
++
++static uint32_t le32(const uint8_t *p) {
++    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
++           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++}
++
++const char *msc_csw_result_name(msc_csw_result_t r) {
++    switch (r) {
++    case MSC_CSW_OK:        return "ok";
++    case MSC_CSW_SHORT:     return "short CSW";
++    case MSC_CSW_LONG:      return "over-long CSW";
++    case MSC_CSW_BAD_SIGNATURE: return "bad CSW signature";
++    case MSC_CSW_BAD_TAG:       return "CSW tag mismatch";
++    case MSC_CSW_BAD_STATUS:    return "CSW status";
++    }
++    return "unknown";
++}
++
++void msc_csw_validate(const uint8_t *buf, int bytes, uint32_t expect_tag,
++                      msc_csw_check_t *out) {
++    if (!out) return;
++    out->result = MSC_CSW_SHORT;
++    out->signature = 0;
++    out->tag = 0;
++    out->residue = 0;
++    out->status = 0;
++
++    if (!buf || bytes <= 0) return;                 /* nothing arrived */
++    if (bytes < (int)MSC_CSW_LEN) return;           /* short: stop here */
++    if (bytes > (int)MSC_CSW_LEN) {
++        /* The length is checked before the payload: a 14-byte answer means
++         * the device and the host disagree about the phase, and the 13 bytes
++         * that follow are not necessarily a CSW. */
++        out->result = MSC_CSW_LONG;
++        out->signature = le32(buf + 0);
++        return;
++    }
++
++    out->signature = le32(buf + 0);
++    out->tag       = le32(buf + 4);
++    out->residue   = le32(buf + 8);
++    out->status    = buf[12];
++
++    if (out->signature != MSC_CSW_SIGNATURE) { out->result = MSC_CSW_BAD_SIGNATURE; return; }
++    if (out->tag != expect_tag)              { out->result = MSC_CSW_BAD_TAG;       return; }
++    if (out->status != 0)                    { out->result = MSC_CSW_BAD_STATUS;    return; }
++    out->result = MSC_CSW_OK;
++}
+diff --git a/drivers/usb/msc_csw.h b/drivers/usb/msc_csw.h
+new file mode 100644
+index 0000000..25bf18f
+--- /dev/null
++++ b/drivers/usb/msc_csw.h
+@@ -0,0 +1,52 @@
++/* msc_csw.h — USB BOT command-status-wrapper validation, as pure data.
++ *
++ * WHY THIS IS A SEPARATE MODULE (RESIDUE3 C5b).
++ *
++ * A CSW is exactly 13 bytes (USB Mass Storage Class Bulk-Only Transport 1.0
++ * §6.2.3).  msc.c used to zero a packed struct, ask the bulk-IN endpoint for
++ * sizeof(struct) and then check the signature -- so a device that answered
++ * with 4 bytes produced "bad CSW signature 0x0", which names the symptom one
++ * layer below the cause (a short read, not a corrupt signature).  C5 changed
++ * that ordering inside msc.c; C5b moves the whole check out here so it can be
++ * driven on the host with byte arrays, including the truncated wrappers no
++ * QEMU device ever sends.
++ *
++ * The fields are decoded as little-endian explicitly rather than by memcpy
++ * into a packed struct: this kernel also builds for aarch64 and riscv64, and
++ * a big-endian port would otherwise read a valid signature as garbage.
++ */
++#ifndef AURALITE_DRIVERS_USB_MSC_CSW_H
++#define AURALITE_DRIVERS_USB_MSC_CSW_H
++
++#include <stdint.h>
++
++#define MSC_CSW_LEN       13u
++#define MSC_CSW_SIGNATURE 0x53425355u   /* "USBS" */
++
++typedef enum {
++    MSC_CSW_OK = 0,        /* 13 bytes, signature and tag match, status 0 */
++    MSC_CSW_SHORT,         /* fewer than 13 bytes: nothing else can be trusted */
++    MSC_CSW_LONG,          /* more than 13 bytes: protocol error, BOT 6.2.3 */
++    MSC_CSW_BAD_SIGNATURE, /* 13 bytes, wrong dCSWSignature */
++    MSC_CSW_BAD_TAG,       /* dCSWTag does not match the CBW tag */
++    MSC_CSW_BAD_STATUS,    /* bCSWStatus != 0 (failed or phase error) */
++} msc_csw_result_t;
++
++typedef struct {
++    msc_csw_result_t result;
++    uint32_t signature;    /* decoded, 0 when the buffer was too short */
++    uint32_t tag;
++    uint32_t residue;      /* dCSWDataResidue, 0 when the buffer was short */
++    uint8_t  status;       /* bCSWStatus */
++} msc_csw_check_t;
++
++/* Validate a CSW read from the bulk-IN endpoint.  `bytes` is what the transfer
++ * actually returned; `expect_tag` is the tag of the CBW just sent.  Never
++ * reads past `bytes`. */
++void msc_csw_validate(const uint8_t *buf, int bytes, uint32_t expect_tag,
++                      msc_csw_check_t *out);
++
++/* Stable, allocation-free name for log messages and tests. */
++const char *msc_csw_result_name(msc_csw_result_t r);
++
++#endif /* AURALITE_DRIVERS_USB_MSC_CSW_H */
+diff --git a/drivers/usb/usb_core.c b/drivers/usb/usb_core.c
+index 780d3a2..ab6af1b 100644
+--- a/drivers/usb/usb_core.c
++++ b/drivers/usb/usb_core.c
+@@ -856,7 +856,17 @@ int usb_enumerate_all(void) {
+     }
+     for (int p = 0; p < EHCI_MAX_PORTS && found < USB_MAX_DEVICES; p++) {
+         if (!ehci_port_has_device(p)) continue;
+-        if (enumerate_device(USB_CTRL_EHCI, p, USB_SPEED_HIGH) == 0) found++;
++        /* C5b: ask the port what it is attached to.  This used to say HIGH
++         * unconditionally, so a full-speed device on an EHCI root port was
++         * enumerated as high-speed -- and its interrupt queue head (eps field)
++         * was built for the wrong speed. */
++        usb_speed_t espeed = USB_SPEED_HIGH;
++        switch (ehci_port_speed_code(p)) {
++        case 0: espeed = USB_SPEED_FULL; break;
++        case 1: espeed = USB_SPEED_LOW;  break;
++        default: espeed = USB_SPEED_HIGH; break;
++        }
++        if (enumerate_device(USB_CTRL_EHCI, p, espeed) == 0) found++;
+         else kprintf("[usb] EHCI port %d: enumeration failed\n", p);
+     }
+     for (int p = 0; p < XHCI_MAX_PORTS && found < USB_MAX_DEVICES; p++) {
+diff --git a/tests/integration/cases/test_usb_ehci_split.sh b/tests/integration/cases/test_usb_ehci_split.sh
+new file mode 100755
+index 0000000..43029bf
+--- /dev/null
++++ b/tests/integration/cases/test_usb_ehci_split.sh
+@@ -0,0 +1,106 @@
++#!/usr/bin/env bash
++# test_usb_ehci_split.sh — RESIDUE3 C5b: EHCI split transactions, and the
++# measurement that says why the split branch has no device case.
++#
++# WHAT C5b FOUND
++#
++# The EHCI periodic path built its queue head with two shortcuts:
++#   - port speed was a stub that returned "high-speed" for every port, so a
++#     full-speed device on a high-speed root port was enumerated as high-speed
++#     (`enumerate_device(USB_CTRL_EHCI, p, USB_SPEED_HIGH)` in usb_core.c) and
++#     its QH said eps=high-speed;
++#   - the split fields were computed inline, and the C-mask for a start in
++#     micro-frame 7 came out empty, so that endpoint would never complete.
++#
++# Both are fixed: the port's PORTSC.PSPD is decoded, the speed travels into
++# enumeration and into the QH, and the capability words are built by
++# drivers/usb/ehci_qh.c, which tests/unit/test_usb_ehci_qh.c pins bit by bit
++# (including all eight start micro-frames).
++#
++# WHY THERE IS NO "TT DEVICE" CASE
++#
++# The plan asked for an FS/LS device behind a high-speed hub on EHCI.  QEMU
++# cannot express that: its only hub is `usb-hub`, a full-speed device, and QEMU
++# refuses to attach it to a high-speed bus.  Case 2 asserts that refusal
++# directly, so the gap is a measured property of the emulator rather than a
++# case that was quietly dropped.  What CAN be measured on QEMU is the branch
++# that matters for the machine in front of you: a full-speed device on an EHCI
++# root port, which must be full-speed with no split (a split without a TT
++# address would be a lie to the controller).
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "EHCI: port speed, split decision, and the TT gap (RESIDUE3 C5b)"
++
++run_case() {
++    local label="$1"; shift
++    local log="$IL_LOGDIR/ehci_split_${label}.log"
++    rm -f "$log"
++    IL_LAST_LOG="$log"
++    set +e
++    timeout --foreground 75 "$IL_QEMU" \
++        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
++        -m 512M -smp 2 -display none \
++        -serial "file:$log" \
++        -no-reboot -cpu qemu64 -boot order=c \
++        "$@" >/dev/null 2>&1
++    set -e
++    echo "$log"
++}
++
++# --- Case 1: full-speed keyboard on an EHCI root port ---------------------
++ELOG=$(run_case fsport -device usb-ehci,id=e -device usb-kbd,bus=e.0)
++IL_LAST_LOG="$ELOG"
++
++il_assert_grep "$ELOG" "\[ehci\] port 0: full-speed device \(PSPD=0\)" \
++    "EHCI: PORTSC.PSPD is decoded, not assumed (a full-speed device is not high-speed)"
++il_assert_grep "$ELOG" "\[usb\] device at addr .: .* speed=full \(12 Mbps\)" \
++    "EHCI: the port's speed reaches enumeration (used to be hardcoded high-speed)"
++il_assert_grep "$ELOG" "\[ehci\] interrupt endpoint 0x81 dev=. on periodic schedule .*eps=0, split=no" \
++    "EHCI: queue head carries eps=full and no split (no TT on a root port)"
++il_assert_grep "$ELOG" "S-mask=0x01 C-mask=0x00" \
++    "EHCI: S-mask set for the periodic schedule, C-mask empty without a TT"
++il_assert_no_grep "$ELOG" "\[ehci\]   TT:" \
++    "EHCI: no TT receipt is printed for a root-port device"
++# Delivery itself is asserted by test_usb_hid_input.sh case 3, which injects
++# keystrokes; QEMU's keyboard sends nothing on its own, so asserting on a
++# report line here would pass only by accident.  What belongs here is that the
++# corrected queue head does not break the poll: no qTD errors, no timeouts.
++il_assert_no_grep "$ELOG" "interrupt qTD error|async qTD timeout" \
++    "EHCI: the corrected queue head does not error out on every poll"
++il_assert_grep "$ELOG" "\[hid\] PASS: 1 USB HID input device\(s\) active" \
++    "EHCI: the keyboard stays bound after the speed correction"
++il_assert_no_grep "$ELOG" "PANIC|Page Fault" \
++    "EHCI: no faults on the periodic path"
++
++# --- Case 2: QEMU refuses to build the TT topology ------------------------
++# This is the receipt for the missing device case: a full-speed hub cannot sit
++# on a high-speed bus, so no FS/LS device can be placed behind a TT on EHCI.
++rm -f "$IL_LOGDIR/ehci_split_hub.log"
++set +e
++HUBOUT=$(timeout --foreground 20 "$IL_QEMU" \
++    -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
++    -m 512M -smp 2 -display none -serial null \
++    -no-reboot -cpu qemu64 -boot order=c \
++    -device usb-ehci,id=e -device usb-hub,bus=e.0,port=1 \
++    -device usb-kbd,bus=e.0,port=1.2 2>&1)
++HUBRC=$?
++set -e
++printf '%s\n' "$HUBOUT" > "$IL_LOGDIR/ehci_split_hub.log"
++
++IL_ASSERT_COUNT=$(( ${IL_ASSERT_COUNT:-0} + 1 ))
++if [ "$HUBRC" -ne 0 ]; then
++    il_pass "TT topology: QEMU exits rather than attach a full-speed hub to a high-speed bus"
++else
++    il_fail "TT topology: QEMU exits rather than attach a full-speed hub to a high-speed bus (rc=$HUBRC)"
++fi
++il_assert_grep "$IL_LOGDIR/ehci_split_hub.log" "speed mismatch trying to attach usb device .QEMU USB Hub. .full speed. to bus .e.0., port .1. .high speed." \
++    "TT topology: the refusal names the reason (full-speed hub, high-speed bus)"
++il_assert_grep "$IL_LOGDIR/ehci_split_hub.log" "usb-hub,bus=e.0,port=1" \
++    "TT topology: the command line that cannot be built is recorded verbatim"
++
++il_summary
+diff --git a/tests/integration/cases/test_usb_hid_report_ids.sh b/tests/integration/cases/test_usb_hid_report_ids.sh
+new file mode 100755
+index 0000000..ea217e0
+--- /dev/null
++++ b/tests/integration/cases/test_usb_hid_report_ids.sh
+@@ -0,0 +1,105 @@
++#!/usr/bin/env bash
++# test_usb_hid_report_ids.sh — RESIDUE3 C5b: HID descriptors with report IDs.
++#
++# WHY THIS EXISTS
++#
++# The HID driver used to remember ONE report ID: the last `0x85` item in the
++# report descriptor.  Everything about the driver then assumed that ID: which
++# reports to accept, and where the report body starts.  A device that declares
++# two report IDs (a very ordinary thing — a keyboard that also sends consumer
++# volume keys under ID 2) parsed into a single blob, so report 1 was either
++# dropped (its ID did not match the remembered one) or, worse, decoded with
++# report 2's field layout.
++#
++# C5b splits the descriptor parser out into drivers/usb/hid_report.c, gives
++# every field its own report_id and its own bit origin, and keeps a per-report
++# body length.  Two independent checks cover that:
++#
++#   1. tests/unit/test_usb_hid_report.c — eight descriptors, host-compiled
++#      against the same translation unit the kernel links.
++#   2. the kernel-side selftest below — proves the *kernel build* reaches the
++#      same conclusions, including the two-ID split and per-report decoding.
++#
++# Why not a multi-ID *device*: none of QEMU's HID devices declare a Report ID
++# item at all.  That was measured, not assumed — dumping the descriptors sent
++# by usb-kbd, usb-tablet and usb-mouse shows zero 0x85 items (receipt in
++# docs/plans/RESIDUE3_PLAN.md, section C5b).  A device case here would have
++# tested the single-report path and called it multi-ID coverage.
++#
++# What the real devices ARE used for: the parsed input length must equal the
++# endpoint wMaxPacketSize, and that is asserted per device.  It also pins the
++# bug this phase found on its own: output-report bits folded into the input
++# length made QEMU's 9-byte keyboard look like an 8-byte packet with a reserved
++# byte and an LED report, i.e. it computed 10 bytes for a 9-byte endpoint.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "HID report descriptors: report IDs, bodies, wire lengths (RESIDUE3 C5b)"
++
++run_case() {
++    # $1 = label, $2.. = qemu device arguments
++    local label="$1"; shift
++    local log="$IL_LOGDIR/hid_rid_${label}.log"
++    rm -f "$log"
++    IL_LAST_LOG="$log"
++    set +e
++    timeout --foreground 75 "$IL_QEMU" \
++        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
++        -m 512M -smp 2 -display none \
++        -serial "file:$log" \
++        -no-reboot -cpu qemu64 -boot order=c \
++        "$@" >/dev/null 2>&1
++    set -e
++    echo "$log"
++}
++
++# --- Case 1: kernel-side selftest, no USB device needed -------------------
++# The selftest runs from usb_hid_init(), so it executes even on a machine with
++# no HID hardware.  That is deliberate: the multi-ID contract must hold on a
++# bare boot, not only when a particular device happens to be attached.
++SLOG=$(run_case selftest)
++IL_LAST_LOG="$SLOG"
++
++il_assert_grep "$SLOG" "\[hid\] selftest: two-ID descriptor -> ids=2 \(1,2\)" \
++    "selftest: one descriptor yields two report IDs, both remembered"
++il_assert_grep "$SLOG" "input bits: r1=64 r2=4 wire=9" \
++    "selftest: per-report body sizes (8 bytes under ID 1, 4 bits under ID 2) and one wire length"
++il_assert_grep "$SLOG" "\[hid\] selftest: QEMU-shaped keyboard -> report_id=none input bits=64 wire=8" \
++    "selftest: LED output report shares the ID but does NOT lengthen the input report"
++il_assert_grep "$SLOG" "\[hid\] selftest: PASS report-ID split and per-report decoding" \
++    "selftest: body split after the prefix, per-report decode, unknown ID rejected"
++il_assert_no_grep "$SLOG" "\[hid\] selftest: FAIL" \
++    "selftest: no failed check"
++
++# --- Case 2: three real devices, parsed length == endpoint packet size -----
++# kbd: 8 mods + 1 reserved + 6 keys = 64 bits = 8 bytes (endpoint 8).
++# tablet: 3 buttons + 5 pad + X 16 + Y 16 + wheel 8 = 48 bits = 6 bytes (6).
++# mouse: 5 buttons + 3 pad + X 8 + Y 8 + wheel 8 = 32 bits = 4 bytes (4).
++DLOG=$(run_case devices -device qemu-xhci,id=x \
++                            -device usb-kbd,bus=x.0 \
++                            -device usb-mouse,bus=x.0 \
++                            -device usb-tablet,bus=x.0)
++IL_LAST_LOG="$DLOG"
++
++il_assert_grep "$DLOG" "\[hid\] parsed generic keyboard report: fields=14 input_bits=64 report_id=none" \
++    "QEMU keyboard: 14 fields, 64 input bits (LED output bits excluded)"
++il_assert_grep "$DLOG" "\[hid\] parsed generic pointer report: fields=8 input_bits=32 report_id=none" \
++    "QEMU mouse: 8 fields, 32 input bits"
++il_assert_grep "$DLOG" "\[hid\] parsed generic pointer report: fields=6 input_bits=48 report_id=none" \
++    "QEMU tablet: 6 fields including the wheel, 48 input bits"
++il_assert_grep "$DLOG" "\[hid\] keyboard ready: addr=. iface=0 ep=0x81 poll_len=8 ep_maxpkt=8" \
++    "QEMU keyboard: polled length 8 exactly fills the 8-byte endpoint"
++il_assert_grep "$DLOG" "\[hid\] mouse ready: addr=. iface=0 ep=0x81 poll_len=4 ep_maxpkt=4" \
++    "QEMU mouse: polled length 4 exactly fills the 4-byte endpoint"
++il_assert_grep "$DLOG" "\[hid\] generic-mouse ready: addr=. iface=0 ep=0x81 poll_len=6 ep_maxpkt=8" \
++    "QEMU tablet: 6-byte descriptor inside an 8-byte endpoint (device over-allocates)"
++il_assert_no_grep "$DLOG" "\[hid\] note: addr .* descriptor wire length" \
++    "no descriptor asks for more input than one packet can carry"
++il_assert_grep "$DLOG" "\[hid\] PASS: 3 USB HID input device\(s\) active" \
++    "all three devices bound through the report-ID-aware parser"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 44e02b3..08fd15d 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -254,6 +254,8 @@ ALL_CASES=(
+     test_xhci_bulk
+     test_xhci_interrupt
+     test_usb_hid_input
++    test_usb_hid_report_ids
++    test_usb_ehci_split
+     test_usb_hub_depth
+     test_usb_hub_full
+     test_usb_full_stack
+diff --git a/tests/unit/test_usb_ehci_qh.c b/tests/unit/test_usb_ehci_qh.c
+new file mode 100644
+index 0000000..b5adf57
+--- /dev/null
++++ b/tests/unit/test_usb_ehci_qh.c
+@@ -0,0 +1,237 @@
++/*
++ * test_usb_ehci_qh.c — RESIDUE3 C5b: the EHCI queue-head capability words,
++ * including the split-transaction fields.
++ *
++ * drivers/usb/ehci_qh.c is compiled UNMODIFIED; this file supplies endpoint
++ * parameters and decodes the two 32-bit words back into named fields, so a
++ * failure names the field that moved rather than a hex difference.
++ *
++ * WHY THIS EXISTS.  C5b's plan asked for an integration case with a FS/LS
++ * device behind a high-speed hub on EHCI, so the TT fields would be shown to
++ * schedule a real periodic transfer.  That case cannot be built on QEMU: its
++ * only hub, `usb-hub`, is a full-speed device and QEMU refuses it on a
++ * high-speed bus ("speed mismatch trying to attach usb device \"QEMU USB
++ * Hub\" (full speed) to bus \"e.0\", port \"1\" (high speed)").  The register
++ * encoding is therefore verified here, bit position by bit position, against
++ * EHCI 1.0 §3.6 and §4.12 — and the split decision is logged by ehci.c at
++ * runtime, so a machine that does have a TT shows it in the boot log.
++ */
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "drivers/usb/ehci_qh.h"
++
++static int passed = 0, failed = 0, tn = 0;
++#define RUN(f) do { int b = failed; f(); tn++; if (failed == b) passed++; } while (0)
++#define CHECK(c) do { if (!(c)) { printf("  FAIL L%d: %s\n", __LINE__, #c); failed++; } } while (0)
++#define CHECK_EQ(a,e) do { long _a=(long)(a), _e=(long)(e); if (_a!=_e) { \
++    printf("  FAIL L%d: %s = %ld, want %ld\n", __LINE__, #a, _a, _e); failed++; } } while (0)
++
++/* --- field extraction, spelled the way EHCI 1.0 §3.6 labels them --------- */
++static uint32_t f_devaddr (uint32_t c1) { return  c1        & 0x7Fu; }
++static uint32_t f_inact   (uint32_t c1) { return (c1 >> 7)  & 0x1u;  }
++static uint32_t f_epnum   (uint32_t c1) { return (c1 >> 8)  & 0xFu;  }
++static uint32_t f_eps     (uint32_t c1) { return (c1 >> 12) & 0x3u;  }
++static uint32_t f_dtc     (uint32_t c1) { return (c1 >> 14) & 0x1u;  }
++static uint32_t f_mpl     (uint32_t c1) { return (c1 >> 16) & 0x7FFu; }
++static uint32_t f_smask   (uint32_t c2) { return  c2        & 0xFFu; }
++static uint32_t f_cmask   (uint32_t c2) { return (c2 >> 8)  & 0xFFu; }
++static uint32_t f_hubaddr (uint32_t c2) { return (c2 >> 16) & 0x7Fu; }
++static uint32_t f_hubport (uint32_t c2) { return (c2 >> 23) & 0x7Fu; }
++static uint32_t f_mult    (uint32_t c2) { return (c2 >> 30) & 0x3u;  }
++
++static ehci_qh_params_t base_params(void) {
++    ehci_qh_params_t p;
++    memset(&p, 0, sizeof(p));
++    p.dev_addr = 1;
++    p.ep_num = 1;                 /* 0x81 -> endpoint number 1 */
++    p.speed = EHCI_QH_SPEED_HIGH;
++    p.max_packet = 8;
++    p.mult = 1;
++    p.start_microframe = 0;
++    return p;
++}
++
++/* ---------------------------------------------------------------- cases --- */
++
++/* A high-speed device on a root port: no TT, no split, S-mask still set
++ * because the QH is periodic. */
++static void test_high_speed_no_split(void) {
++    ehci_qh_params_t p = base_params();
++    ehci_qh_caps_t c;
++    ehci_qh_build_caps(&p, &c);
++
++    CHECK_EQ(c.is_split, 0);
++    CHECK_EQ(f_eps(c.ep_caps1), EHCI_QH_SPEED_HIGH);
++    CHECK_EQ(f_devaddr(c.ep_caps1), 1);
++    CHECK_EQ(f_epnum(c.ep_caps1), 1);
++    CHECK_EQ(f_mpl(c.ep_caps1), 8);
++    CHECK_EQ(f_dtc(c.ep_caps1), 1);      /* data toggle comes from the qTD */
++    CHECK_EQ(f_inact(c.ep_caps1), 0);
++    CHECK_EQ(f_smask(c.ep_caps2), 0x01);
++    CHECK_EQ(f_cmask(c.ep_caps2), 0x00); /* no complete-splits without a TT */
++    CHECK_EQ(f_hubaddr(c.ep_caps2), 0);
++    CHECK_EQ(f_hubport(c.ep_caps2), 0);
++    CHECK_EQ(f_mult(c.ep_caps2), 1);
++}
++
++/* QEMU's actual case (C5b measurement): a full-speed keyboard attached
++ * straight to the EHCI controller.  Full speed, hub address 0 -- and
++ * therefore NOT a split, whatever the speed says. */
++static void test_full_speed_direct_has_no_tt(void) {
++    ehci_qh_params_t p = base_params();
++    p.speed = EHCI_QH_SPEED_FULL;
++    p.max_packet = 8;
++    ehci_qh_caps_t c;
++    ehci_qh_build_caps(&p, &c);
++
++    CHECK_EQ(c.is_split, 0);
++    CHECK_EQ(f_eps(c.ep_caps1), EHCI_QH_SPEED_FULL);
++    CHECK_EQ(f_cmask(c.ep_caps2), 0);
++    CHECK_EQ(f_hubaddr(c.ep_caps2), 0);
++    CHECK_EQ(ehci_qh_needs_split(EHCI_QH_SPEED_FULL, 0), 0);
++}
++
++/* The split case the plan wanted: full speed behind a TT at hub address 2,
++ * port 3.  This is where the TT fields have to be exactly right. */
++static void test_full_speed_behind_tt(void) {
++    ehci_qh_params_t p = base_params();
++    p.speed = EHCI_QH_SPEED_FULL;
++    p.hub_addr = 2;
++    p.hub_port = 3;
++    ehci_qh_caps_t c;
++    ehci_qh_build_caps(&p, &c);
++
++    CHECK_EQ(c.is_split, 1);
++    CHECK_EQ(f_eps(c.ep_caps1), EHCI_QH_SPEED_FULL);
++    CHECK_EQ(f_hubaddr(c.ep_caps2), 2);
++    CHECK_EQ(f_hubport(c.ep_caps2), 3);
++    /* One start-split, in microframe 0. */
++    CHECK_EQ(f_smask(c.ep_caps2), 0x01);
++    CHECK_EQ(c.s_mask & (uint8_t)(c.s_mask - 1), 0);   /* exactly one bit */
++    /* Complete-splits follow the start-split, and never overlap it. */
++    CHECK_EQ(f_cmask(c.ep_caps2) & f_smask(c.ep_caps2), 0);
++    CHECK(f_cmask(c.ep_caps2) != 0);
++    /* Microframe 0 is the last start, so the three flags in 1..3. */
++    CHECK_EQ(f_cmask(c.ep_caps2), 0x0E);
++}
++
++/* Low speed behind the same TT: same split fields, different EPS. */
++static void test_low_speed_behind_tt(void) {
++    ehci_qh_params_t p = base_params();
++    p.speed = EHCI_QH_SPEED_LOW;
++    p.hub_addr = 5;
++    p.hub_port = 1;
++    p.max_packet = 4;
++    ehci_qh_caps_t c;
++    ehci_qh_build_caps(&p, &c);
++
++    CHECK_EQ(c.is_split, 1);
++    CHECK_EQ(f_eps(c.ep_caps1), EHCI_QH_SPEED_LOW);
++    CHECK_EQ(f_hubaddr(c.ep_caps2), 5);
++    CHECK_EQ(f_hubport(c.ep_caps2), 1);
++    CHECK_EQ(f_mpl(c.ep_caps1), 4);
++}
++
++/* A non-zero start microframe must move both masks and keep them disjoint,
++ * for every one of the eight possible phases. */
++static void test_start_microframe_rotates_masks(void) {
++    for (uint8_t mf = 0; mf < 8; mf++) {
++        ehci_qh_params_t p = base_params();
++        p.speed = EHCI_QH_SPEED_FULL;
++        p.hub_addr = 2;
++        p.hub_port = 1;
++        p.start_microframe = mf;
++        ehci_qh_caps_t c;
++        ehci_qh_build_caps(&p, &c);
++
++        CHECK_EQ(f_smask(c.ep_caps2), 1u << mf);
++        CHECK_EQ(f_cmask(c.ep_caps2) & f_smask(c.ep_caps2), 0);
++        /* Three complete-split micro-frames, starting right after the start
++         * and wrapping past bit 7 (a late start must not leave the mask
++         * empty -- the controller would never see a complete-split). */
++        CHECK(f_cmask(c.ep_caps2) != 0);
++        {
++            uint8_t cm = (uint8_t)f_cmask(c.ep_caps2);
++            int bits = 0;
++            for (int b = 0; b < 8; b++) bits += (cm >> b) & 1;
++            CHECK_EQ(bits, 3);
++        }
++        CHECK_EQ(f_cmask(c.ep_caps2) & ~0xFFu, 0);
++        CHECK_EQ(f_hubaddr(c.ep_caps2), 2);
++    }
++}
++
++/* Field widths: address and port are 7 bits each, endpoints 4, MPL 11, Mult
++ * 2.  Values wider than a field must be truncated at the field, not bleed
++ * into the neighbouring one. */
++static void test_field_widths(void) {
++    ehci_qh_params_t p = base_params();
++    p.dev_addr = 0xFF;          /* 7 bits  -> 0x7F */
++    p.ep_num = 0xFF;            /* 4 bits  -> 0x0F */
++    p.max_packet = 0xFFFF;      /* 11 bits -> 0x7FF */
++    p.speed = EHCI_QH_SPEED_FULL;
++    p.hub_addr = 0xFF;          /* 7 bits  -> 0x7F */
++    p.hub_port = 0xFF;          /* 7 bits  -> 0x7F */
++    p.mult = 0xFF;              /* 2 bits  -> 0x3  */
++    ehci_qh_caps_t c;
++    ehci_qh_build_caps(&p, &c);
++
++    CHECK_EQ(f_devaddr(c.ep_caps1), 0x7F);
++    CHECK_EQ(f_epnum(c.ep_caps1), 0x0F);
++    CHECK_EQ(f_mpl(c.ep_caps1), 0x7FF);
++    CHECK_EQ(f_eps(c.ep_caps1), EHCI_QH_SPEED_FULL);
++    CHECK_EQ(f_hubaddr(c.ep_caps2), 0x7F);
++    CHECK_EQ(f_hubport(c.ep_caps2), 0x7F);
++    CHECK_EQ(f_mult(c.ep_caps2), 0x3);
++    /* The two words must not collide: caps1 stops at bit 26, eps at 13. */
++    CHECK_EQ(c.ep_caps1 & ~((1u << 27) - 1), 0);
++}
++
++/* Mult = 0 means "one transaction per microframe" in this driver; it must not
++ * be encoded as the reserved value 0. */
++static void test_mult_zero_becomes_one(void) {
++    ehci_qh_params_t p = base_params();
++    p.mult = 0;
++    ehci_qh_caps_t c;
++    ehci_qh_build_caps(&p, &c);
++    CHECK_EQ(f_mult(c.ep_caps2), 1);
++}
++
++/* The split decision as a standalone predicate, including the combination
++ * that would be a bug: a high-speed device reached "through a hub" needs no
++ * split (hubs are transparent to high-speed traffic). */
++static void test_needs_split_predicate(void) {
++    CHECK_EQ(ehci_qh_needs_split(EHCI_QH_SPEED_FULL, 0), 0);
++    CHECK_EQ(ehci_qh_needs_split(EHCI_QH_SPEED_LOW, 0), 0);
++    CHECK_EQ(ehci_qh_needs_split(EHCI_QH_SPEED_FULL, 1), 1);
++    CHECK_EQ(ehci_qh_needs_split(EHCI_QH_SPEED_LOW, 1), 1);
++    CHECK_EQ(ehci_qh_needs_split(EHCI_QH_SPEED_HIGH, 3), 0);
++}
++
++/* NULL tolerance: called from an error path, must not fault. */
++static void test_rejects_null(void) {
++    ehci_qh_caps_t c;
++    memset(&c, 0xAA, sizeof(c));
++    ehci_qh_build_caps(NULL, &c);
++    CHECK_EQ(c.ep_caps1, 0xAAAAAAAAu);
++    ehci_qh_params_t p = base_params();
++    ehci_qh_build_caps(&p, NULL);
++}
++
++int main(void) {
++    printf("=== AuraLite OS EHCI queue-head capability tests ===\n");
++    RUN(test_high_speed_no_split);
++    RUN(test_full_speed_direct_has_no_tt);
++    RUN(test_full_speed_behind_tt);
++    RUN(test_low_speed_behind_tt);
++    RUN(test_start_microframe_rotates_masks);
++    RUN(test_field_widths);
++    RUN(test_mult_zero_becomes_one);
++    RUN(test_needs_split_predicate);
++    RUN(test_rejects_null);
++    printf("\n=== Results: %d/%d passed, %d failed ===\n", passed, tn, failed);
++    return failed ? 1 : 0;
++}
+diff --git a/tests/unit/test_usb_hid_report.c b/tests/unit/test_usb_hid_report.c
+new file mode 100644
+index 0000000..67bf2de
+--- /dev/null
++++ b/tests/unit/test_usb_hid_report.c
+@@ -0,0 +1,290 @@
++/*
++ * test_usb_hid_report.c — RESIDUE3 C5b (RES-62): the HID report-descriptor
++ * parser, driven against fixtures.
++ *
++ * drivers/usb/hid_report.c is compiled UNMODIFIED.  What this file supplies is
++ * descriptors: a boot keyboard, a two-report-ID device (keyboard + consumer
++ * controls), a truncated descriptor and one with nothing usable in it.
++ *
++ * Why it matters: before C5b the parser kept ONE `report_id` for the whole
++ * descriptor and one running bit cursor, so a device declaring IDs 1 and 2
++ * folded report 2's fields onto ID 1 and started its layout at bit 8 of the
++ * wrong report.  Every case below is one that a QEMU-only parser never saw --
++ * QEMU's `usb-kbd` and `usb-tablet` happen to use layouts where the bug is
++ * invisible.
++ */
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "drivers/usb/hid_report.h"
++
++static int passed = 0, failed = 0, tn = 0;
++#define RUN(f) do { int b = failed; f(); tn++; if (failed == b) passed++; } while (0)
++#define CHECK(c) do { if (!(c)) { printf("  FAIL L%d: %s\n", __LINE__, #c); failed++; } } while (0)
++#define CHECK_EQ(a,e) do { long _a=(long)(a), _e=(long)(e); if (_a!=_e) { \
++    printf("  FAIL L%d: %s = %ld, want %ld\n", __LINE__, #a, _a, _e); failed++; } } while (0)
++
++/* ---- the classic 8-byte boot keyboard, no Report ID ------------------- */
++static const uint8_t desc_boot_kbd[] = {
++    0x05, 0x01,        /* Usage Page (Generic Desktop) */
++    0x09, 0x06,        /* Usage (Keyboard) */
++    0xA1, 0x01,        /* Collection (Application) */
++    0x05, 0x07,        /*   Usage Page (Keyboard) */
++    0x19, 0xE0,        /*   Usage Min (0xE0) */
++    0x29, 0xE7,        /*   Usage Max (0xE7) */
++    0x15, 0x00,        /*   Logical Min (0) */
++    0x25, 0x01,        /*   Logical Max (1) */
++    0x75, 0x01,        /*   Report Size (1) */
++    0x95, 0x08,        /*   Report Count (8) */
++    0x81, 0x02,        /*   Input (Data,Var,Abs)  -> 8 modifier bits */
++    0x95, 0x01,        /*   Report Count (1) */
++    0x75, 0x08,        /*   Report Size (8) */
++    0x81, 0x01,        /*   Input (Const)         -> 1 reserved byte */
++    0x95, 0x06,        /*   Report Count (6) */
++    0x75, 0x08,        /*   Report Size (8) */
++    0x15, 0x00,        /*   Logical Min (0) */
++    0x25, 0x65,        /*   Logical Max (101) */
++    0x05, 0x07,        /*   Usage Page (Keyboard) */
++    0x19, 0x00,        /*   Usage Min (0) */
++    0x29, 0x65,        /*   Usage Max (101) */
++    0x81, 0x00,        /*   Input (Data,Array)    -> 6 keycodes */
++    0xC0,              /* End Collection */
++};
++
++/* ---- two reports: ID 1 keyboard (mods + 2 keys), ID 2 consumer --------- */
++static const uint8_t desc_two_ids[] = {
++    0x05, 0x01,        /* Usage Page (Generic Desktop) */
++    0x09, 0x06,        /* Usage (Keyboard) */
++    0xA1, 0x01,        /* Collection (Application) */
++
++    0x85, 0x01,        /*   Report ID (1) */
++    0x05, 0x07,        /*   Usage Page (Keyboard) */
++    0x19, 0xE0,        /*   Usage Min (0xE0) */
++    0x29, 0xE7,        /*   Usage Max (0xE7) */
++    0x15, 0x00, 0x25, 0x01,
++    0x75, 0x01, 0x95, 0x08,
++    0x81, 0x02,        /*   Input: 8 modifier bits, bits 0..7   */
++    0x95, 0x02,        /*   Report Count (2) */
++    0x75, 0x08,        /*   Report Size (8) */
++    0x15, 0x00, 0x25, 0x65,
++    0x05, 0x07, 0x19, 0x00, 0x29, 0x65,
++    0x81, 0x00,        /*   Input: 2 keycodes, bits 8..23      */
++
++    0x85, 0x02,        /*   Report ID (2)  -- new report, cursor restarts */
++    0x05, 0x0C,        /*   Usage Page (Consumer) */
++    0x09, 0xE9,        /*   Usage (Volume Up) */
++    0x15, 0x00, 0x25, 0x01,
++    0x75, 0x01, 0x95, 0x04,
++    0x81, 0x02,        /*   Input: 4 bits, bits 0..3 of report 2 */
++    0xC0,              /* End Collection */
++};
++
++/* Padding-only: parses, but declares nothing this driver interprets. */
++static const uint8_t desc_padding_only[] = {
++    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01,
++    0x75, 0x08, 0x95, 0x04, 0x81, 0x01,   /* Input (Const) x4 */
++    0xC0,
++};
++
++static void test_boot_keyboard(void) {
++    hid_report_t r;
++    CHECK_EQ(hid_report_parse(&r, desc_boot_kbd, sizeof(desc_boot_kbd)), 0);
++    CHECK_EQ(r.has_report_id, 0);
++    CHECK_EQ(r.is_keyboard, 1);
++    CHECK_EQ(r.is_mouse, 0);
++    /* 8 modifier bits + 6 keycodes; the reserved byte is constant and is not
++     * a field, but it DOES advance the cursor. */
++    CHECK_EQ(r.field_count, 14);
++    CHECK_EQ(hid_report_wire_len(&r), 8);
++    CHECK_EQ(r.fields[0].report_id, 0);
++    CHECK_EQ(r.fields[0].bit_offset, 0);
++    CHECK_EQ(r.fields[0].size, 1);
++    /* The first keycode starts after the 8 modifier bits and the reserved
++     * byte: bit 16. */
++    CHECK_EQ(r.fields[8].bit_offset, 16);
++    CHECK_EQ(r.fields[8].size, 8);
++    CHECK_EQ(r.fields[8].usage_page, HID_USAGE_PAGE_KEYBOARD);
++}
++
++static void test_two_report_ids(void) {
++    hid_report_t r;
++    CHECK_EQ(hid_report_parse(&r, desc_two_ids, sizeof(desc_two_ids)), 0);
++    CHECK_EQ(r.has_report_id, 1);
++    CHECK_EQ(r.report_id_count, 2);
++    CHECK_EQ(r.report_ids[0], 1);
++    CHECK_EQ(r.report_ids[1], 2);
++
++    /* Report 1: 8 mod bits + 2 keycodes = 24 bits. */
++    CHECK_EQ(hid_report_bits(&r, 1), 24);
++    /* Report 2: 4 bits -- NOT 8+ something, because the cursor restarts at
++     * the second Report ID item.  This is the assertion the old parser
++     * failed: it would have reported 28 bits for "report 2". */
++    CHECK_EQ(hid_report_bits(&r, 2), 4);
++
++    /* Fields carry their own report ID. */
++    CHECK_EQ(r.fields[0].report_id, 1);
++    CHECK_EQ(r.fields[0].usage, 0xE0);
++    uint8_t last_kbd = 0;
++    for (uint8_t i = 0; i < r.field_count; i++)
++        if (r.fields[i].report_id == 1) last_kbd = i;
++    CHECK_EQ(r.fields[last_kbd].report_id, 1);
++    /* The consumer-control bits are report 2, starting at bit 0 of ITS
++     * report (four one-bit fields). */
++    int consumer = -1, consumer_n = 0;
++    for (uint8_t i = 0; i < r.field_count; i++) {
++        if (r.fields[i].report_id != 2) continue;
++        if (consumer < 0) consumer = i;
++        consumer_n++;
++    }
++    CHECK_EQ(consumer_n, 4);
++    CHECK(consumer >= 0);
++    CHECK_EQ(r.fields[consumer].bit_offset, 0);
++    CHECK_EQ(r.fields[consumer].usage_page, 0x0C);
++
++    /* Wire length is the largest body (3 bytes) plus the ID prefix. */
++    CHECK_EQ(hid_report_wire_len(&r), 4);
++}
++
++static void test_body_split(void) {
++    hid_report_t r;
++    uint32_t body_len = 0;
++    uint8_t id = 0;
++    CHECK_EQ(hid_report_parse(&r, desc_two_ids, sizeof(desc_two_ids)), 0);
++
++    /* Report 1: ID 0x01, mods = 0x02 (Left Shift), keycodes {0x04, 0x00}. */
++    const uint8_t rep1[] = { 0x01, 0x02, 0x04, 0x00 };
++    const uint8_t *body = hid_report_body(&r, rep1, sizeof(rep1), &body_len, &id);
++    CHECK(body != NULL);
++    CHECK_EQ(id, 1);
++    CHECK_EQ(body_len, 3);
++    int kbd_mod = -1, kbd_key0 = -1;
++    for (uint8_t i = 0; i < r.field_count; i++) {
++        if (r.fields[i].report_id != 1) continue;
++        if (r.fields[i].usage == 0xE1) kbd_mod = i;          /* Left Shift */
++        if (r.fields[i].size == 8 && kbd_key0 < 0) kbd_key0 = i;
++    }
++    CHECK(kbd_mod >= 0);
++    CHECK_EQ(hid_report_field_value(body, &r.fields[kbd_mod]), 1);
++    CHECK(kbd_key0 >= 0);
++    CHECK_EQ(hid_report_field_value(body, &r.fields[kbd_key0]), 0x04);
++
++    /* Report 2: ID 0x02, one bit set -> decoded against ITS layout. */
++    const uint8_t rep2[] = { 0x02, 0x01 };
++    body = hid_report_body(&r, rep2, sizeof(rep2), &body_len, &id);
++    CHECK(body != NULL);
++    CHECK_EQ(id, 2);
++    CHECK_EQ(body_len, 1);
++    int consumer = -1;
++    for (uint8_t i = 0; i < r.field_count; i++)
++        if (r.fields[i].report_id == 2) { consumer = i; break; }
++    CHECK(consumer >= 0);
++    CHECK_EQ(hid_report_field_value(body, &r.fields[consumer]), 1);
++}
++
++static void test_negative_unknown_report_id(void) {
++    hid_report_t r;
++    uint32_t body_len = 123;
++    uint8_t id = 99;
++    CHECK_EQ(hid_report_parse(&r, desc_two_ids, sizeof(desc_two_ids)), 0);
++    /* Report ID 7 was never declared: refused, and the outputs are cleared. */
++    const uint8_t rep[] = { 0x07, 0xFF, 0xFF };
++    CHECK(hid_report_body(&r, rep, sizeof(rep), &body_len, &id) == NULL);
++    CHECK_EQ(body_len, 0);
++    CHECK_EQ(id, 0);
++    /* An ID byte with no body is not a report either. */
++    const uint8_t bare[] = { 0x01 };
++    CHECK(hid_report_body(&r, bare, sizeof(bare), &body_len, &id) == NULL);
++    CHECK_EQ(hid_report_has_id(&r, 7), 0);
++    CHECK_EQ(hid_report_has_id(&r, 1), 1);
++}
++
++static void test_negative_truncated(void) {
++    hid_report_t r;
++    /* Cut the descriptor in the middle of the last Input item's payload:
++     * the parser must stop cleanly, keep what it understood, and not read
++     * past the buffer (ASan is on for this binary). */
++    uint8_t truncated[sizeof(desc_boot_kbd)];
++    memcpy(truncated, desc_boot_kbd, sizeof(truncated));
++    uint16_t len = (uint16_t)(sizeof(truncated) - 1);
++    int rc = hid_report_parse(&r, truncated, len);
++    CHECK_EQ(rc, 0);                 /* what was complete still counts */
++    CHECK(r.field_count > 0);
++    /* A descriptor cut down to its first item parses to nothing usable. */
++    CHECK_EQ(hid_report_parse(&r, desc_boot_kbd, 2), -1);
++}
++
++static void test_negative_nothing_interpretable(void) {
++    hid_report_t r;
++    CHECK_EQ(hid_report_parse(&r, desc_padding_only, sizeof(desc_padding_only)), -1);
++    CHECK_EQ(r.field_count, 0);
++    /* Empty input is refused rather than "parsed". */
++    CHECK_EQ(hid_report_parse(&r, desc_padding_only, 0), -1);
++}
++
++static void test_no_report_id_body_is_whole_report(void) {
++    hid_report_t r;
++    uint32_t body_len = 0;
++    uint8_t id = 77;
++    CHECK_EQ(hid_report_parse(&r, desc_boot_kbd, sizeof(desc_boot_kbd)), 0);
++    const uint8_t rep[8] = { 0x02, 0x00, 0x04, 0, 0, 0, 0, 0 };
++    const uint8_t *body = hid_report_body(&r, rep, sizeof(rep), &body_len, &id);
++    CHECK(body == rep);              /* no prefix to strip */
++    CHECK_EQ(body_len, 8);
++    CHECK_EQ(id, 0);
++}
++
++
++/* A Report ID is shared by input, output and feature reports, but the lengths
++ * are separate.  QEMU's usb-kbd is exactly this shape: 8 input bytes plus an
++ * LED output report, both under ID 1, on a 9-byte interrupt packet.  If the
++ * output bits were folded into the input length the driver would ask the
++ * endpoint for 10 bytes and the short-packet accounting would be wrong. */
++static void case_output_shares_id(void) {
++    static const uint8_t d[] = {
++        0x05, 0x01,        /* Usage Page (Generic) */
++        0x09, 0x06,        /* Usage (Keyboard) */
++        0xA1, 0x01,        /* Collection (Application) */
++        0x85, 0x01,        /*   Report ID (1) */
++        0x05, 0x07,        /*   Usage Page (Keyboard) */
++        0x19, 0xE0, 0x29, 0xE7,   /* Usage Min/Max (modifiers) */
++        0x15, 0x00, 0x25, 0x01,   /* Logical Min/Max */
++        0x75, 0x01, 0x95, 0x08,   /* Report Size 1, Count 8 */
++        0x81, 0x02,               /*   Input (Data,Var,Abs) */
++        0x75, 0x08, 0x95, 0x01,   /* Report Size 8, Count 1 */
++        0x81, 0x03,               /*   Input (Const) -- QEMU's reserved byte */
++        0x75, 0x08, 0x95, 0x06,   /* Report Size 8, Count 6 */
++        0x15, 0x00, 0x26, 0xFF, 0x00,
++        0x19, 0x00, 0x2A, 0xFF, 0x00,
++        0x81, 0x00,               /*   Input (Data,Array) */
++        0x05, 0x08,               /*   Usage Page (LEDs) */
++        0x19, 0x01, 0x29, 0x05,
++        0x75, 0x01, 0x95, 0x05,   /* Report Size 1, Count 5 */
++        0x91, 0x02,               /*   Output (Data,Var,Abs) */
++        0x75, 0x03, 0x95, 0x01,   /* Report Size 3, Count 1 (pad) */
++        0x91, 0x03,               /*   Output (Const) */
++        0xC0,                     /* End Collection */
++    };
++    hid_report_t r;
++    CHECK_EQ(hid_report_parse(&r, d, sizeof(d)), 0);
++    CHECK_EQ(r.report_id_count, 1);
++    CHECK_EQ(r.report_ids[0], 1);
++    CHECK_EQ(r.report_bits_max, 64);          /* 8 mods + 48 key bits */
++    CHECK_EQ(hid_report_wire_len(&r), 9);     /* 8 body bytes + the ID byte */
++}
++
++int main(void) {
++    printf("=== AuraLite OS HID report-descriptor unit tests ===\n\n");
++    RUN(test_boot_keyboard);
++    RUN(test_two_report_ids);
++    RUN(test_body_split);
++    RUN(test_negative_unknown_report_id);
++    RUN(test_negative_truncated);
++    RUN(test_negative_nothing_interpretable);
++    RUN(test_no_report_id_body_is_whole_report);
++    RUN(case_output_shares_id);
++
++    printf("\n=== Results: %d/%d passed, %d failed ===\n", passed, tn, failed);
++    return failed == 0 ? 0 : 1;
++}
+diff --git a/tests/unit/test_usb_hid_report_negcontrol.sh b/tests/unit/test_usb_hid_report_negcontrol.sh
+new file mode 100755
+index 0000000..8b4f15f
+--- /dev/null
++++ b/tests/unit/test_usb_hid_report_negcontrol.sh
+@@ -0,0 +1,74 @@
++#!/usr/bin/env bash
++# test_usb_hid_report_negcontrol.sh — RESIDUE3 C5b: does the new host test
++# actually DISCRIMINATE?
++#
++# The plan's definition of done for C5b was "a HID case that fails against
++# today's parser and passes after".  The old parser no longer exists in the
++# tree, so it is reconstructed here, mechanically: drivers/usb/hid_report.c is
++# copied into a scratch file and the two report-ID behaviours are reverted to
++# the shape hid.c had before C5b --
++#
++#   * on a Report ID item the bit cursor keeps going (one cursor for the whole
++#     descriptor instead of one per report), and
++#   * the report-ID bookkeeping still records each ID, but the per-report body
++#     length is therefore wrong, so wire_len and every field offset after the
++#     first report are wrong as well.
++#
++# Then the SAME test file is compiled against the old-shape parser.  If the
++# test still passed, it would be measuring nothing; the expected result is a
++# failure, and this script fails if that failure does not happen.
++#
++# Usage: tests/unit/test_usb_hid_report_negcontrol.sh   (exit 0 = control held)
++
++set -u
++cd "$(dirname "$0")/../.."
++ROOT=$PWD
++TMP=$(mktemp -d)
++trap 'rm -rf "$TMP"' EXIT
++
++cp drivers/usb/hid_report.h "$TMP/"
++python3 - "$TMP" <<'PY'
++import sys, pathlib
++tmp = pathlib.Path(sys.argv[1])
++src = (tmp.parent / "x") # unused
++s = open("drivers/usb/hid_report.c").read()
++old = """            case 0x8: { /* Report ID: a new report starts here */
++                /* Persist the size of the report we are leaving. */
++                if (cur_slot >= 0) r->report_bits[cur_slot] = bitpos;
++                cur_id = (uint8_t)uval;
++                r->has_report_id = 1;
++                cur_slot = report_slot(r, cur_id);
++                bitpos = (cur_slot >= 0) ? r->report_bits[cur_slot] : 0;
++                break;
++            }"""
++new = """            case 0x8: { /* OLD BEHAVIOUR: one shared bit cursor */
++                cur_id = (uint8_t)uval;
++                r->has_report_id = 1;
++                cur_slot = report_slot(r, cur_id);
++                break;
++            }"""
++if old not in s:
++    raise SystemExit("negative control is stale: the Report ID branch changed")
++s = s.replace(old, new, 1)
++(tmp / "hid_report_old.c").write_text(s)
++PY
++
++cc -std=c11 -Wall -Wextra -Werror -O1 -I "$TMP" -I "$ROOT" \
++    tests/unit/test_usb_hid_report.c "$TMP/hid_report_old.c" -o "$TMP/t_old" || {
++    echo "negcontrol: FAIL (old-shape parser did not compile)"; exit 1; }
++
++set +e
++OUT=$("$TMP/t_old" 2>&1)
++RC=$?
++set -e
++echo "$OUT" | tail -8
++
++FAILS=$(echo "$OUT" | grep -c "FAIL L" || true)
++if [ "$RC" -eq 0 ] || [ "${FAILS:-0}" -lt 3 ]; then
++    echo
++    echo "negcontrol: FAIL — the host test passes against the pre-C5b parser"
++    echo "            (rc=$RC, $FAILS failing checks). The test does not discriminate."
++    exit 1
++fi
++echo
++echo "negcontrol: PASS — the pre-C5b parser fails $FAILS check(s) in the same test"
+diff --git a/tests/unit/test_usb_msc_csw.c b/tests/unit/test_usb_msc_csw.c
+new file mode 100644
+index 0000000..1139ac9
+--- /dev/null
++++ b/tests/unit/test_usb_msc_csw.c
+@@ -0,0 +1,168 @@
++/*
++ * test_usb_msc_csw.c — RESIDUE3 C5b: the USB BOT command-status wrapper.
++ *
++ * drivers/usb/msc_csw.c is compiled UNMODIFIED and driven with byte arrays.
++ * The cases are the ones a working QEMU storage device never produces: a
++ * truncated wrapper, an over-long one, a stale tag, and the two status codes
++ * BOT defines (failed = 1, phase error = 2).
++ *
++ * The first case is the bug this pins: before C5 the driver checked the
++ * signature of a zeroed struct after a short read, so 4 bytes of nothing
++ * produced "bad CSW signature 0x0" -- a message about the wrong layer.
++ */
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "drivers/usb/msc_csw.h"
++
++static int passed = 0, failed = 0, tn = 0;
++#define RUN(f) do { int b = failed; f(); tn++; if (failed == b) passed++; } while (0)
++#define CHECK(c) do { if (!(c)) { printf("  FAIL L%d: %s\n", __LINE__, #c); failed++; } } while (0)
++#define CHECK_EQ(a,e) do { long _a=(long)(a), _e=(long)(e); if (_a!=_e) { \
++    printf("  FAIL L%d: %s = %ld, want %ld\n", __LINE__, #a, _a, _e); failed++; } } while (0)
++
++#define TAG 0x11223344u
++
++/* A well-formed CSW: "USBS", tag, residue, status. */
++static void build_csw(uint8_t *b, uint32_t sig, uint32_t tag, uint32_t res, uint8_t st) {
++    b[0] = (uint8_t)(sig);       b[1] = (uint8_t)(sig >> 8);
++    b[2] = (uint8_t)(sig >> 16); b[3] = (uint8_t)(sig >> 24);
++    b[4] = (uint8_t)(tag);       b[5] = (uint8_t)(tag >> 8);
++    b[6] = (uint8_t)(tag >> 16); b[7] = (uint8_t)(tag >> 24);
++    b[8] = (uint8_t)(res);       b[9] = (uint8_t)(res >> 8);
++    b[10] = (uint8_t)(res >> 16); b[11] = (uint8_t)(res >> 24);
++    b[12] = st;
++}
++
++static void test_good_csw(void) {
++    uint8_t b[MSC_CSW_LEN];
++    build_csw(b, MSC_CSW_SIGNATURE, TAG, 0, 0);
++    msc_csw_check_t c;
++    msc_csw_validate(b, (int)sizeof(b), TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_OK);
++    CHECK_EQ(c.signature, 0x53425355u);
++    CHECK_EQ(c.tag, TAG);
++    CHECK_EQ(c.residue, 0);
++    CHECK_EQ(c.status, 0);
++    CHECK(strcmp(msc_csw_result_name(c.result), "ok") == 0);
++}
++
++/* The C5b case: 4 bytes.  Must be SHORT, not a signature complaint, and no
++ * field may be decoded from a buffer that was not fully received. */
++static void test_short_csw_is_not_a_signature_error(void) {
++    uint8_t b[4] = { 0x55, 0x53, 0x42, 0x53 };   /* "USBS" and nothing else */
++    msc_csw_check_t c;
++    msc_csw_validate(b, 4, TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_SHORT);
++    CHECK_EQ(c.signature, 0);
++    CHECK_EQ(c.tag, 0);
++    CHECK_EQ(c.residue, 0);
++    CHECK(strstr(msc_csw_result_name(c.result), "short") != NULL);
++}
++
++/* One byte short of a wrapper: still short, still zero fields. */
++static void test_twelve_bytes(void) {
++    uint8_t b[MSC_CSW_LEN];
++    build_csw(b, MSC_CSW_SIGNATURE, TAG, 0, 0);
++    for (int n = 1; n < (int)MSC_CSW_LEN; n++) {
++        msc_csw_check_t c;
++        msc_csw_validate(b, n, TAG, &c);
++        CHECK_EQ(c.result, MSC_CSW_SHORT);
++    }
++}
++
++/* One byte too many is its own error: the phases disagree. */
++static void test_over_long_csw(void) {
++    uint8_t b[MSC_CSW_LEN + 1];
++    build_csw(b, MSC_CSW_SIGNATURE, TAG, 0, 0);
++    b[MSC_CSW_LEN] = 0xAA;
++    msc_csw_check_t c;
++    msc_csw_validate(b, MSC_CSW_LEN + 1, TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_LONG);
++    CHECK(strstr(msc_csw_result_name(c.result), "over-long") != NULL);
++}
++
++static void test_bad_signature(void) {
++    uint8_t b[MSC_CSW_LEN];
++    build_csw(b, 0xDEADBEEF, TAG, 0, 0);
++    msc_csw_check_t c;
++    msc_csw_validate(b, (int)sizeof(b), TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_BAD_SIGNATURE);
++    CHECK_EQ(c.signature, 0xDEADBEEFu);
++}
++
++static void test_stale_tag(void) {
++    uint8_t b[MSC_CSW_LEN];
++    build_csw(b, MSC_CSW_SIGNATURE, TAG + 1, 0, 0);
++    msc_csw_check_t c;
++    msc_csw_validate(b, (int)sizeof(b), TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_BAD_TAG);
++    CHECK_EQ(c.tag, TAG + 1);
++}
++
++/* Both failure statuses, with the residue the device reported preserved so the
++ * log can say how many bytes never made it. */
++static void test_failed_status_keeps_residue(void) {
++    uint8_t b[MSC_CSW_LEN];
++    build_csw(b, MSC_CSW_SIGNATURE, TAG, 512, 1);
++    msc_csw_check_t c;
++    msc_csw_validate(b, (int)sizeof(b), TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_BAD_STATUS);
++    CHECK_EQ(c.status, 1);
++    CHECK_EQ(c.residue, 512);
++}
++
++static void test_phase_error_status(void) {
++    uint8_t b[MSC_CSW_LEN];
++    build_csw(b, MSC_CSW_SIGNATURE, TAG, 0, 2);
++    msc_csw_check_t c;
++    msc_csw_validate(b, (int)sizeof(b), TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_BAD_STATUS);
++    CHECK_EQ(c.status, 2);
++}
++
++/* Nothing at all: a failed transfer, reported as short, not as garbage. */
++static void test_null_and_zero(void) {
++    msc_csw_check_t c;
++    msc_csw_validate(NULL, 13, TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_SHORT);
++    uint8_t b[MSC_CSW_LEN];
++    memset(b, 07, sizeof(b));
++    msc_csw_validate(b, 0, TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_SHORT);
++    msc_csw_validate(b, -5, TAG, &c);
++    CHECK_EQ(c.result, MSC_CSW_SHORT);
++    msc_csw_validate(b, (int)sizeof(b), TAG, NULL);   /* must not fault */
++}
++
++/* Every result name is distinct and non-empty: the log lines are asserted by
++ * pattern in the integration cases, so two names that collapsed would make a
++ * grep for one match the other. */
++static void test_result_names_distinct(void) {
++    msc_csw_result_t all[] = { MSC_CSW_OK, MSC_CSW_SHORT, MSC_CSW_LONG,
++                               MSC_CSW_BAD_SIGNATURE, MSC_CSW_BAD_TAG, MSC_CSW_BAD_STATUS };
++    for (unsigned i = 0; i < sizeof(all) / sizeof(all[0]); i++) {
++        const char *a = msc_csw_result_name(all[i]);
++        CHECK(a && *a);
++        for (unsigned j = i + 1; j < sizeof(all) / sizeof(all[0]); j++)
++            CHECK(strcmp(a, msc_csw_result_name(all[j])) != 0);
++    }
++}
++
++int main(void) {
++    printf("=== AuraLite OS USB MSC command-status-wrapper tests ===\n");
++    RUN(test_good_csw);
++    RUN(test_short_csw_is_not_a_signature_error);
++    RUN(test_twelve_bytes);
++    RUN(test_over_long_csw);
++    RUN(test_bad_signature);
++    RUN(test_stale_tag);
++    RUN(test_failed_status_keeps_residue);
++    RUN(test_phase_error_status);
++    RUN(test_null_and_zero);
++    RUN(test_result_names_distinct);
++    printf("\n=== Results: %d/%d passed, %d failed ===\n", passed, tn, failed);
++    return failed ? 1 : 0;
++}
+diff --git a/tools/check_residue_claims.py b/tools/check_residue_claims.py
+index 14b0f5b..3a61e5a 100644
+--- a/tools/check_residue_claims.py
++++ b/tools/check_residue_claims.py
+@@ -56,7 +56,10 @@ def claims():
+     checks = []
+ 
+     # --- the ledger's arithmetic --------------------------------------
+-    rows = re.findall(r"^\| (RES-\d\d) \| (\w+) \| ([A-Z@R\d-]+) \|",
++    # The status cell allows a lowercase phase suffix: RESIDUE3 C5b closes
++    # RES-62 as DONE@C5b, and the old `[A-Z@R\d-]+` shape silently dropped that
++    # row from the count (61 of 62, S 13 of 14) instead of failing loudly.
++    rows = re.findall(r"^\| (RES-\d\d) \| (\w+) \| ([A-Za-z@\d-]+) \|",
+                       ledger, re.M)
+     ids = [r[0] for r in rows]
+     checks.append((

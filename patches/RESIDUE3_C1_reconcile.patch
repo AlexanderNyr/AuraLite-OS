@@ -1,0 +1,539 @@
+diff --git a/TODO.md b/TODO.md
+index 9be2fee..602a1ef 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -252,10 +252,10 @@ build when a box and the plan disagree.
+   Ctrl+Z sendkey timing reason (pre-existing, fails on M1 too).
+ - [ ] IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (the M5
+   signal path works around it with a runtime-aligned scratch).
+-  (class: kernel) (RESIDUE2 T1)
++  (class: kernel) (RESIDUE3 C2)
+ - [ ] SMP-safety sweep: atomic OFD refcounts, per-vnode write lock for
+   O_APPEND, atomic `sig_pending`, per-CPU SYSCALL state. (class:
+-  kernel/SMP) (RESIDUE2 T1)
++  kernel/SMP) (RESIDUE3 C2)
+ - ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
+   console stdin path and /dev/tty0 line discipline generate these via ISIG and
+   the tty->fg_pgid indirection. Full per-process-group routing arrives in P6.
+@@ -404,7 +404,7 @@ build when a box and the plan disagree.
+ - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
+   bundled demos/tests, but not POSIX-complete.
+ - [ ] POSIX-completeness for `fork`/`execve`/`wait4` beyond what the
+-  demos need. (class: POSIX/proc) (RESIDUE2 T1)
++  demos need. (class: POSIX/proc) (RESIDUE3 C2)
+ - **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
+   lazy VMAs and true file-backed `MAP_SHARED` remain future work.
+ - ~~Lazy VMAs and true file-backed `MAP_SHARED` write-back.~~ **Done
+@@ -606,7 +606,7 @@ build when a box and the plan disagree.
+ - [ ] Real isochronous STREAMING (narrowed 2026-09-06): frame-accurate
+   ISOCH TRBs on xHCI + a device that consumes them (usb-audio with a
+   real audiodev); today only the framework and attach gates exist and
+-  say so honestly (`test_usb_isoc`). (class: USB) (RESIDUE2 T6)
++  say so honestly (`test_usb_isoc`). (class: USB) (RESIDUE3 C5)
+ - **USB HID generic support is partial.** Boot keyboard/mouse works through UHCI,
+   OHCI, high-speed EHCI and xHCI; generic keyboard and mouse/tablet report
+   descriptors are parsed for common QEMU-tested layouts. Full HID collections/usages
+@@ -761,9 +761,9 @@ that — so the parked lx items stay bullets, not boxes):
+ - [x] User `mmap` / `munmap` / `brk` baseline syscalls (eager private mappings; true lazy/shared VMAs remain future work).
+ - [x] Slab allocator for common fixed-size kernel objects.
+ - [x] Guard pages around kernel/user stacks, with explicit overflow diagnosis in the `#PF` handler (`kernel/proc/guard.c`; kernel-stack hit is fatal, user-stack hit → SIGSEGV). Heap-region guard pages remain future work.
+-- [ ] Large-page support for selected kernel mappings. (RESIDUE2 T1)
++- [ ] Large-page support for selected kernel mappings. (RESIDUE3 C2)
+ - [x] `paging_free_address_space()` walker (user half) with PMM accounting.
+-- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land. (RESIDUE2 T1)
++- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land. (RESIDUE3 C2)
+ 
+ ### Scheduling and processes
+ 
+@@ -771,7 +771,7 @@ that — so the parked lx items stay bullets, not boxes):
+ - [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
+ - [x] Full address-space/page-table reaping via `paging_free_address_space()` in `thread_reap_zombies()`.
+ - [x] BLOCKED state, wait queues and sleepable kernel primitives baseline.
+-- [ ] Real parent/child process table and precise `waitpid` semantics. (RESIDUE2 T1)
++- [ ] Real parent/child process table and precise `waitpid` semantics. (RESIDUE3 C2)
+ - [x] Basic per-process FD tables.
+ - [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
+ - [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
+diff --git a/docs/plans/RESIDUE2_PLAN.md b/docs/plans/RESIDUE2_PLAN.md
+index 896629d..1f39f29 100644
+--- a/docs/plans/RESIDUE2_PLAN.md
++++ b/docs/plans/RESIDUE2_PLAN.md
+@@ -11,7 +11,7 @@
+ | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ✅ done | `patches/RESIDUE2_T4_posix.patch` |
+ | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ✅ done | `patches/RESIDUE2_T5_net.patch` |
+ | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ✅ done | `patches/RESIDUE2_T6_devs.patch` |
+-| T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
++| T7 — GUI (isolation, clipboard, settings, apps) | ✅ done (2026-09-06) | `patches/RESIDUE2_T7_gui.patch` |
+ | T8 — ports and oddities (RES-02, RES-06, RES-18) | ✅ done | `patches/RESIDUE2_T8_ports.patch` |
+ | T9 — tooling and close-out (GDB, flakiness, arithmetic) | ✅ done | `patches/RESIDUE2_T9_close.patch` |
+ 
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 136b0cf..06a9a7b 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,11 +1,11 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 landed 2026-11-03 (the rig, 1/11); every count in this file was measured on `26cb7fe`
++## Status: IN PROGRESS — C0 landed 2026-11-03 (the rig) and C1 the same day (the reconciliation, 2/11); every count in this file was measured on `26cb7fe`
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+ | C0 — the rig: the plan-table / orphan-debt checker | ✅ done (2026-11-03) | `patches/RESIDUE3_C0_rig.patch` |
+-| C1 — the reconciliation: flip what already landed, repair what drifted | ⬜ planned | `patches/RESIDUE3_C1_reconcile.patch` |
++| C1 — the reconciliation: flip what already landed, repair what drifted | ✅ done (2026-11-03) | `patches/RESIDUE3_C1_reconcile.patch` |
+ | C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table | ⬜ planned | `patches/RESIDUE3_C2_kernel.patch` |
+ | C3 — i386 graphics: VBE first, then the compositor (RES-12 → RES-11) | ⬜ planned | `patches/RESIDUE3_C3_i386gfx.patch` |
+ | C4 — MSI/MSI-X on virtio (RES-36) | ⬜ planned | `patches/RESIDUE3_C4_msi.patch` |
+@@ -196,40 +196,41 @@ debt that silently disappears without the pin moving is red as well.
+ 
+ ### C1 — the reconciliation: flip what already landed, repair what drifted
+ 
+-**Status:** ⬜ planned
++**Status:** ✅ COMPLETE
+ 
+ **Objective:** pay the audit's own findings before writing new code. No
+ feature work in this phase; every change is a status that now matches a
+ receipt that already exists.
+ 
+-**Measured at C0 birth** (to be pasted verbatim): D1 ×3, D2 ×6, D3 ×7.
++**Measured at C0 birth** (pasted verbatim from the rig): r3 ×3, r2 ×7,
++r4 ×6 — the sixteen the audit named.
+ 
+-- [ ] **RES-38 → DONE@T6**, survivor narrows to frame-accurate
++- [x] **RES-38 → DONE@T6**, survivor narrows to frame-accurate
+       isochronous streaming, which becomes RES-60 (class W — QEMU has
+       `usb-audio` + `-audiodev`, so it is provable) and stays the C5
+       target. Receipt quoted from T6's Result (five boxes measured
+       stale, 13-gate USB sweep re-run).
+-- [ ] **RES-39 → DONE@T6**, survivor narrows to the Bluetooth
++- [x] **RES-39 → DONE@T6**, survivor narrows to the Bluetooth
+       controller attach, which becomes RES-61 (class M for real
+       silicon, but C6 keeps a QEMU-provable lane) — and the Wi-Fi half
+       cites the printed `[wifi] PASS: virtual AP …` receipt rather than
+       "the tree has ZERO".
+-- [ ] **RES-47 → DONE@T7** (its four boxes closed with receipts at T7:
++- [x] **RES-47 → DONE@T7** (its four boxes closed with receipts at T7:
+       owner gates, clipboard ACL, settings, `gclip`), with the named
+       survivors restated as boxes if any are still open.
+-- [ ] **W32APP table:** five rows `⬜ planned` → `✅ done` (W32A-1/2/5/12/18),
++- [x] **W32APP table:** five rows `⬜ planned` → `✅ done` (W32A-1/2/5/12/18),
+       matching the plan's own Status header and `docs/status.md`.
+-- [ ] **RESIDUE2 table:** T7 row `⬜ planned` → `✅ done (2026-09-06)`.
+-- [ ] **Re-tag the seven TODO boxes** `(RESIDUE2 T1/T6)` → `(RESIDUE3 C2)`
++- [x] **RESIDUE2 table:** T7 row `⬜ planned` → `✅ done (2026-09-06)`.
++- [x] **Re-tag the seven TODO boxes** `(RESIDUE2 T1/T6)` → `(RESIDUE3 C2)`
+       (six: ABI alignment, SMP-safety, POSIX depth, large pages, zombie
+       reaping, process table) and `(RESIDUE3 C5)` (isochronous streaming).
+-- [ ] **Re-derive the stale openers** (D5): RES-11's 3198 → 4089 and
++- [x] **Re-derive the stale openers** (D5): RES-11's 3198 → 4089 and
+       RES-38/39's line counts, or drop the numbers and keep the grep.
+-- [ ] **status.md 🚧 rows:** each of the four gets a row-level verdict —
++- [x] **status.md 🚧 rows:** each of the four gets a row-level verdict —
+       OpenGL/libgl flips to 🧪 with GL2's receipts or keeps 🚧 with the
+       named remainder; Bluetooth/Wi-Fi keep 🚧 and cite RES-61; the
+       arch.h ratchet row either names its remaining file list or flips.
+-- [ ] Ledger arithmetic pins move in the same commit: rows 59 → **61**
++- [x] Ledger arithmetic pins move in the same commit: rows 59 → **61**
+       (RES-60/61), `CLASS_PIN` W 35→36, M 7→8; `check_residue_claims.py`
+       updated with the same numbers.
+ 
+@@ -241,6 +242,47 @@ green with the new pins; `git diff` touches no `.c`/`.h` file except
+ read the ledger, which this phase edits — the edit is the proof the two
+ checkers agree).
+ 
++**Result (2026-11-03):** DONE, and the pin is **empty**: the rig reports
++`0 live violation(s)` and `--openers` reports `0 stale opener(s)`. What
++moved, and what had to move with it:
++
++| Change | Receipt |
++|---|---|
++| RES-38 → `DONE@T6`, survivor narrowed to **RES-60** (W, OPEN) | row carries T6's 13-gate sweep + the stale-stub measurement; RES-60's opener is `test_usb_isoc`'s own SKIP line |
++| RES-39 → `DONE@T6`, survivor narrowed to **RES-61** (M) | row quotes the boot line `[wifi] PASS: virtual AP: scan found 'AuraVirt' ch6` re-run 2026-11-03; **D4's stale sentence removed** |
++| RES-47 → `DONE@T7` | row keeps its measured opener and cites T7's four-box Result |
++| W32APP table ×5, RESIDUE2 T7 row | all six now agree with their own sections' status |
++| seven TODO boxes re-tagged | six `(RESIDUE2 T1)` → `(RESIDUE3 C2)`, one `(RESIDUE2 T6)` → `(RESIDUE3 C5)`; the seven struck-through history entries keep their original tags — history stays readable |
++| D5's five stale measurements | `--openers` proves four (`gui.c` 2461→3151, `fb.c` 207→408, `bt.c` 215→193, `wifi.c` 370→333); RES-11's composite 3198→4089 and RES-38's `xhci` 1995→2093 were corrected by hand |
++| `status.md` four 🚧 rows | OpenGL flips 🚧→🧪 (both plan series complete; RES-54 named as the one remainder); Bluetooth and Wi-Fi keep 🚧 but now say what is actually missing (a controller, not a protocol) and cite RES-61; the arch ratchet row names its measured pin (`BASELINE_X64_INCLUDES = 69`) instead of a vague sentence |
++
++Two contracts had to move with the debt, and both moved in this commit:
++
++1. **`tools/check_residue2_claims.py`** was pinned to `(RESIDUE2 T#)` tags
++   and to "every OPEN row is named in *this* plan". Re-tagging seven boxes
++   and opening RES-60 in the successor breaks both *by design*, so the
++   checker now accepts `(RESIDUE3 C#)` too, requires a C-tag to name a
++   phase the successor actually has, allows a RESIDUE2 phase to stand at
++   zero boxes only when the successor records the hand-off (it does —
++   §1.1 D3 carries the literal tags), and accepts an OPEN row owned by
++   the successor. Its own selftest still passes: 22 claims, doctored tree
++   detected.
++2. **`tools/check_residue_claims.py`** had to move three pins and one
++   claim shape: `LEDGER_ROWS` 59 → **61**, `CLASS_PIN` W 35 → **36**,
++   M 7 → **8** (S stays 13), and the R12 "ledger is terminal" claim now
++   counts **rows** instead of the substring `HANDED-OFF@R12` — the
++   arithmetic prose below the table also contains that string, so the old
++   count conflated rows with prose. Rows at `HANDED-OFF@R12`: 7 → **3**
++   (RES-11, RES-12, RES-36), all owned here by C3/C4.
++
++Not-slack worth naming: the phase also **repaired two numbers in its own
++ledger arithmetic heading** ("Rows: 56 … S 10" had been wrong since Y7);
++the heading now reads 61 / W 36 · M 8 · N 4 · S 13, which is what the
++checker pins. And the marker ratchet moved exactly once — `status-wip
++6 → 5` for the OpenGL flip — after the note was reworded so that it did
++not itself contain the WIP glyph (a row that says "this used to be 🚧"
++is still a row containing 🚧; that would have pinned phantom debt).
++
+ ---
+ 
+ ### C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table
+diff --git a/docs/plans/W32APP_PLAN.md b/docs/plans/W32APP_PLAN.md
+index 11f3f58..7d90136 100644
+--- a/docs/plans/W32APP_PLAN.md
++++ b/docs/plans/W32APP_PLAN.md
+@@ -1,28 +1,28 @@
+ # AuraLite OS — Win32 Applications Plan (w32 breadth + the OSS ladder)
+ 
+-## Status: ACTIVE — see each phase's heading and receipts; W32A-0..W32A-17 are done (App horizon / Audacity closed 2026-09-29, OUTCOME B: does not run — gap ledger committed)
++## Status: ACTIVE — see each phase's heading and receipts; C1 repair (2026-11-03) flipped five table rows that still read ⬜ planned while their own sections read ✅ (W32A-1/2/5/12/18); W32A-0..W32A-17 are done (App horizon / Audacity closed 2026-09-29, OUTCOME B: does not run — gap ledger committed)
+ 
+ | Phase | State |
+ |---|---|
+ | W32A-0 Import ledgers, receipt protocol, claim checker | ✅ done |
+-| W32A-1 Loader: ordinals, delay-load, DLL chains, manifests | ⬜ planned |
+-| W32A-2 `KERNEL32` breadth I — files, paths, time, process info | ⬜ planned |
++| W32A-1 Loader: ordinals, delay-load, DLL chains, manifests | ✅ done |
++| W32A-2 `KERNEL32` breadth I — files, paths, time, process info | ✅ done |
+ | W32A-3 Threads and per-thread TLS (the one kernel change) | ✅ done |
+ | W32A-4 The table-driven SEH unwinder | ✅ done |
+-| W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
++| W32A-5 `USER32` breadth I — windows and messages, the `W` core | ✅ done |
+ | W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ✅ shipped |
+ | W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ✅ shipped |
+ | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ✅ shipped |
+ | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ✅ shipped |
+ | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ✅ shipped |
+ | W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ✅ done |
+-| W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
++| W32A-12 `WS2_32` WinSock over the native socket stack | ✅ done |
+ | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ✅ done |
+ | W32A-14 App gate I — PuTTY | ✅ done |
+ | W32A-15 App gate II — 7-Zip File Manager | ✅ done |
+ | W32A-16 App gate III — Notepad++ | ✅ done (2026-09-29) |
+ | W32A-17 App horizon — Audacity, or a documented gap list | ✅ done (2026-09-29, OUTCOME B) |
+-| W32A-18 Integration, documentation and the honest matrix | ⬜ planned |
++| W32A-18 Integration, documentation and the honest matrix | ✅ done |
+ 
+ This document answers one question:
+ 
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index 88092ca..fe77aaa 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -22,7 +22,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-08 | W | DONE@R2 | i386 shell fd layer initrd-only (PARITY P4/P7) | i386 shell cats /ext2 file through VFS; smoke pins it |
+ | RES-09 | W | DONE@R2 | no path-level VFS mounts on rv64/a64 (PARITY P2) | `[vfs] mounted /` printed on both tenants; smokes pin it |
+ | RES-10 | W | DONE@R3 | i386 TCP/sockets absent — net32 is miniproto only (I386 I8) | one TCP payload round-trips in an i386 smoke |
+-| RES-11 | S | HANDED-OFF@R12 | i386 compositor/GUI (I386 I8) | OPENER, measured: the portable GUI surface is 3198 lines (gui.c 2461 + wm.c 530 + fb.c 207); the i386 side references NONE of it (one grep hit in arch/i386, main32.c's VGA banner) — the series starts at the fb seam, not the compositor |
++| RES-11 | S | HANDED-OFF@R12 | i386 compositor/GUI (I386 I8) | OPENER, measured: the portable GUI surface is 4089 lines (gui.c 3151 + wm.c 530 + fb.c 408, re-measured 2026-11-03); the i386 side references NONE of it (one grep hit in arch/i386, main32.c's VGA banner) — the series starts at the fb seam, not the compositor |
+ | RES-12 | S | HANDED-OFF@R12 | i386 VBE graphics; text mode is the console (I386 I7) | OPENER, measured: zero VBE code in ANY loader (grep 4F02/vbe across boot/ = 0 files); the console is VGA text at 0xB8000 — first deliverable is a mode-set in stage2/loader32 + a boot_info fb block |
+ | RES-13 | W | DONE@R4 | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
+ | RES-14 | W | DONE@R5 | tenant SMP receipts-only — R5: init runs at U-mode/EL0 ON a secondary on BOTH tenants (strictly serialized one-job mailbox; per-hart stvec/VBAR, adopted final translation roots).  Preemptive multi-CPU runqueues on tenants remain the S-class successor, folded into RES-46's hand-off notes | a user thread RUNS on a secondary; receipt counted |
+@@ -49,8 +49,8 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-35 | W | DONE@R1 | O1/O6/O8 measured at R1: O8 REFUSED with numbers (naive --gc-sections on kernelrv "saves" 68% by deleting live boot/trap sections — all five smokes red; needs a KEEP() audit, folded into the R12 hand-off notes); O1 superseded (P7 linked word-wide string.c on i386); O6 deferred to R6 where port allocation actually grows | measured; done or refused with numbers |
+ | RES-36 | S | HANDED-OFF@R12 | MSI/MSI-X for virtio + virtio-gpu (MATURITY) | OPENER, measured: virtio_pci.c's cap walk parses ONLY vendor-specific (0x09); zero mentions of caps 0x05/0x11 in virtio_pci.c or pci.c; the ISR register is read-to-clear INTx — the series starts at the cap walk it already owns |
+ | RES-37 | M | DONE@R11 | IOAPIC base was QEMU-hardcoded with no cross-check — closed: the kernel walks RSDP→RSDT/XSDT→MADT (both loaders publish rsdp_phys) and prints agree/disagree-by-name; QEMU NULL: `(MADT agree)` asserted. Interrupt Source Overrides remain the named residue in ioapic.c | `[ioapic] base ... (MADT agree)` pinned in test_metal_null; package slot 7 carries the metal line |
+-| RES-38 | S | HANDED-OFF@R12 | OHCI/EHCI/xHCI full transfer scheduling; HID beyond UHCI; BOT short-packet line (USB/TODO) | OPENER, measured: uhci.c 555 lines IS the complete reference (TD scheduling, R1 guest-time waits); ohci 709 / ehci 865 / xhci 1995 lines with 3 named stub markers in xhci — the shapes exist, the transfer rings are the work |
+-| RES-39 | S | HANDED-OFF@R12 | Bluetooth USB transport; Wi-Fi chipset backend (TODO/status) | OPENER, measured: bt.c 215 lines already rides uhci_bulk/control (HCI protocol complete); wifi.c 370 lines carries the full 802.11 open-auth flow over a "registered wireless NIC" — of which the tree has ZERO; the missing piece on both is one hardware backend, not protocol |
++| RES-38 | S | DONE@T6 | OHCI/EHCI/xHCI full transfer scheduling; HID beyond UHCI; BOT short-packet line (USB/TODO) | OPENER, measured: uhci.c 555 lines IS the complete reference; ohci 709 / ehci 869 / xhci 2093 lines carry the shapes. CLOSED at T6: five of the named boxes were MEASURED STALE — the named stub markers are gone and the 13-gate USB sweep re-run 2026-09-05/06 pins the rings/queues (one xhci TD-timeout runner flake, re-run green). The narrowed survivor is frame-accurate isochronous STREAMING → RES-60 (owned by RESIDUE3 C5) |
++| RES-39 | S | DONE@T6 | Bluetooth USB transport; Wi-Fi chipset backend (TODO/status) | OPENER, measured: bt.c 193 lines and wifi.c 333 + wifi_virt.c 136; the row's "the tree has ZERO wireless NIC" sentence had gone STALE IN ITS OWN FAVOUR. CLOSED at T6: Bluetooth's transport moved onto the controller-agnostic usb_core API with the protocol host-pinned (test_bt_hci 35/35); Wi-Fi gained RX ingestion (scan/auth/AID parsed from frames), host-pinned protocol (test_wifi_proto 37/37) and a virtual AP that proves the flow end to end (test_wifi_virtual_ap) — the plain `make iso` boot prints `[wifi] PASS: virtual AP: scan found 'AuraVirt' ch6` + auth/AID + 78 data bytes (re-run 2026-11-03). The narrowed survivor is a real controller/chip attach → RES-61 (RESIDUE3 C6) |
+ | RES-40 | W | DONE@R1 | virtio-gpu init hang found by G13, bisected pre-G11d (TODO) | repro'd + fixed, or narrowed with a new fact |
+ | RES-41 | S | DONE@L7 | TGSI backend for VirGL DRAW_VBO (GL G13) | OPENER, measured: the KERNEL side already emits the 12-dword DRAW_VBO packet (virgl.c:180); glvirgl.c:13 names its own gap — "does NOT implement DRAW_VBO … needs shaders" — the missing piece is a userspace TGSI assembler feeding CREATE_SHADER, nothing kernel-side.  CLOSED at GL2 L7: `gl_backend_t.draw` + a hand-written canned TGSI pipeline in libgl takes whole fixed-function glDrawArrays(GL_TRIANGLES) batches through CREATE_SHADER + SET_VERTEX_BUFFERS + DRAW_VBO (the seam — RES-41's userspace half). The AST→TGSI retarget itself was never claimed here and opens as RES-54 |
+ | RES-42 | W | DONE@R12 | POSIX leftovers triaged entry by entry: posix2024 known_partials measured EMPTY (0 active rows — the last one, sem_open, closed 2026-08-21 by conformtest's own CI catch); readline/scanf/jobs-fg-bg re-affirmed as the POSIX_PLAN's OWN named deferrals (§P9 text, lines 593/622/637); epoll re-affirmed a non-goal — poll() rides select(), recorded in TODO's map | each entry triaged: scheduled or re-affirmed ✔ |
+@@ -58,7 +58,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-44 | N | RE-AFFIRMED@R12 | W32 registry (D8), MSG_COPY/SHM_LOCK/proc-sysvipc, DOOM §6, slab single-caller rule — all four re-affirmed as the decisions their plans recorded; none silently reversed | re-affirmed ✔ |
+ | RES-45 | W | DONE@R12 | TODO.md kept IN FULL and ANNOTATED (the user's call — the first draft rewrote it down to a map and the review caught the loss): headline pointer names the ledger as the machine-checked index; THIRTEEN stale entries receipted inline in the file's own ~~strikethrough~~+Done style (six from the R12 sweep: IST/#DF — closed R1; virtio-net polling — closed R9; brk/mmap; virtio-blk ×3 transports; symlinks; CI artifacts ×6 upload steps; seven from the follow-up audit: uaccess #PF fixup — M3; MAP_SHARED — shmem.c; auxv — M5; posix_spawn.c; tmpfs mkdir — Q12; mkdir(mode); tan/fmod/atan); live boxes carry their ledger row or class | every line dispositioned ✔; the file GREW by receipts (576→639 lines) ✔; harvest TODO count 26→20, baseline moved same-commit |
+ | RES-46 | S | DONE@F7 | FS data paths + modern NICs — F7 (FSFULL_PLAN.md) is RES-46's exit gate: the five filesystems (ext4/f2fs/btrfs/exFAT/NTFS) now have real, self-contained CI cases registered in `tests/integration/run_all.sh` ALL_CASES and run as the `fsfull` shard (each builds its own disks — no shared state), the five kernel self-tests run in the `full` selftest lane when mounted, and the ledger row proves coverage machine-checkably via `tools/check_residue_claims.py`.  F7 opened this row by MEASURING the FS harnesses against the tree: f2fs/btrfs/exFAT/NTFS are green, and the coverage surfaced a pre-existing F3 defect — the ext4 driver cannot interoperate with a real `mkfs.ext4` image (its non-standard `base_lba=128` layout is not host-e2fsck-verifiable), tracked in FSFULL_PLAN.md F7.  The NIC side (vmxnet3/e1000e/NVMe) stays open as RES-46's named successor. | OPENER, measured: the five-filesystem line count is 3889 with 0 CI cases — F7 delivered 5 registered cases + the fsfull shard + full-lane self-tests; ext4's red interop lane is a discovered pre-existing driver defect, not a coverage gap |
+-| RES-47 | S | HANDED-OFF@R12 | GUI isolation/permissions, clipboard/focus, settings (TODO) — part-stale too: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner | OPENER, measured: ownership gates exist (27 permission/owner sites); clipboard has 5 references (zero cross-process model); settings persistence has no backing file — the series starts at a clipboard ACL, not at zero |
++| RES-47 | S | DONE@T7 | GUI isolation/permissions, clipboard/focus, settings (TODO) — part-stale too: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner | OPENER, measured: ownership gates exist (27 permission/owner sites); clipboard had 5 references and no cross-process model. CLOSED at RESIDUE2 T7 (2026-09-06): all four boxes landed with receipts — the owner/permission model extended to GUI-GLOBAL mutations (clipboard set+get deny-then-grant round trip), persisted settings/theme, richer editor/terminal, and the `gclip` clipboard manager dogfooding the ACL (7-check gate); T7's Result is the receipt and this row was the last one it forgot to flip |
+ | RES-48 | M | PENDING-USER@R11 | HW §6 metal receipts never exercised on user's machine | R11 package ships (tools/metal_receipts.sh, NULL test CI-pinned); pending-user is a status, not a failure |
+ | RES-49 | M | PENDING-USER@Y7 | Live-web PQ-hybrid fetch against a real host (the X9 PEER_EOF sentence) | paste `[tls] group=X25519MLKEM768` from `run http https://www.ietf.org/` into docs/live_web.md |
+ | RES-50 | N | RE-AFFIRMED@Y7 | Happy-eyeballs connection racing — dual-stack still picks then falls back serially (REALINTERNET2 §4) | re-affirmed; no racing |
+@@ -71,10 +71,12 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-57 | S | HANDED-OFF@W32U | `static-only` dynamic surfaces in the W32 app ledgers never exercised live (W32APP_PLAN W32A-0/W32A-18) | OPENER, measured: `w32/app_ledger/*.imports` carry 1694 `static-only` markers (symbols reachable only via LoadLibrary/GetProcAddress) that the CI fixtures bind but never call at runtime; W32U's human-run receipts exercise them or the marker is dropped |
+ | RES-58 | S | HANDED-OFF@W32U | FAIL-CLEAN functions asserted by ledger class but never observed returning their honest failure in-guest (W32APP_PLAN D9) | OPENER, measured: `docs/win32.md` generates 35 FAIL-CLEAN functions (crypt32 8, advapi32 9, plus imm32/print/network) from the ledgers; no pasted in-guest receipt has watched one return its documented failure — W32U observes them live or they stay static claims |
+ | RES-59 | S | HANDED-OFF@W32U | the Audacity Outcome-B walls — the §6 scale/shape/runtime risk materialised (W32APP_PLAN W32A-17) | OPENER, measured: `w32/app_ledger/audacity-3.7.5.gap` records 3 fatal walls (90932 relocations vs w32run's 16384 buffer; a 117-DLL bundled graph; a 19-module/419-symbol gap = UCRT api-set 302 + winmm 74); W32U's first phase is the dynamic-scale loader |
++| RES-60 | W | OPEN | Frame-accurate isochronous STREAMING — xHCI ISOCH TRBs (type 5) plus a device that consumes them (RES-38's narrowed survivor; TODO.md's isoc box) | OPENER, measured: test_usb_isoc prints `[isoc] SKIP: no isochronous endpoint exercised`; xhci.c 2093 lines carry rings and no ISOCH TRB type | test_usb_isoc flips SKIP→PASS with a counted frame stream on `-device usb-audio` + `-audiodev`; owned by RESIDUE3 C5 |
++| RES-61 | M | PENDING-USER@C1 | Bluetooth / Wi-Fi silicon attach — the narrowed survivor of RES-39; RESIDUE3 C6 proves the controller path against QEMU's `usb-bt-dongle` and the virtual AP, the chip itself is metal | OPENER, measured: bt_init() prints `[bt] PASS: HCI protocol layer ready (no controller detected)` — the transport is proved, the controller is absent | C6's dongle lane green in QEMU + the user's adapter paste-back (the RES-30/32/33/48 discipline: pending-user is a status, not a failure) |
+ 
+ ## Arithmetic (checker-enforced)
+ 
+-Rows: 56.  Classes: **W 35 · M 7 · N 4 · S 10**.  The R0 recount
++Rows: 61.  Classes: **W 36 · M 8 · N 4 · S 13**.  The R0 recount
+ **W 33 · M 5 · N 2 · S 8** (the plan §2 draft hand-summed 27/6/3/12
+ and was WRONG — amended same-commit, catch recorded) is the
+ historical pin; Y7 appended RES-49..53.  Statuses at CLOSE: OPEN 6 (RES-02/06/07/16/18/54 — named survivors, none hidden: two narrowed oddities, two port-adoption rows, one IOAPIC-routing row, and GL2's D7 hand-off; RES-26's DONE@Y4 flip is recorded below and was mistakenly still counted here), DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure), DONE@R12 2 (RES-42/45), RE-AFFIRMED@R12 2 (RES-43/44), HANDED-OFF@R12 7 (RES-11/12/36/38/39/46/47 — every one leaves with a MEASURED opener fact in its row), DONE@L7 1 (RES-41 — the canned DRAW_VBO seam landed in GL2 L6; its compiler half opens as RES-54).
+diff --git a/docs/status.md b/docs/status.md
+index 614b643..cd81b7b 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -163,7 +163,7 @@ tied to the tree.
+ | PS/2 mouse | ✅ | IRQ 12, cursor/buttons and wheel-event support. |
+ | Kernel GUI/compositor | ✅ | **v2.0**: Theme engine (30+ params), desktop icons (32), notifications, window snapping (left/right/top/bottom/maximize), start menu, context menus, always-on-top windows, tool windows, edge/corner resize, double-click titlebar maximize, alpha blit, explicit event ABI (#define values), 64 windows, 128-event rings. Dirty-rect partial redraw is implemented via `compositor_render_dirty()` and `gfx_flip_rect()`, with idle frames skipping flips. Per-process window/icon cleanup on exit. |
+ | 3D software renderer | 🧪 | Demo renderer, CPU/SSE float math. |
+-| **OpenGL (libgl)** | 🚧 | User-space GL 1.1/1.3 stack with FBOs and an ES 2.0 shader path, software rasterizer — see `GL_PLAN.md`. **G0-G9 complete**: hardened `GUI_OP_BLIT` presentation path, libc float math, `glmath` layer, AuraGLX context, matrix stacks + immediate mode (all ten primitive modes), and a **filled edge-function rasterizer** with depth buffer (all 8 compare functions, `glDepthMask`), back-face culling, top-left fill rule, scissor test and `glPolygonMode`. 168 host unit tests + 38 QEMU assertions. `/glcube` renders a **solid depth-buffered cube**. Plus **frustum clipping** against all six planes (Sutherland–Hodgman for triangles, Liang–Barsky for lines, attributes interpolated at the cut) and `glPushAttrib`/`glPopAttrib`. 196 host unit tests + 46 QEMU assertions. The camera can fly through geometry without artefacts. Plus the full **GL 1.1 lighting model**: 8 lights (positional/directional/spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, inverse-transpose normal matrix and `GL_NORMALIZE`. 228 host unit tests + 53 QEMU assertions. `/glcube` renders a lit, depth-buffered cube. Plus **texturing** (2D texture objects, all five base formats, nearest/bilinear filtering, repeat/clamp wrapping, `GL_MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** UV interpolation), **blending**, the **alpha test** and **fog** (linear/exp/exp2). 265 host unit tests + 63 QEMU assertions. `/glcube` renders a lit, textured, depth-buffered cube. Plus **vertex arrays** (all four attribute arrays, arbitrary stride, eight component types), **buffer objects** (GL 1.5 subset, both targets) and **display lists** (command-log based, so matrix and state commands replay correctly). 301 host unit tests + 71 QEMU assertions. `/glcube` compiles its cube into a display list and draws the grid from a vertex array. Note: arrays are an API-completeness feature, not a speed-up — the per-vertex transform dominates, so `glDrawArrays` measures the same as immediate mode. Plus the **GLU layer** (`gluPerspective`, `gluLookAt`, `gluOrtho2D`, `gluErrorString`, sphere/cylinder/disk quadrics) and two shipped demos: `/glcube` and `/glgears` — the latter ported from real OpenGL sources with the GL calls unchanged, which is the strongest available evidence the API behaves as applications expect. 322 host unit tests + 80 QEMU assertions. See [`docs/opengl.md`](opengl.md). Plus the **backend seam** (`gl_backend_t`, modelled on `netdev`): the software rasterizer is registered as an ordinary backend, any entry point may be NULL with software covering the rest, and `glGetString(GL_RENDERER)` reports the active one. A VirGL candidate is registered but declines until the kernel exposes a user-space 3D submission syscall. Plus **GL 1.2/1.3 texturing** (G10): mipmap chains with all four mipmap filters and `glGenerateMipmap`/`gluBuild2DMipmaps`, **two texture units** (`glActiveTexture`, `glClientActiveTexture`, `glMultiTexCoord2f`, per-unit environment, combined in fragment order), **3D textures** with trilinear sampling, **cube maps** with major-axis face selection, and `GL_CLAMP_TO_BORDER`. The mipmap level is chosen **per triangle** rather than per fragment — a scanline rasterizer has no `dFdx`/`dFdy`, so the level comes from the texture-space/screen-space area ratio; large receding surfaces must be tessellated, which `/glcube`'s new mipmapped floor demonstrates. Measured: `GL_NEAREST_MIPMAP_NEAREST` is *faster* than un-mipmapped `GL_LINEAR` (2.6 vs 3.2 ms/frame), trilinear costs 1.9×. This phase also uncovered and fixed a latent G1 bug — `aglxResize()` held a whole scratch context on the stack, which page-faulted once the context passed 130 KB. Plus **framebuffer objects and render-to-texture** (G12): `glGenFramebuffers`/`glBindFramebuffer`/`glFramebufferTexture2D`/`glFramebufferRenderbuffer`/`glCheckFramebufferStatus`, colour and depth renderbuffers, and `glReadPixels` in six formats reading whichever target is bound. The rasterizer needed **no changes at all** — an FBO re-points the four fields (`color`, `depth`, `width`, `height`) it has always written through, which is the return on having kept the render target abstract since G3. Rendering into an FBO measures the same as rendering into the window (3.72 vs 3.75 ms/frame); only the bind/unbind pair costs anything, and that scales with attachment area because unbinding forces the rendered texture opaque. Two real bugs surfaced and were fixed: `gl_fb_row()` flipped y unconditionally, correct for the window and upside-down for a texture; and a rendered texture sampled as fully transparent because the rasterizer writes no alpha byte. `/glcube` gained an inset render-to-texture panel showing a second view of the scene. Plus the **GLSL ES 1.0 front end** (G11a, the first of four shader sub-phases): a lexer, recursive-descent parser and type checker producing a typed AST, in 2400 lines. The full language — scalar/vector/matrix/sampler types, structs, arrays, functions with `in`/`out`/`inout`, the built-in library — with stage-aware rules (`attribute` refused in a fragment shader, `discard` in a vertex shader, a diagnostic when a vertex shader never writes `gl_Position`). Diagnostics are treated as the deliverable rather than an afterthought: every one carries a line number and names the rule, and most of the 167 host tests are negative cases asserting on the message text. One arena per compilation means a failed parse leaks nothing; every limit on untrusted input is a diagnostic rather than a fault. Not yet reachable from the GL API — `glCreateShader` arrives in G11c. Measured: 0.037 ms and 140 KB to compile a 22-line Blinn-Phong shader. Plus the **GLSL execution engine** (G11b): an AST-walking interpreter, 1500 lines, running the whole language — expressions, control flow, user functions with `in`/`out`/`inout`, structs, arrays, swizzled lvalues, matrix algebra and the built-in library. A shader reaches the outside world through three `glsl_env_t` callbacks, so the engine is testable with no GL context and G11c can attach the real pipeline without changing it. Semantics that differ from C are tested explicitly: `mod()` takes the sign of the divisor, integer division truncates towards zero, `matN(s)` is a diagonal, and undefined maths yields finite values rather than NaNs that would propagate through blending. Every limit on untrusted input (100k iterations, call depth 16, argument nesting 24) is a diagnostic rather than a fault. Three bugs were found only by running on the target, where the user stack is 64 KB against the host's 8 MB: two scratch arrays living on the C stack (5.9 KB and 1.2 KB per frame) and a shared argument buffer keyed on call depth rather than argument nesting, which made `max(dot(a,b), 0.0)` silently ignore its clamp. A kernel limit surfaced too: `spawn()` truncated executables over 256 KB without saying so. Measured 0.27 µs per trivial fragment shader invocation — 20 ms/frame at 320×240, against 0.07 ms for the entire fixed-function path, exactly the one-to-two orders of magnitude the plan predicted. The shader path buys API coverage, not frames per second. Plus the **shader pipeline** (G11c): shaders are reachable from the GL API and draw pixels — `glCreateShader` through `glUseProgram`, generic vertex attributes, uniforms including the matrix forms. The vertex shader replaces the transform, the fragment shader replaces texturing/lighting/fog, and varyings ride through the existing clipper and perspective-correct interpolator; clipping, culling, depth, scissor and blending are untouched because a shader changes neither the window coordinates nor the meaning of a colour. Linking builds the uniform/varying/attribute tables once so the interpreter's by-name lookups become index arithmetic, and a varying the fragment shader reads but the vertex shader never declares is a **link error** rather than a silent read of zeros. Assembling the pipeline exposed a 30× interpreter regression invisible in G11b's standalone benchmark: `glsl_run()` allocated and zeroed its 90 KB state on every invocation, which at one call per pixel cost 3.90 µs per fragment against 0.27 µs measured directly — caching it took a full-screen shaded frame from 306 ms to 12 ms. Measured at 320×240: fixed function 0.92 ms/frame, constant shader 12.1 ms, Lambert-lit 53.8 ms, vertex stage alone 1.2 µs/draw. Vertex shaders are affordable; full-screen fragment shaders are not. Plus **coexistence hardening** (G11d), the sub-phase the plan flagged as carrying most of the risk — correctly, since audit found four real defects. Shaded points and lines were **not shaded**: they wrote the vertex colour, which the shader path leaves at white, so a shaded `GL_LINE_LOOP` came out white; every G11c test drew triangles, so nothing exercised those rasterizers with a program bound. Immediate mode silently hybridised — the fixed-function matrices placed the geometry and the fragment shader coloured it, a combination no GL implementation produces and one that would render plausibly here and draw nothing on real hardware; now `GL_INVALID_OPERATION`, with the draw calls exempt. `glUseProgram` was accepted inside `glBegin`/`glEnd` and executed immediately inside a display list, the latter silently rebinding the current program as a side effect of compiling. Verified rather than assumed: scissor, culling, depth mask, blending and FBO rendering all apply to shaded fragments, while lighting, fog, the alpha test, the texture environment, `glShadeModel`, the fixed-function matrices and arrays all correctly fail to reach one. The audit was a probe program enumerating interactions rather than tests written from the specification — three of the four defects were combinations nobody would have thought to assert on. Plus the **VirGL hardware backend** (G13): `lib/libgl/src/glvirgl.c` reaches a real virtio-gpu through `SYS_GPU_CALL` — probe, clear, and present via TRANSFER + SET_SCANOUT + RESOURCE_FLUSH. `DRAW_VBO` is deliberately absent: it needs shaders as TGSI, and G11's compiler produces an interpreted AST, so a TGSI back end is a compiler phase rather than a corner of this one. The phase also closed the K1 blocker — `op_transfer()` shipped copying its payload into a bounce buffer and freeing it **unused**, because a `RESOURCE_CREATE_3D` resource has no guest memory behind it; resources now get backing, released on destroy and on process teardown, the latter having been a permanent physical-memory leak. Three wire-format constants were wrong in the first draft and all were caught before reaching a device (two by a unit test running the kernel's own validator); the file now includes `drivers/gpu/virgl.h` rather than restating it, so there is one definition of the protocol in the tree. Attaching a real GPU also surfaced a **pre-existing driver hang** during virtio-gpu initialisation — bisected to before G11d, never exercised because no integration case attached a GPU until G13 added one; recorded in `TODO.md` with what has been ruled out. Honest framing: this buys a proved seam, not frames per second. **GL_PLAN.md G0–G13 complete** — the plan is finished: 967 host unit checks + 373 in-OS checks + 86 QEMU assertions. Plus the **GL2 continuation series** (`docs/plans/GL2_PLAN.md`, L0–L7 complete): an 8-bit **stencil** plane with the full op set (two-pass clip demo, FBO attach), **glCopyTexImage**/`glBlitFramebuffer`, **GL_COMBINE** with a per-unit texture matrix and four texture units, **per-fragment mipmap LOD** from window-axis derivatives (`/glcube`'s floor back to one quad, 6.21 → 0.05 ms), a **sound early-Z** (whole-tree `discard` scan at link; hidden safe fragments skip the interpreter — proven by an invocation counter — while `discard` shaders shade before the tests), **`/glshade`** (the cube lit from a GLSL program, attributes + `glDrawArrays`, no fixed-function fallback), and the **canned VirGL triangle**: `gl_backend_t.draw` plus a hand-written TGSI pipeline taking whole fixed-function `glDrawArrays(GL_TRIANGLES)` batches of clip positions + colours, with the whole-draw fallback and the GPU-present fork. 1064 libgl host checks + 427 in-OS checks; checker claims live in `tools/check_gl2_claims.py`. |
++| **OpenGL (libgl)** | 🧪 | User-space GL 1.1/1.3 stack with FBOs and an ES 2.0 shader path, software rasterizer — see `GL_PLAN.md`. **G0-G9 complete**: hardened `GUI_OP_BLIT` presentation path, libc float math, `glmath` layer, AuraGLX context, matrix stacks + immediate mode (all ten primitive modes), and a **filled edge-function rasterizer** with depth buffer (all 8 compare functions, `glDepthMask`), back-face culling, top-left fill rule, scissor test and `glPolygonMode`. 168 host unit tests + 38 QEMU assertions. `/glcube` renders a **solid depth-buffered cube**. Plus **frustum clipping** against all six planes (Sutherland–Hodgman for triangles, Liang–Barsky for lines, attributes interpolated at the cut) and `glPushAttrib`/`glPopAttrib`. 196 host unit tests + 46 QEMU assertions. The camera can fly through geometry without artefacts. Plus the full **GL 1.1 lighting model**: 8 lights (positional/directional/spot), Blinn–Phong specular, distance attenuation, front/back materials, `GL_COLOR_MATERIAL`, inverse-transpose normal matrix and `GL_NORMALIZE`. 228 host unit tests + 53 QEMU assertions. `/glcube` renders a lit, depth-buffered cube. Plus **texturing** (2D texture objects, all five base formats, nearest/bilinear filtering, repeat/clamp wrapping, `GL_MODULATE`/`REPLACE`/`DECAL`/`BLEND`, **perspective-correct** UV interpolation), **blending**, the **alpha test** and **fog** (linear/exp/exp2). 265 host unit tests + 63 QEMU assertions. `/glcube` renders a lit, textured, depth-buffered cube. Plus **vertex arrays** (all four attribute arrays, arbitrary stride, eight component types), **buffer objects** (GL 1.5 subset, both targets) and **display lists** (command-log based, so matrix and state commands replay correctly). 301 host unit tests + 71 QEMU assertions. `/glcube` compiles its cube into a display list and draws the grid from a vertex array. Note: arrays are an API-completeness feature, not a speed-up — the per-vertex transform dominates, so `glDrawArrays` measures the same as immediate mode. Plus the **GLU layer** (`gluPerspective`, `gluLookAt`, `gluOrtho2D`, `gluErrorString`, sphere/cylinder/disk quadrics) and two shipped demos: `/glcube` and `/glgears` — the latter ported from real OpenGL sources with the GL calls unchanged, which is the strongest available evidence the API behaves as applications expect. 322 host unit tests + 80 QEMU assertions. See [`docs/opengl.md`](opengl.md). Plus the **backend seam** (`gl_backend_t`, modelled on `netdev`): the software rasterizer is registered as an ordinary backend, any entry point may be NULL with software covering the rest, and `glGetString(GL_RENDERER)` reports the active one. A VirGL candidate is registered but declines until the kernel exposes a user-space 3D submission syscall. Plus **GL 1.2/1.3 texturing** (G10): mipmap chains with all four mipmap filters and `glGenerateMipmap`/`gluBuild2DMipmaps`, **two texture units** (`glActiveTexture`, `glClientActiveTexture`, `glMultiTexCoord2f`, per-unit environment, combined in fragment order), **3D textures** with trilinear sampling, **cube maps** with major-axis face selection, and `GL_CLAMP_TO_BORDER`. The mipmap level is chosen **per triangle** rather than per fragment — a scanline rasterizer has no `dFdx`/`dFdy`, so the level comes from the texture-space/screen-space area ratio; large receding surfaces must be tessellated, which `/glcube`'s new mipmapped floor demonstrates. Measured: `GL_NEAREST_MIPMAP_NEAREST` is *faster* than un-mipmapped `GL_LINEAR` (2.6 vs 3.2 ms/frame), trilinear costs 1.9×. This phase also uncovered and fixed a latent G1 bug — `aglxResize()` held a whole scratch context on the stack, which page-faulted once the context passed 130 KB. Plus **framebuffer objects and render-to-texture** (G12): `glGenFramebuffers`/`glBindFramebuffer`/`glFramebufferTexture2D`/`glFramebufferRenderbuffer`/`glCheckFramebufferStatus`, colour and depth renderbuffers, and `glReadPixels` in six formats reading whichever target is bound. The rasterizer needed **no changes at all** — an FBO re-points the four fields (`color`, `depth`, `width`, `height`) it has always written through, which is the return on having kept the render target abstract since G3. Rendering into an FBO measures the same as rendering into the window (3.72 vs 3.75 ms/frame); only the bind/unbind pair costs anything, and that scales with attachment area because unbinding forces the rendered texture opaque. Two real bugs surfaced and were fixed: `gl_fb_row()` flipped y unconditionally, correct for the window and upside-down for a texture; and a rendered texture sampled as fully transparent because the rasterizer writes no alpha byte. `/glcube` gained an inset render-to-texture panel showing a second view of the scene. Plus the **GLSL ES 1.0 front end** (G11a, the first of four shader sub-phases): a lexer, recursive-descent parser and type checker producing a typed AST, in 2400 lines. The full language — scalar/vector/matrix/sampler types, structs, arrays, functions with `in`/`out`/`inout`, the built-in library — with stage-aware rules (`attribute` refused in a fragment shader, `discard` in a vertex shader, a diagnostic when a vertex shader never writes `gl_Position`). Diagnostics are treated as the deliverable rather than an afterthought: every one carries a line number and names the rule, and most of the 167 host tests are negative cases asserting on the message text. One arena per compilation means a failed parse leaks nothing; every limit on untrusted input is a diagnostic rather than a fault. Not yet reachable from the GL API — `glCreateShader` arrives in G11c. Measured: 0.037 ms and 140 KB to compile a 22-line Blinn-Phong shader. Plus the **GLSL execution engine** (G11b): an AST-walking interpreter, 1500 lines, running the whole language — expressions, control flow, user functions with `in`/`out`/`inout`, structs, arrays, swizzled lvalues, matrix algebra and the built-in library. A shader reaches the outside world through three `glsl_env_t` callbacks, so the engine is testable with no GL context and G11c can attach the real pipeline without changing it. Semantics that differ from C are tested explicitly: `mod()` takes the sign of the divisor, integer division truncates towards zero, `matN(s)` is a diagonal, and undefined maths yields finite values rather than NaNs that would propagate through blending. Every limit on untrusted input (100k iterations, call depth 16, argument nesting 24) is a diagnostic rather than a fault. Three bugs were found only by running on the target, where the user stack is 64 KB against the host's 8 MB: two scratch arrays living on the C stack (5.9 KB and 1.2 KB per frame) and a shared argument buffer keyed on call depth rather than argument nesting, which made `max(dot(a,b), 0.0)` silently ignore its clamp. A kernel limit surfaced too: `spawn()` truncated executables over 256 KB without saying so. Measured 0.27 µs per trivial fragment shader invocation — 20 ms/frame at 320×240, against 0.07 ms for the entire fixed-function path, exactly the one-to-two orders of magnitude the plan predicted. The shader path buys API coverage, not frames per second. Plus the **shader pipeline** (G11c): shaders are reachable from the GL API and draw pixels — `glCreateShader` through `glUseProgram`, generic vertex attributes, uniforms including the matrix forms. The vertex shader replaces the transform, the fragment shader replaces texturing/lighting/fog, and varyings ride through the existing clipper and perspective-correct interpolator; clipping, culling, depth, scissor and blending are untouched because a shader changes neither the window coordinates nor the meaning of a colour. Linking builds the uniform/varying/attribute tables once so the interpreter's by-name lookups become index arithmetic, and a varying the fragment shader reads but the vertex shader never declares is a **link error** rather than a silent read of zeros. Assembling the pipeline exposed a 30× interpreter regression invisible in G11b's standalone benchmark: `glsl_run()` allocated and zeroed its 90 KB state on every invocation, which at one call per pixel cost 3.90 µs per fragment against 0.27 µs measured directly — caching it took a full-screen shaded frame from 306 ms to 12 ms. Measured at 320×240: fixed function 0.92 ms/frame, constant shader 12.1 ms, Lambert-lit 53.8 ms, vertex stage alone 1.2 µs/draw. Vertex shaders are affordable; full-screen fragment shaders are not. Plus **coexistence hardening** (G11d), the sub-phase the plan flagged as carrying most of the risk — correctly, since audit found four real defects. Shaded points and lines were **not shaded**: they wrote the vertex colour, which the shader path leaves at white, so a shaded `GL_LINE_LOOP` came out white; every G11c test drew triangles, so nothing exercised those rasterizers with a program bound. Immediate mode silently hybridised — the fixed-function matrices placed the geometry and the fragment shader coloured it, a combination no GL implementation produces and one that would render plausibly here and draw nothing on real hardware; now `GL_INVALID_OPERATION`, with the draw calls exempt. `glUseProgram` was accepted inside `glBegin`/`glEnd` and executed immediately inside a display list, the latter silently rebinding the current program as a side effect of compiling. Verified rather than assumed: scissor, culling, depth mask, blending and FBO rendering all apply to shaded fragments, while lighting, fog, the alpha test, the texture environment, `glShadeModel`, the fixed-function matrices and arrays all correctly fail to reach one. The audit was a probe program enumerating interactions rather than tests written from the specification — three of the four defects were combinations nobody would have thought to assert on. Plus the **VirGL hardware backend** (G13): `lib/libgl/src/glvirgl.c` reaches a real virtio-gpu through `SYS_GPU_CALL` — probe, clear, and present via TRANSFER + SET_SCANOUT + RESOURCE_FLUSH. `DRAW_VBO` is deliberately absent: it needs shaders as TGSI, and G11's compiler produces an interpreted AST, so a TGSI back end is a compiler phase rather than a corner of this one. The phase also closed the K1 blocker — `op_transfer()` shipped copying its payload into a bounce buffer and freeing it **unused**, because a `RESOURCE_CREATE_3D` resource has no guest memory behind it; resources now get backing, released on destroy and on process teardown, the latter having been a permanent physical-memory leak. Three wire-format constants were wrong in the first draft and all were caught before reaching a device (two by a unit test running the kernel's own validator); the file now includes `drivers/gpu/virgl.h` rather than restating it, so there is one definition of the protocol in the tree. Attaching a real GPU also surfaced a **pre-existing driver hang** during virtio-gpu initialisation — bisected to before G11d, never exercised because no integration case attached a GPU until G13 added one; recorded in `TODO.md` with what has been ruled out. Honest framing: this buys a proved seam, not frames per second. **GL_PLAN.md G0–G13 complete** — the plan is finished: 967 host unit checks + 373 in-OS checks + 86 QEMU assertions. Plus the **GL2 continuation series** (`docs/plans/GL2_PLAN.md`, L0–L7 complete): an 8-bit **stencil** plane with the full op set (two-pass clip demo, FBO attach), **glCopyTexImage**/`glBlitFramebuffer`, **GL_COMBINE** with a per-unit texture matrix and four texture units, **per-fragment mipmap LOD** from window-axis derivatives (`/glcube`'s floor back to one quad, 6.21 → 0.05 ms), a **sound early-Z** (whole-tree `discard` scan at link; hidden safe fragments skip the interpreter — proven by an invocation counter — while `discard` shaders shade before the tests), **`/glshade`** (the cube lit from a GLSL program, attributes + `glDrawArrays`, no fixed-function fallback), and the **canned VirGL triangle**: `gl_backend_t.draw` plus a hand-written TGSI pipeline taking whole fixed-function `glDrawArrays(GL_TRIANGLES)` batches of clip positions + colours, with the whole-draw fallback and the GPU-present fork. 1064 libgl host checks + 427 in-OS checks; checker claims live in `tools/check_gl2_claims.py`. **RESIDUE3 C1 (2026-11-03):** this row still carried the WIP glyph while *both* plan series are complete (GL_PLAN G0–G13, GL2 L0–L7); it flips to 🧪 with its one named remainder — the GLSL AST → TGSI retarget, RES-54, owned by RESIDUE3 C9. |
+ | GUI bulk pixel blit | ✅ | `GUI_OP_BLIT` / `GUI_OP_BLIT_ALPHA` + `ag_blit()`/`ag_blit_alpha()`. Source rect is fully validated with `validate_user_range()`, then copied row-by-row through a kernel bounce buffer, so no raw user pointer is ever dereferenced. Covered by `test_opengl.sh`. |
+ | Native VBox/VMware SVGA drivers | ❌ | The bootloader-provided framebuffer is used instead. |
+ | virtio-gpu 2D scanout | 🧪 | Modern virtio-gpu PCI probe, control queue, RESOURCE_CREATE_2D, ATTACH_BACKING, SET_SCANOUT, TRANSFER_TO_HOST_2D and RESOURCE_FLUSH are implemented as an optional mirror path for `gfx_flip()`. The driver is initialised during graphics boot so mirroring is available before the GUI compositor starts. |
+@@ -191,8 +191,8 @@ tied to the tree.
+ 
+ | Feature | Status | Notes |
+ |---|---:|---|
+-| Bluetooth HCI protocol | 🚧 | HCI commands/events implemented; depends on USB transport. |
+-| Wi-Fi 802.11 MAC layer | 🚧 | Management frames/state machine; no chipset driver registered by default. |
++| Bluetooth HCI protocol | 🚧 | HCI commands/events implemented; depends on USB transport. **RESIDUE3 C1 (2026-11-03):** the transport is no longer the gap — `bt.c` rides the controller-agnostic `usb_core` API and the protocol is host-pinned (`test_bt_hci` 35/35); what is missing is a *controller*. RESIDUE3 C6 attaches QEMU's `usb-bt-dongle` and C5-style receipts, real silicon is RES-61 (M class). |
++| Wi-Fi 802.11 MAC layer | 🚧 | Management frames/state machine; no chipset driver registered by default. **RESIDUE3 C1 (2026-11-03):** "no chipset driver" undersold the tree — `wifi_virt.c` (the T6 reference backend) auto-registers and the boot prints `[wifi] PASS: virtual AP: scan found 'AuraVirt' ch6` + auth/AID + 78 data bytes. C6 promotes that to a data path (IP over the virtual AP); a real chip stays RES-61 (M). |
+ 
+ ## Userspace applications
+ 
+@@ -238,7 +238,7 @@ older CPUs get an honest two-console refusal, 386 included.
+ | ATA PIO storage | ✅ | LBA28 on the boot controller; IDENTIFY + known-bytes read + write/readback/restore self-test. AHCI: waiting on a VFS consumer. |
+ | e1000 + DHCP/ARP/ICMP | ✅ | 82540EM; SLIRP lease + gateway ARP + payload-verified echo. Sockets/TCP/DNS: pending the net-stack port. |
+ | Crypto at 32-bit width | ✅ | RESIDUE R10: the COMPLETE suite (hash/AEAD/X25519/Ed25519/P-256, 104 checks) passes on the 32-bit limb path (`-DATLS_FE_FORCE32`, native host); the ILP32 `-m32` ABI lane needs `gcc-multilib` and is skipped where that is absent — `atls_fe.h` selects a packed 8×uint32 radix-2^32 field core and `atls_ecdsa.c` an 8×uint32 limb parameterisation where `__int128` is absent. Two lanes in `test_libatls_m32.sh`: `-DATLS_FE_FORCE32` on the native host (runs even without multilib) + the real `-m32` ABI. |
+-| VFS / FAT32 / ext2 / TCP / GUI | 🚧 | Residue tracked by ratchet 2 (x86_64-include count); lands as the shared subsystems finish the arch.h migration. |
++| VFS / FAT32 / ext2 / TCP / GUI | 🚧 | Residue tracked by ratchet 2 (x86_64-include count); lands as the shared subsystems finish the arch.h migration. **RESIDUE3 C1 (2026-11-03):** the number is measured rather than implied — `tools/check_width_sweep.py` pins `BASELINE_X64_INCLUDES = 69` x86_64 includes outside `kernel/arch/` (was 80; the `portio.h`→`arch.h` batch paid 11). The row flips when that ratchet reads 0, and every batch that lowers it must lower the pin in the same commit. |
+ | Rust userspace / w32 / USB / BT / Wi-Fi | ❌ | Per plan §6: no `i686-unknown-none` target; w32 is PE32+ by design; USB et al. deferred. |
+ | UEFI (`BOOTIA32.EFI`) | ❌ by design | BIOS/CSM only on i386 (plan D2). |
+ 
+diff --git a/tools/check_plan_tables.py b/tools/check_plan_tables.py
+index 10b9c5c..0809ad4 100755
+--- a/tools/check_plan_tables.py
++++ b/tools/check_plan_tables.py
+@@ -538,8 +538,12 @@ def main(argv):
+               % (len(new), len(fixed), len(pin)))
+         return 1
+ 
+-    print("check_plan_tables: OK - %d pinned violation(s) match the tree "
+-          "(C1 drives this pin to zero)" % len(live))
++    if live:
++        print("check_plan_tables: OK - %d pinned violation(s) match the tree"
++              % len(live))
++    else:
++        print("check_plan_tables: OK - no violation reaches the tree "
++              "(the pin is empty; the next one is red)")
+     return 0
+ 
+ 
+diff --git a/tools/check_residue2_claims.py b/tools/check_residue2_claims.py
+index f139691..98b5c55 100644
+--- a/tools/check_residue2_claims.py
++++ b/tools/check_residue2_claims.py
+@@ -29,6 +29,24 @@ BOX_OPTIONAL = {"T0"}
+ 
+ PENDING_USER_ROWS = ["RES-30", "RES-32", "RES-33", "RES-48"]
+ 
++# RESIDUE2 is closed (2026-09-06).  Seven boxes it could not finish were
++# handed to the successor series: six T1 kernel boxes to RESIDUE3 C2 and
++# the T6 isochronous-streaming box to C5.  A box may therefore carry a
++# `(RESIDUE2 T#)` tag or a `(RESIDUE3 C#)` one, and a RESIDUE2 phase may
++# stand at zero boxes ONLY when the successor records the hand-off by
++# naming it (RESIDUE3_PLAN.md's C1 Result carries the literal tags).
++# The "a tag must not name a finished phase" half of the contract moved
++# with the debt: tools/check_plan_tables.py rule r2 enforces it, so the
++# two checkers tile the space instead of overlapping.
++TAG = re.compile(r"\((?:RESIDUE2 (T\d+)|RESIDUE3 (C\d+))\)")
++HANDOFF_PLAN = ("docs", "plans", "RESIDUE3_PLAN.md")
++
++
++def handed_off_phases():
++    """RESIDUE2 phase ids the successor plan records as handed over."""
++    plan = read(*HANDOFF_PLAN)
++    return {m.group(1) for m in re.finditer(r"\(RESIDUE2 (T\d+)\)", plan)}
++
+ 
+ def read(*parts):
+     try:
+@@ -89,28 +107,34 @@ def claims():
+     checks.append((
+         "todo: there is at least one open box to cover",
+         len(boxes) > 0))
+-    untagged = [(n, t) for n, t in boxes
+-                if not re.search(r"\(RESIDUE2 T\d+\)", t)]
++    untagged = [(n, t) for n, t in boxes if not TAG.search(t)]
+     checks.append((
+-        "coverage: every TODO box carries a (RESIDUE2 T#) tag "
+-        "(untagged: %s)" % [n for n, _ in untagged],
++        "coverage: every TODO box carries a (RESIDUE2 T#) or "
++        "(RESIDUE3 C#) tag (untagged: %s)" % [n for n, _ in untagged],
+         not untagged))
+-    multi = [(n, t) for n, t in boxes
+-             if len(re.findall(r"\(RESIDUE2 T\d+\)", t)) > 1]
++    multi = [(n, t) for n, t in boxes if len(TAG.findall(t)) > 1]
+     checks.append((
+         "coverage: no box carries two tags", not multi))
+ 
+     tags = {}
++    ctags = {}
+     for _, t in boxes:
+-        m = re.search(r"\(RESIDUE2 (T\d+)\)", t)
++        m = TAG.search(t)
+         if not m:
+             continue  # already counted by the untagged claim
+-        ph = m.group(1)
+-        tags[ph] = tags.get(ph, 0) + 1
++        if m.group(1):
++            tags[m.group(1)] = tags.get(m.group(1), 0) + 1
++        else:
++            ctags[m.group(2)] = ctags.get(m.group(2), 0) + 1
+     unknown = [ph for ph in tags if ph not in PHASE_ORDER]
+     checks.append((
+-        "coverage: every tagged phase is one of T0–T9 (found %s)"
++        "coverage: every RESIDUE2-tagged phase is one of T0–T9 (found %s)"
+         % unknown, not unknown))
++    r3_headings = re.findall(r"^### (C\d+) ", read(*HANDOFF_PLAN), re.M)
++    cunknown = [ph for ph in ctags if ph not in r3_headings]
++    checks.append((
++        "coverage: every RESIDUE3-tagged box names a phase the successor "
++        "plan actually has (unknown: %s)" % cunknown, not cunknown))
+ 
+     headings = re.findall(r"^### (T\d+) —", plan, re.M)
+     checks.append((
+@@ -131,13 +155,15 @@ def claims():
+     checks.append(("coverage: no tag points at a headless phase",
+                    not orphans))
+ 
++    handed = handed_off_phases()
+     for ph in PHASE_ORDER:
+         if ph in BOX_OPTIONAL:
+             continue
+-        ok = tags.get(ph, 0) > 0 or phase_section_names_ledger(plan, ph)
++        ok = (tags.get(ph, 0) > 0 or phase_section_names_ledger(plan, ph)
++              or ph in handed)
+         checks.append((
+-            "coverage: %s is tagged by ≥1 box or names its ledger rows"
+-            % ph, ok))
++            "coverage: %s is tagged by ≥1 box, names its ledger rows, or "
++            "is recorded as handed off to RESIDUE3" % ph, ok))
+ 
+     # --- the ledger pairs ---------------------------------------------
+     open_rows = re.findall(r"^\| (RES-\d\d) \| \w+ \| OPEN \|",
+@@ -145,10 +171,16 @@ def claims():
+     checks.append((
+         "ledger: there are OPEN rows to schedule (found %s)" % open_rows,
+         len(open_rows) > 0))
+-    unnamed = [r for r in open_rows if r not in plan]
++    # An OPEN row may now live in the successor series instead: RESIDUE3
++    # C1 opened RES-60 (isochronous streaming, its C5 target) while this
++    # plan is closed.  The rule is "every OPEN row has an owner plan",
++    # not "every OPEN row is ours" — the successor names it, so the debt
++    # is still machine-visible.
++    successor = read(*HANDOFF_PLAN)
++    unnamed = [r for r in open_rows if r not in plan and r not in successor]
+     checks.append((
+-        "plan: every OPEN ledger row is named in the plan (unnamed: %s)"
+-        % unnamed, not unnamed))
++        "plan: every OPEN ledger row is named here or in the successor "
++        "plan (unnamed: %s)" % unnamed, not unnamed))
+     pu_missing = [r for r in PENDING_USER_ROWS if r not in plan]
+     checks.append((
+         "plan: every PENDING-USER row is named in the plan's §4 "
+diff --git a/tools/check_residue_claims.py b/tools/check_residue_claims.py
+index db6b5e0..d53ef72 100644
+--- a/tools/check_residue_claims.py
++++ b/tools/check_residue_claims.py
+@@ -5,7 +5,7 @@ Seventh checker of the D8 family.  What is new here: the debt
+ RATCHET.  The harvester's per-file marker counts are pinned in
+ tools/residue_baseline.txt; any plan growing (or shedding) residue
+ markers without moving the baseline AND the ledger in the same
+-commit fails.  The ledger itself is arithmetic-checked: 48 rows,
++commit fails.  The ledger itself is arithmetic-checked: 61 rows,
+ sequential unique ids, class totals, status totals.
+ 
+ Usage:
+@@ -19,8 +19,8 @@ import sys
+ 
+ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ 
+-LEDGER_ROWS = 59
+-CLASS_PIN = {"W": 35, "M": 7, "N": 4, "S": 13}
++LEDGER_ROWS = 61
++CLASS_PIN = {"W": 36, "M": 8, "N": 4, "S": 13}
+ PHASE_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5", "R6",
+                "R7", "R8", "R9", "R10", "R11", "R12"]
+ 
+@@ -317,15 +317,23 @@ def claims():
+     # --- R12: close-out (when the plan says it landed) ------------------
+     if re.search(r"^### R12[^\n]*✅ COMPLETE", plan, re.M):
+         todo = read("TODO.md")
++        # Count the ROWS, not the string: the arithmetic prose below the
++        # table also names the status, and a substring count conflates the
++        # two.  The floor moves as successors close rows, each move
++        # recorded here in the same commit that moves it: R12 closed at
++        # seven (RES-11/12/36/38/39/46/47), GL2 L7 took RES-41 (DONE@L7),
++        # RESIDUE2 F7 took RES-46 (DONE@F7), and RESIDUE3 C1 flipped
++        # RES-38/39 (DONE@T6) and RES-47 (DONE@T7) — leaving three, all
++        # owned by RESIDUE3's C3 (RES-11/12) and C4 (RES-36).
++        r12_rows = len(re.findall(
++            r"^\| RES-\d\d \| \w \| HANDED-OFF@R12 \|", ledger, re.M))
+         checks.append((
+             "R12: the ledger is terminal — no row still promises "
+             "future work 'at R12', and every S hand-off carries a "
+             "measured opener",
+             "at R12" not in ledger and
+             ledger.count("OPENER, measured") >= 8 and
+-            # GL2 L7 closed RES-41 (DONE@L7), so seven remain: the R12
+-            # count is a floor, not a pin on the exact number.
+-            ledger.count("HANDED-OFF@R12") >= 7))
++            r12_rows >= 3))
+         checks.append((
+             "R12: TODO.md is kept IN FULL and annotated — the headline "
+             "note names the ledger as the index, the file kept its "
+diff --git a/tools/plan_tables_baseline.txt b/tools/plan_tables_baseline.txt
+index 2d1aa7d..62325d9 100644
+--- a/tools/plan_tables_baseline.txt
++++ b/tools/plan_tables_baseline.txt
+@@ -10,19 +10,9 @@
+ #
+ # Rule key: r1 orphan residue - r2 stale box tag - r3 closure claim -
+ #           r4 table drift
+-r2:TODO.md:IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (th
+-r2:TODO.md:Large-page support for selected kernel mappings. (RESIDUE2 T
+-r2:TODO.md:POSIX-completeness for `fork`/`execve`/`wait4` beyond what t
+-r2:TODO.md:Real isochronous STREAMING (narrowed 2026-09-06): frame-accu
+-r2:TODO.md:Real parent/child process table and precise `waitpid` semant
+-r2:TODO.md:SMP-safety sweep: atomic OFD refcounts, per-vnode write lock
+-r2:TODO.md:Wire it on for all reaped zombies once TLB shootdown + per-P
+-r3:RES-38
+-r3:RES-39
+-r3:RES-47
+-r4:RESIDUE2_PLAN.md:T7
+-r4:W32APP_PLAN.md:W32A-1
+-r4:W32APP_PLAN.md:W32A-12
+-r4:W32APP_PLAN.md:W32A-18
+-r4:W32APP_PLAN.md:W32A-2
+-r4:W32APP_PLAN.md:W32A-5
++#
++# BODY EMPTY since RESIDUE3 C1 (2026-11-03): the sixteen pinned
++# violations were all repaired - three ledger rows flipped, two plan
++# tables repaired, seven boxes re-tagged.  The file stays so the ratchet
++# keeps a home: the first new violation is red again, and the pin only
++# moves with a landed phase.
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index 02795d2..7b971b7 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -21,7 +21,7 @@ REALINTERNET2_PLAN.md 8
+ REALINTERNET_PLAN.md 8
+ REALTEK_PLAN.md 5
+ RESIDUE2_PLAN.md 21
+-RESIDUE3_PLAN.md 39
++RESIDUE3_PLAN.md 45
+ RISCV_PLAN.md 9
+ SDK_PLAN.md 0
+ SELFHOST_PLAN.md 1
+@@ -32,4 +32,4 @@ W32RUN_PLAN.md 7
+ WEBVIEW_PLAN.md 1
+ WIN32_PLAN.md 8
+ TODO.md 7
+-status-wip 6
++status-wip 5

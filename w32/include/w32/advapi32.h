@@ -77,7 +77,12 @@ typedef uint16_t W32_WCHAR;
 #define W32_ERROR_NO_TOKEN          1008u   /* OpenProcessToken: no token object */
 #define W32_ERROR_NOT_ALL_ASSIGNED  1300u   /* AdjustTokenPrivileges: nothing held */
 #define W32_ERROR_NONE_MAPPED       1332u   /* LookupAccountName: no account db */
-#define W32_ERROR_NO_SUCH_PRIVILEGE 1530u   /* LookupPrivilegeValue: no privilege db */
+#define W32_ERROR_NO_SUCH_PRIVILEGE 1313u   /* LookupPrivilegeValue: no privilege db.
+                                             * RESIDUE3 C8: this was 1530 -- a value
+                                             * Windows never defines, found by the live
+                                             * FAIL-CLEAN fixture comparing the code a
+                                             * real PE reads back.  1313 is
+                                             * ERROR_NO_SUCH_PRIVILEGE. */
 #define W32_ERROR_FILE_CORRUPT      1392u   /* hive: torn write / bad CRC */
 #define W32_ERROR_UNSUPPORTED_TYPE  1630u   /* RegGetValue: wrong value type */
 #define W32_ERROR_REGISTRY_IO_FAILED 1017u  /* hive write-through failed */

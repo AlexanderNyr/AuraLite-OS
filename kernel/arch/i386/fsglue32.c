@@ -45,7 +45,12 @@ void uart_putchar(char c)
     outb(COM1, (uint8_t)c);
 }
 
-void fb_putchar(char c)   { vga32_putc(c); }
+/* RESIDUE3 C3 / RES-11: fb_putchar USED to be a shim onto the VGA text
+ * console, because the i386 build had no framebuffer console to point at.
+ * It now has one -- drivers/framebuffer/fb.c is a KERNEL32_SHARED row, and
+ * the shared kprintf's fb sink links against the real glyph-drawing
+ * implementation.  Keeping the shim would be a duplicate symbol; keeping it
+ * under another name would be a second, divergent console. */
 void klog_putchar(char c) { (void)c; }
 
 /* ---- the heap names ext2.c links against ---------------------------- */

@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include "drivers/usb/hid.h"
+#include "drivers/usb/hid_report.h"   /* C5b: descriptors, with report IDs */
 #include "drivers/usb/usb_core.h"
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
@@ -24,41 +25,10 @@
 #define HID_REQ_SET_PROTOCOL    0x0B
 #define HID_BOOT_PROTOCOL       0x00
 
-#define HID_USAGE_PAGE_GENERIC  0x01
-#define HID_USAGE_PAGE_BUTTON   0x09
-#define HID_USAGE_PAGE_KEYBOARD 0x07
-#define HID_USAGE_MOUSE         0x02
-#define HID_USAGE_POINTER       0x01
-#define HID_USAGE_KEYBOARD      0x06
-#define HID_USAGE_X             0x30
-#define HID_USAGE_Y             0x31
-#define HID_USAGE_WHEEL         0x38
-
-#define HID_FIELD_MAX           32
+/* The usage-page constants, the field limit and HID_REPORT_DESC_MAX live in
+ * hid_report.h now (C5b): the parser is a module with its own host tests, and
+ * this file is one of its callers. */
 #define HID_REPORT_MAX          64
-#define HID_REPORT_DESC_MAX     256
-
-typedef struct {
-    uint16_t usage_page;
-    uint16_t usage;
-    uint16_t usage_min;
-    uint16_t usage_max;
-    uint16_t bit_offset;
-    uint8_t  size;
-    int32_t  logical_min;
-    int32_t  logical_max;
-    uint8_t  flags;
-} hid_field_t;
-
-typedef struct {
-    int is_mouse;
-    int is_keyboard;
-    int has_report_id;
-    uint8_t report_id;
-    uint16_t report_bits;
-    hid_field_t fields[HID_FIELD_MAX];
-    uint8_t field_count;
-} hid_report_parser_t;
 
 typedef struct {
     int          in_use;
@@ -75,7 +45,7 @@ typedef struct {
     uint8_t      last_key_count;
     int          generic;  /* 0=boot, 1=generic pointer, 2=generic keyboard */
     int          logged_first; /* first pointer report already printed */
-    hid_report_parser_t parser;
+    hid_report_t parser;
 } hid_dev_t;
 
 static hid_dev_t hid_devs[USB_HID_MAX_DEVICES];
@@ -104,143 +74,11 @@ static int hid_get_report_descriptor(usb_device_t *dev, uint8_t iface,
     return usb_control_transfer(dev, &setup, buf, len);
 }
 
-static int32_t sign_extend(uint32_t v, uint8_t bits) {
-    if (bits == 0 || bits >= 32) return (int32_t)v;
-    uint32_t sign = 1u << (bits - 1);
-    if (v & sign) v |= (~0u << bits);
-    return (int32_t)v;
-}
-
-static uint32_t get_bits(const uint8_t *buf, uint16_t bit, uint8_t size) {
-    uint32_t v = 0;
-    for (uint8_t i = 0; i < size && i < 32; i++) {
-        uint16_t b = bit + i;
-        if (buf[b >> 3] & (1u << (b & 7))) v |= (1u << i);
-    }
-    return v;
-}
-
-static int32_t get_field_value(const uint8_t *buf, const hid_field_t *f) {
-    uint32_t raw = get_bits(buf, f->bit_offset, f->size);
-    if (f->logical_min < 0) return sign_extend(raw, f->size);
-    return (int32_t)raw;
-}
-
-static int item_sdata(const uint8_t *p, int size) {
-    if (size == 0) return 0;
-    if (size == 1) return (int8_t)p[0];
-    if (size == 2) return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-    return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
-}
-static uint32_t item_udata(const uint8_t *p, int size) {
-    if (size == 0) return 0;
-    if (size == 1) return p[0];
-    if (size == 2) return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
-static int parse_hid_report(hid_report_parser_t *rp, const uint8_t *d, uint16_t len) {
-    memset(rp, 0, sizeof(*rp));
-    uint16_t usage_page = 0;
-    int32_t logical_min = 0, logical_max = 1;
-    uint8_t report_size = 0, report_count = 0, report_id = 0;
-    uint16_t bitpos = 0;
-    uint16_t usages[32];
-    uint8_t usage_count = 0;
-    uint16_t usage_min = 0, usage_max = 0;
-    int have_range = 0;
-    int mouse_collection = 0;
-
-    for (uint16_t off = 0; off < len;) {
-        uint8_t b = d[off++];
-        if (b == 0xFE) { if (off + 2 > len) break; uint8_t n = d[off]; off += 2 + n; continue; }
-        int sz = b & 3; if (sz == 3) sz = 4;
-        int type = (b >> 2) & 3;
-        int tag = (b >> 4) & 0xF;
-        if (off + sz > len) break;
-        const uint8_t *payload = d + off;
-        uint32_t uval = item_udata(payload, sz);
-        int32_t sval = item_sdata(payload, sz);
-        off += sz;
-
-        if (type == 1) { /* global */
-            switch (tag) {
-            case 0x0: usage_page = (uint16_t)uval; break;
-            case 0x1: logical_min = sval; break;
-            case 0x2: logical_max = sval; break;
-            case 0x7: report_size = (uint8_t)uval; break;
-            case 0x8:
-                report_id = (uint8_t)uval;
-                rp->has_report_id = 1;
-                rp->report_id = report_id;
-                bitpos = 8;
-                break;
-            case 0x9: report_count = (uint8_t)uval; break;
-            default: break;
-            }
-        } else if (type == 2) { /* local */
-            switch (tag) {
-            case 0x0:
-                if (usage_count < 32) usages[usage_count++] = (uint16_t)uval;
-                if (usage_page == HID_USAGE_PAGE_GENERIC &&
-                    (uval == HID_USAGE_MOUSE || uval == HID_USAGE_POINTER))
-                    rp->is_mouse = 1;
-                if (usage_page == HID_USAGE_PAGE_GENERIC && uval == HID_USAGE_KEYBOARD)
-                    rp->is_keyboard = 1;
-                break;
-            case 0x1: usage_min = (uint16_t)uval; have_range = 1; break;
-            case 0x2: usage_max = (uint16_t)uval; have_range = 1; break;
-            default: break;
-            }
-        } else if (type == 0) { /* main */
-            if (tag == 0xA) { /* Collection */
-                if (usage_page == HID_USAGE_PAGE_GENERIC && usage_count &&
-                    (usages[usage_count - 1] == HID_USAGE_MOUSE ||
-                     usages[usage_count - 1] == HID_USAGE_POINTER))
-                    mouse_collection++;
-                usage_count = 0; have_range = 0;
-            } else if (tag == 0xC) {
-                if (mouse_collection > 0) mouse_collection--;
-            } else if (tag == 0x8) { /* Input */
-                uint8_t flags = (uint8_t)uval;
-                for (uint8_t i = 0; i < report_count; i++) {
-                    uint16_t usage = 0;
-                    if (i < usage_count) usage = usages[i];
-                    else if (have_range && usage_min + i <= usage_max) usage = usage_min + i;
-                    if (!(flags & 0x01) && rp->field_count < HID_FIELD_MAX) {
-                        hid_field_t *f = &rp->fields[rp->field_count++];
-                        f->usage_page = usage_page;
-                        f->usage = usage;
-                        f->usage_min = have_range ? usage_min : usage;
-                        f->usage_max = have_range ? usage_max : usage;
-                        f->bit_offset = bitpos;
-                        f->size = report_size;
-                        f->logical_min = logical_min;
-                        f->logical_max = logical_max;
-                        f->flags = flags;
-                        if (usage_page == HID_USAGE_PAGE_GENERIC &&
-                            (usage == HID_USAGE_X || usage == HID_USAGE_Y || usage == HID_USAGE_WHEEL))
-                            rp->is_mouse = 1;
-                        if (usage_page == HID_USAGE_PAGE_BUTTON) rp->is_mouse = 1;
-                        if (usage_page == HID_USAGE_PAGE_KEYBOARD) rp->is_keyboard = 1;
-                    }
-                    bitpos += report_size;
-                }
-                usage_count = 0; have_range = 0;
-            } else if (tag == 0x9 || tag == 0xB) { /* Output/Feature */
-                bitpos += (uint16_t)report_size * report_count;
-                usage_count = 0; have_range = 0;
-            }
-        }
-    }
-    rp->report_bits = bitpos;
-    return ((rp->is_mouse || rp->is_keyboard) && rp->field_count > 0) ? 0 : -1;
-}
-
-static int report_contains_key(const uint8_t *report, uint8_t usage) {
-    for (int i = 2; i < 8; i++) if (report[i] == usage) return 1;
+/* Boot-protocol report layout: byte 2..9 are held keys, byte 0 is modifiers.
+ * (Generic reports use the descriptor parser instead; this helper stayed here
+ * with the boot decoder when the parser moved out to hid_report.c.) */
+static int report_contains_key(const uint8_t *r, uint8_t usage) {
+    for (uint8_t i = 2; i < 8; i++) if (r[i] == usage) return 1;
     return 0;
 }
 
@@ -284,19 +122,27 @@ static int key_array_contains(const uint8_t *arr, uint8_t n, uint8_t usage) {
     return 0;
 }
 
+
 static void process_generic_keyboard_report(hid_dev_t *h, const uint8_t *r, uint32_t len) {
-    hid_report_parser_t *rp = &h->parser;
-    if (rp->has_report_id) {
-        if (len == 0 || r[0] != rp->report_id) return;
-    }
+    hid_report_t *rp = &h->parser;
+    /* C5b: split the report-ID prefix off first, then decode against the
+     * fields of THAT report only.  The old code compared the incoming ID with
+     * the single ID the descriptor declared last, so on a two-ID device it
+     * dropped report 1 entirely (or, worse, decoded it with report 2's
+     * layout). */
+    uint32_t body_len = 0;
+    uint8_t rid = 0;
+    const uint8_t *body = hid_report_body(rp, r, len, &body_len, &rid);
+    if (!body || body_len == 0) return;
     uint8_t mods = 0;
     uint8_t keys[16];
     uint8_t key_count = 0;
 
     for (uint8_t i = 0; i < rp->field_count; i++) {
-        hid_field_t *f = &rp->fields[i];
+        hid_report_field_t *f = &rp->fields[i];
+        if (f->report_id != rid) continue;
         if (f->usage_page != HID_USAGE_PAGE_KEYBOARD) continue;
-        int32_t v = get_field_value(r, f);
+        int32_t v = hid_report_field_value(body, f);
         if ((f->flags & 0x02) && f->usage >= 0xE0 && f->usage <= 0xE7) {
             if (v) mods |= (uint8_t)(1u << (f->usage - 0xE0));
         } else if (!(f->flags & 0x02)) {
@@ -330,17 +176,19 @@ static void process_generic_keyboard_report(hid_dev_t *h, const uint8_t *r, uint
 }
 
 static void process_generic_mouse_report(hid_dev_t *h, const uint8_t *r, uint32_t len) {
-    hid_report_parser_t *rp = &h->parser;
-    if (rp->has_report_id) {
-        if (len == 0 || r[0] != rp->report_id) return;
-    }
+    hid_report_t *rp = &h->parser;
+    uint32_t body_len = 0;
+    uint8_t rid = 0;
+    const uint8_t *body = hid_report_body(rp, r, len, &body_len, &rid);
+    if (!body || body_len == 0) return;
     uint8_t buttons = 0;
     int have_x = 0, have_y = 0, rel = 0;
     int32_t x = 0, y = 0, wheel = 0;
     int32_t xmin = 0, xmax = 32767, ymin = 0, ymax = 32767;
     for (uint8_t i = 0; i < rp->field_count; i++) {
-        hid_field_t *f = &rp->fields[i];
-        int32_t v = get_field_value(r, f);
+        hid_report_field_t *f = &rp->fields[i];
+        if (f->report_id != rid) continue;
+        int32_t v = hid_report_field_value(body, f);
         if (f->usage_page == HID_USAGE_PAGE_BUTTON && f->usage >= 1 && f->usage <= 8) {
             if (v) buttons |= (uint8_t)(1u << (f->usage - 1));
         } else if (f->usage_page == HID_USAGE_PAGE_GENERIC && f->usage == HID_USAGE_X) {
@@ -459,10 +307,19 @@ static int add_hid_device(usb_device_t *dev) {
     if (rlen == 0 || rlen > HID_REPORT_DESC_MAX) rlen = HID_REPORT_DESC_MAX;
     memset(desc, 0, sizeof(desc));
     if (hid_get_report_descriptor(dev, h->interface_number, desc, rlen) >= 0 &&
-        parse_hid_report(&h->parser, desc, rlen) == 0) {
+        hid_report_parse(&h->parser, desc, rlen) == 0) {
         parsed = 1;
-        uint16_t bytes = (h->parser.report_bits + 7) / 8;
+        uint16_t bytes = hid_report_wire_len(&h->parser);
         if (bytes > 0 && bytes < HID_REPORT_MAX) h->report_len = bytes;
+        /* Cross-check against the endpoint.  A device is free to allocate a
+         * larger wMaxPacketSize than its descriptor needs (QEMU's tablet asks
+         * for 8 and sends 6), so only the failing direction is notable: a
+         * descriptor that claims more input than one packet can carry would
+         * silently truncate every report.  Measured at C5b: kbd 8/8,
+         * mouse 4/4, tablet 6 of 8. */
+        if (dev->interrupt_max_packet && bytes > dev->interrupt_max_packet)
+            kprintf("[hid] note: addr %d descriptor wire length %u > endpoint maxpkt %u\n",
+                    dev->address, (unsigned)bytes, (unsigned)dev->interrupt_max_packet);
         if (h->parser.is_keyboard) {
             h->generic = 2;
             kind = "keyboard";
@@ -470,9 +327,21 @@ static int add_hid_device(usb_device_t *dev) {
             h->generic = 1;
             kind = (dev->interface_protocol == HID_PROTO_MOUSE) ? "mouse" : "generic-mouse";
         }
-        kprintf("[hid] parsed generic %s report: fields=%u bits=%u report_id=%u\n",
+        /* C5b receipt: name the report IDs the descriptor declared, not just
+         * the one a single-value parser happened to end on.  A descriptor with
+         * no Report ID item reports "none" -- its slot 0 is synthetic and
+         * saying "report_id(s)=1 (0)" would read like a declared ID 0. */
+        kprintf("[hid] parsed generic %s report: fields=%u input_bits=%u ",
                 h->parser.is_keyboard ? "keyboard" : "pointer",
-                h->parser.field_count, h->parser.report_bits, h->parser.report_id);
+                h->parser.field_count, h->parser.report_bits_max);
+        if (!h->parser.has_report_id) {
+            kprintf("report_id=none\n");
+        } else {
+            kprintf("report_id(s)=%u", (unsigned)h->parser.report_id_count);
+            for (uint8_t ri = 0; ri < h->parser.report_id_count; ri++)
+                kprintf("%s%u", ri ? "," : " (", h->parser.report_ids[ri]);
+            kprintf(")\n");
+        }
     }
 
     if (!parsed) {
@@ -496,10 +365,162 @@ static int add_hid_device(usb_device_t *dev) {
     }
 
     hid_count++;
-    kprintf("[hid] %s ready: addr=%d iface=%d ep=0x%02x maxpkt=%u interval=%ums\n",
+    /* Report both numbers: the length we poll with (from the descriptor when
+     * it parsed, from the endpoint otherwise) and the endpoint's own capacity.
+     * Printing one number called it "maxpkt" and hid which was which. */
+    kprintf("[hid] %s ready: addr=%d iface=%d ep=0x%02x poll_len=%u ep_maxpkt=%u interval=%ums\n",
             kind, dev->address, h->interface_number, h->ep_in,
-            (unsigned)h->report_len, (unsigned)h->interval_ms);
+            (unsigned)h->report_len, (unsigned)dev->interrupt_max_packet,
+            (unsigned)h->interval_ms);
     return 0;
+}
+
+/* ---------------------------------------------------------------------------
+ * RESIDUE3 C5b selftest: report IDs.
+ *
+ * WHY A SELFTEST AND NOT JUST A DEVICE CASE.
+ *
+ * The host unit test (tests/unit/test_usb_hid_report.c) covers the parser
+ * against eight descriptors, including two-ID ones.  What it cannot show is
+ * that the *kernel build* reaches those code paths: drivers/usb/hid_report.c
+ * is compiled twice (host, freestanding kernel) and the kernel copy could in
+ * principle differ.  It also cannot show that the driver's contract -- body
+ * after the prefix, fields addressed per report -- holds for descriptors the
+ * kernel actually parses at boot.
+ *
+ * Why not a device: as of QEMU 8 none of usb-kbd, usb-mouse, usb-tablet or
+ * usb-wacom-tablet declares a Report ID item.  Dumping the descriptors these
+ * three devices really send (C5b measurement) shows zero `0x85` items, so a
+ * "multi-report-ID device" case on stock QEMU would be a test of nothing.
+ * The descriptors below are therefore carried in the kernel, and the real
+ * devices are asserted a different way: the parsed input length must equal
+ * the endpoint's wMaxPacketSize, which is checked on every attach.
+ * ------------------------------------------------------------------------ */
+static const uint8_t hid_st_2id_desc[] = {
+    0x05, 0x01,        /* Usage Page (Generic Desktop) */
+    0x09, 0x06,        /* Usage (Keyboard) */
+    0xA1, 0x01,        /* Collection (Application) */
+    0x85, 0x01,        /*   Report ID (1) */
+    0x05, 0x07,        /*   Usage Page (Keyboard) */
+    0x19, 0xE0, 0x29, 0xE7,       /*   Usage Min/Max (modifiers) */
+    0x15, 0x00, 0x25, 0x01,       /*   Logical Min/Max */
+    0x75, 0x01, 0x95, 0x08,       /*   Report Size 1, Count 8 */
+    0x81, 0x02,                   /*   Input (Data,Var,Abs) */
+    0x95, 0x01, 0x75, 0x08, 0x81, 0x01,  /* 1 reserved byte */
+    0x95, 0x06, 0x75, 0x08,
+    0x15, 0x00, 0x25, 0x65,
+    0x05, 0x07, 0x19, 0x00, 0x29, 0x65,
+    0x81, 0x00,                   /*   Input (Data,Array) */
+    0x85, 0x02,        /*   Report ID (2) */
+    0x05, 0x0C,        /*   Usage Page (Consumer) */
+    0x0A, 0xE9, 0x00,             /*   Usage (Volume Increment) */
+    0x15, 0x00, 0x25, 0x01,
+    0x75, 0x01, 0x95, 0x01,
+    0x81, 0x02,                   /*   Input (Data,Var,Abs) */
+    0x0A, 0xEA, 0x00, 0x81, 0x02, /*   Usage (Volume Decrement) */
+    0x0A, 0xE2, 0x00, 0x81, 0x02, /*   Usage (Mute) */
+    0x0A, 0xCD, 0x00, 0x81, 0x02, /*   Usage (Play/Pause) */
+    0xC0,              /* End Collection */
+};
+
+/* QEMU's usb-kbd descriptor, byte for byte (measured, C5b): no Report ID, and
+ * an LED output report between two input items.  The output bits must not be
+ * folded into the input length -- that was the bug the host test now pins. */
+static const uint8_t hid_st_kbd_desc[] = {
+    0x05, 0x01, 0x09, 0x06, 0xA1, 0x01, 0x75, 0x01, 0x95, 0x08, 0x05, 0x07,
+    0x19, 0xE0, 0x29, 0xE7, 0x15, 0x00, 0x25, 0x01, 0x81, 0x02, 0x95, 0x01,
+    0x75, 0x08, 0x81, 0x01, 0x95, 0x05, 0x75, 0x01, 0x05, 0x08, 0x19, 0x01,
+    0x29, 0x05, 0x91, 0x02, 0x95, 0x01, 0x75, 0x03, 0x91, 0x01, 0x95, 0x06,
+    0x75, 0x08, 0x15, 0x00, 0x25, 0xFF, 0x05, 0x07, 0x19, 0x00, 0x29, 0xFF,
+    0x81, 0x00, 0xC0,
+};
+
+static int hid_selftest_fail;
+
+static void hid_st_check(int ok, const char *what) {
+    if (!ok) {
+        hid_selftest_fail++;
+        kprintf("[hid] selftest: FAIL %s\n", what);
+    }
+}
+
+void usb_hid_report_selftest(void) {
+    static hid_report_t r;
+    hid_selftest_fail = 0;
+
+    /* --- one descriptor, two report IDs ------------------------------- */
+    if (hid_report_parse(&r, hid_st_2id_desc, sizeof(hid_st_2id_desc)) != 0) {
+        kprintf("[hid] selftest: FAIL two-ID descriptor did not parse\n");
+        return;
+    }
+    kprintf("[hid] selftest: two-ID descriptor -> ids=%u (",
+            (unsigned)r.report_id_count);
+    for (uint8_t i = 0; i < r.report_id_count; i++)
+        kprintf("%s%u", i ? "," : "", r.report_ids[i]);
+    kprintf(") input bits: r1=%u r2=%u wire=%u\n",
+            (unsigned)hid_report_bits(&r, 1), (unsigned)hid_report_bits(&r, 2),
+            (unsigned)hid_report_wire_len(&r));
+    hid_st_check(r.report_id_count == 2, "two report IDs declared");
+    hid_st_check(hid_report_bits(&r, 1) == 64, "report 1 is 8 bytes of input");
+    hid_st_check(hid_report_bits(&r, 2) == 4, "report 2 is four 1-bit inputs");
+    hid_st_check(hid_report_wire_len(&r) == 9, "wire length = 8 + ID byte");
+
+    /* --- the split: report 1 keeps its 8-byte body -------------------- */
+    uint8_t rep1[9] = { 0x01, 0x02, 0x00, 0x04, 0, 0, 0, 0, 0 }; /* LShift + 'a' */
+    uint32_t blen = 0; uint8_t rid = 0;
+    const uint8_t *body = hid_report_body(&r, rep1, sizeof(rep1), &blen, &rid);
+    hid_st_check(body != NULL && blen == 8 && rid == 1, "report 1 body after prefix");
+    if (body) {
+        /* Modifier LShift is bit 1 of the body; 'a' (0x04) is key slot 0,
+         * i.e. body bits 16..23 -> body byte 2. */
+        int32_t mod = 0, key = 0;
+        for (uint8_t i = 0; i < r.field_count; i++) {
+            hid_report_field_t *f = &r.fields[i];
+            if (f->report_id != 1 || f->usage_page != HID_USAGE_PAGE_KEYBOARD) continue;
+            int32_t v = hid_report_field_value(body, f);
+            if ((f->flags & 0x02) && f->usage == 0xE1) mod = v;
+            if (!(f->flags & 0x02) && v == 0x04) key = v;
+        }
+        hid_st_check(mod == 1, "LShift decoded from report 1 body bit 1");
+        hid_st_check(key == 0x04, "'a' keycode read from the array field");
+    }
+
+    /* --- report 2 is a different layout and must not decode as keys ---- */
+    uint8_t rep2[2] = { 0x02, 0x05 };   /* ID 2: mute=1, vol+=0 */
+    body = hid_report_body(&r, rep2, sizeof(rep2), &blen, &rid);
+    hid_st_check(body != NULL && blen == 1 && rid == 2, "report 2 body after prefix");
+    if (body) {
+        int32_t mute = -1;
+        for (uint8_t i = 0; i < r.field_count; i++) {
+            hid_report_field_t *f = &r.fields[i];
+            if (f->report_id != 2) continue;
+            if (f->usage == 0xE2) mute = hid_report_field_value(body, f);
+        }
+        hid_st_check(mute == 1, "Mute bit read from report 2, not from report 1");
+    }
+
+    /* --- a report ID the descriptor never declared is not a report ----- */
+    uint8_t rep9[4] = { 0x09, 0x01, 0x02, 0x03 };
+    rid = 0x7F; blen = 0;
+    hid_st_check(hid_report_body(&r, rep9, sizeof(rep9), &blen, &rid) == NULL,
+                 "unknown report ID rejected");
+    hid_st_check(blen == 0 && rid == 0, "rejection clears body length and ID");
+
+    /* --- QEMU keyboard shape: output bits are not input bits ---------- */
+    if (hid_report_parse(&r, hid_st_kbd_desc, sizeof(hid_st_kbd_desc)) != 0) {
+        kprintf("[hid] selftest: FAIL QEMU-shaped descriptor did not parse\n");
+        return;
+    }
+    kprintf("[hid] selftest: QEMU-shaped keyboard -> report_id=%s input bits=%u wire=%u\n",
+            r.has_report_id ? "yes" : "none", (unsigned)r.report_bits_max,
+            (unsigned)hid_report_wire_len(&r));
+    hid_st_check(r.report_bits_max == 64, "8 mods + 1 reserved + 6 keys = 64 bits");
+    hid_st_check(hid_report_wire_len(&r) == 8, "LED output bits not folded in");
+
+    if (hid_selftest_fail == 0)
+        kprintf("[hid] selftest: PASS report-ID split and per-report decoding\n");
+    else
+        kprintf("[hid] selftest: FAIL %d check(s)\n", hid_selftest_fail);
 }
 
 int usb_hid_attach_device(void *usb_dev) {
@@ -512,6 +533,7 @@ int usb_hid_init(void) {
     memset(hid_devs, 0, sizeof(hid_devs));
     hid_count = 0;
     kprintf("[hid] initialising USB HID keyboard/mouse driver...\n");
+    usb_hid_report_selftest();
     for (int i = 0; i < USB_MAX_DEVICES; i++) {
         usb_device_t *dev = &usb_devices[i];
         if (!dev->in_use || dev->interface_class != USB_CLASS_HID) continue;

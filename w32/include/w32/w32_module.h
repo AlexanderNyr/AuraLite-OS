@@ -48,16 +48,39 @@
  * value the program can fabricate must not be dereferenceable. */
 typedef void *W32_HMODULE;
 
-#define W32_MODULE_MAX      64   /* built-ins plus loaded files.
+#define W32_MODULE_MAX      256  /* built-ins plus loaded files.
                                  * 16 died in W32A-1: the stub-module
                                  * registration alone fills 20, and a full
-                                 * table fails every file load silently. */
+                                 * table fails every file load silently.
+                                 * RESIDUE3 C8 raised it from 64 to 256 by
+                                 * measurement: Audacity 3.7.5's bundle is
+                                 * 117 DLLs on top of the 21 built-ins, and a
+                                 * 64-slot table refuses the graph at the 44th
+                                 * load.  256 leaves room for the plugins a
+                                 * real bundle pulls in without pretending
+                                 * there is no limit at all -- the table is
+                                 * static, and an unbounded one is a
+                                 * different design (a growable module list)
+                                 * that nothing here needs yet. */
 #define W32_MODULE_NAME_MAX 64
 
-/* W32A-1: a dependency chain (exe -> A -> B -> ...) stops here.  Deeper
- * than any ladder chain (two: an exe plus one DLL), shallow enough that a
- * malicious cycle-that-is-not-quite-a-cycle cannot recurse usefully. */
-#define W32_LOAD_DEPTH_MAX   8
+/* How many distinct DLLs one image may hold open.  Decoupled from
+ * W32_MODULE_MAX in RESIDUE3 C8: tied to the slot count it would cost
+ * 256 slots x 1 KiB of ints, and it silently dropped the 33rd hold
+ * (`if (nholds >= W32_MODULE_MAX) continue`), which is a use-after-free
+ * waiting to happen rather than a limit.  Audacity.exe imports 34 modules
+ * from one image. */
+#define W32_MODULE_HOLDS_MAX 128
+
+/* W32A-1: a dependency chain (exe -> A -> B -> ...) stops here.
+ *
+ * RESIDUE3 C8 raised it from 8 to 32 by the bundle's shape, not by taste: a
+ * wxWidgets application's graph (exe -> wxmsw313u_core -> lib-* -> vcruntime)
+ * is deeper than the two-node ladder chain W32A-1 measured, and 8 named a
+ * refusal on a graph that is only four levels deep.  32 is still a bound: the
+ * cycle guard is the real protection, and the depth ceiling stays as the
+ * backstop that makes a non-cycle-but-runaway chain terminate. */
+#define W32_LOAD_DEPTH_MAX   32
 
 /* Documented error codes this layer reports through w32_set_last_error(). */
 #define W32_ERROR_MOD_NOT_FOUND   126u

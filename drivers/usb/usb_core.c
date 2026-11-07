@@ -184,12 +184,58 @@ int usb_isochronous_transfer(usb_device_t *dev, uint8_t endpoint,
         ret = ehci_bulk_transfer(dev->address, endpoint, data, len, is_in, dev->isoc_max_packet ? dev->isoc_max_packet : 1024);
         break;
     case USB_CTRL_XHCI:
-        ret = xhci_bulk_transfer(dev->address, endpoint, data, len, is_in, dev->isoc_max_packet ? dev->isoc_max_packet : 1024);
+        /* C5: this used to be xhci_bulk_transfer() -- a BULK transfer for an
+         * isochronous endpoint, i.e. the one thing an isoc endpoint may not
+         * be driven with.  xhci_isochronous_transfer() exists (U9 fixed its
+         * TRB type) and was never called from here. */
+        ret = xhci_isochronous_transfer(dev->address, endpoint, low_speed, max_pkt,
+                                        data, len, is_in);
         break;
     }
     if (ret >= 0 && transferred) *transferred = (uint32_t)ret;
     else if (transferred) *transferred = len;
     return ret;
+}
+
+int usb_isochronous_stream(usb_device_t *dev, uint8_t endpoint,
+                           uint32_t packet_bytes, void *data, uint32_t len,
+                           uint32_t *packets_out) {
+    if (packets_out) *packets_out = 0;
+    if (!dev || !data || len == 0) return -1;
+    if (dev->controller == USB_CTRL_XHCI) {
+        uint32_t frames = 0;
+        int r = xhci_isoc_stream(dev->address, endpoint,
+                                 dev->isoc_max_packet ? dev->isoc_max_packet
+                                                      : (uint16_t)packet_bytes,
+                                 data, len, packet_bytes, &frames);
+        if (r < 0) return -1;
+        if (packets_out) *packets_out = frames;
+        return 0;
+    }
+    /* No frame-scheduled path on this controller (yet): drive the packets
+     * one at a time through the single-transfer path and say so once, so a
+     * caller cannot mistake this for the real thing. */
+    static int warned;
+    if (!warned) {
+        warned = 1;
+        kprintf("[isoc] note: controller %d has no frame-scheduled stream path; "
+                "packets are issued one at a time (xHCI has one)\n",
+                (int)dev->controller);
+    }
+    uint32_t npkts = packet_bytes ? len / packet_bytes : 1;
+    if (npkts == 0) npkts = 1;
+    uint32_t done = 0;
+    for (uint32_t i = 0; i < npkts; i++) {
+        uint32_t off = i * packet_bytes;
+        uint32_t cur = packet_bytes;
+        if (off + cur > len) cur = len - off;
+        uint32_t t = 0;
+        if (usb_isochronous_transfer(dev, endpoint, (uint8_t *)data + off, cur, &t) < 0)
+            break;
+        done++;
+    }
+    if (packets_out) *packets_out = done;
+    return done ? 0 : -1;
 }
 
 int usb_get_sync_frame(usb_device_t *dev, uint8_t endpoint, uint16_t *frame) {
@@ -810,7 +856,17 @@ int usb_enumerate_all(void) {
     }
     for (int p = 0; p < EHCI_MAX_PORTS && found < USB_MAX_DEVICES; p++) {
         if (!ehci_port_has_device(p)) continue;
-        if (enumerate_device(USB_CTRL_EHCI, p, USB_SPEED_HIGH) == 0) found++;
+        /* C5b: ask the port what it is attached to.  This used to say HIGH
+         * unconditionally, so a full-speed device on an EHCI root port was
+         * enumerated as high-speed -- and its interrupt queue head (eps field)
+         * was built for the wrong speed. */
+        usb_speed_t espeed = USB_SPEED_HIGH;
+        switch (ehci_port_speed_code(p)) {
+        case 0: espeed = USB_SPEED_FULL; break;
+        case 1: espeed = USB_SPEED_LOW;  break;
+        default: espeed = USB_SPEED_HIGH; break;
+        }
+        if (enumerate_device(USB_CTRL_EHCI, p, espeed) == 0) found++;
         else kprintf("[usb] EHCI port %d: enumeration failed\n", p);
     }
     for (int p = 0; p < XHCI_MAX_PORTS && found < USB_MAX_DEVICES; p++) {

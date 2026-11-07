@@ -1134,11 +1134,25 @@ start:
     call GetMonitorInfoW
     test eax, eax
     jz   .f_monitor
-    mov  eax, [mi+8]                       ; rcMonitor.right
-    cmp  eax, [rect+0]
+    ; MONITORINFO's layout: cbSize +0, rcMonitor {left +4, top +8, right +12,
+    ; bottom +16}, rcWork, dwFlags.  This block used to read +8 and +12 and
+    ; call them right/bottom, then compare them with the CLIENT rect's left
+    ; and top -- an assertion that could only pass by coincidence, and did not
+    ; (A5-MONITOR-FAIL, rcMonitor.right 1024 vs client left 0).  What the
+    ; section means to say is that the monitor is the whole screen and starts
+    ; at the origin, so it is compared against the metrics the same program
+    ; can read: SM_CXSCREEN / SM_CYSCREEN.
+    cmp  dword [mi+4], 0                   ; rcMonitor.left
     jne  .f_monitor
-    mov  eax, [mi+12]                      ; rcMonitor.bottom
-    cmp  eax, [rect+4]
+    cmp  dword [mi+8], 0                   ; rcMonitor.top
+    jne  .f_monitor
+    mov  ecx, SM_CXSCREEN                  ; the screen width the same program
+    call GetSystemMetrics                  ; can read, not the client rect
+    cmp  eax, [mi+12]                      ; rcMonitor.right
+    jne  .f_monitor
+    mov  ecx, SM_CYSCREEN
+    call GetSystemMetrics
+    cmp  eax, [mi+16]                      ; rcMonitor.bottom
     jne  .f_monitor
     lea  rsi, [m_monitor]
     mov  edi, m_monitor_l

@@ -749,12 +749,24 @@ note below).
 
 #### Tasks
 
-- [x] **VGA text console** (`vga32.c`), not VBE: Stage 2's 32-bit path
-      sets no video mode, so the machine is in text mode 3 — 80×25 at
+- [x] **VGA text console** (`vga32.c`) — the FALLBACK now: 80×25 at
       `0xB8000` through the direct map, scroll/cursor/backspace.
       `kprintf32` fans out to UART + VGA, the two-sink shape of the
-      64-bit kprintf.  **VBE graphics are I8 residue**: a bring-up
-      console wants the zero-mode-set path, and text mode is it.
+      64-bit kprintf.
+- [x] **VBE framebuffer console** (RESIDUE3 C3, 2026-11-04) — the I8
+      residue this row used to name.  Stage 2 sets 1024×768×32 with
+      `LIN_FA` (`boot/bios/stage2/vbe.inc`) and fills `boot_info_t.fb`;
+      the 32-bit kernel maps the LFB into a device-memory window
+      (`fbmap32.c`, `0xFE000000`) and draws with the SHARED
+      `drivers/framebuffer/fb.c` + `psf.c` + `graphics.c`, which are now
+      `KERNEL32_SHARED` rows.  `kprintf32` prefers the framebuffer and
+      keeps VGA text as the fallback for a machine whose BIOS has no VBE
+      mode.  Receipts: `[boot] framebuffer console online (1024x768x32,
+      pitch 4096, 128x48 cells at fe000000)`, a 1024×768 monitor
+      screendump, and `test_i386_vbe.sh` (14/14).
+      **Remaining residue, named: the 32-bit COMPOSITOR** (`wm.c`/`gui.c`
+      link, RESIDUE3 C3b) — the files compile at 32 bits with zero errors
+      but need the x86_64 process/scheduler/mouse surface.
 - [x] **PS/2 keyboard** (`kbd32.c`): IRQ 1, scancode set 1, US map,
       shift — the one modifier a shell cannot live without.  One input
       ring, two producers (PS/2 + polled UART RX), so serial and

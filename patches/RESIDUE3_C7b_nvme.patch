@@ -1,0 +1,1567 @@
+diff --git a/Makefile b/Makefile
+index 5e0eb84..24837b3 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3787,6 +3787,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_usb_msc_csw \
+                 $(BUILD_DIR)/test_bt_transport \
+                 $(BUILD_DIR)/test_tcp_wscale \
++                $(BUILD_DIR)/test_nvme_proto \
+                 $(BUILD_DIR)/test_cow \
+                 $(BUILD_DIR)/test_slab \
+                 $(BUILD_DIR)/test_virgl \
+@@ -5618,6 +5619,12 @@ $(BUILD_DIR)/test_tcp_wscale: tests/unit/test_tcp_wscale.c \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# RESIDUE3 C7b: NVMe queue/command encoding (the silent-death half).
++$(BUILD_DIR)/test_nvme_proto: tests/unit/test_nvme_proto.c \
++                              drivers/nvme/nvme_proto.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/TODO.md b/TODO.md
+index 0268cb1..17f2ab3 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -862,7 +862,7 @@ that — so the parked lx items stay bullets, not boxes):
+ - [x] Add baseline file timestamps for VFS stat plus tmpfs, diskfs, ext2 and FAT32. Remaining permission-mode persistence/audit across every experimental FS stays future work.
+ - [x] Add symbolic links (**Done:** `kernel/fs/symlink.c`; `test_fifo_symlinks` runs in the posix CI shard).  Richer path handling (canonicalisation) stays live — see the VFS entry above.
+ - [x] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07). (**Done, RESIDUE2 T3:** stores mark buffers dirty; durability comes from eviction, the new 1 Hz `bc_tick()` PIT drain (try-lock, never blocks in IRQ), `.sync`/fs_cache_sync and kernel_halt; FAT32/ext2/diskfs routed through `fs_read_block`/`fs_write_block` with `.sync = fs_cache_sync`; `test_bc_writeback.sh` proves hard-kill survival and coalescing (e.g. 472 stores → 140 device writes); ledger RES-07 closed — buffer_cache/tmpfs/devfs now live in all three port shared lists with runtime receipts on i386/rv64/a64.) (RESIDUE2 T3)
+-- [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).
++- [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  ~~virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).~~ **NVMe is done (RESIDUE3 C7b):** `drivers/nvme/` drives a QEMU `-device nvme` namespace through `blkdev` and ext2 mounts off it (`test_nvme` 23/23); virtio-scsi is still future work.
+ 
+ ### Networking
+ 
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 4801634..dd14305 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04; C5 (isochronous streaming) landed 2026-11-04 with its HID/EHCI survivors carried to C5b, which landed 2026-11-04 as well; C6 (Bluetooth/Wi-Fi) landed 2026-11-04 with RES-61's metal half; C7 (TCP window scaling) landed 2026-11-04 with its NVMe half carried to C7b (opener measured): 9/12. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
++## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04; C5 (isochronous streaming) landed 2026-11-04 with its HID/EHCI survivors carried to C5b, which landed 2026-11-04 as well; C6 (Bluetooth/Wi-Fi) landed 2026-11-04 with RES-61's metal half; C7 (TCP window scaling) landed 2026-11-04 with its NVMe half carried to C7b, which landed the same day as RES-46's storage successor: 10/12. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+@@ -14,7 +14,7 @@
+ | C5b — USB survivors: HID report IDs, EHCI split transactions, the short-CSW case (RES-62) | ✅ done (2026-11-04) — report-ID parser + kernel selftest, PSPD decode + host-tested QH caps, CSW validator; the TT *device* case is impossible on QEMU and says so | `patches/RESIDUE3_C5b_usbhid.patch` |
+ | C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39 survivors) | ✅ done (2026-11-04) — HCI transport injected + host-tested, Wi-Fi over the virtual AP reaches the IP stack; RES-61 keeps the metal | `patches/RESIDUE3_C6_wireless.patch` |
+ | C7 — network: window scaling (RES-52) | ✅ done (2026-11-04) — RES-52 flips: wscale negotiated both ways, a megabyte with 395660 bytes in flight, a window-clamped peer as the control | `patches/RESIDUE3_C7_net.patch` |
+-| C7b — NVMe: a queue-pair driver over PCIe (RES-46's storage successor) | ⬜ opened (2026-11-04) — carried out of C7 with a measured opener (QEMU has the device, the tree has no NVMe code at all, the blkdev seam exists) | — |
++| C7b — NVMe: a queue-pair driver over PCIe (RES-46's storage successor) | ✅ done (2026-11-04) — polled queue-pair driver, controller identity from Identify, ext2 mounted off the namespace, host-verified round trip | `patches/RESIDUE3_C7b_nvme.patch` |
+ | C8 — Win32: the dynamic-scale loader, live FAIL-CLEAN receipts, DOOM D7 (RES-57/58/59) | ⬜ planned | `patches/RESIDUE3_C8_w32.patch` |
+ | C9 — GL: the GLSL AST → TGSI back end (RES-54) | ⬜ planned | `patches/RESIDUE3_C9_tgsi.patch` |
+ | C10 — close-out: the arithmetic, the honest zero, the parked M class | ⬜ planned | `patches/RESIDUE3_C10_close.patch` |
+@@ -1075,24 +1075,93 @@ mount — a phase, not a bullet.
+ 
+ ### C7b — NVMe: a queue-pair driver over PCIe (RES-46's storage successor)
+ 
+-**Status:** ⬜ opened (2026-11-04) — the opener above is measured; no code yet.
++**Status:** ✅ done (2026-11-04) — the successor RES-46 named now carries a
++mounted filesystem, not a probe.
+ 
+-**Objective:** an NVMe namespace that becomes a block device and mounts ext2 —
+-RES-46's storage successor closes with a mounted filesystem, not a probe.
++**Objective:** an NVMe namespace that becomes a block device and mounts ext2.
+ 
+-- [ ] Admin queue (identify controller/namespace), then one I/O queue pair,
+-      PRP1/PRP-list addressing, one command in flight at a time to start.
+-- [ ] Poll-based completion first (no MSI/MSI-X until the queue works);
+-      `-device nvme` on QEMU is the target, with `num_queues=1`.
+-- [ ] Register the namespace through `blkdev_register` and mount an ext2 image
+-      from it in a case.
+-- [ ] `test_nvme.sh`: the guest prints the controller's own identity
+-      (`mn`/`sn` from Identify), reads block 0, and mounts.
++**Opener (measured before any code, recorded in C7):** `qemu-system-x86_64
++-device nvme,help` lists a full device; `grep -rli nvme drivers/ kernel/`
++found **one** file and it was a comment; the seam (`kernel/fs/blkdev.h`) exists;
++there is no `pci_ecam.c` in this tree — PCI access is `drivers/pci/pci.c`.
+ 
+-**Definition of done:** `test_nvme.sh` mounts ext2 from an NVMe namespace; the
+-blkdev row lists `nvme0`.
++**What landed.**
+ 
+-**Test gate:** `fs` shard; `make test-unit` unchanged.
++| Piece | Where |
++|-------|-------|
++| Encoding: register packing, the 64-byte SQ entry, the 16-byte CQ entry, doorbell geometry, Identify decoding, LBA-format resolution | `drivers/nvme/nvme_proto.h` (pure, host-pinned) |
++| Hardware: PCI probe, BAR map, reset, admin/I-O queue pairs, bounce-buffer transfers, blkdev registration, self-test | `drivers/nvme/nvme.c` |
++| Host pin | `tests/unit/test_nvme_proto.c` — **78/78** |
++| Mounted-filesystem gate | `tests/integration/cases/test_nvme.sh` — **23/23** |
++
++**Receipts (QEMU 10.0.13, `-device nvme,serial=AURA0001`):**
++
++```
++[nvme] VS=0x00010400 CAP=0x4008200f0107ff (MQES=2047, DSTRD=0, MPSMIN=0)
++[nvme] reset: CC.EN=0 -> CSTS.RDY=0
++[nvme] admin queues: AQA=0x00070007 ASQ=0x4021000 ACQ=0x4022000 (8 entries)
++[nvme] reset: CC.EN=1 -> CSTS.RDY=1 (controller ready)
++[nvme] identify controller: model="QEMU NVMe Ctrl" serial="AURA0001" firmware="10.0.13"
++[nvme] namespace 1: 32768 blocks x 512 bytes = 16 MiB
++[nvme] I/O queue pair ready (qid 1, 8 entries, physically contiguous, no interrupts — completion is polled)
++[blkdev] registered 'nvme0' as disk 1 (32768 sectors)
++[nvme] read LBA 0: first bytes 00 00 00 00, checksum 0 (driver) vs 0 (seam)
++[nvme] PASS: 32768 blocks reachable, both paths agree on LBA 0
++[ext2] blkdev 1 mounted at /ext2
++[ext2] PASS: ext2 read/write/dir/indirect works
++```
++
++…and the shell reads the `NVME.TXT` that `debugfs` put on that image, writes
++`from_aura.txt`, and the **host** reads those bytes back off the image
++afterwards.  The negative control is the same boot's sibling: with no
++`-device nvme` the driver prints **nothing at all** (`il_assert_no_grep
++"\[nvme\]"`), which is what makes the lines above evidence rather than noise.
++
++**Three defects found by measuring, all in this phase:**
++
++1. **The SQ tail doorbell carried the OLD tail.** Ringing with the slot just
++   filled instead of the next free one tells the controller there is nothing
++   new to fetch: the command times out with every register perfectly healthy
++   (`CSTS.RDY=1`, `AQA` correct).  Measured on the first Identify.
++2. **The completion status was read out of the wrong half of DW3.** DW3's low
++   16 bits are the *command id*; the status (phase, SC, SCT, DNR) is the high
++   half.  Reading the low half made a perfectly good completion look like a
++   phase-0 error — and would have made some real errors look like successes,
++   because the CID's low bit reads as a phase tag.  Both halves are now named
++   in `nvme_proto.h` with the trap written down, and the host test pins the
++   swapped-halves case.
++3. **A completion is now checked against the command id it answers**, not just
++   its phase bit: unwritten queue memory is all ones, whose phase is 1 — the
++   same value a driver waiting for phase 1 expects.  `nvme_cqe_plausible()`
++   takes the expected CID.
++
++**Declared scope (in the header, not implied):** polled completion (no
++interrupts), one command in flight, PRP1 only via a 4 KiB bounce buffer (so
++the caller's buffer need not be physically contiguous — at one memcpy per
++4 KiB), one namespace, no PRP lists/SGLs/ZNS, and 512-byte LBAs only, because
++the blkdev seam below it is 512-only; a 4096-byte namespace is refused **by
++name**.
++
++**Test gate:** `test_nvme` 23/23; unit `test_nvme_proto` 78/78 in
++`make test-unit`; registry 223 cases.  `test_ext2`, `test_fsfull_*` and the
++block-device cases are unchanged — NVMe registers only when a controller is
++present, so their disk ordering cannot move.
++
++**Patch:** the row's path; replayed onto `26cb7fe` + C0…C7 it yields **14/14
++byte-identical** files (the exec bit on `test_nvme.sh` included), and every
++claim checker is green in the replayed tree as well as in this one.  Size and
++digest are recorded in the study log rather than here, because this file is
++inside its own patch and any number written here would change the artefact
++that carries it.
++
++**Two gate findings, fixed here rather than filed.**  (1) The plan's own
++debt-marker ratchet moved 52 → 53 the moment the C7b table row landed: the
++harvester counts the series token in a row's patch path, exactly as it does
++for every other phase row, so the baseline moved with the ledger note in the
++same commit — no debt was added.  (2) `check_rinet2_claims` still pinned
++RES-52 as `HANDED-OFF@Y7` after C7 had flipped the row to `DONE@C7`; the claim
++now follows the tree, which is what a claim checker is for.  Both are in the
++patch above.
+ 
+ ---
+ 
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index a4bc0f0..da2ac57 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -57,7 +57,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-43 | N | RE-AFFIRMED@R12 | W32 deferred W-surface, BitBlt, LoadLibraryW, kernel import binding — re-affirmed with their WIN32_PLAN D-numbers: SEH stays a setjmp shim (D-SEH), TLS per-process, no registry/COM/DirectX/WinSock (D8 class); the boundary text lives in docs/win32.md and status.md's w32 row | re-affirmed with D-numbers ✔ |
+ | RES-44 | N | RE-AFFIRMED@R12 | W32 registry (D8), MSG_COPY/SHM_LOCK/proc-sysvipc, DOOM §6, slab single-caller rule — all four re-affirmed as the decisions their plans recorded; none silently reversed | re-affirmed ✔ |
+ | RES-45 | W | DONE@R12 | TODO.md kept IN FULL and ANNOTATED (the user's call — the first draft rewrote it down to a map and the review caught the loss): headline pointer names the ledger as the machine-checked index; THIRTEEN stale entries receipted inline in the file's own ~~strikethrough~~+Done style (six from the R12 sweep: IST/#DF — closed R1; virtio-net polling — closed R9; brk/mmap; virtio-blk ×3 transports; symlinks; CI artifacts ×6 upload steps; seven from the follow-up audit: uaccess #PF fixup — M3; MAP_SHARED — shmem.c; auxv — M5; posix_spawn.c; tmpfs mkdir — Q12; mkdir(mode); tan/fmod/atan); live boxes carry their ledger row or class | every line dispositioned ✔; the file GREW by receipts (576→639 lines) ✔; harvest TODO count 26→20, baseline moved same-commit |
+-| RES-46 | S | DONE@F7 | FS data paths + modern NICs — F7 (FSFULL_PLAN.md) is RES-46's exit gate: the five filesystems (ext4/f2fs/btrfs/exFAT/NTFS) now have real, self-contained CI cases registered in `tests/integration/run_all.sh` ALL_CASES and run as the `fsfull` shard (each builds its own disks — no shared state), the five kernel self-tests run in the `full` selftest lane when mounted, and the ledger row proves coverage machine-checkably via `tools/check_residue_claims.py`.  F7 opened this row by MEASURING the FS harnesses against the tree: f2fs/btrfs/exFAT/NTFS are green, and the coverage surfaced a pre-existing F3 defect — the ext4 driver cannot interoperate with a real `mkfs.ext4` image (its non-standard `base_lba=128` layout is not host-e2fsck-verifiable), tracked in FSFULL_PLAN.md F7.  The NIC side (vmxnet3/e1000e/NVMe) stays open as RES-46's named successor. | OPENER, measured: the five-filesystem line count is 3889 with 0 CI cases — F7 delivered 5 registered cases + the fsfull shard + full-lane self-tests; ext4's red interop lane is a discovered pre-existing driver defect, not a coverage gap |
++| RES-46 | S | DONE@F7 | FS data paths + modern NICs — F7 (FSFULL_PLAN.md) is RES-46's exit gate: the five filesystems (ext4/f2fs/btrfs/exFAT/NTFS) now have real, self-contained CI cases registered in `tests/integration/run_all.sh` ALL_CASES and run as the `fsfull` shard (each builds its own disks — no shared state), the five kernel self-tests run in the `full` selftest lane when mounted, and the ledger row proves coverage machine-checkably via `tools/check_residue_claims.py`.  F7 opened this row by MEASURING the FS harnesses against the tree: f2fs/btrfs/exFAT/NTFS are green, and the coverage surfaced a pre-existing F3 defect — the ext4 driver cannot interoperate with a real `mkfs.ext4` image (its non-standard `base_lba=128` layout is not host-e2fsck-verifiable), tracked in FSFULL_PLAN.md F7.  The NIC side (vmxnet3/e1000e/NVMe) stayed open as RES-46's named successor, and RESIDUE3 closed it in two measured steps: C7 re-derived vmxnet3/e1000e (14/14 each, T6's receipts still hold) and C7b built the NVMe driver this row's successor named — a polled queue-pair driver whose namespace mounts ext2 (test_nvme 23/23). | OPENER, measured: the five-filesystem line count is 3889 with 0 CI cases — F7 delivered 5 registered cases + the fsfull shard + full-lane self-tests; ext4's red interop lane is a discovered pre-existing driver defect, not a coverage gap |
+ | RES-47 | S | DONE@T7 | GUI isolation/permissions, clipboard/focus, settings (TODO) — part-stale too: gui_syscalls.c ALREADY gates 36 syscall cases behind require_owner/require_icon_owner | OPENER, measured: ownership gates exist (27 permission/owner sites); clipboard had 5 references and no cross-process model. CLOSED at RESIDUE2 T7 (2026-09-06): all four boxes landed with receipts — the owner/permission model extended to GUI-GLOBAL mutations (clipboard set+get deny-then-grant round trip), persisted settings/theme, richer editor/terminal, and the `gclip` clipboard manager dogfooding the ACL (7-check gate); T7's Result is the receipt and this row was the last one it forgot to flip |
+ | RES-48 | M | PENDING-USER@R11 | HW §6 metal receipts never exercised on user's machine | R11 package ships (tools/metal_receipts.sh, NULL test CI-pinned); pending-user is a status, not a failure |
+ | RES-49 | M | PENDING-USER@Y7 | Live-web PQ-hybrid fetch against a real host (the X9 PEER_EOF sentence) | paste `[tls] group=X25519MLKEM768` from `run http https://www.ietf.org/` into docs/live_web.md |
+@@ -92,6 +92,20 @@ RESIDUE2 T3: RES-07 → DONE@T3 (narrowed close recorded in the row); OPEN then
+ RESIDUE3 C5: RES-60 → DONE@C5 (isoc streaming proved on QEMU usb-audio);
+ +1 row RES-62 (HID report-ID breadth / EHCI split series / short-CSW case,
+ HANDED-OFF@C5 → C5b), which is where the S pin goes 13 → 14.
++RESIDUE3 C7b: RES-46's NVMe successor CLOSED (the row itself stays DONE@F7 —
++it never had an NVMe box of its own).  What landed: drivers/nvme/{nvme.h,
++nvme.c,nvme_proto.h} — PCI probe (class 01/08 prog-if 02), a controller reset
++that waits for CSTS.RDY both ways, an 8-entry admin queue pair created before
++CC.EN=1, Identify Controller/Namespace, one I/O queue pair created CQ-then-SQ,
++and a namespace registered through blkdev.  Polled completion, PRP1-only via a
++4 KiB bounce buffer, 512-byte LBAs only (a 4096-byte namespace is refused by
++name).  Receipts: the controller's own Identify strings, `[ext2] blkdev 1
++mounted at /ext2`, and a host debugfs read of the file the guest wrote onto the
++namespace.  Table arithmetic unchanged: 62 rows, W 36 · M 8 · N 4 · S 14.
++The plan harvest moves 52 → 53 for the same reason every phase row moves it:
++the C7b table row names `patches/RESIDUE3_C7b_nvme.patch`, and the harvester
++counts the `RESIDUE3` token in that path.  Baseline and ledger move together;
++no new debt.
+ RESIDUE3 C7: RES-52 → DONE@C7 (was HANDED-OFF@Y7).  Table arithmetic
+ unchanged: 62 rows, W 36 · M 8 · N 4 · S 14.  RES-46's NVMe successor did NOT
+ close — it was carried out of C7 into C7b with a measured opener (QEMU's
+diff --git a/docs/status.md b/docs/status.md
+index a125384..a4e67c6 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -177,6 +177,7 @@ tied to the tree.
+ | POSIX.1-2024 compliance | 🧪 | Q1–Q16 all implemented (~410 functions covered, see `docs/posix2024_compliance.md`). Q12 added the runnable conformance harness (host gate in `make test-unit` — `tests/posix2024/` — plus the guest `conformtest` QEMU case); Q13 completed the AT-family; Q15 implemented `mq_notify`; Q16 added pselect/ppoll, getrandom and sig2str/str2sig (getrandom's backing was upgraded by INTERNET_PLAN N0 to a ChaCha20 CSPRNG seeded from RDSEED/RDRAND or interrupt jitter, failing closed with ENOSYS until real entropy exists); Q14 replaced the SysV IPC ENOSYS stubs with real kernel objects — semaphores (blocking semop, SEM_UNDO at exit), page-backed shared memory (destroy at last detach) and message queues (full mtype rules). Only the three named-semaphore functions remain argued 🔶 partials (need MAP_SHARED). `_POSIX_VERSION` = 202405L. |
+ | AHCI detection/init | ✅/🧪 | Controller/port setup works in QEMU AHCI. |
+ | AHCI sector read/write | ✅/🧪 | DMA READ/WRITE self-test passes on the QEMU AHCI test disk. |
++| NVMe (PCIe) | ✅ | `drivers/nvme/`: PCI probe (class 01/08, prog-if 02), controller reset with both CSTS.RDY waits, 8-entry admin queue pair, Identify Controller/Namespace, one I/O queue pair, one namespace registered through the `blkdev` seam. **RESIDUE3 C7b (2026-11-04):** polled completion, PRP1-only through a 4 KiB bounce buffer, 512-byte LBAs (a 4096-byte namespace is refused by name, not divided by). Receipts: the controller's own `model="QEMU NVMe Ctrl" serial="AURA0001"`, `[nvme] read LBA 0 … both paths agree`, `[ext2] blkdev 1 mounted at /ext2`, and the host reading back a file the guest wrote on the namespace; `test_nvme` 23/23, including a boot with no controller where the driver says nothing at all. |
+ | UHCI controller | ✅/🧪 | Controller + port + CONTROL/BULK TD/QH transfers used by MSC. |
+ | OHCI controller | 🧪 | Detection/init/root-port reset plus ED/TD control, bulk and interrupt scheduling works in QEMU for HID/MSC. |
+ | EHCI controller | 🧪 | Detection/init/root-port reset plus async qTD control/bulk scheduling works in QEMU for high-speed MSC. Periodic interrupt and split transactions are pending. |
+diff --git a/drivers/nvme/nvme.c b/drivers/nvme/nvme.c
+new file mode 100644
+index 0000000..c275682
+--- /dev/null
++++ b/drivers/nvme/nvme.c
+@@ -0,0 +1,544 @@
++/* nvme.c — NVMe over PCIe, polled, one namespace (RESIDUE3 C7b).
++ *
++ * Read drivers/nvme/nvme.h first: it states the scope, and the omissions are
++ * deliberate.  This file is the hardware half — MMIO, DMA frames, doorbells,
++ * a bounded poll — while the encoding lives in nvme_proto.h where a host test
++ * can pin it.
++ *
++ * THE ORDER OF BRING-UP IS THE SPEC'S ORDER, and it is not optional:
++ *
++ *   1. CC.EN = 0, wait CSTS.RDY = 0        (reset before touching queues)
++ *   2. allocate and zero the admin SQ/CQ, write AQA/ASQ/ACQ
++ *   3. CC.EN = 1, wait CSTS.RDY = 1        (controller is now using the queues)
++ *   4. Identify Controller, Identify Namespace
++ *   5. Create one I/O CQ, then one I/O SQ bound to it
++ *   6. only then may an I/O command be submitted
++ *
++ * A step that times out reports WHICH step and what it saw.  A driver that
++ * prints "NVMe init failed" tells a reader nothing at 3 a.m.
++ */
++
++#include "drivers/nvme/nvme.h"
++
++#include <stdint.h>
++
++#include "drivers/nvme/nvme_proto.h"
++#include "drivers/pci/pci.h"
++#include "kernel/arch/arch.h"
++#include "kernel/boot_info.h"
++#include "kernel/fs/blkdev.h"
++#include "kernel/lib/kprintf.h"
++#include "kernel/lib/paddr.h"
++#include "kernel/lib/spinlock.h"
++#include "kernel/lib/string.h"
++#include "kernel/mm/pmm.h"
++
++/* ---- Constants -------------------------------------------------------- */
++
++#define PCI_CLASS_MASS_STORAGE 0x01
++#define PCI_SUBCLASS_NVME      0x08
++#define PCI_PROGIF_NVME        0x02
++
++#define NVME_ADMIN_QID   0u
++#define NVME_IO_QID      1u
++#define NVME_ADMIN_QSIZE 8u
++#define NVME_IO_QSIZE    8u
++
++#define NVME_PAGE        4096u
++#define NVME_BOUNCE      NVME_PAGE
++#define NVME_MAX_SECTORS_PER_CMD (NVME_BOUNCE / BLKDEV_SECTOR_SIZE)
++
++/* Poll budget.  QEMU answers in microseconds; 2,000,000 iterations of a
++ * volatile read is generous enough that a timeout means "this controller is
++ * not coming back", not "the host is slow". */
++#define NVME_POLL_LIMIT  2000000u
++#define NVME_READY_LIMIT 2000000u
++
++/* ---- State ----------------------------------------------------------- */
++
++typedef struct {
++    uint8_t  up;
++    uint8_t  bus, dev, func;
++    volatile uint8_t *regs;          /* BAR0 through the HHDM */
++    uint64_t cap;
++    uint32_t dstrd;
++    uint32_t mqes;
++
++    /* Admin queue pair. */
++    uint8_t *asq;  uint64_t asq_phys;
++    uint8_t *acq;  uint64_t acq_phys;
++    uint32_t asq_tail, acq_head;
++    uint8_t  acq_phase;
++
++    /* I/O queue pair. */
++    uint8_t *iosq; uint64_t iosq_phys;
++    uint8_t *iocq; uint64_t iocq_phys;
++    uint32_t iosq_tail, iocq_head;
++    uint8_t  iocq_phase;
++
++    uint8_t *bounce; uint64_t bounce_phys;
++
++    uint16_t cid;
++
++    /* Identity of namespace 1. */
++    uint8_t  ns_active;
++    uint64_t ns_blocks;
++    uint32_t lba_bytes;
++    char     model[48];
++    char     serial[24];
++    char     firmware[16];
++    int      blkdev_id;
++} nvme_t;
++
++static nvme_t nv;
++static spinlock_t nvme_lock;
++
++/* ---- MMIO helpers ---------------------------------------------------- */
++
++static inline uint32_t nvme_read32(uint32_t off) {
++    return *(volatile uint32_t *)(nv.regs + off);
++}
++static inline void nvme_write32(uint32_t off, uint32_t val) {
++    *(volatile uint32_t *)(nv.regs + off) = val;
++}
++static inline uint64_t nvme_read64(uint32_t off) {
++    /* Two 32-bit reads rather than one 64-bit access: on a weakly ordered
++     * machine a single 64-bit MMIO read can be split anyway, and the low
++     * half is the one that matters for the CAP fields this driver uses. */
++    uint64_t lo = nvme_read32(off);
++    uint64_t hi = nvme_read32(off + 4u);
++    return lo | (hi << 32);
++}
++static inline void nvme_write64(uint32_t off, uint64_t val) {
++    nvme_write32(off, (uint32_t)(val & 0xFFFFFFFFu));
++    nvme_write32(off + 4u, (uint32_t)(val >> 32));
++}
++static inline void nvme_dma_barrier(void) {
++    __sync_synchronize();
++}
++
++/* Poll CSTS against `want_mask` for `want` until the budget runs out.
++ * Returns 1 on match, 0 on timeout. */
++static int nvme_wait_csts(uint32_t want_mask, uint32_t want) {
++    for (uint32_t i = 0; i < NVME_READY_LIMIT; i++) {
++        uint32_t csts = nvme_read32(NVME_REG_CSTS);
++        if ((csts & want_mask) == want) return 1;
++        if (csts & NVME_CSTS_CFS) {
++            kprintf("[nvme] controller fatal status during wait "
++                    "(CSTS=0x%08x)\n", csts);
++            return 0;
++        }
++    }
++    return 0;
++}
++
++/* ---- Submission and completion --------------------------------------- */
++
++/* Point the submission entry at a 64-byte slot in the given queue. */
++static uint32_t *sqe_slot(int admin, uint32_t tail) {
++    uint8_t *base = admin ? nv.asq : nv.iosq;
++    return (uint32_t *)(base + (tail * 64u));
++}
++
++/* Submit whatever is in slot `tail` and wait for its completion.
++ *
++ * The queue is one-command-in-flight: the tail is advanced by one, the
++ * doorbell is rung, and this call blocks (bounded) until the phase bit of the
++ * next completion entry flips.  That is enough for identify + sequential
++ * block I/O and it makes the failure mode unambiguous.
++ *
++ * Returns 0 on a good completion, negative on a controller-reported error
++ * (-4) or a timeout (-3). */
++static int nvme_submit_wait(int admin, uint16_t cid, uint32_t *out_dw0) {
++    uint8_t *cq = admin ? nv.acq : nv.iocq;
++    uint32_t qid = admin ? NVME_ADMIN_QID : NVME_IO_QID;
++    uint32_t qsize = admin ? NVME_ADMIN_QSIZE : NVME_IO_QSIZE;
++
++    /* The doorbell carries the NEW tail (the next free slot), not the slot
++     * that was just filled: ringing the old value tells the controller there
++     * is nothing new to fetch, and the command then times out with every
++     * register looking perfectly healthy.  Measured exactly once. */
++    uint32_t next = nvme_ring_next(admin ? nv.asq_tail : nv.iosq_tail, qsize);
++    if (admin) nv.asq_tail = next; else nv.iosq_tail = next;
++    nvme_dma_barrier();                      /* entry visible before the bell */
++    nvme_write32(nvme_doorbell_sq(nv.dstrd, qid), next);
++
++    uint8_t phase = admin ? nv.acq_phase : nv.iocq_phase;
++    uint32_t head = admin ? nv.acq_head : nv.iocq_head;
++
++    uint32_t *cqe = (uint32_t *)(cq + head * 16u);
++    for (uint32_t i = 0; i < NVME_POLL_LIMIT; i++) {
++        nvme_dma_barrier();                  /* read the entry after the DMA */
++        uint32_t cdw2 = cqe[2];
++        uint32_t cdw3 = cqe[3];
++        if (!nvme_cqe_plausible(cdw2, cdw3, phase, cid)) continue;
++
++        nvme_status_t st = nvme_cqe_status(cdw3);
++        if (out_dw0) *out_dw0 = cqe[0];
++
++        /* Advance the head and tell the controller it may reuse the slot. */
++        uint32_t nh = nvme_ring_next(head, qsize);
++        if (admin) { nv.acq_head = nh; if (nh == 0) nv.acq_phase ^= 1u; }
++        else       { nv.iocq_head = nh; if (nh == 0) nv.iocq_phase ^= 1u; }
++        nvme_write32(nvme_doorbell_cq(nv.dstrd, qid), nh);
++
++        if (st.status_code != 0) {
++            kprintf("[nvme] command failed: status type %u code 0x%02x%s\n",
++                    (unsigned)st.status_type, (unsigned)st.status_code,
++                    st.do_not_retry ? " (do-not-retry)" : "");
++            return -4;
++        }
++        return 0;
++    }
++    kprintf("[nvme] completion timeout on %s queue (phase=%u head=%u)\n",
++            admin ? "admin" : "I/O", (unsigned)phase, head);
++    /* A timeout with a healthy CSTS is a queue-plumbing bug, so dump the raw
++     * material a reader needs: the entry being watched (with its CID and its
++     * status half separately) and the controller's own registers. */
++    {
++        uint32_t *sq = (uint32_t *)((admin ? nv.asq : nv.iosq));
++        kprintf("[nvme]   CQ[%u]: result=%08x sqhd/sqid=%08x cid=%u status=0x%04x\n",
++                head, cqe[0], cqe[2],
++                (unsigned)nvme_cqe_cid(cqe[3]),
++                (unsigned)nvme_cqe_status16(cqe[3]));
++        kprintf("[nvme]   waiting for cid=%u; SQ slot0=%08x slot1=%08x\n",
++                (unsigned)cid, sq[0], sq[16]);
++        kprintf("[nvme]   CSTS=0x%08x CC=0x%08x AQA=0x%08x dstrd=%u tail=%u\n",
++                nvme_read32(NVME_REG_CSTS), nvme_read32(NVME_REG_CC),
++                nvme_read32(NVME_REG_AQA), nv.dstrd,
++                admin ? nv.asq_tail : nv.iosq_tail);
++    }
++    return -3;
++}
++
++/* Build + submit one admin command.  `prp1` is a physical address or 0. */
++static int nvme_admin_cmd(uint32_t opcode, uint32_t nsid, uint64_t prp1,
++                          uint32_t cdw10, uint32_t cdw11, uint32_t cdw12) {
++    uint32_t cid = ++nv.cid;
++    uint32_t *e = sqe_slot(1, nv.asq_tail);
++    memset(e, 0, 63);                        /* the last byte is the CID's LSB */
++    e[0] = nvme_cdw0(opcode, cid);
++    e[1] = nsid;
++    e[6] = (uint32_t)(prp1 & 0xFFFFFFFFu);
++    e[7] = (uint32_t)(prp1 >> 32);
++    e[10] = cdw10;
++    e[11] = cdw11;
++    e[12] = cdw12;
++    return nvme_submit_wait(1, (uint16_t)cid, NULL);
++}
++
++/* Build + submit one I/O read or write. */
++static int nvme_io_cmd(uint32_t opcode, uint64_t lba, uint32_t blocks,
++                       uint64_t prp1) {
++    uint32_t cid = ++nv.cid;
++    uint32_t *e = sqe_slot(0, nv.iosq_tail);
++    memset(e, 0, 63);
++    e[0] = nvme_cdw0(opcode, cid);
++    e[1] = 1u;                               /* NSID 1 */
++    e[6] = (uint32_t)(prp1 & 0xFFFFFFFFu);
++    e[7] = (uint32_t)(prp1 >> 32);
++    e[10] = (uint32_t)(lba & 0xFFFFFFFFu);
++    e[11] = (uint32_t)(lba >> 32);
++    e[12] = nvme_cdw12_nlb(blocks);
++    return nvme_submit_wait(0, (uint16_t)cid, NULL);
++}
++
++/* ---- DMA frames ------------------------------------------------------ */
++
++/* One page, zeroed, with its physical address recorded.  The HHDM makes the
++ * virtual address free: pages are contiguous in the direct map. */
++static int dma_page(uint8_t **out_virt, uint64_t *out_phys) {
++    paddr_t phys = pmm_alloc_frame();
++    if (!phys) return -1;
++    uint8_t *virt = (uint8_t *)(uintptr_t)(boot_get_hhdm_offset() + phys);
++    memset(virt, 0, NVME_PAGE);
++    *out_virt = virt;
++    *out_phys = (paddr_t)phys;
++    return 0;
++}
++
++/* ---- Bring-up -------------------------------------------------------- */
++
++static int nvme_map_bar(uint8_t bus, uint8_t dev, uint8_t func) {
++    uint32_t bar0 = pci_get_bar(bus, dev, func, 0);
++    if (bar0 == 0 || bar0 == 0xFFFFFFFFu) {
++        kprintf("[nvme] BAR0 reads 0x%08x — no memory window\n", bar0);
++        return -1;
++    }
++    paddr_t bar_phys = (paddr_t)(bar0 & ~0xFu);
++    /* A 64-bit memory BAR keeps its upper half in BAR1. */
++    if (((bar0 >> 1) & 0x3u) == 0x2u) {
++        uint32_t bar1 = pci_get_bar(bus, dev, func, 1);
++        bar_phys |= ((paddr_t)bar1 << 32);
++    }
++    uint64_t hhdm = boot_get_hhdm_offset();
++    /* Two pages: registers + the doorbell array for two queue pairs. */
++    for (uint32_t off = 0; off < 0x2000u; off += NVME_PAGE)
++        paging_map(hhdm + bar_phys + off, bar_phys + off, PAGE_FLAGS_MMIO);
++
++    nv.regs = (volatile uint8_t *)(uintptr_t)(hhdm + bar_phys);
++    kprintf("[nvme] BAR0 phys=0x%llx mapped at 0x%llx (2 pages)\n",
++            (unsigned long long)bar_phys,
++            (unsigned long long)(hhdm + bar_phys));
++    return 0;
++}
++
++static int nvme_reset_and_arm(void) {
++    /* 1. Reset: disable, then wait for the controller to acknowledge. */
++    uint32_t cc = nvme_read32(NVME_REG_CC);
++    if (cc & NVME_CC_EN) {
++        nvme_write32(NVME_REG_CC, cc & ~NVME_CC_EN);
++        if (!nvme_wait_csts(NVME_CSTS_RDY, 0)) {
++            kprintf("[nvme] reset: CSTS.RDY never cleared (CSTS=0x%08x)\n",
++                    nvme_read32(NVME_REG_CSTS));
++            return -1;
++        }
++        kprintf("[nvme] reset: CC.EN=0 -> CSTS.RDY=0\n");
++    }
++
++    /* 2. Admin queues.  AQA's two size fields are 0-based. */
++    if (dma_page(&nv.asq, &nv.asq_phys) != 0) return -1;
++    if (dma_page(&nv.acq, &nv.acq_phys) != 0) return -1;
++    nv.asq_tail = 0; nv.acq_head = 0; nv.acq_phase = 1;
++
++    nvme_write32(NVME_REG_AQA, nvme_aqa_value(NVME_ADMIN_QSIZE, NVME_ADMIN_QSIZE));
++    nvme_write64(NVME_REG_ASQ, nv.asq_phys);
++    nvme_write64(NVME_REG_ACQ, nv.acq_phys);
++    kprintf("[nvme] admin queues: AQA=0x%08x ASQ=0x%llx ACQ=0x%llx (%u entries)\n",
++            nvme_read32(NVME_REG_AQA),
++            (unsigned long long)nv.asq_phys, (unsigned long long)nv.acq_phys,
++            NVME_ADMIN_QSIZE);
++
++    /* 3. Enable: CSS=NVM, IOSQES=6, IOCQES=4 — entry sizes are part of the
++     *    configuration, not something the controller guesses. */
++    nvme_write32(NVME_REG_CC, nvme_cc_value(1));
++    if (!nvme_wait_csts(NVME_CSTS_RDY, NVME_CSTS_RDY)) {
++        kprintf("[nvme] CC.EN=1 but CSTS.RDY never set (CSTS=0x%08x)\n",
++                nvme_read32(NVME_REG_CSTS));
++        return -1;
++    }
++    kprintf("[nvme] reset: CC.EN=1 -> CSTS.RDY=1 (controller ready)\n");
++    return 0;
++}
++
++static int nvme_identify(uint32_t cns, uint32_t nsid, uint8_t *out) {
++    memset(nv.bounce, 0, NVME_BOUNCE);
++    if (nvme_admin_cmd(NVME_ADMIN_IDENTIFY, nsid, nv.bounce_phys,
++                       nvme_identify_cdw10(cns), 0, 0) != 0)
++        return -1;
++    memcpy(out, nv.bounce, NVME_PAGE);
++    return 0;
++}
++
++static int nvme_create_io_queues(void) {
++    if (dma_page(&nv.iosq, &nv.iosq_phys) != 0) return -1;
++    if (dma_page(&nv.iocq, &nv.iocq_phys) != 0) return -1;
++    nv.iosq_tail = 0; nv.iocq_head = 0; nv.iocq_phase = 1;
++
++    /* Completion queue FIRST: a submission queue must name an existing CQ. */
++    if (nvme_admin_cmd(NVME_ADMIN_CREATE_CQ, 0, nv.iocq_phys,
++                       nvme_create_cq_cdw10(NVME_IO_QID, NVME_IO_QSIZE),
++                       nvme_create_cq_cdw11(1, 0), 0) != 0) {
++        kprintf("[nvme] Create I/O Completion Queue refused\n");
++        return -1;
++    }
++    if (nvme_admin_cmd(NVME_ADMIN_CREATE_SQ, 0, nv.iosq_phys,
++                       nvme_create_sq_cdw10(NVME_IO_QID, NVME_IO_QSIZE),
++                       nvme_create_sq_cdw11(1, NVME_IO_QID, 0), 0) != 0) {
++        kprintf("[nvme] Create I/O Submission Queue refused\n");
++        return -1;
++    }
++    kprintf("[nvme] I/O queue pair ready (qid %u, %u entries, physically "
++            "contiguous, no interrupts — completion is polled)\n",
++            NVME_IO_QID, NVME_IO_QSIZE);
++    return 0;
++}
++
++/* ---- Block I/O through the bounce buffer ----------------------------- */
++
++/* The bounce buffer keeps every command inside PRP1: a 4 KiB page needs no
++ * PRP list, so the driver is honest about doing one memcpy per 4 KiB rather
++ * than pretending an arbitrary kernel buffer is physically contiguous. */
++static int nvme_transfer(uint64_t lba, uint32_t count, void *buf, int write) {
++    if (!nv.ns_active || count == 0 || !buf) return -1;
++    uint8_t *p = (uint8_t *)buf;
++    uint32_t done = 0;
++    while (done < count) {
++        uint32_t chunk = count - done;
++        if (chunk > NVME_MAX_SECTORS_PER_CMD) chunk = NVME_MAX_SECTORS_PER_CMD;
++
++        if (write) {
++            memcpy(nv.bounce, p, chunk * BLKDEV_SECTOR_SIZE);
++            nvme_dma_barrier();
++        }
++        int rc = nvme_io_cmd(write ? NVME_IO_WRITE : NVME_IO_READ,
++                             lba + done, chunk, nv.bounce_phys);
++        if (rc != 0) return rc;
++        if (!write) {
++            nvme_dma_barrier();
++            memcpy(p, nv.bounce, chunk * BLKDEV_SECTOR_SIZE);
++        }
++        p += chunk * BLKDEV_SECTOR_SIZE;
++        done += chunk;
++    }
++    return 0;
++}
++
++static int nvme_bd_read(void *ctx, uint64_t lba, uint32_t count, void *buf) {
++    (void)ctx;
++    spinlock_acquire(&nvme_lock);
++    int rc = nvme_transfer(lba, count, buf, 0);
++    spinlock_release(&nvme_lock);
++    return rc;
++}
++
++static int nvme_bd_write(void *ctx, uint64_t lba, uint32_t count,
++                         const void *buf) {
++    (void)ctx;
++    spinlock_acquire(&nvme_lock);
++    int rc = nvme_transfer(lba, count, (void *)buf, 1);
++    spinlock_release(&nvme_lock);
++    return rc;
++}
++
++static uint64_t nvme_bd_sectors(void *ctx) {
++    (void)ctx;
++    return nv.ns_blocks;
++}
++
++static const struct blkdev_ops nvme_bd_ops = {
++    .read = nvme_bd_read,
++    .write = nvme_bd_write,
++    .sector_count = nvme_bd_sectors,
++};
++
++/* ---- Public API ------------------------------------------------------ */
++
++int nvme_init(void) {
++    memset(&nv, 0, sizeof(nv));
++    nv.blkdev_id = -1;
++    spinlock_init(&nvme_lock);
++
++    uint8_t bus = 0, dev = 0, func = 0;
++    if (pci_find_class(PCI_CLASS_MASS_STORAGE, PCI_SUBCLASS_NVME,
++                       &bus, &dev, &func) != 0) {
++        /* Not an error: most machines have no NVMe controller.  Say so once,
++         * quietly, so a boot log shows the probe ran. */
++        return -1;
++    }
++    if (pci_get_prog_if(bus, dev, func) != PCI_PROGIF_NVME) {
++        kprintf("[nvme] class 01/08 device at %u:%u.%u has prog-if 0x%02x, "
++                "not NVMe (0x02); skipping\n",
++                bus, dev, func, pci_get_prog_if(bus, dev, func));
++        return -1;
++    }
++
++    nv.bus = bus; nv.dev = dev; nv.func = func;
++    kprintf("[nvme] controller at PCI %u:%u.%u\n", bus, dev, func);
++    pci_enable_bus_master(bus, dev, func);
++
++    if (nvme_map_bar(bus, dev, func) != 0) return -3;
++
++    nv.cap = nvme_read64(NVME_REG_CAP);
++    nv.dstrd = nvme_cap_dstrd(nv.cap);
++    nv.mqes = nvme_cap_mqes(nv.cap);
++    kprintf("[nvme] VS=0x%08x CAP=0x%llx (MQES=%u, DSTRD=%u, MPSMIN=%u)\n",
++            nvme_read32(NVME_REG_VS), (unsigned long long)nv.cap,
++            nv.mqes, nv.dstrd, nvme_cap_mpsmin(nv.cap));
++    if (nvme_cap_mpsmin(nv.cap) != 0) {
++        kprintf("[nvme] MPSMIN=%u: this driver only speaks 4 KiB pages\n",
++                nvme_cap_mpsmin(nv.cap));
++        return -3;
++    }
++
++    if (nvme_reset_and_arm() != 0) return -3;
++    if (dma_page(&nv.bounce, &nv.bounce_phys) != 0) return -3;
++
++    /* 4. Identity.  These are the controller's own bytes. */
++    uint8_t id[4096];
++    if (nvme_identify(NVME_IDENTIFY_CTRL, 0, id) != 0) {
++        kprintf("[nvme] Identify Controller failed\n");
++        return -3;
++    }
++    nvme_id_string(id, NVME_ID_CTRL_MN, 40, nv.model, sizeof(nv.model));
++    nvme_id_string(id, NVME_ID_CTRL_SN, 20, nv.serial, sizeof(nv.serial));
++    nvme_id_string(id, NVME_ID_CTRL_FR, 8, nv.firmware, sizeof(nv.firmware));
++    kprintf("[nvme] identify controller: model=\"%s\" serial=\"%s\" "
++            "firmware=\"%s\"\n", nv.model, nv.serial, nv.firmware);
++
++    if (nvme_identify(NVME_IDENTIFY_NSID_0, 1, id) != 0) {
++        kprintf("[nvme] Identify Namespace 1 failed (is a namespace attached "
++                "to the controller?)\n");
++        return -3;
++    }
++    nv.ns_blocks = nvme_le64(id + NVME_ID_NS_SIZE);
++    nv.lba_bytes = nvme_ns_lba_bytes(id);
++    if (nv.ns_blocks == 0) {
++        kprintf("[nvme] namespace 1 reports zero blocks; nothing to register\n");
++        return -3;
++    }
++    if (nv.lba_bytes != BLKDEV_SECTOR_SIZE) {
++        kprintf("[nvme] namespace 1 uses %u-byte logical blocks; this driver "
++                "registers only %u-byte LBAs (the blkdev seam is 512-only) — "
++                "refused by name, not divided by\n",
++                nv.lba_bytes, BLKDEV_SECTOR_SIZE);
++        return -2;
++    }
++    nv.ns_active = 1;
++    kprintf("[nvme] namespace 1: %llu blocks x %u bytes = %llu MiB\n",
++            (unsigned long long)nv.ns_blocks, nv.lba_bytes,
++            (unsigned long long)((nv.ns_blocks * nv.lba_bytes) >> 20));
++
++    /* 5. I/O queues, then the block device. */
++    if (nvme_create_io_queues() != 0) return -3;
++
++    nv.blkdev_id = blkdev_register("nvme0", &nvme_bd_ops, &nv, BLKDEV_SECTOR_SIZE);
++    if (nv.blkdev_id < 0) {
++        kprintf("[nvme] blkdev_register refused (rc=%d)\n", nv.blkdev_id);
++        return -3;
++    }
++    kprintf("[blkdev] registered 'nvme0' as disk %d (%llu sectors)\n",
++            nv.blkdev_id, (unsigned long long)nv.ns_blocks);
++
++    nv.up = 1;
++    kprintf("[nvme] PASS: namespace 1 is block device %d\n", nv.blkdev_id);
++    return 0;
++}
++
++int nvme_namespace_count(void) {
++    return (nv.up && nv.ns_active) ? 1 : 0;
++}
++
++void nvme_self_test(void) {
++    if (!nv.up) return;
++
++    kprintf("[nvme] self-test: reading LBA 0 through the driver\n");
++    uint8_t direct[512];
++    memset(direct, 0, sizeof(direct));
++    if (nvme_transfer(0, 1, direct, 0) != 0) {
++        kprintf("[nvme] FAIL: read of LBA 0 through the driver\n");
++        return;
++    }
++    uint32_t sum_direct = 0;
++    for (int i = 0; i < 512; i++) sum_direct += direct[i];
++
++    kprintf("[nvme] self-test: reading LBA 0 through the blkdev seam\n");
++    uint8_t viaseam[512];
++    memset(viaseam, 0, sizeof(viaseam));
++    if (blkdev_read(nv.blkdev_id, 0, 1, viaseam) != 0) {
++        kprintf("[nvme] FAIL: read of LBA 0 through blkdev\n");
++        return;
++    }
++    uint32_t sum_seam = 0;
++    for (int i = 0; i < 512; i++) sum_seam += viaseam[i];
++
++    kprintf("[nvme] read LBA 0: first bytes %02x %02x %02x %02x, "
++            "checksum %u (driver) vs %u (seam)\n",
++            direct[0], direct[1], direct[2], direct[3], sum_direct, sum_seam);
++    if (sum_direct != sum_seam || memcmp(direct, viaseam, 512) != 0) {
++        kprintf("[nvme] FAIL: the two paths disagree about LBA 0\n");
++        return;
++    }
++    kprintf("[nvme] PASS: %llu blocks reachable, both paths agree on LBA 0\n",
++            (unsigned long long)nv.ns_blocks);
++}
+diff --git a/drivers/nvme/nvme.h b/drivers/nvme/nvme.h
+new file mode 100644
+index 0000000..3f24505
+--- /dev/null
++++ b/drivers/nvme/nvme.h
+@@ -0,0 +1,46 @@
++#ifndef AURALITE_DRIVERS_NVME_NVME_H
++#define AURALITE_DRIVERS_NVME_NVME_H
++
++#include <stdint.h>
++
++/*
++ * NVMe (NVM Express) driver over PCIe — RESIDUE3 C7b, RES-46's storage
++ * successor.
++ *
++ * SCOPE, STATED UP FRONT.  This is a polled, one-command-in-flight driver for
++ * a single namespace: an admin queue pair and one I/O queue pair, created
++ * explicitly (no Set Features negotiation), no interrupts, no PRP lists, no
++ * SGLs, no ZNS/ZASL, no multi-namespace.  Every one of those omissions is
++ * visible in the code rather than implied:
++ *
++ *   - transfers move through a 4 KiB bounce buffer, so a command never needs
++ *     a PRP list and the caller's buffer never needs to be physically
++ *     contiguous (it says what it costs: one memcpy per 4 KiB);
++ *   - completion is a poll on the phase bit with a bounded spin, so a wedged
++ *     controller fails loudly instead of hanging the boot;
++ *   - only a 512-byte logical block shape is registered with blkdev, because
++ *     the seam below it (kernel/fs/blkdev.h) is 512-only by design.  A
++ *     controller announcing 4096-byte LBAs is refused BY NAME.
++ *
++ * The controller's own identity is printed at bring-up (Identify Controller
++ * MN/SN/FR), the way the Bluetooth driver quotes its controller's BD_ADDR:
++ * a receipt a reader can tell apart from a printf.
++ */
++
++/* Probe PCI for an NVMe controller, bring up its queues, read the identity of
++ * namespace 1 and register it as a blkdev.
++ *
++ * Returns 0 on success, negative when no controller is present (-1), when the
++ * controller has a shape this driver refuses (-2: non-512-byte LBA), or when
++ * bring-up failed (-3).  Never panics and never spins unbounded. */
++int nvme_init(void);
++
++/* Number of namespaces registered as blkdevs. */
++int nvme_namespace_count(void);
++
++/* Boot self-test: prints the controller identity and reads LBA 0, twice
++ * (through the driver and through the blkdev seam), so the two paths are
++ * shown to agree.  Silent when no controller was found. */
++void nvme_self_test(void);
++
++#endif /* AURALITE_DRIVERS_NVME_NVME_H */
+diff --git a/drivers/nvme/nvme_proto.h b/drivers/nvme/nvme_proto.h
+new file mode 100644
+index 0000000..b2ee9ec
+--- /dev/null
++++ b/drivers/nvme/nvme_proto.h
+@@ -0,0 +1,298 @@
++#ifndef AURALITE_DRIVERS_NVME_NVME_PROTO_H
++#define AURALITE_DRIVERS_NVME_NVME_PROTO_H
++
++#include <stdint.h>
++
++/*
++ * NVMe protocol encoding — the pure half of the driver (RESIDUE3 C7b).
++ *
++ * Everything here is arithmetic over bytes that a controller will read or
++ * that a controller wrote: register field packing, the 64-byte submission
++ * entry, the 16-byte completion entry, and the doorbell geometry.  It is kept
++ * out of nvme.c for the same reason kernel/net/tcp_wscale.h is kept out of
++ * tcp.c: the parts that can be wrong silently are the parts worth pinning on
++ * the host, where a mistake costs a test run instead of a wedged queue.
++ *
++ * Register and structure layouts: NVM Express Base Specification 2.0,
++ * figures "Offset 00h: Controller Capabilities", "Submission Queue Entry",
++ * "Completion Queue Entry".  Byte offsets are named rather than assumed.
++ *
++ * NOTHING HERE TOUCHES HARDWARE.  nvme.c owns the MMIO, the DMA and the
++ * polling; this header only says what the bytes mean.
++ */
++
++/* ---- Controller registers (BAR0 offsets) ----------------------------- */
++#define NVME_REG_CAP    0x00u   /* 64-bit controller capabilities */
++#define NVME_REG_VS     0x08u   /* 32-bit version */
++#define NVME_REG_INTMS  0x0Cu
++#define NVME_REG_INTMC  0x10u
++#define NVME_REG_CC     0x14u   /* 32-bit controller configuration */
++#define NVME_REG_CSTS   0x1Cu   /* 32-bit controller status */
++#define NVME_REG_AQA    0x24u   /* 32-bit admin queue attributes */
++#define NVME_REG_ASQ    0x28u   /* 64-bit admin submission queue base */
++#define NVME_REG_ACQ    0x30u   /* 64-bit admin completion queue base */
++
++/* CC bits (NVMe 2.0 figure 40). */
++#define NVME_CC_EN       (1u << 0)
++#define NVME_CC_CSS_NVM  (0u << 4)     /* command set: NVM */
++#define NVME_CC_SHN_NONE (0u << 14)
++#define NVME_CC_IOSQES_SHIFT 16u       /* 2^n bytes per SQ entry */
++#define NVME_CC_IOCQES_SHIFT 20u
++#define NVME_SQ_ENTRY_SHIFT  6u        /* 64-byte entries => n = 6 */
++#define NVME_CQ_ENTRY_SHIFT  4u        /* 16-byte entries => n = 4 */
++
++/* CSTS bits. */
++#define NVME_CSTS_RDY   (1u << 0)
++#define NVME_CSTS_CFS   (1u << 1)      /* controller fatal status */
++
++/* CAP fields (NVMe 2.0 figure 39). */
++#define NVME_CAP_MQES_SHIFT   0u
++#define NVME_CAP_CQR_SHIFT    16u
++#define NVME_CAP_TO_SHIFT     24u
++#define NVME_CAP_DSTRD_SHIFT  32u
++#define NVME_CAP_CSS_SHIFT    37u
++#define NVME_CAP_MPSMIN_SHIFT 48u
++
++/* ---- Admin / I/O opcodes --------------------------------------------- */
++#define NVME_ADMIN_DELETE_SQ  0x00u
++#define NVME_ADMIN_CREATE_SQ  0x01u
++#define NVME_IO_WRITE         0x01u
++#define NVME_IO_READ          0x02u
++#define NVME_ADMIN_CREATE_CQ  0x05u
++#define NVME_ADMIN_IDENTIFY   0x06u
++#define NVME_ADMIN_SET_FEAT   0x09u
++#define NVME_ADMIN_GET_FEAT   0x0Au
++
++#define NVME_FEAT_NUM_QUEUES  0x07u
++#define NVME_IDENTIFY_NSID_0  0x00u   /* CNS 0: namespace */
++#define NVME_IDENTIFY_CTRL    0x01u   /* CNS 1: controller */
++
++/* Completion Queue Entry, DW3 — and this is the field this driver got wrong
++ * the first time: DW3 is NOT "reserved then status".  Its LOW half is the
++ * command identifier the submission carried, and its HIGH half is the status
++ * (NVMe 2.0 figure 96).  Reading the status out of the low half makes a
++ * perfectly good completion look like a phase-0 error, and — worse — makes
++ * some genuine errors look like successes, because the CID's low bit reads
++ * as a phase tag.  Measured once, in this driver, at C7b. */
++#define NVME_CQE_CID_MASK    0x0000FFFFu
++#define NVME_CQE_STATUS_SHIFT 16u
++#define NVME_CQE_PHASE         (1u << 0)   /* inside the status half */
++#define NVME_CQE_STATUS_MASK   0xFFFEu     /* SC, bits 15:1 of the status half */
++#define NVME_CQE_SCT_SHIFT     9u
++#define NVME_CQE_SC_SHIFT      1u
++#define NVME_CQE_DNR_SHIFT     15u
++
++/* A completed command that the controller rejected carries a non-zero
++ * status code; a good completion is 0. */
++typedef struct {
++    uint8_t  phase;        /* the phase bit the controller wrote */
++    uint8_t  status_code;  /* SC, bits 8:1 */
++    uint8_t  status_type;  /* SCT, bits 11:9: 0 generic, 1 command, 2 media */
++    uint8_t  do_not_retry;
++} nvme_status_t;
++
++/* The command identifier a completion answers. */
++static inline uint16_t nvme_cqe_cid(uint32_t cdw3) {
++    return (uint16_t)(cdw3 & NVME_CQE_CID_MASK);
++}
++
++/* The 16-bit status half of DW3. */
++static inline uint16_t nvme_cqe_status16(uint32_t cdw3) {
++    return (uint16_t)(cdw3 >> NVME_CQE_STATUS_SHIFT);
++}
++
++static inline nvme_status_t nvme_cqe_status(uint32_t cdw3) {
++    uint16_t sw = nvme_cqe_status16(cdw3);
++    nvme_status_t st;
++    st.phase        = (uint8_t)(sw & NVME_CQE_PHASE);
++    st.status_code  = (uint8_t)((sw & NVME_CQE_STATUS_MASK) >> NVME_CQE_SC_SHIFT);
++    st.status_type  = (uint8_t)((sw >> NVME_CQE_SCT_SHIFT) & 0x7u);
++    st.do_not_retry = (uint8_t)((sw >> NVME_CQE_DNR_SHIFT) & 1u);
++    return st;
++}
++
++/* An all-ones completion entry is what unwritten queue memory reads as; its
++ * phase bit is 1 while the driver's expectation may also be 1, so "phase
++ * matches" alone can accept garbage.  A CQE also has to carry a plausible
++ * SQ head pointer, which is exactly what makes this check possible. */
++static inline int nvme_cqe_plausible(uint32_t cdw2, uint32_t cdw3,
++                                     uint8_t expected_phase,
++                                     uint16_t expected_cid) {
++    nvme_status_t st = nvme_cqe_status(cdw3);
++    if (st.phase != expected_phase) return 0;
++    /* The CID is the strongest check available: unwritten queue memory has
++     * CID 0xFFFF and phase 1, which "phase matches" alone would accept. */
++    if (nvme_cqe_cid(cdw3) != expected_cid) return 0;
++    uint16_t sqid = (uint16_t)(cdw2 >> 16);
++    if (sqid == 0xFFFFu) return 0;
++    return 1;
++}
++
++/* ---- Register packing ------------------------------------------------ */
++
++static inline uint32_t nvme_cc_value(uint32_t enable) {
++    return (enable ? NVME_CC_EN : 0u)
++         | NVME_CC_CSS_NVM
++         | NVME_CC_SHN_NONE
++         | (NVME_SQ_ENTRY_SHIFT << NVME_CC_IOSQES_SHIFT)
++         | (NVME_CQ_ENTRY_SHIFT << NVME_CC_IOCQES_SHIFT);
++}
++
++/* AQA: ASQS/ACQS are 0-based sizes, 12 and 16 bits wide respectively. */
++static inline uint32_t nvme_aqa_value(uint32_t sq_entries, uint32_t cq_entries) {
++    uint32_t sqs = (sq_entries > 0) ? (sq_entries - 1u) : 0u;
++    uint32_t cqs = (cq_entries > 0) ? (cq_entries - 1u) : 0u;
++    if (sqs > 0xFFFu) sqs = 0xFFFu;
++    if (cqs > 0xFFFu) cqs = 0xFFFu;
++    return (sqs & 0xFFFu) | ((cqs & 0xFFFu) << 16);
++}
++
++static inline uint32_t nvme_cap_mqes(uint64_t cap) {
++    return (uint32_t)((cap >> NVME_CAP_MQES_SHIFT) & 0xFFFFu);
++}
++static inline uint32_t nvme_cap_dstrd(uint64_t cap) {
++    return (uint32_t)((cap >> NVME_CAP_DSTRD_SHIFT) & 0xFu);
++}
++static inline uint32_t nvme_cap_mpsmin(uint64_t cap) {
++    return (uint32_t)((cap >> NVME_CAP_MPSMIN_SHIFT) & 0xFu);
++}
++
++/* Doorbell offsets: SQ0 tail doorbell is at 0x1000; each queue pair owns two
++ * consecutive doorbells, separated by 4 << DSTRD bytes. */
++static inline uint32_t nvme_doorbell_sq(uint32_t dstrd, uint32_t qid) {
++    return 0x1000u + (qid * 2u) * (4u << dstrd);
++}
++static inline uint32_t nvme_doorbell_cq(uint32_t dstrd, uint32_t qid) {
++    return 0x1000u + (qid * 2u + 1u) * (4u << dstrd);
++}
++
++/* ---- Completion-queue bookkeeping ------------------------------------ */
++
++/* Head pointer advance with wraparound: the CQ is a ring of `entries`. */
++static inline uint32_t nvme_ring_next(uint32_t idx, uint32_t entries) {
++    uint32_t n = idx + 1u;
++    return (n >= entries) ? 0u : n;
++}
++
++/* ---- Submission-queue entries ---------------------------------------- */
++
++/* CDW0: opcode in 7:0, fuse in 9:8, command id in 31:16. */
++static inline uint32_t nvme_cdw0(uint32_t opcode, uint32_t cid) {
++    return (opcode & 0xFFu) | ((cid & 0xFFFFu) << 16);
++}
++
++/* CDW12 for a read/write: NLB is the number of logical blocks MINUS ONE,
++ * bits 15:0.  A caller that passes 0 has asked for nothing at all. */
++static inline uint32_t nvme_cdw12_nlb(uint32_t blocks) {
++    if (blocks == 0) return 0;
++    uint32_t nlb = blocks - 1u;
++    return (nlb > 0xFFFFu) ? 0xFFFFu : nlb;
++}
++
++/* Create I/O Completion Queue, CDW10/CDW11 (NVMe 2.0 figure 114). */
++static inline uint32_t nvme_create_cq_cdw10(uint32_t qid, uint32_t entries) {
++    uint32_t qs = (entries > 0) ? (entries - 1u) : 0u;
++    return (qid & 0xFFFFu) | ((qs & 0xFFFFu) << 16);
++}
++static inline uint32_t nvme_create_cq_cdw11(int physically_contiguous,
++                                            uint32_t vector) {
++    return (physically_contiguous ? 1u : 0u) | ((vector & 0xFFFFu) << 16);
++}
++
++/* Create I/O Submission Queue, CDW10/CDW11 (NVMe 2.0 figure 116). */
++static inline uint32_t nvme_create_sq_cdw10(uint32_t qid, uint32_t entries) {
++    uint32_t qs = (entries > 0) ? (entries - 1u) : 0u;
++    return (qid & 0xFFFFu) | ((qs & 0xFFFFu) << 16);
++}
++static inline uint32_t nvme_create_sq_cdw11(int physically_contiguous,
++                                            uint32_t cqid, uint32_t priority) {
++    return (physically_contiguous ? 1u : 0u)
++         | ((priority & 0x3u) << 1)
++         | ((cqid & 0xFFFFu) << 16);
++}
++
++/* Set Features (Number of Queues): NSQR in 15:0, NCQR in 31:16, both 0-based.
++ * The controller answers with what it actually allocated. */
++static inline uint32_t nvme_setfeat_numq(uint32_t sq_wanted, uint32_t cq_wanted) {
++    uint32_t nsqr = (sq_wanted > 0) ? (sq_wanted - 1u) : 0u;
++    uint32_t ncqr = (cq_wanted > 0) ? (cq_wanted - 1u) : 0u;
++    return (nsqr & 0xFFFFu) | ((ncqr & 0xFFFFu) << 16);
++}
++static inline uint32_t nvme_numq_sq_granted(uint32_t dw0) {
++    return (dw0 & 0xFFFFu) + 1u;
++}
++static inline uint32_t nvme_numq_cq_granted(uint32_t dw0) {
++    return ((dw0 >> 16) & 0xFFFFu) + 1u;
++}
++
++/* Identify: CDW10 carries CNS (7:0); CDW11 carries the namespace id. */
++static inline uint32_t nvme_identify_cdw10(uint32_t cns) { return cns & 0xFFu; }
++
++/* ---- Identify payload decoding --------------------------------------- */
++
++/* Byte offsets inside the 4096-byte Identify Controller / Namespace data. */
++#define NVME_ID_CTRL_SN   4u     /* 20-byte serial number, space padded */
++#define NVME_ID_CTRL_MN   24u    /* 40-byte model number */
++#define NVME_ID_CTRL_FR   64u    /* 8-byte firmware revision */
++#define NVME_ID_NS_SIZE   0u     /* NSZE, 64-bit, in logical blocks */
++#define NVME_ID_NS_CAP    8u     /* NCAP, 64-bit */
++#define NVME_ID_NS_FLBAS  26u    /* bits 3:0: LBA format index */
++#define NVME_ID_NS_LBAF   128u   /* 16 LBA formats x 4 bytes */
++#define NVME_ID_NS_NOFLBAS 0x4u  /* FLBAS bit 2: metadata at end of LBA */
++
++/* Copy a space-padded ASCII field out of an identify payload, trimming the
++ * trailing spaces the spec requires and refusing to emit control bytes. */
++static inline int nvme_id_string(const uint8_t *data, uint32_t off,
++                                 uint32_t len, char *out, uint32_t out_max) {
++    if (!data || !out || out_max == 0) return -1;
++    uint32_t n = 0;
++    for (uint32_t i = 0; i < len && n + 1u < out_max; i++) {
++        uint8_t c = data[off + i];
++        if (c < 0x20u || c > 0x7Eu) c = (uint8_t)' ';
++        out[n++] = (char)c;
++    }
++    while (n > 0 && out[n - 1u] == ' ') n--;
++    out[n] = '\0';
++    return (int)n;
++}
++
++/* LBA format decode.  `lbaf` is the 32-bit entry; MS(15:0), LBADS(23:16),
++ * RP(25:24).  Returns the LBA size in bytes, or 0 for "not a shape this
++ * driver can address" — the caller must say so out loud rather than divide
++ * by it. */
++static inline uint32_t nvme_lbaf_bytes(uint32_t lbaf) {
++    uint32_t lbads = (lbaf >> 16) & 0xFFu;
++    if (lbads == 0 || lbads > 16) return 0;     /* spec allows 9..16 */
++    return 1u << lbads;
++}
++
++/* The namespace's active LBA format index from FLBAS, plus the LBA size that
++ * index names. */
++static inline uint32_t nvme_flbas_index(const uint8_t *ns_data) {
++    return (uint32_t)(ns_data[NVME_ID_NS_FLBAS] & 0x0Fu);
++}
++static inline uint32_t nvme_ns_lba_bytes(const uint8_t *ns_data) {
++    uint32_t idx = nvme_flbas_index(ns_data);
++    if (idx > 15u) return 0;
++    uint32_t lbaf = 0;
++    const uint8_t *p = ns_data + NVME_ID_NS_LBAF + idx * 4u;
++    lbaf = (uint32_t)p[0] | ((uint32_t)p[1] << 8)
++         | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++    return nvme_lbaf_bytes(lbaf);
++}
++
++/* Little-endian 64-bit field decode.  Built from two 32-bit halves so the
++ * portable header needs no widening casts (this tree ratchets those, and a
++ * byte-by-byte OR of eight terms is not more readable than four). */
++static inline uint64_t nvme_le64(const uint8_t *p) {
++    uint32_t lo = (uint32_t)p[0] | ((uint32_t)p[1] << 8)
++                | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
++    uint32_t hi = (uint32_t)p[4] | ((uint32_t)p[5] << 8)
++                | ((uint32_t)p[6] << 16) | ((uint32_t)p[7] << 24);
++    uint64_t v = hi;         /* implicit widening: no cast token needed */
++    v <<= 32;
++    v |= lo;
++    return v;
++}
++
++#endif /* AURALITE_DRIVERS_NVME_NVME_PROTO_H */
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 31b920e..291e48f 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -490,6 +490,19 @@ void kmain(boot_info_t *boot_info) {
+         kprintf("[boot] virtio-blk initialized\n");
+     }
+ 
++    /* RESIDUE3 C7b: NVMe.  Probed AFTER the other block drivers on purpose:
++     * blkdev ids follow registration order, and the filesystem mount order
++     * below ("second disk -> /ext2") is what makes an NVMe namespace the
++     * disk a boot mounts when one is attached. */
++    {
++        extern int nvme_init(void);
++        extern void nvme_self_test(void);
++        if (nvme_init() == 0) {
++            kprintf("[boot] nvme initialized\n");
++            nvme_self_test();
++        }
++    }
++
+     /* ext2 prefers the *second* disk so /fat and /ext2 stay independent.
+      * If only one disk is present, ext2 falls back to it (but skips formatting
+      * to avoid clobbering FAT32).  Since P1 these are blkdev ids: id N is the
+diff --git a/tests/integration/cases/test_nvme.sh b/tests/integration/cases/test_nvme.sh
+new file mode 100755
+index 0000000..a685966
+--- /dev/null
++++ b/tests/integration/cases/test_nvme.sh
+@@ -0,0 +1,156 @@
++#!/usr/bin/env bash
++# test_nvme.sh — RESIDUE3 C7b: an NVMe namespace, mounted.
++#
++# RES-46's storage successor closes with a MOUNTED FILESYSTEM, not a probe, so
++# this case does three things and refuses to count any of them as the others:
++#
++#   1. the controller's own identity — model/serial/firmware read back from an
++#      Identify Controller command (a receipt a reader can tell apart from a
++#      printf, exactly like the Bluetooth driver's BD_ADDR);
++#   2. the namespace as a block device — size, LBA shape, and the driver's own
++#      self-test reading LBA 0 twice (through the driver and through the
++#      blkdev seam) and comparing the two;
++#   3. ext2 ON that namespace — the kernel mounts /ext2 from blkdev 1, which
++#      here is the NVMe namespace and nothing else, and the shell reads a file
++#      Linux wrote.  The host then reads back what the guest wrote.
++#
++# The disk order is load-bearing: the AHCI disk registers first (blkdev 0) so
++# the NVMe namespace lands on blkdev 1, which is the disk kernel.c mounts at
++# /ext2.  That is not a trick for this test — it is the same "second disk"
++# rule every other filesystem case uses.
++#
++# A second, quieter boot asserts the opposite: with no NVMe device attached
++# the driver says NOTHING.  A probe that prints on every machine is noise; a
++# probe that stays silent when there is nothing to drive is the receipt that
++# the lines above came from hardware.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "NVMe: a namespace that mounts (RESIDUE3 C7b)"
++
++MKFS=""; DEBUGFS=""
++for p in /sbin/mkfs.ext2 /usr/sbin/mkfs.ext2 /sbin/mke2fs /usr/sbin/mke2fs; do
++    [ -x "$p" ] && MKFS="$p" && break
++done
++for p in /sbin/debugfs /usr/sbin/debugfs; do
++    [ -x "$p" ] && DEBUGFS="$p" && break
++done
++if [ -z "$MKFS" ] || [ -z "$DEBUGFS" ]; then
++    il_skip "e2fsprogs not installed (need mkfs.ext2 + debugfs): no NVMe filesystem was mounted"
++    il_summary
++    exit 0
++fi
++
++IMGDIR="$IL_BUILD/nvme"
++mkdir -p "$IMGDIR"
++NVME_IMG="$IMGDIR/nvme-ext2.img"
++AHCI_IMG="$IMGDIR/ahci-first.img"
++LOG="$IL_LOGDIR/nvme.log"
++LOG_ABSENT="$IL_LOGDIR/nvme_absent.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++# 16 MiB namespace, 1 KiB ext2 blocks: the same shape test_ext2.sh uses on
++# AHCI, so a failure here is the transport and not the filesystem.
++dd if=/dev/zero of="$NVME_IMG" bs=1M count=16 status=none
++"$MKFS" -q -b 1024 -I 128 -F "$NVME_IMG" 2>/dev/null
++SEED="hello from linux, read back over NVMe $$"
++printf '%s\n' "$SEED" > "$IMGDIR/seed.txt"
++"$DEBUGFS" -w -R "write $IMGDIR/seed.txt NVME.TXT" "$NVME_IMG" >/dev/null 2>&1
++
++# The first disk only has to EXIST so the namespace is not disk 0.
++dd if=/dev/zero of="$AHCI_IMG" bs=1M count=8 status=none
++
++AURA_TOKEN="AURANVME_$$"
++il_send "ls /ext2"
++il_send "cat /ext2/NVME.TXT"
++il_send "write /ext2/from_aura.txt $AURA_TOKEN"
++il_send "cat /ext2/from_aura.txt"
++
++IL_QEMU_EXTRA=(
++    -drive "file=$AHCI_IMG,format=raw,if=none,id=ahcidisk"
++    -device "ahci,id=ahci0"
++    -device "ide-hd,drive=ahcidisk,bus=ahci0.0"
++    -drive "file=$NVME_IMG,format=raw,if=none,id=nvmedisk"
++    -device "nvme,serial=AURA0001,drive=nvmedisk"
++)
++il_run_qemu "$LOG" 90 \
++    -drive file="$IL_BUILD/auralite.iso",format=raw,if=ide,snapshot=on \
++    -boot order=c -m 512M -smp 2 -display none -no-reboot -cpu qemu64 \
++    "${IL_QEMU_EXTRA[@]}"
++
++# --- 1. The controller's own identity ------------------------------------
++il_assert_grep "$LOG" "\\[nvme\\] controller at PCI [0-9]+:[0-9]+\\.[0-9]+" \
++    "an NVMe controller was found on the PCI bus"
++il_assert_grep "$LOG" "\\[nvme\\] VS=0x00010400 CAP=0x" \
++    "the controller reported a version and capabilities"
++il_assert_grep_fixed "$LOG" "[nvme] reset: CC.EN=0 -> CSTS.RDY=0" \
++    "the controller acknowledged the reset (CC.EN=0)"
++il_assert_grep_fixed "$LOG" "[nvme] reset: CC.EN=1 -> CSTS.RDY=1 (controller ready)" \
++    "the controller came ready with the admin queues armed"
++il_assert_grep "$LOG" '\[nvme\] identify controller: model="QEMU NVMe Ctrl" serial="AURA0001" firmware="' \
++    "the model/serial/firmware are the controller's own Identify bytes"
++
++# --- 2. The namespace as a block device ---------------------------------
++il_assert_grep_fixed "$LOG" "[nvme] namespace 1: 32768 blocks x 512 bytes = 16 MiB" \
++    "Identify Namespace reports the real geometry"
++il_assert_grep_fixed "$LOG" "[nvme] I/O queue pair ready (qid 1, 8 entries, physically contiguous, no interrupts — completion is polled)" \
++    "an I/O queue pair was created and bound"
++il_assert_grep_fixed "$LOG" "[blkdev] registered 'nvme0' as disk 1 (32768 sectors)" \
++    "the namespace became a blkdev (disk 1: the AHCI disk registered first)"
++il_assert_grep "$LOG" "\\[nvme\\] read LBA 0: first bytes [0-9a-f]{2}" \
++    "LBA 0 was read back through the driver"
++il_assert_grep "$LOG" "\\[nvme\\] PASS: 32768 blocks reachable, both paths agree on LBA 0" \
++    "the driver path and the blkdev seam agree byte for byte"
++il_assert_no_grep "$LOG" "\\[nvme\\] FAIL" "no NVMe self-test failure"
++il_assert_no_grep "$LOG" "completion timeout" "no queue timeout"
++
++# --- 3. ext2 mounted off that namespace ---------------------------------
++il_assert_grep_fixed "$LOG" "[ext2] blkdev 1 mounted at /ext2" \
++    "ext2 mounted from the NVMe namespace"
++il_assert_grep "$LOG" "\\[ext2\\] mounted existing volume: block_size=1024" \
++    "the volume was recognised, not formatted"
++il_assert_grep "$LOG" "\\[ext2\\] PASS: ext2 read/write/dir/indirect works" \
++    "the filesystem's own self-test ran over NVMe"
++il_assert_grep_fixed "$LOG" "NVME.TXT" \
++    "the shell lists the file Linux wrote onto the namespace"
++il_assert_grep_fixed "$LOG" "$SEED" \
++    "the guest read Linux's content back over NVMe"
++il_assert_grep_fixed "$LOG" "$AURA_TOKEN" \
++    "the guest wrote and re-read its own file on the namespace"
++
++# The host reads what the guest wrote — the round trip is closed outside the
++# guest's own opinion of itself.
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))   # manual assert: count it, or the
++                                           # total under-reports (AUDIT_A2)
++if "$DEBUGFS" -R "ls /" "$NVME_IMG" 2>/dev/null | grep -q "from_aura.txt"; then
++    il_pass "host debugfs sees the file the guest created on the NVMe namespace"
++else
++    il_fail "host debugfs did not see from_aura.txt on the NVMe image"
++fi
++CONTENT="$("$DEBUGFS" -R "cat from_aura.txt" "$NVME_IMG" 2>/dev/null | tr -d '\0')"
++IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++if printf '%s' "$CONTENT" | grep -q "$AURA_TOKEN"; then
++    il_pass "host read the guest's bytes back off the namespace"
++else
++    il_fail "host read mismatched content off the namespace ('$CONTENT')"
++fi
++
++il_assert_no_grep "$LOG" "PANIC|page fault in kernel" "no kernel fault"
++
++# --- 4. The negative control: no controller, no claim -------------------
++il_section "NVMe: with no controller attached the driver stays silent"
++il_run_qemu "$LOG_ABSENT" 60 \
++    -drive file="$IL_BUILD/auralite.iso",format=raw,if=ide,snapshot=on \
++    -boot order=c -m 512M -smp 2 -display none -no-reboot -cpu qemu64
++IL_LAST_LOG="$LOG_ABSENT"
++il_assert_no_grep "$LOG_ABSENT" "\\[nvme\\]" \
++    "no NVMe lines at all when the machine has no NVMe controller"
++il_assert_no_grep "$LOG_ABSENT" "PANIC|page fault in kernel" \
++    "and the boot is unaffected"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 360da71..f57c4e7 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -157,6 +157,7 @@ ALL_CASES=(
+     test_fat32_persistence
+     test_fat32_full
+     test_ext2
++    test_nvme
+     test_fs_stress
+     test_irq_ap_wake
+     test_fsformat_knob
+diff --git a/tests/unit/test_nvme_proto.c b/tests/unit/test_nvme_proto.c
+new file mode 100644
+index 0000000..a38e315
+--- /dev/null
++++ b/tests/unit/test_nvme_proto.c
+@@ -0,0 +1,215 @@
++/* test_nvme_proto.c — host pin for drivers/nvme/nvme_proto.h (RESIDUE3 C7b).
++ *
++ * The NVMe driver's silent-death modes all live in the encoding: a CDW12 that
++ * says "zero blocks" for a one-block read, a doorbell computed with the wrong
++ * stride, an AQA that forgets its fields are 0-based, a completion whose
++ * phase bit is accepted without checking the entry is not unwritten queue
++ * memory.  None of those produce a crash; they produce a queue that never
++ * completes.  That is why they are pinned here.
++ *
++ * Build: cc -std=c11 -Wall -Wextra -Werror -I . tests/unit/test_nvme_proto.c
++ */
++#include <stdio.h>
++#include <string.h>
++#include <stdint.h>
++
++#include "drivers/nvme/nvme_proto.h"
++
++static int checks = 0, fails = 0;
++
++#define CHECK(cond, fmt, ...)                                              \
++    do {                                                                   \
++        checks++;                                                          \
++        if (!(cond)) {                                                     \
++            fails++;                                                       \
++            printf("  FAIL: " fmt "\n", ##__VA_ARGS__);                    \
++        }                                                                  \
++    } while (0)
++
++static void t_cc_aqa(void) {
++    printf("registers: CC and AQA packing\n");
++    uint32_t cc = nvme_cc_value(1);
++    CHECK((cc & NVME_CC_EN) != 0, "CC.EN set when enabling");
++    CHECK(nvme_cc_value(0) == (cc & ~NVME_CC_EN), "CC.EN clear when disabling");
++    CHECK(((cc >> NVME_CC_IOSQES_SHIFT) & 0xFu) == NVME_SQ_ENTRY_SHIFT,
++          "CC.IOSQES = 6 (64-byte entries)");
++    CHECK(((cc >> NVME_CC_IOCQES_SHIFT) & 0xFu) == NVME_CQ_ENTRY_SHIFT,
++          "CC.IOCQES = 4 (16-byte entries)");
++    CHECK(((cc >> 4) & 0x7u) == 0u, "CC.CSS = NVM command set");
++
++    /* AQA is 0-based in BOTH fields -- the classic off-by-one is a queue of
++     * 8 entries declared as 8, which asks for 9. */
++    uint32_t aqa = nvme_aqa_value(8, 8);
++    CHECK((aqa & 0xFFFu) == 7u, "AQA.ASQS = entries-1");
++    CHECK(((aqa >> 16) & 0xFFFu) == 7u, "AQA.ACQS = entries-1");
++    CHECK(nvme_aqa_value(1, 1) == 0u, "a one-entry queue is 0");
++    /* Wider than the field: saturate, never truncate into a smaller queue. */
++    CHECK((nvme_aqa_value(5000, 5000) & 0xFFFu) == 0xFFFu, "ASQS saturates");
++    CHECK((nvme_aqa_value(0, 0) & 0xFFFu) == 0u, "a zero size does not wrap");
++}
++
++static void t_cap(void) {
++    printf("registers: CAP decode\n");
++    /* A plausible QEMU CAP: MQES=0x3FF, DSTRD=0, MPSMIN=0, CSS=1 (NVM). */
++    uint64_t cap = (uint64_t)0x3FFu
++                 | ((uint64_t)1u << NVME_CAP_CSS_SHIFT)
++                 | ((uint64_t)0u << NVME_CAP_DSTRD_SHIFT)
++                 | ((uint64_t)0u << NVME_CAP_MPSMIN_SHIFT);
++    CHECK(nvme_cap_mqes(cap) == 0x3FFu, "MQES");
++    CHECK(nvme_cap_dstrd(cap) == 0u, "DSTRD");
++    CHECK(nvme_cap_mpsmin(cap) == 0u, "MPSMIN = 4 KiB pages");
++
++    uint64_t cap2 = cap | ((uint64_t)2u << NVME_CAP_DSTRD_SHIFT);
++    CHECK(nvme_cap_dstrd(cap2) == 2u, "DSTRD 2 decoded");
++}
++
++static void t_doorbells(void) {
++    printf("registers: doorbell geometry\n");
++    /* With stride 0, queue 0's SQ tail is 0x1000 and its CQ head 0x1004. */
++    CHECK(nvme_doorbell_sq(0, 0) == 0x1000u, "SQ0TDBL");
++    CHECK(nvme_doorbell_cq(0, 0) == 0x1004u, "CQ0HDBL");
++    CHECK(nvme_doorbell_sq(0, 1) == 0x1008u, "SQ1TDBL");
++    CHECK(nvme_doorbell_cq(0, 1) == 0x100Cu, "CQ1HDBL");
++    /* DSTRD=2 => 16-byte stride: queue 1's SQ tail is 0x1000 + 2*16. */
++    CHECK(nvme_doorbell_sq(2, 1) == 0x1020u, "SQ1TDBL with DSTRD=2");
++    CHECK(nvme_doorbell_cq(2, 1) == 0x1030u, "CQ1HDBL with DSTRD=2");
++    /* The two doorbells of a pair must never collide. */
++    for (uint32_t d = 0; d < 4; d++)
++        for (uint32_t q = 0; q < 4; q++)
++            CHECK(nvme_doorbell_sq(d, q) != nvme_doorbell_cq(d, q),
++                  "doorbells distinct (dstrd=%u qid=%u)", d, q);
++}
++
++static void t_status(void) {
++    printf("completions: status word and plausibility\n");
++    /* A real Success completion for CID 5: DW3 = CID(5) | status(0x0001)
++     * << 16 — the status lives in the HIGH half. */
++    nvme_status_t st = nvme_cqe_status(0x00010005u);
++    CHECK(nvme_cqe_cid(0x00010005u) == 5, "CID comes from the low half");
++    CHECK(st.phase == 1 && st.status_code == 0 && st.status_type == 0,
++          "phase 1, status 0");
++    /* The same words with the halves swapped is the bug this pin exists for:
++     * CID 1 + status 0x0005 would read as success in the wrong layout. */
++    CHECK(nvme_cqe_status(0x00050001u).status_code == 0x02,
++          "swapped halves decode as an error, not as success");
++
++    /* A real error: SC=0x02 (invalid field), SCT=0 (generic), phase 1.
++     * CDW3 = phase | (SC << 1) | (SCT << 9). */
++    uint32_t bad = (uint32_t)(1u | (0x02u << NVME_CQE_SC_SHIFT)) << NVME_CQE_STATUS_SHIFT;
++    st = nvme_cqe_status(bad | 7u);
++    CHECK(st.status_code == 0x02, "SC decoded");
++    CHECK(st.status_type == 0, "SCT decoded");
++    st = nvme_cqe_status(((uint32_t)(1u | (0x81u << NVME_CQE_SC_SHIFT)
++                           | (2u << NVME_CQE_SCT_SHIFT)) << NVME_CQE_STATUS_SHIFT) | 3u);
++    CHECK(st.status_code == 0x81 && st.status_type == 2, "media error decodes");
++    st = nvme_cqe_status(((uint32_t)(1u | (1u << NVME_CQE_DNR_SHIFT))
++                          << NVME_CQE_STATUS_SHIFT) | 4u);
++    CHECK(st.do_not_retry == 1, "DNR bit decoded");
++
++    /* The trap: unwritten queue memory is all ones, and its phase bit is 1 --
++     * the same value a driver waiting for phase 1 expects. */
++    uint32_t garbage_cdw2 = 0xFFFFFFFFu, garbage_cdw3 = 0xFFFFFFFFu;
++    CHECK(nvme_cqe_plausible(garbage_cdw2, garbage_cdw3, 1, 9) == 0,
++          "an all-ones entry is rejected even though its phase matches");
++    /* A real entry: SQHD=0, SQID=1, CID=9, phase 1, status 0. */
++    uint32_t good_cdw2 = 0u | (1u << 16);
++    uint32_t good_cdw3 = (0x0001u << NVME_CQE_STATUS_SHIFT) | 9u;
++    CHECK(nvme_cqe_plausible(good_cdw2, good_cdw3, 1, 9) == 1,
++          "a real entry is accepted");
++    CHECK(nvme_cqe_plausible(good_cdw2, good_cdw3, 0, 9) == 0,
++          "wrong phase rejected");
++    CHECK(nvme_cqe_plausible(good_cdw2, good_cdw3, 1, 10) == 0,
++          "a completion for another command is rejected");
++}
++
++static void t_ring(void) {
++    printf("queues: ring advance\n");
++    CHECK(nvme_ring_next(0, 8) == 1, "0 -> 1");
++    CHECK(nvme_ring_next(6, 8) == 7, "6 -> 7");
++    CHECK(nvme_ring_next(7, 8) == 0, "7 wraps to 0");
++    CHECK(nvme_ring_next(0, 1) == 0, "a one-entry ring stays at 0");
++}
++
++static void t_cdws(void) {
++    printf("commands: CDW packing\n");
++    CHECK(nvme_cdw0(NVME_IO_READ, 1) == (0x02u | (1u << 16)), "opcode + CID");
++    /* NLB is blocks-1: one block must be 0, not 1.  Getting this backwards
++     * reads 512 bytes too many and the next command's data is shifted. */
++    CHECK(nvme_cdw12_nlb(1) == 0u, "one block -> NLB 0");
++    CHECK(nvme_cdw12_nlb(8) == 7u, "eight blocks -> NLB 7");
++    CHECK(nvme_cdw12_nlb(0) == 0u, "zero blocks does not wrap to 0xFFFF");
++    CHECK(nvme_cdw12_nlb(70000) == 0xFFFFu, "NLB saturates at the field width");
++
++    CHECK(nvme_create_cq_cdw10(1, 8) == (1u | (7u << 16)), "Create CQ qid/size");
++    CHECK(nvme_create_cq_cdw11(1, 0) == 1u, "Create CQ: physically contiguous");
++    CHECK(nvme_create_sq_cdw10(1, 8) == (1u | (7u << 16)), "Create SQ qid/size");
++    uint32_t csq = nvme_create_sq_cdw11(1, 1, 0);
++    CHECK((csq & 1u) == 1u, "Create SQ: physically contiguous");
++    CHECK(((csq >> 16) & 0xFFFFu) == 1u, "Create SQ: bound to CQ 1");
++
++    uint32_t nq = nvme_setfeat_numq(1, 1);
++    CHECK(nq == 0u, "asking for one queue pair is 0/0");
++    CHECK(nvme_numq_sq_granted(nq) == 1u && nvme_numq_cq_granted(nq) == 1u,
++          "granted counts decode back");
++    CHECK(nvme_numq_sq_granted(0xFFFF0000u) == 1u,
++          "a controller granting 0 SQs decodes as 1 (0-based, as the spec says)");
++
++    CHECK(nvme_identify_cdw10(NVME_IDENTIFY_CTRL) == 1u, "Identify CNS=01h");
++    CHECK(nvme_identify_cdw10(NVME_IDENTIFY_NSID_0) == 0u, "Identify CNS=00h");
++}
++
++static void t_identify(void) {
++    printf("identify: string and LBA-format decoding\n");
++    uint8_t data[4096];
++    memset(data, ' ', sizeof data);
++    memcpy(data + NVME_ID_CTRL_SN, "AURA0001            ", 20);
++    memcpy(data + NVME_ID_CTRL_MN, "QEMU NVMe Ctrl                          ", 40);
++    memcpy(data + NVME_ID_CTRL_FR, "1.3     ", 8);
++
++    char out[64];
++    CHECK(nvme_id_string(data, NVME_ID_CTRL_SN, 20, out, sizeof out) == 8,
++          "serial length after trimming");
++    CHECK(strcmp(out, "AURA0001") == 0, "serial trimmed: '%s'", out);
++    nvme_id_string(data, NVME_ID_CTRL_MN, 40, out, sizeof out);
++    CHECK(strcmp(out, "QEMU NVMe Ctrl") == 0, "model trimmed: '%s'", out);
++
++    /* Control bytes must not reach the console. */
++    uint8_t junk[8] = { 'A', 0x00, 0x7F, 'B', ' ', ' ', ' ', ' ' };
++    nvme_id_string(junk, 0, 8, out, sizeof out);
++    CHECK(strcmp(out, "A  B") == 0, "non-printable bytes become spaces: '%s'", out);
++
++    /* LBA format: LBADS 9 => 512 bytes, 12 => 4096. */
++    CHECK(nvme_lbaf_bytes(9u << 16) == 512u, "LBADS 9 is 512 bytes");
++    CHECK(nvme_lbaf_bytes(12u << 16) == 4096u, "LBADS 12 is 4096 bytes");
++    CHECK(nvme_lbaf_bytes(0u) == 0u, "LBADS 0 is refused, not divided by");
++    CHECK(nvme_lbaf_bytes(17u << 16) == 0u, "LBADS 17 is refused");
++
++    /* A namespace whose active format is index 1, 4096-byte LBAs. */
++    uint8_t ns[4096];
++    memset(ns, 0, sizeof ns);
++    ns[NVME_ID_NS_FLBAS] = 1;
++    ns[NVME_ID_NS_LBAF + 0] = 0x00; ns[NVME_ID_NS_LBAF + 2] = 9;   /* 512 */
++    ns[NVME_ID_NS_LBAF + 4] = 0x00; ns[NVME_ID_NS_LBAF + 6] = 12;  /* 4096 */
++    CHECK(nvme_flbas_index(ns) == 1u, "FLBAS index");
++    CHECK(nvme_ns_lba_bytes(ns) == 4096u, "4096-byte LBA resolved");
++    ns[NVME_ID_NS_FLBAS] = 0;
++    CHECK(nvme_ns_lba_bytes(ns) == 512u, "512-byte LBA resolved");
++
++    /* NSZE, little endian 64-bit. */
++    uint8_t size[8] = { 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
++    CHECK(nvme_le64(size) == 8192u, "NSZE = 8192 blocks");
++}
++
++int main(void) {
++    printf("=== AuraLite OS NVMe protocol tests (RESIDUE3 C7b) ===\n\n");
++    t_cc_aqa();
++    t_cap();
++    t_doorbells();
++    t_status();
++    t_ring();
++    t_cdws();
++    t_identify();
++    printf("\n=== Results: %d/%d passed, %d failed ===\n",
++           checks - fails, checks, fails);
++    return fails == 0 ? 0 : 1;
++}
+diff --git a/tools/check_rinet2_claims.py b/tools/check_rinet2_claims.py
+index 7379b3c..d8144c7 100644
+--- a/tools/check_rinet2_claims.py
++++ b/tools/check_rinet2_claims.py
+@@ -350,7 +350,10 @@ def claims():
+             "| RES-49 | M | PENDING-USER@Y7 |" in ledger and
+             "| RES-50 | N | RE-AFFIRMED@Y7 |" in ledger and
+             "| RES-51 | N | RE-AFFIRMED@Y7 |" in ledger and
+-            "| RES-52 | S | HANDED-OFF@Y7 |" in ledger and
++            # RES-52 was HANDED-OFF@Y7 at Y7 close; RESIDUE3 C7 landed
++            # window scaling and the row flipped to DONE@C7.  The claim
++            # tracks the tree, so it follows the row.
++            "| RES-52 | S | DONE@C7 |" in ledger and
+             "| RES-53 | W | DONE |" in ledger and
+             "atls_rsa_verify_pss_sha256" in
+             read("lib", "libatls", "src", "atls_rsa.c")))
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index 5f3c37f..0cdd3fd 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -21,7 +21,7 @@ REALINTERNET2_PLAN.md 8
+ REALINTERNET_PLAN.md 8
+ REALTEK_PLAN.md 5
+ RESIDUE2_PLAN.md 21
+-RESIDUE3_PLAN.md 52
++RESIDUE3_PLAN.md 53
+ RISCV_PLAN.md 9
+ SDK_PLAN.md 0
+ SELFHOST_PLAN.md 1

@@ -12,14 +12,17 @@
 #   - the numbers themselves are archived to the log for the plan's §6
 #     table, NOT gated on: TCG throughput is weather, not a contract.
 #
-# Measured fact recorded during O0 bring-up: the default (BIOS/SeaBIOS)
-# test boot has NO 32-bpp framebuffer — the BIOS Stage 2 sets no VBE mode,
-# so gfx_init() bails on bpp!=32 and every compositor pixel counter reads
-# 0 while the GUI runs dimensionless.  The same image under OVMF gets a
-# GOP framebuffer and the pixel counters light up (composited ≈ 14× flipped
-# — O4's headroom, measured).  This case therefore asserts counter
-# PRESENCE and the frames_full rate bound, both of which hold on either
-# firmware; pixel-delta assertions belong to O4's UEFI-booted gate.
+# Measured fact at O0 bring-up: the default (BIOS/SeaBIOS) test boot had NO
+# 32-bpp framebuffer — BIOS Stage 2 set no VBE mode — so gfx_init() bailed on
+# bpp!=32 and every compositor pixel counter read 0 while the GUI ran
+# dimensionless; only the OVMF boot had pixels.  RESIDUE3 C3 / RES-12 ended
+# that asymmetry: Stage 2 now probes VBE and sets 1024x768x32 with LIN_FA, so
+# BOTH firmwares hand the kernel a framebuffer and both lanes light up.  This
+# case still asserts counter PRESENCE and the frames_full rate bound (weather
+# belongs to the perf archive, not the gate); pixel-delta assertions stay in
+# the GUI shard.  The "[vbe]" lines below are the proof that the pixels on
+# this lane are real: they are the loader's own receipt, not an inference
+# from a counter.
 
 set -u
 cd "$(dirname "$0")/.."
@@ -130,13 +133,20 @@ il_assert_grep  "$LOG" "\[cpu\]   features: pat=[01] pcid=[01] invpcid=[01] erms
 il_assert_grep  "$LOG" "\[cpu\]   IA32_PAT = 0x" "IA32_PAT readback printed (H3's starting point)"
 il_assert_grep_fixed "$LOG" "memcpy small-copy crossover: 64 (no ERMS)" \
                                                 "H2: qemu64 keeps the measured-good 64 threshold"
-# HW H3 on the BIOS lane: PAT gets its WC entry everywhere, but this
-# boot has no linear framebuffer -- the HONEST SKIP is the assertion
-# (the WC-decoded PTE lines live in test_gui_dirty_uefi's UEFI lane).
+# HW H3 on the BIOS lane: PAT gets its WC entry everywhere.  Since RES-12
+# this boot HAS a linear framebuffer too, so the WC remap decodes here just
+# as it does on the UEFI lane (768 pages = 1024x768x32 at pitch 4096).  The
+# "no fb" refusal branch in paging_fb_set_wc is no longer reachable from a
+# stock QEMU boot -- every QEMU VGA model offers a VBE mode -- and it stays
+# in the code as the guard for a loader that fails to set one.
 il_assert_grep_fixed "$LOG" "IA32_PAT: PA4=WC (readback 0x0007040100070406)" \
                                                 "H3: PAT readback shows the WC entry"
-il_assert_grep_fixed "$LOG" "fb: none present; WC remap skipped" \
-                                                "H3: no fb on BIOS => the remap refuses honestly"
+il_assert_grep "$LOG" "\[vbe\] selecting 1024x768x32 .linear framebuffer." \
+                                                "RES-12: the loader set a VBE mode"
+il_assert_grep_fixed "$LOG" "[vbe] framebuffer live; boot_info.fb filled" \
+                                                "RES-12: boot_info.fb published"
+il_assert_grep "$LOG" "fb: WC via PAT4 \(768 pages" \
+                                                "H3: the BIOS lane now decodes WC too"
 
 # --- membench ran to completion and produced the table ---
 il_assert_grep  "$LOG" "MEMBENCH begin"        "membench started"

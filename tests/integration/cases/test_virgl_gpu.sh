@@ -17,19 +17,25 @@
 # What it is NOT tolerant about is dishonesty or breakage — whichever path is
 # taken, GL_RENDERER must match it and every rendering check must still pass.
 #
-# KNOWN DEFECT, PREDATING THIS PHASE
+# KNOWN DEFECT, PREDATING THIS PHASE — MEASURED GONE, ATTRIBUTION OPEN
 #
-# The virtio-gpu DRIVER hangs during initialisation when a device is actually
-# attached: the boot stops after "found modern GPU" and never reaches the
-# shell.  Bisected to before phase G11d — commit 9188c85 hangs identically —
-# so it is not something G13 introduced.  It was simply never exercised: no
-# integration case attached a GPU until this one.
+# The comment that stood here said the virtio-gpu DRIVER hangs during
+# initialisation when a device is attached: the boot stopped after "found
+# modern GPU" and never reached the shell, bisected to before phase G11d
+# (commit 9188c85 hung identically), traced as far as the first
+# GET_DISPLAY_INFO command.
 #
-# Traced as far as the first GET_DISPLAY_INFO command.  The notify write
-# completes, but the wait loop then makes zero iterations and still does not
-# return, which points at the used-ring page rather than at the notification.
-# Fixing it is virtio driver work, not GL work, and is recorded in TODO.md
-# rather than folded into a GL phase.
+# Re-measured 2026-11-04 on the RESIDUE3 C4 tree (two boots, with a GPU
+# attached): the hang does NOT reproduce.  The boot reaches the shell and
+# prints `[virtio-gpu] ready: virgl=0 enabled=0 size=1280x800` and
+# `[virtio-gpu] 2D resource ready: 1024x768 backing=3072 KiB`, and a second
+# pair of boots with C4's GPU MSI-X code compiled out behaves identically --
+# so the fix, if it was a fix, predates C4 and is not claimed by it.  The
+# reproducer list above stays: if it returns, this is where to start.
+#
+# The assertions below stay as they are (the case is already green either
+# way); what changed is that the "known defect" branch below should now be
+# unreachable, and if it fires the NOTE above will say so.
 #
 # So this case asserts what it can today and states plainly what it cannot.
 # The moment the driver is fixed, ENABLE_FULL_ASSERTS below turns the rest on

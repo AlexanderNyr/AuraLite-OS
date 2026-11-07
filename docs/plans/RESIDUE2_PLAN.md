@@ -11,7 +11,7 @@
 | T4 — VFS and POSIX (canonicalisation, VMAs, libc/TTY gaps) | ✅ done | `patches/RESIDUE2_T4_posix.patch` |
 | T5 — network and TLS (blocking edges, production TCP, idle RX, HTTPS) | ✅ done | `patches/RESIDUE2_T5_net.patch` |
 | T6 — devices beyond QEMU (OHCI/EHCI/xHCI/HID, BT, Wi-Fi, modern NICs) | ✅ done | `patches/RESIDUE2_T6_devs.patch` |
-| T7 — GUI (isolation, clipboard, settings, apps) | ⬜ planned | `patches/RESIDUE2_T7_gui.patch` |
+| T7 — GUI (isolation, clipboard, settings, apps) | ✅ done (2026-09-06) | `patches/RESIDUE2_T7_gui.patch` |
 | T8 — ports and oddities (RES-02, RES-06, RES-18) | ✅ done | `patches/RESIDUE2_T8_ports.patch` |
 | T9 — tooling and close-out (GDB, flakiness, arithmetic) | ✅ done | `patches/RESIDUE2_T9_close.patch` |
 

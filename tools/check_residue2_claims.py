@@ -29,6 +29,24 @@ BOX_OPTIONAL = {"T0"}
 
 PENDING_USER_ROWS = ["RES-30", "RES-32", "RES-33", "RES-48"]
 
+# RESIDUE2 is closed (2026-09-06).  Seven boxes it could not finish were
+# handed to the successor series: six T1 kernel boxes to RESIDUE3 C2 and
+# the T6 isochronous-streaming box to C5.  A box may therefore carry a
+# `(RESIDUE2 T#)` tag or a `(RESIDUE3 C#)` one, and a RESIDUE2 phase may
+# stand at zero boxes ONLY when the successor records the hand-off by
+# naming it (RESIDUE3_PLAN.md's C1 Result carries the literal tags).
+# The "a tag must not name a finished phase" half of the contract moved
+# with the debt: tools/check_plan_tables.py rule r2 enforces it, so the
+# two checkers tile the space instead of overlapping.
+TAG = re.compile(r"\((?:RESIDUE2 (T\d+)|RESIDUE3 (C\d+))\)")
+HANDOFF_PLAN = ("docs", "plans", "RESIDUE3_PLAN.md")
+
+
+def handed_off_phases():
+    """RESIDUE2 phase ids the successor plan records as handed over."""
+    plan = read(*HANDOFF_PLAN)
+    return {m.group(1) for m in re.finditer(r"\(RESIDUE2 (T\d+)\)", plan)}
+
 
 def read(*parts):
     try:
@@ -85,32 +103,52 @@ def claims():
         table_rows == PHASE_ORDER))
 
     # --- the coverage contract ----------------------------------------
+    #
+    # The clause used to read "there is at least one open box to cover",
+    # which held for the whole of RESIDUE2's life and stopped being true the
+    # moment RESIDUE3 C5 closed the last one (the isoc box; C2 had taken the
+    # six kernel boxes).  An empty set cannot be covered, so the contract is
+    # restated as the TERMINAL property it was actually protecting: every box
+    # that is still open carries a tag pointing at a live phase (vacuously
+    # true at zero boxes), and the historical boxes are present as closed
+    # `[x]` entries with their receipts -- i.e. the debt was closed by
+    # succession, not deleted.
     boxes = todo_boxes(todo)
+    closed = re.findall(r"^- \[x\] .*?(?=\n- |\n\*\*|\Z)", todo, re.M | re.S)
     checks.append((
-        "todo: there is at least one open box to cover",
-        len(boxes) > 0))
-    untagged = [(n, t) for n, t in boxes
-                if not re.search(r"\(RESIDUE2 T\d+\)", t)]
+        "todo: the open-box set is empty AND the boxes that were open are "
+        "closed with receipts (not deleted)",
+        len(boxes) == 0 and len(closed) >= 6 and
+        "Real isochronous STREAMING" in todo and
+        "~~" in todo))
+    untagged = [(n, t) for n, t in boxes if not TAG.search(t)]
     checks.append((
-        "coverage: every TODO box carries a (RESIDUE2 T#) tag "
-        "(untagged: %s)" % [n for n, _ in untagged],
+        "coverage: every TODO box carries a (RESIDUE2 T#) or "
+        "(RESIDUE3 C#) tag (untagged: %s)" % [n for n, _ in untagged],
         not untagged))
-    multi = [(n, t) for n, t in boxes
-             if len(re.findall(r"\(RESIDUE2 T\d+\)", t)) > 1]
+    multi = [(n, t) for n, t in boxes if len(TAG.findall(t)) > 1]
     checks.append((
         "coverage: no box carries two tags", not multi))
 
     tags = {}
+    ctags = {}
     for _, t in boxes:
-        m = re.search(r"\(RESIDUE2 (T\d+)\)", t)
+        m = TAG.search(t)
         if not m:
             continue  # already counted by the untagged claim
-        ph = m.group(1)
-        tags[ph] = tags.get(ph, 0) + 1
+        if m.group(1):
+            tags[m.group(1)] = tags.get(m.group(1), 0) + 1
+        else:
+            ctags[m.group(2)] = ctags.get(m.group(2), 0) + 1
     unknown = [ph for ph in tags if ph not in PHASE_ORDER]
     checks.append((
-        "coverage: every tagged phase is one of T0–T9 (found %s)"
+        "coverage: every RESIDUE2-tagged phase is one of T0–T9 (found %s)"
         % unknown, not unknown))
+    r3_headings = re.findall(r"^### (C\d+) ", read(*HANDOFF_PLAN), re.M)
+    cunknown = [ph for ph in ctags if ph not in r3_headings]
+    checks.append((
+        "coverage: every RESIDUE3-tagged box names a phase the successor "
+        "plan actually has (unknown: %s)" % cunknown, not cunknown))
 
     headings = re.findall(r"^### (T\d+) —", plan, re.M)
     checks.append((
@@ -131,13 +169,15 @@ def claims():
     checks.append(("coverage: no tag points at a headless phase",
                    not orphans))
 
+    handed = handed_off_phases()
     for ph in PHASE_ORDER:
         if ph in BOX_OPTIONAL:
             continue
-        ok = tags.get(ph, 0) > 0 or phase_section_names_ledger(plan, ph)
+        ok = (tags.get(ph, 0) > 0 or phase_section_names_ledger(plan, ph)
+              or ph in handed)
         checks.append((
-            "coverage: %s is tagged by ≥1 box or names its ledger rows"
-            % ph, ok))
+            "coverage: %s is tagged by ≥1 box, names its ledger rows, or "
+            "is recorded as handed off to RESIDUE3" % ph, ok))
 
     # --- the ledger pairs ---------------------------------------------
     open_rows = re.findall(r"^\| (RES-\d\d) \| \w+ \| OPEN \|",
@@ -145,10 +185,16 @@ def claims():
     checks.append((
         "ledger: there are OPEN rows to schedule (found %s)" % open_rows,
         len(open_rows) > 0))
-    unnamed = [r for r in open_rows if r not in plan]
+    # An OPEN row may now live in the successor series instead: RESIDUE3
+    # C1 opened RES-60 (isochronous streaming, its C5 target) while this
+    # plan is closed.  The rule is "every OPEN row has an owner plan",
+    # not "every OPEN row is ours" — the successor names it, so the debt
+    # is still machine-visible.
+    successor = read(*HANDOFF_PLAN)
+    unnamed = [r for r in open_rows if r not in plan and r not in successor]
     checks.append((
-        "plan: every OPEN ledger row is named in the plan (unnamed: %s)"
-        % unnamed, not unnamed))
+        "plan: every OPEN ledger row is named here or in the successor "
+        "plan (unnamed: %s)" % unnamed, not unnamed))
     pu_missing = [r for r in PENDING_USER_ROWS if r not in plan]
     checks.append((
         "plan: every PENDING-USER row is named in the plan's §4 "

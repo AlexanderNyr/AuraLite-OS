@@ -1,0 +1,39 @@
+RESIDUE3 C8 file manifest (sha256, first 16 hex digits)
+Cut 2026-11-05, 31 files.
+patches/RESIDUE3_C8_receipts.patch: 129935 bytes, sha256 b214fe3173e95b9415d5dc73df726acc8f0b34b98b8963f35cd0fdadb2b827b5
+  22 files, git apply --check clean, replay verified byte-for-byte.
+
+The patch carries the receipt half (boxes 2-5).  The loader half (box 1) has no
+pre-image in this environment and is pinned by hash here only.
+
+Makefile                                                   309406  6dc9a951c6adc7f8  in patch
+w32/src/w32_pe.c                                            28758  be2e8460ccf960db  loader half (pinned here only)
+w32/include/w32/w32_pe.h                                    11209  19834ea2fe612eca  loader half (pinned here only)
+w32/include/w32/w32_reloc.h                                  3849  802a265826a7dfca  loader half (pinned here only)
+w32/src/w32_reloc.c                                          5819  79943b8d58307abd  loader half (pinned here only)
+w32/src/w32_module.c                                        44521  de7155a05aa17e2f  in patch
+w32/include/w32/w32_module.h                                 9804  202567a007dc2f7c  loader half (pinned here only)
+w32/src/w32_bind.c                                          88908  98cc08edde151ed9  in patch
+w32/include/w32/w32_bind.h                                   4408  07695a99b25e465e  in patch
+w32/include/w32/advapi32.h                                  18826  e92eed97ce108615  in patch
+userspace/apps/w32run/w32run.c                              16245  19ff8d26232b6808  in patch
+tests/unit/test_w32_reloc.c                                 15299  b9261377272e0973  loader half (pinned here only)
+w32/tests/w32a9_registry.asm                                43168  5384c65d267c4d73  in patch
+w32/PROVENANCE.md                                           33657  6e6cab3ef7742f45  in patch
+w32/app_ledger/audacity-3.7.5.gap                           10459  358526ce722cf598  loader half (pinned here only)
+tools/w32_scale_fixture.py                                  11052  6615591d5a1a1ea3  loader half (pinned here only)
+tools/w32_static_slice.py                                   10603  a04f8a498ad3525e  in patch
+tests/integration/cases/test_w32_scale.sh                    5063  37a84b2244ae9063  loader half (pinned here only)
+tests/integration/cases/test_w32_failclean_live.sh           5780  eb8aa4e9293874be  in patch
+tests/integration/cases/test_w32_static_slice.sh             6999  089bb3a93cae2664  in patch
+tests/integration/cases/test_doom_w32.sh                     4604  5b881905513001d0  in patch
+tests/integration/run_all.sh                                21786  c4919307e22b0039  in patch
+w32/tests/w32c8_failclean.c                                 16729  31be65f66b94b595  in patch
+w32/tests/w32c8_static_slice.c                               9335  1be16281a4f9e87b  in patch
+docs/status.md                                              88711  6c068fdc44175032  in patch
+docs/win32.md                                               54922  fdbbaff03d373ce0  in patch
+docs/win32_run.md                                            4967  b8702945bbcd7ff9  in patch
+docs/plans/DOOM_PLAN.md                                     24369  361ec7ea63fc07cc  in patch
+docs/plans/RESIDUE3_PLAN.md                                 91811  42bc14b1532a5066  in patch
+docs/residue_ledger.md                                      54259  469fa1c229c592f4  in patch
+tools/residue_baseline.txt                                    610  3dc3991dbcf4aef8  in patch

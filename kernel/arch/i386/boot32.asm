@@ -97,8 +97,12 @@ higher_half:
     rep  stosd
 
     mov  esp, stack_top
-
-    push esi                            ; cdecl: kmain32(boot_info_phys)
+    ; RESIDUE3 C2: 16-byte C-ABI stack alignment before entering C.  The
+    ; argument goes to a full aligned slot instead of a `push`, so ESP%16 == 0
+    ; at the call and the callee can use aligned SSE spills for its locals.
+    and  esp, -16
+    sub  esp, 16
+    mov  [esp], esi                     ; cdecl: kmain32(boot_info_phys)
     call kmain32
 
 .hang:

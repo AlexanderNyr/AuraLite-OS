@@ -79,6 +79,10 @@ int          tcp_send_h(tcp_handle_t h, const void *data, uint32_t len);
 int          tcp_recv_h(tcp_handle_t h, void *buf, uint32_t bufsize);
 int          tcp_close_h(tcp_handle_t h);
 tcp_state_t  tcp_state_h(tcp_handle_t h);
+/* C7 receipts: what the connection's window arithmetic actually did. */
+uint32_t     tcp_inflight_peak_h(tcp_handle_t h);
+uint32_t     tcp_snd_wnd_h(tcp_handle_t h);
+uint8_t      tcp_snd_shift_h(tcp_handle_t h);
 
 /* Legacy single-connection API (deprecated; preserved for the in-kernel
  * self-test and the legacy SYS_NET_* syscalls).  These map onto a single

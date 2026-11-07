@@ -1,0 +1,1850 @@
+diff --git a/Makefile b/Makefile
+index 76745bd..0cf9df9 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3781,6 +3781,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_jobcontrol \
+                 $(BUILD_DIR)/test_permissions \
+                 $(BUILD_DIR)/test_aspace \
++                $(BUILD_DIR)/test_msi_caps \
+                 $(BUILD_DIR)/test_cow \
+                 $(BUILD_DIR)/test_slab \
+                 $(BUILD_DIR)/test_virgl \
+@@ -5570,6 +5571,14 @@ $(BUILD_DIR)/test_aspace: tests/unit/test_aspace.c kernel/mm/aspace.c \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< kernel/mm/aspace.c -o $@
+ 
++# RESIDUE3 C4: the MSI/MSI-X capability walker, compiled from the SAME
++# translation unit the kernel links (drivers/pci/msi_caps.c) -- the transport
++# is injected as an accessor table, so no device is mocked, only config space.
++$(BUILD_DIR)/test_msi_caps: tests/unit/test_msi_caps.c drivers/pci/msi_caps.c \
++                            drivers/pci/msi_caps.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/pci/msi_caps.c -o $@
++
+ $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/TODO.md b/TODO.md
+index 9384ad4..c8f00be 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -140,9 +140,13 @@ build when a box and the plan disagree.
+   agree)` — a disagreeing machine gets named at boot), and virtio-net
+   IRQ RX landed at RESIDUE R9 / ledger RES-28 (`wq_wait_deadline`
+   sleeps, the `RX via IRQ wake` receipt is CI-pinned).  Still open:
+-  Interrupt Source Overrides from the MADT, device IRQ waking a
+-  hlt-ed AP (ledger RES-16), and MSI/MSI-X (ledger RES-36, opener
+-  measured: the virtio-pci cap walk parses only vendor caps today).
++  Interrupt Source Overrides from the MADT and device IRQ waking a
++  hlt-ed AP (ledger RES-16).  **MSI/MSI-X is done** — RESIDUE3 C4 /
++  ledger RES-36: the cap walk, the LAPIC vector block and the two
++  virtio attaches landed 2026-11-04, receipt
++  `[msi] virtio-blk: MSI-X vector 96 (1 msg, 3 entries)` →
++  `1 interrupt(s) delivered on vector 96`, and `opt/auralite.msi=off`
++  keeps both devices on INTx (test_msix.sh 28/28).
+ - [x] Interrupt Source Overrides from the ACPI MADT (**Done, RESIDUE2 T2:**
+   the redirection table is programmed from the type-2 ISO entries with
+   polarity/trigger, PC-standard defaults remain the fallback, divergences
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 731f1af..45705e2 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b, 4/11. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
++## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04, 5/11. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+@@ -9,7 +9,7 @@
+ | C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table | ✅ done (2026-11-03) | `patches/RESIDUE3_C2_kernel.patch` |
+ | C3 — i386 graphics: VBE first, then the compositor (RES-12 → RES-11) | ✅ done (2026-11-04) — RES-12 + the i386 fb console; the compositor half is C3b | `patches/RESIDUE3_C3_i386gfx.patch` |
+ | C3b — the i386 compositor: `wm.c`/`gui.c` on 32 bits | ⬜ planned — blocked on the i386 process/scheduler surface (blocker list in §C3) | `patches/RESIDUE3_C3b_compositor.patch` |
+-| C4 — MSI/MSI-X on virtio (RES-36) | ⬜ planned | `patches/RESIDUE3_C4_msi.patch` |
++| C4 — MSI/MSI-X on virtio (RES-36) | ✅ done (2026-11-04) | `patches/RESIDUE3_C4_msix.patch` |
+ | C5 — USB: isochronous streaming and HID breadth (RES-38 survivors) | ⬜ planned | `patches/RESIDUE3_C5_usb.patch` |
+ | C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39 survivors) | ⬜ planned | `patches/RESIDUE3_C6_wireless.patch` |
+ | C7 — network: window scaling (RES-52) and the NIC/storage successor of RES-46 | ⬜ planned | `patches/RESIDUE3_C7_net.patch` |
+@@ -561,32 +561,127 @@ AND the VGA fallback, `i386_boot32/cpu/proc_smoke.sh` still green, the
+ 
+ ### C4 — MSI/MSI-X on virtio (RES-36)
+ 
+-**Status:** ⬜ planned
++**Status:** ✅ done (2026-11-04) — RES-36 flips `DONE@C4`
+ 
+ **Objective:** give virtio-blk and virtio-gpu real message-signalled
+ interrupts, with INTx kept as the fallback.
+ 
+-Measured: `virtio_pci.c` parses capability id `0x09` only; `0x05`/`0x11`
++Measured before: `virtio_pci.c` parses capability id `0x09` only; `0x05`/`0x11`
+ appear zero times in `virtio_pci.c` and `pci.c`; the ISR register is
+ read-to-clear INTx.
+ 
+-- [ ] Extend the cap walk to `0x05` (MSI) and `0x11` (MSI-X), parse the
+-      tables (multiple-message capable/enable, table + PBA BAR offsets),
+-      and allocate vectors from the LAPIC (per-vector LVT entries on the
+-      x86_64 side, `irq.c` dispatch keyed by vector).
+-- [ ] Per-vector EOI in `irq.c` (today's early-EOI path assumes one
+-      controller); INTx stays the default when the guest sees no caps.
+-- [ ] virtio-blk + virtio-gpu attach over MSI-X when
+-      `-device virtio-blk-pci,msix=on` / `virtio-gpu-pci,msix=on` are
+-      present, with a printed receipt naming the vector.
+-
+-**Definition of done:** `[msi] virtio-blk: MSI-X vector 42 (1 msg)`
+-printed and pinned; both devices still work with MSI disabled.
+-
+-**Test gate:** new `test_msix.sh` (two lanes: MSI-X on, INTx fallback);
+-existing `vblk`/`virgl` cases green unmodified.
++**Result.** Three pieces, split along the seam the width sweep enforces:
++
++- `drivers/pci/msi_caps.{h,c}` — the portable half: a capability walk to
++  `0x05` (MSI) and `0x11` (MSI-X), the multiple-message capable/enable
++  fields, table + PBA BAR offsets, and every write read back.  It reaches
++  the device only through an accessor table (`msi_pci_io_t`), which is what
++  makes it host-testable: `tests/unit/test_msi_caps.c` drives it against a
++  synthetic 2 KiB config space (**12/12**, including a dropped-enable
++  negative control, a writer-less transport, and malformed-list
++  termination).
++- `kernel/arch/x86_64/msi.{h,c}` — the other half: vectors `0x60`–`0x6F`
++  (one monotone block, never reused — nothing here teardown-probes), a
++  handler table, `msi_dispatch()` called from `isr.c` **before** the
++  spurious branch, and the EOI written after the handler so the existing
++  early-EOI path for IOAPIC lines is untouched.  `fwcfg_msi_probe()` reads
++  `opt/auralite.msi`; the boot prints
++  `[msi] message-signalled interrupts: ENABLED (build default on)`.
++- the drivers: `virtio_blk.c` and `virtio_gpu.c` attach through
++  `kernel/arch/arch.h` (the forwarding seam — see defect 3 below), program
++  the MSI-X table entry, tell the device which entry to use, and print a
++  receipt naming the vector.
++
++**Receipts (QEMU, measured 2026-11-04, `tests/integration/cases/test_msix.sh`):**
+ 
+----
++| Claim | Receipt |
++|-------|---------|
++| the switch, and its cause | `[msi] message-signalled interrupts: ENABLED (build default on)` / `… DISABLED (fw_cfg opt/auralite.msi=off)` |
++| the capability walk finds and programs MSI-X | `[msi] virtio-blk: MSI-X vector 96 (1 msg, 3 entries)` and the same line for `virtio-gpu` |
++| the DEVICE accepts the entry | `[msi] virtio-blk: queue 0 -> table entry 0 (readback 0), x86 vector 96` |
++| a message is really delivered | `[msi] virtio-blk: 1 interrupt(s) delivered on vector 96` — printed from the request path, after the first completed request, not at probe time |
++| the request path itself works | `[virtio-blk] self-test: LBA 0 read OK (interrupt delivered)` — the driver had **no in-tree caller** on x86_64, so C4 added a read-only sector-0 self-test; without it "interrupts are configured" would have been the whole claim |
++| the GPU too | `[msi] virtio-gpu: MSI-X vector 96 (1 msg, 3 entries)`, `queue 0 -> table entry 0 (readback 0)`, `1 interrupt(s) delivered on vector 96`, over the control queue that carries `GET_DISPLAY_INFO` |
++| the fallback is not a hope | `opt/auralite.msi=off` → both devices still initialise, `[virtio-blk] self-test: LBA 0 read OK (INTx/polling)`, and **no** `MSI-X vector` / `delivered on vector` line appears (asserted with `il_assert_no_grep`) |
++| nothing else was disturbed | no `spurious interrupt`, no panic, the shell is reached in all four lanes |
++
++**Three defects found while landing it (all fixed here):**
++
++1. **The vector/table-index conflation.**  The first run printed
++   `[msi] virtio-blk: MSI-X vector 96 …` and then
++   `device refused queue 0 vector 96 (NO_VECTOR); keeping INTx`.  The device
++   register `queue_msix_vector` takes the **table entry index**, not the x86
++   vector; the vector belongs in the entry's DATA field.  QEMU's table has 3
++   entries, so 96 was simply out of range.  Both drivers now write
++   `MSI_TABLE_ENTRY` (0) and read it back; `msi.h` records the mistake next
++   to the constant, because the two numbers look interchangeable and are not.
++2. **virtio-blk never negotiated features at all.**  `device_status` went
++   ACK→DRIVER→FEATURES_OK→DRIVER_OK without ever writing `driver_feature`,
++   and without `VIRTIO_F_VERSION_1` (bit 32) a transitional device stays in
++   legacy I/O-BAR mode: every write to the modern common-config window is
++   accepted and means nothing, so the first request never completes.  This
++   was invisible until C4's self-test issued one.  The negotiation is now
++   real, `FEATURES_OK` is checked instead of assumed, and MSI-X (bit 27) is
++   accepted when offered.  The same commit fixed `capacity`, which was being
++   read out of PCI BAR0 (`18356408198371524609 sectors` on an 8 MiB disk) —
++   it now comes from the device-config capability (cfg_type 4), and the
++   receipt reads `capacity 16384 sectors`.
++3. **The width ratchet caught the first draft.**  Both drivers included
++   `kernel/arch/x86_64/msi.h` directly, which is exactly what
++   `check_width_sweep.py` forbids (72 > ratchet 69).  The MSI entry points
++   are now forwarded through `kernel/arch/arch.h`, with the non-x86_64
++   arches declaring them `unavailable` rather than stubbing them — a device
++   that silently never interrupts is the bug shape this phase exists to
++   catch.  Sweep back to `403/403, 69/69, 0, 27/27`.
++
++**Two measurements that corrected the plan's own text:**
++
++- The plan's `-device virtio-blk-pci,msix=on` / `virtio-gpu-pci,msix=on`
++  arguments **do not exist** in this QEMU: passing them is a hard error
++  (`Property 'virtio-blk-pci.msix' not found`) and killed every lane of the
++  first gate run before the firmware started.  Both devices offer MSI-X
++  unconditionally; the lanes pass neither.
++- The DoD's expected `vector 42` is written down wrong: the block starts at
++  `0x60`, so the first device gets **96**.  The pinned line names 96 and its
++  table size.
++
++**Recorded, not caused here:** `test_virgl_gpu.sh` carries a
++KNOWN DEFECT saying the virtio-gpu driver hangs during initialisation as soon
++as a device is attached (predating phase G11d).  It **does not reproduce on
++this tree** — measured twice, with a GPU attached and with C4's GPU MSI code
++compiled out: both boots reach the shell and print
++`[virtio-gpu] 2D resource ready`.  The case's comment is updated to say so
++and to keep the hang's reproducer list; the attribution is left open rather
++than credited to this phase.
++
++**Two gates had to move, and both moves are recorded here rather than made
++quietly:**
++
++1. `tools/residue_baseline.txt`: `RESIDUE3_PLAN.md 47 → 51` (the C4 section and the
++gate-change note below it).  This section
++   names residue (the untested MSI path, the polling request path) on one
++   line the harvester counts; the ratchet's own rule is that the baseline
++   moves in the same commit that grows it.
++2. `tools/check_residue_claims.py`: the R12 clause asserted
++   *"at least one `HANDED-OFF@R12` row is still tracked"* (`r12_rows >= 1`),
++   which was correct while one was.  C4 closed the last one, so the clause
++   now asserts the terminal state — `r12_rows == 0` **and** five successor
++   rows (`DONE@T6/T7/C3/C4`) proving the rows were closed by succession, not
++   deleted.  A new `HANDED-OFF@R12` row is now a failure, which is the
++   property the clause was always reaching for.
++
++**Test gate:** `tests/integration/cases/test_msix.sh` (new, registered in
++`run_all.sh` ALL_CASES, **28/28** across four lanes: virtio-blk MSI-X on,
++virtio-blk MSI off, virtio-gpu MSI-X on, virtio-gpu MSI off),
++`test_virgl_gpu.sh` **13/13** unmodified in behaviour, `make test-unit`
++**EXIT=0** with `test_msi_caps` 12/12, `check_width_sweep` OK, and
++`test_e1000_irq.sh` (the nearest INTx neighbour) unaffected.
++
++**Residue this phase names rather than hides:** the walker's MSI (non-X)
++path is host-tested only — no virtio device in this QEMU offers cap `0x05`,
++so its table programming has never been run against silicon; and the request
++paths still POLL the used ring (the interrupt is delivered and counted, but
++I/O does not sleep on it — that is a scheduler change, not a transport one).
+ 
+ ### C5 — USB: isochronous streaming and HID breadth (RES-38's survivors)
+ 
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index 6f89d9a..3755e8e 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -47,7 +47,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-33 | M | PENDING-USER@R11 | O3 wall-clock, O8 ThinLTO bar, membench metal numbers (OPT §7/HW §6) | R11 package slots 3/8/9 ship |
+ | RES-34 | W | DONE@R11 | fast-boot knob unwired on i386; a64 fw-cfg AMEND-5 deferred — closed: fwcfg32.c (same port protocol) + fwcfg_a64.c (MMIO, BE selector at +8, DTB-discovered) feed the SHARED selftest.c, newly a KERNEL32/KERNELA64_SHARED row | knob toggles in a smoke on both ✔ (i386_shell: mode=off + 2 SKIPPED; a64_boot: mode=off + 2 SKIPPED) |
+ | RES-35 | W | DONE@R1 | O1/O6/O8 measured at R1: O8 REFUSED with numbers (naive --gc-sections on kernelrv "saves" 68% by deleting live boot/trap sections — all five smokes red; needs a KEEP() audit, folded into the R12 hand-off notes); O1 superseded (P7 linked word-wide string.c on i386); O6 deferred to R6 where port allocation actually grows | measured; done or refused with numbers |
+-| RES-36 | S | HANDED-OFF@R12 | MSI/MSI-X for virtio + virtio-gpu (MATURITY) | OPENER, measured: virtio_pci.c's cap walk parses ONLY vendor-specific (0x09); zero mentions of caps 0x05/0x11 in virtio_pci.c or pci.c; the ISR register is read-to-clear INTx — the series starts at the cap walk it already owns |
++| RES-36 | S | DONE@C4 | MSI/MSI-X for virtio + virtio-gpu (MATURITY) | OPENER, measured: virtio_pci.c's cap walk parses ONLY vendor-specific (0x09); zero mentions of caps 0x05/0x11 in virtio_pci.c or pci.c; the ISR register is read-to-clear INTx — the series starts at the cap walk it already owns. CLOSED at RESIDUE3 C4 (2026-11-04): the cap walk exists as a portable, host-tested module (drivers/pci/msi_caps.{h,c}, 12/12 unit cases), the x86_64 LAPIC side owns vectors 0x60-0x6F with dispatch from isr.c and EOI after the handler (kernel/arch/x86_64/msi.{h,c}), and both virtio drivers attach through the arch.h seam with the entry index written to the device and read back. The MSI (non-X) half of the walker is host-tested only — no virtio device in this QEMU offers cap 0x05 — and the request paths still poll the used ring (the message is delivered and counted; sleeping on it is a scheduler change, named not implied) | `[msi] virtio-blk: MSI-X vector 96 (1 msg, 3 entries)` → `queue 0 -> table entry 0 (readback 0), x86 vector 96` → `1 interrupt(s) delivered on vector 96` + `[virtio-blk] self-test: LBA 0 read OK (interrupt delivered)`; the same three lines for virtio-gpu; `opt/auralite.msi=off` keeps both on INTx with no msi line at all; test_msix.sh 28/28 |
+ | RES-37 | M | DONE@R11 | IOAPIC base was QEMU-hardcoded with no cross-check — closed: the kernel walks RSDP→RSDT/XSDT→MADT (both loaders publish rsdp_phys) and prints agree/disagree-by-name; QEMU NULL: `(MADT agree)` asserted. Interrupt Source Overrides remain the named residue in ioapic.c | `[ioapic] base ... (MADT agree)` pinned in test_metal_null; package slot 7 carries the metal line |
+ | RES-38 | S | DONE@T6 | OHCI/EHCI/xHCI full transfer scheduling; HID beyond UHCI; BOT short-packet line (USB/TODO) | OPENER, measured: uhci.c 555 lines IS the complete reference; ohci 709 / ehci 869 / xhci 2093 lines carry the shapes. CLOSED at T6: five of the named boxes were MEASURED STALE — the named stub markers are gone and the 13-gate USB sweep re-run 2026-09-05/06 pins the rings/queues (one xhci TD-timeout runner flake, re-run green). The narrowed survivor is frame-accurate isochronous STREAMING → RES-60 (owned by RESIDUE3 C5) |
+ | RES-39 | S | DONE@T6 | Bluetooth USB transport; Wi-Fi chipset backend (TODO/status) | OPENER, measured: bt.c 193 lines and wifi.c 333 + wifi_virt.c 136; the row's "the tree has ZERO wireless NIC" sentence had gone STALE IN ITS OWN FAVOUR. CLOSED at T6: Bluetooth's transport moved onto the controller-agnostic usb_core API with the protocol host-pinned (test_bt_hci 35/35); Wi-Fi gained RX ingestion (scan/auth/AID parsed from frames), host-pinned protocol (test_wifi_proto 37/37) and a virtual AP that proves the flow end to end (test_wifi_virtual_ap) — the plain `make iso` boot prints `[wifi] PASS: virtual AP: scan found 'AuraVirt' ch6` + auth/AID + 78 data bytes (re-run 2026-11-03). The narrowed survivor is a real controller/chip attach → RES-61 (RESIDUE3 C6) |
+diff --git a/docs/status.md b/docs/status.md
+index 124d759..e42c045 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -56,7 +56,7 @@ tied to the tree.
+ | Win32 personality (`w32`) | 🧪 | WIN32_PLAN W32-0 – W32-8 **and** W32APP_PLAN W32A-0 – W32A-18. A mingw-w64-built PE32+ `.exe` runs unmodified: the kernel loads PE by magic, the shell routes an importing binary through `/apps/w32run`, which binds imports and runs the CRT startup. **939 functions across 21 modules** (KERNEL32/USER32/GDI32/COMCTL32/ADVAPI32/OLE32/OLEAUT32/SHELL32/SHLWAPI/UXTHEME/IMM32/COMDLG32/CRYPT32/WS2_32/VERSION/msvcrt/…), each with a per-function D9 class (904 REAL, 35 FAIL-CLEAN) generated into [`win32.md`](win32.md) from `w32/src/w32_bind.c` + the app ledgers. SEH now unwinds `.pdata`/`.xdata` for real (typed C++ `catch` is the named residue); registry (`W32HIVE1`), incremental COM/IME/themes, WinSock and the msvcrt surface are landed; CryptoAPI is hash-only (FAIL-CLEAN). Three real apps (PuTTY, 7-Zip File Manager, Notepad++) **run, measured on pixels** (W32RUN_PLAN WR-0 – WR-5: live-frame gates 14/14, 24/24, 17/17 — the per-app run state is [`win32_run.md`](win32_run.md)); a fourth (Audacity) is a deliberate **Outcome B — does not run** (19-module/419-symbol gap, see `w32/app_ledger/audacity-3.7.5.gap`). **Stays 🧪**: the three app runs stay PARTIAL with named gaps (Telnet/Load/serial, Find/File-Open, the Options popup). Gates: `make test-unit` runs `check_w32app_claims.py --check/--selftest`, `gen_w32_api_table.py --check`, `gen_w32_run_matrix.py --check`, `check_provenance.sh`, and the W32A per-phase unit + integration cases. |
+ | Linux personality (`lx`) | 🧪 | LX_COMPAT_PLAN L0–L5 complete: existing, **unmodified Linux binaries** run on the kernel through a per-process syscall-number map (selected by the `/linux` path prefix at `execve`; native processes keep the native map). The ladder is fully climbed and CI-gated as the `lx` shard: a static glibc `hello` (L1), upstream busybox `ls`/`cat`/`echo` with Linux-shaped `struct stat`/`getdents64` (L2), busybox `ash` running scripts with Linux signal frames (L3), dynamic PIE binaries through the real glibc loader + futex/TLS (L4), and an **unmodified stock lua 5.4** running a real script (L5). Unmapped Linux numbers fail loudly (`-ENOSYS`), so each rung's gaps are named, not silent; the deliberate absences (sendfile, rseq, faccessat2's full form, full struct-siginfo payloads) stay documented in `kernel/lx/lx_translate.c` and `LX_COMPAT_PLAN.md`. `lxrun(1)` is the front door; `tools/check_lx_claims.py` pins every ✅ phase to its artefacts and receipts. |
+ | SMP bring-up | ✅ | H8 scheduler: all online CPUs run preemptive round-robin with per-CPU run queues, LAPIC-timer ticks, cross-CPU work stealing and IPI TLB shootdown. **M1 added eager `FXSAVE`/`FXRSTOR` FPU/SSE context switching**, which H8 needed to be correct (gltest now passes 373/373 under `-smp 4`; `test_fpu_smp.sh`). |
+-| LAPIC / IOAPIC | ✅ | LAPIC enable + per-CPU timer and I/O APIC bring-up are implemented (MATURITY M2): the BSP runs on APIC IRQs (PIT@GSI2, kbd@GSI1), the IOAPIC base is cross-checked against the ACPI MADT at boot (`[ioapic] base … (MADT agree)`, RESIDUE R11), and legacy PIC/PIT paths remain available. MSI/MSI-X and MADT Interrupt Source Overrides remain named residue (RES-36 / ioapic.c). |
++| LAPIC / IOAPIC | ✅ | LAPIC enable + per-CPU timer and I/O APIC bring-up are implemented (MATURITY M2): the BSP runs on APIC IRQs (PIT@GSI2, kbd@GSI1), the IOAPIC base is cross-checked against the ACPI MADT at boot (`[ioapic] base … (MADT agree)`, RESIDUE R11), and legacy PIC/PIT paths remain available. MSI/MSI-X landed at RESIDUE3 C4 (RES-36): a portable capability walker (`drivers/pci/msi_caps.c`) plus an x86_64 LAPIC vector block (`kernel/arch/x86_64/msi.c`, vectors `0x60`–`0x6F`) let virtio-blk and virtio-gpu signal interrupts by message — `[msi] virtio-blk: MSI-X vector 96 (1 msg, 3 entries)` → `1 interrupt(s) delivered on vector 96`, same for the GPU, with `opt/auralite.msi=off` keeping both on INTx (`tests/integration/cases/test_msix.sh`, 28/28). MADT Interrupt Source Overrides landed at RESIDUE2 T2; `ioapic.c`'s named residue is now only the MSI (non-X) path, which no QEMU virtio device offers to exercise. |
+ 
+ ## Memory management
+ 
+diff --git a/drivers/gpu/virtio_gpu.c b/drivers/gpu/virtio_gpu.c
+index 231d24b..98910ed 100644
+--- a/drivers/gpu/virtio_gpu.c
++++ b/drivers/gpu/virtio_gpu.c
+@@ -465,6 +465,90 @@ static void write_driver_features(uint64_t f) {
+     common_cfg->driver_feature = (uint32_t)(f >> 32);
+ }
+ 
++#include "kernel/arch/arch.h"   /* RESIDUE3 C4: MSI, via the width seam */
++
++/* ---------------------------------------------------------------------
++ * RESIDUE3 C4 (RES-36): message-signalled interrupts for the control queue.
++ * Same shape as virtio-blk's attach: the shared walker in
++ * kernel/arch/x86_64/msi.c does the capability parsing and the MSI-X table
++ * programming, this file only supplies the transport accessors.
++ * --------------------------------------------------------------------- */
++static uint32_t gpu_msi_vector;
++static volatile uint32_t gpu_msi_irqs;
++
++static void virtio_gpu_msi_handler(void *cookie) {
++    (void)cookie;
++    if (isr_cfg) (void)*isr_cfg;      /* read-to-clear retires the message */
++    gpu_msi_irqs++;
++}
++
++static uint8_t  gmsi_cfg8 (void *ctx, uint16_t off) { (void)ctx; return pci_read8_at((uint8_t)off); }
++static uint16_t gmsi_cfg16(void *ctx, uint16_t off) { (void)ctx; return pci_read16_at((uint8_t)off); }
++static uint32_t gmsi_cfg32(void *ctx, uint16_t off) {
++    (void)ctx;
++    return pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
++}
++static void gmsi_w16(void *ctx, uint16_t off, uint16_t v) {
++    (void)ctx;
++    uint32_t cur = pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
++    uint32_t sh = (off & 2) * 8;
++    uint32_t nv = (cur & ~(0xFFFFu << sh)) | ((uint32_t)v << sh);
++    pci_config_write(pci_bus, pci_dev, pci_func, off & 0xFC, nv);
++}
++static void gmsi_w32(void *ctx, uint16_t off, uint32_t v) {
++    (void)ctx;
++    pci_config_write(pci_bus, pci_dev, pci_func, off & 0xFC, v);
++}
++static volatile uint8_t *gmsi_bar(void *ctx, uint8_t bar, uint32_t off, uint32_t len) {
++    (void)ctx;
++    uint64_t va = map_bar_region(bar, off, len ? len : 0x1000);
++    return va ? (volatile uint8_t *)(uintptr_t)va : 0;
++}
++
++static void virtio_gpu_msi_attach(void) {
++    msi_pci_io_t io;
++    memset(&io, 0, sizeof(io));
++    io.ctx = 0;
++    io.cfg8 = gmsi_cfg8; io.cfg16 = gmsi_cfg16; io.cfg32 = gmsi_cfg32;
++    io.w16 = gmsi_w16; io.w32 = gmsi_w32; io.bar_map = gmsi_bar;
++
++    uint32_t vec = 0;
++    int rc = msi_attach_pci(&io, virtio_gpu_msi_handler, 0, "virtio-gpu", &vec);
++    if (rc != 0) {
++        if (rc == -1)
++            kprintf("[msi] virtio-gpu: no MSI/MSI-X capability -- "
++                    "INTx/polling path\n");
++        else if (msi_enabled())
++            kprintf("[msi] virtio-gpu: attach refused (see above) -- "
++                    "INTx/polling path\n");
++        return;
++    }
++    gpu_msi_vector = vec;
++
++    /* Table INDEX, not the x86 vector -- see MSI_TABLE_ENTRY in msi.h. */
++    common_cfg->queue_select = 0;
++    common_cfg->queue_msix_vector = (uint16_t)MSI_TABLE_ENTRY;
++    uint16_t got = common_cfg->queue_msix_vector;
++    if (got == 0xFFFF) {
++        kprintf("[msi] virtio-gpu: device refused queue 0 entry %u "
++                "(NO_VECTOR); keeping INTx\n", (unsigned)MSI_TABLE_ENTRY);
++        gpu_msi_vector = 0;
++        return;
++    }
++    kprintf("[msi] virtio-gpu: queue 0 -> table entry %u (readback %u), "
++            "x86 vector %u\n", (unsigned)MSI_TABLE_ENTRY, (unsigned)got,
++            (unsigned)vec);
++}
++
++/* The receipt: printed once, after a command has actually completed and the
++ * counter shows the message arrived.  A grace spin is needed because the
++ * message can trail the used-ring write. */
++static void virtio_gpu_msi_receipt(void) {
++    if (!gpu_msi_vector || gpu_msi_irqs == 0) return;
++    kprintf("[msi] virtio-gpu: %u interrupt(s) delivered on vector %u\n",
++            (unsigned)gpu_msi_irqs, (unsigned)gpu_msi_vector);
++}
++
+ static int setup_control_queue(void) {
+     common_cfg->queue_select = 0;
+     uint16_t qsz = common_cfg->queue_size;
+@@ -772,6 +856,9 @@ int virtio_gpu_init(void) {
+ 
+     uint64_t dev_features = read_device_features();
+     uint64_t wanted = (1ULL << VIRTIO_F_VERSION_1);
++    /* VIRTIO_PCI_F_MSI_X (bit 27): accept it when offered so queue_msix_vector
++     * is meaningful; declining leaves the INTx line in charge. */
++    wanted |= dev_features & (1ULL << 27);
+     if (dev_features & (1ULL << VIRTIO_GPU_F_VIRGL)) {
+         info.virgl_supported = 1;
+         wanted |= (1ULL << VIRTIO_GPU_F_VIRGL);
+@@ -792,6 +879,11 @@ int virtio_gpu_init(void) {
+     }
+ 
+     common_cfg->device_status |= VIRTIO_STATUS_DRIVER_OK;
++
++    /* C4: attach before the first command, so the very first completion is
++     * the one that proves the vector works. */
++    virtio_gpu_msi_attach();
++
+     if (get_display_info() != 0) {
+         kprintf("[virtio-gpu] control queue ready, display-info command failed\n");
+     }
+@@ -804,6 +896,15 @@ int virtio_gpu_init(void) {
+         else
+             kprintf("[virtio-gpu] default VirGL context create failed\n");
+     }
++    if (gpu_msi_vector) {
++        for (uint32_t i = 0; i < 200000 && gpu_msi_irqs == 0; i++)
++            __asm__ volatile ("pause");
++        if (gpu_msi_irqs == 0)
++            kprintf("[msi] virtio-gpu: no message received on vector %u "
++                    "(commands polled to completion)\n", (unsigned)gpu_msi_vector);
++    }
++    virtio_gpu_msi_receipt();
++
+     init_result = 0;
+     return init_result;
+ }
+diff --git a/drivers/pci/msi_caps.c b/drivers/pci/msi_caps.c
+new file mode 100644
+index 0000000..52bc6a5
+--- /dev/null
++++ b/drivers/pci/msi_caps.c
+@@ -0,0 +1,184 @@
++/* msi_caps.c — MSI / MSI-X capability parsing and programming.
++ * See msi_caps.h for the contract and for why the accessors are injectable.
++ *
++ * Capability layouts (PCI Local Bus 3.0 §6.8, PCIe 2.0 §7.7):
++ *
++ *   MSI (id 0x05)
++ *     +0  cap id       +1  next
++ *     +2  message control  (bit0 EN, bit3 64-bit, bit4 per-vector mask,
++ *                           bits 13:11 multiple-message capable,
++ *                           bits 9:7  multiple-message enable)
++ *     +4  message address low
++ *     +8  message address high   (only if 64-bit capable)
++ *     +12 message data           (+16 .. if per-vector mask capable)
++ *
++ *   MSI-X (id 0x11)
++ *     +0  cap id       +1  next
++ *     +2  message control  (bit15 ENABLE, bit14 FUNCTION MASK,
++ *                           bits 10:0 table size - 1)
++ *     +4  table BIR (bits 2:0) + table offset (bits 31:3)
++ *     +8  PBA  BIR + offset
++ *     table entry (16 bytes): addr lo, addr hi, data, vector control (bit0
++ *     = mask this vector)
++ */
++
++#include <stdint.h>
++
++#include "drivers/pci/msi_caps.h"
++
++static void put_reason(char *why, unsigned n, const char *s) {
++    if (!why || n == 0) return;
++    unsigned i = 0;
++    for (; s[i] && i + 1 < n; i++) why[i] = s[i];
++    why[i] = '\0';
++}
++
++static void put_u32(char *why, unsigned n, const char *pre, uint32_t v) {
++    if (!why || n == 0) return;
++    unsigned i = 0;
++    char tmp[11];
++    int t = 0;
++    for (; pre[i] && i + 1 < n; i++) why[i] = pre[i];
++    if (v == 0) tmp[t++] = '0';
++    while (v && t < (int)sizeof(tmp)) { tmp[t++] = (char)('0' + (v % 10u)); v /= 10u; }
++    while (t > 0 && i + 1 < n) why[i++] = tmp[--t];
++    why[i] = '\0';
++}
++
++int msi_scan(const msi_pci_io_t *io, msi_caps_t *out) {
++    if (!io || !out || !io->cfg8) return MSI_KIND_NONE;
++    out->kind = MSI_KIND_NONE;
++    out->cap_off = 0;
++    out->n_vectors = 0;
++    out->bir = 0;
++    out->table_off = 0;
++    out->cap64 = 0;
++
++    /* Status bit 4 = capability list present. */
++    uint16_t status = 0;
++    if (io->cfg16) {
++        status = io->cfg16(io->ctx, 0x06);
++    } else {
++        status = (uint16_t)(io->cfg8(io->ctx, 0x06) |
++                            (io->cfg8(io->ctx, 0x07) << 8));
++    }
++    if (!(status & 0x0010)) return MSI_KIND_NONE;
++
++    uint8_t ptr = (uint8_t)(io->cfg8(io->ctx, 0x34) & 0xFC);
++    int fuse = 48;                       /* a malformed list must terminate */
++    msi_caps_t msix, msi;
++    msix.kind = MSI_KIND_NONE;
++    msi.kind  = MSI_KIND_NONE;
++    while (ptr && fuse--) {
++        uint8_t id  = io->cfg8(io->ctx, ptr);
++        uint8_t nxt = (uint8_t)(io->cfg8(io->ctx, ptr + 1u) & 0xFC);
++        if (id == PCI_CAP_ID_MSIX && msix.kind == MSI_KIND_NONE) {
++            uint16_t mc = io->cfg16 ? io->cfg16(io->ctx, (uint16_t)(ptr + 2u)) : 0;
++            uint32_t tbl = io->cfg32 ? io->cfg32(io->ctx, (uint16_t)(ptr + 4u)) : 0;
++            msix.kind      = MSI_KIND_MSIX;
++            msix.cap_off   = ptr;
++            msix.n_vectors = (uint16_t)((mc & 0x07FFu) + 1u);
++            msix.bir       = (uint8_t)(tbl & 0x07u);
++            msix.table_off = tbl & 0xFFFFFFF8u;
++            msix.cap64     = 0;
++        } else if (id == PCI_CAP_ID_MSI && msi.kind == MSI_KIND_NONE) {
++            uint16_t mc = io->cfg16 ? io->cfg16(io->ctx, (uint16_t)(ptr + 2u)) : 0;
++            msi.kind      = MSI_KIND_MSI;
++            msi.cap_off   = ptr;
++            msi.n_vectors = (uint16_t)(1u << ((mc >> 11) & 0x07u));
++            msi.cap64     = (uint8_t)((mc & 0x0008u) ? 1 : 0);
++        }
++        if (nxt == ptr) break;           /* self-referential list: stop */
++        ptr = nxt;
++    }
++
++    /* Prefer MSI-X: per-vector masking and a table are what a queue per
++     * device needs, and every virtio-pci device that offers both offers
++     * MSI-X for a reason. */
++    *out = (msix.kind == MSI_KIND_MSIX) ? msix : msi;
++    return out->kind;
++}
++
++int msi_program(const msi_pci_io_t *io, const msi_caps_t *caps,
++                uint8_t vector, uint8_t dest_apic_id,
++                char *why, unsigned why_n) {
++    if (!io || !caps || caps->kind == MSI_KIND_NONE) {
++        put_reason(why, why_n, "no MSI/MSI-X capability");
++        return -1;
++    }
++    if (!io->w16 || !io->w32) {
++        put_reason(why, why_n, "transport has no config writer");
++        return -3;
++    }
++
++    uint32_t msg_addr = MSI_APIC_ADDR_BASE | ((uint32_t)dest_apic_id << 12);
++
++    if (caps->kind == MSI_KIND_MSIX) {
++        if (!io->bar_map) {
++            put_reason(why, why_n, "transport cannot map the MSI-X table");
++            return -3;
++        }
++        uint32_t len = (uint32_t)caps->n_vectors * 16u;
++        if (len < 16u) len = 16u;
++        volatile uint8_t *tbl = io->bar_map(io->ctx, caps->bir,
++                                           caps->table_off, len);
++        if (!tbl) {
++            put_u32(why, why_n, "MSI-X table BAR unmappable: BAR", caps->bir);
++            return -3;
++        }
++
++        volatile uint32_t *e = (volatile uint32_t *)tbl;   /* entry 0 */
++        e[0] = msg_addr;          /* address low  */
++        e[1] = 0;                 /* address high */
++        e[2] = (uint32_t)vector;  /* data         */
++        e[3] = 0;                 /* unmask       */
++
++        /* Enable, then clear the function mask, then read it back.  The
++         * order matters: enabling with the mask set still delivers
++         * nothing, and a device that drops the write must be seen. */
++        uint16_t off = (uint16_t)(caps->cap_off + 2u);
++        uint16_t mc  = io->cfg16 ? io->cfg16(io->ctx, off) : 0;
++        mc |= 0x8000u;            /* MSI-X enable      */
++        mc &= (uint16_t)~0x4000u; /* function mask off */
++        io->w16(io->ctx, off, mc);
++        uint16_t back = io->cfg16 ? io->cfg16(io->ctx, off) : 0;
++        if (!(back & 0x8000u)) {
++            put_reason(why, why_n, "device refused the MSI-X enable bit");
++            return -2;
++        }
++        if (back & 0x4000u) {
++            put_reason(why, why_n, "device kept the MSI-X function mask set");
++            return -2;
++        }
++        return 0;
++    }
++
++    /* ---- MSI ---- */
++    uint16_t off = (uint16_t)(caps->cap_off + 2u);
++    uint16_t mc  = io->cfg16 ? io->cfg16(io->ctx, off) : 0;
++    mc &= (uint16_t)~0x0700u;          /* multiple-message enable = 1 msg */
++    mc &= (uint16_t)~0x0001u;          /* program while disabled          */
++    io->w16(io->ctx, off, mc);
++
++    io->w32(io->ctx, (uint16_t)(caps->cap_off + 4u), msg_addr);
++    uint16_t data_off = (uint16_t)(caps->cap_off + 12u);
++    if (caps->cap64) {
++        io->w32(io->ctx, (uint16_t)(caps->cap_off + 8u), 0);
++        data_off = (uint16_t)(caps->cap_off + 12u);
++    }
++    /* The data field is a WORD in the layout; write it as one. */
++    io->w16(io->ctx, data_off, (uint16_t)vector);
++    if (mc & 0x0010u) {
++        /* Per-vector masking capable: clear every mask bit (one vector, so
++         * the low 32 bits of the mask register cover it). */
++        io->w32(io->ctx, (uint16_t)(caps->cap_off + 16u), 0);
++    }
++    mc |= 0x0001u;                     /* enable */
++    io->w16(io->ctx, off, mc);
++    uint16_t back = io->cfg16 ? io->cfg16(io->ctx, off) : 0;
++    if (!(back & 0x0001u)) {
++        put_reason(why, why_n, "device refused the MSI enable bit");
++        return -2;
++    }
++    return 0;
++}
+diff --git a/drivers/pci/msi_caps.h b/drivers/pci/msi_caps.h
+new file mode 100644
+index 0000000..d425dc9
+--- /dev/null
++++ b/drivers/pci/msi_caps.h
+@@ -0,0 +1,73 @@
++/* msi_caps.h — MSI / MSI-X capability parsing and programming
++ * (RESIDUE3 C4, ledger RES-36).
++ *
++ * The logic lives here, in the portable driver tree, and touches the device
++ * ONLY through a small accessor table: config space is whatever the transport
++ * speaks (the x86_64 virtio-blk path uses port I/O through `pci_config_read`;
++ * the modern virtio-pci path uses ECAM), and the MSI-X table is a BAR the
++ * caller maps.  That is what makes the whole thing host-testable
++ * (tests/unit/test_msi_caps.c drives it against a synthetic config space),
++ * which matters because a capability walker that is only ever run on QEMU is
++ * a walker whose edge cases nobody has seen.
++ *
++ * Scope, measured on QEMU (2026-11-03):
++ *   - cap id 0x05 = MSI, 0x11 = MSI-X.  MSI-X is preferred when both exist.
++ *   - the message address for the local APIC is 0xFEE00000 | (dest << 12);
++ *     the message data is the vector.  No DMAR/IRQ-remapping is enabled on
++ *     this tree, so the classic encoding is the correct one.
++ *   - every write is READ BACK: a device that refuses the enable bit is
++ *     reported, not assumed to have taken it.
++ */
++#ifndef AURALITE_DRIVERS_PCI_MSI_CAPS_H
++#define AURALITE_DRIVERS_PCI_MSI_CAPS_H
++
++#include <stdint.h>
++
++#define PCI_CAP_ID_MSI   0x05
++#define PCI_CAP_ID_MSIX  0x11
++
++#define MSI_KIND_NONE  0
++#define MSI_KIND_MSI   1
++#define MSI_KIND_MSIX  2
++
++/* The local APIC's message address, and the shape of a message. */
++#define MSI_APIC_ADDR_BASE 0xFEE00000u
++
++/* The caller supplies everything that is transport-specific.  Any of the
++ * writers may be NULL on a read-only transport; programming then fails
++ * loudly instead of silently doing nothing. */
++typedef struct {
++    void *ctx;
++    uint8_t  (*cfg8) (void *ctx, uint16_t off);
++    uint16_t (*cfg16)(void *ctx, uint16_t off);
++    uint32_t (*cfg32)(void *ctx, uint16_t off);
++    void     (*w16)  (void *ctx, uint16_t off, uint16_t v);
++    void     (*w32)  (void *ctx, uint16_t off, uint32_t v);
++    /* Map [bar:off, bar:off+len) into CPU-addressable memory.  0 = cannot. */
++    volatile uint8_t *(*bar_map)(void *ctx, uint8_t bar, uint32_t off,
++                                 uint32_t len);
++} msi_pci_io_t;
++
++typedef struct {
++    int      kind;          /* MSI_KIND_*                                     */
++    uint8_t  cap_off;       /* config-space offset of the capability          */
++    uint16_t n_vectors;     /* MSI-X: table entries; MSI: 1 << MMC            */
++    uint8_t  bir;           /* MSI-X: BAR indicator of the table              */
++    uint32_t table_off;     /* MSI-X: table offset inside that BAR            */
++    uint8_t  cap64;         /* MSI: 64-bit address capable                    */
++} msi_caps_t;
++
++/* Walk the capability list and describe what the device offers.
++ * Returns MSI_KIND_MSIX / MSI_KIND_MSI / MSI_KIND_NONE. */
++int msi_scan(const msi_pci_io_t *io, msi_caps_t *out);
++
++/* Program vector @vector to be delivered to APIC id @dest for the device
++ * described by @caps.  Returns 0 on success (and only after reading the
++ * enable bit back), -1 when there is no capability, -2 when the device
++ * refused, -3 when the transport cannot write or map.  @why receives a
++ * one-line reason on failure (may be NULL). */
++int msi_program(const msi_pci_io_t *io, const msi_caps_t *caps,
++                uint8_t vector, uint8_t dest_apic_id,
++                char *why, unsigned why_n);
++
++#endif /* AURALITE_DRIVERS_PCI_MSI_CAPS_H */
+diff --git a/drivers/virtio_blk/virtio_blk.c b/drivers/virtio_blk/virtio_blk.c
+index 2ecc78f..8ddcf66 100644
+--- a/drivers/virtio_blk/virtio_blk.c
++++ b/drivers/virtio_blk/virtio_blk.c
+@@ -6,6 +6,7 @@
+ #include "kernel/mm/pmm.h"
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/kprintf.h"
++#include "kernel/arch/arch.h"   /* RESIDUE3 C4: MSI, via the width seam */
+ 
+ #define VIRTIO_VENDOR_ID         0x1AF4
+ #define VIRTIO_BLK_MODERN_DEVICE 0x1042
+@@ -63,10 +64,28 @@ static int present = 0;
+ static uint8_t pci_bus, pci_dev, pci_func;
+ static volatile struct virtio_pci_common_cfg *common_cfg;
+ static volatile uint8_t *notify_base;
++/* C4: the ISR-status region (virtio-pci cfg_type 3).  Reading it is
++ * what retires the interrupt -- it is READ-TO-CLEAR, which is why the
++ * handler must touch this and nothing else. */
++static volatile uint8_t *isr_base;
++static volatile uint8_t *devcfg_base;
++/* C4: the device-config region (cfg_type 4), where virtio-blk's capacity
++ * lives.  The old code read BAR0 out of PCI config space and called it a
++ * sector count (measured: 18356408198371524609 sectors on an 8 MiB disk) --
++ * harmless only because the bound check it fed was always satisfied. */
+ static uint32_t notify_multiplier;
+ 
+ static struct vblk_queue q;
+ static uint64_t device_capacity_sectors;
++/* C4: the MSI-X vector this device was attached to (0 = INTx/polling), and
++ * the number of interrupts it has taken.  The counter is the receipt that
++ * proves the vector is not merely programmed but DELIVERED. */
++static uint32_t msi_vector;
++/* Did the device offer VIRTIO_PCI_F_MSI_X (bit 27)?  Probing MSI-X on a
++ * device that did not is legal but the answer means nothing. */
++static int      msi_offered;
++static volatile uint32_t msi_irqs;
++static int      msi_report_done;
+ 
+ static uint8_t pci_read8_at(uint8_t off) {
+     uint32_t v = pci_config_read(pci_bus, pci_dev, pci_func, off & 0xFC);
+@@ -86,6 +105,44 @@ static uint64_t map_bar_region(uint8_t bar, uint32_t offset, uint32_t length) {
+     return hhdm + phys;
+ }
+ 
++/* ---- RESIDUE3 C4 (RES-36): the MSI/MSI-X transport shims ---------------
++ *
++ * kernel/drivers/pci/msi_caps.c does not know how this driver reaches its
++ * config space (port I/O through pci_config_read) or its BARs
++ * (map_bar_region), so those are handed to it as an accessor table.  Nothing
++ * here makes a decision: it is the same three reads and two writes the
++ * capability walk above already does, in the shape the walker expects. */
++static uint8_t  msi_cfg8 (void *ctx, uint16_t off) { (void)ctx; return pci_read8_at((uint8_t)off); }
++static uint16_t msi_cfg16(void *ctx, uint16_t off) {
++    (void)ctx;
++    return (uint16_t)(pci_read8_at((uint8_t)off) | (pci_read8_at((uint8_t)(off + 1)) << 8));
++}
++static uint32_t msi_cfg32(void *ctx, uint16_t off) {
++    (void)ctx;
++    return pci_config_read(pci_bus, pci_dev, pci_func, (uint8_t)off);
++}
++static void msi_w16(void *ctx, uint16_t off, uint16_t v) {
++    (void)ctx;
++    /* The config mechanism exposes dword writes only: read, patch the half,
++     * write back.  A torn read-modify-write is not possible here -- this runs
++     * with interrupts disabled during probe, and nothing else touches this
++     * device's config space. */
++    uint32_t cur = pci_config_read(pci_bus, pci_dev, pci_func, (uint8_t)(off & 0xFC));
++    unsigned sh = (unsigned)(off & 2u) * 8u;
++    uint32_t mask = 0xFFFFu << sh;
++    pci_config_write(pci_bus, pci_dev, pci_func, (uint8_t)(off & 0xFC),
++                     (cur & ~mask) | ((uint32_t)v << sh));
++}
++static void msi_w32(void *ctx, uint16_t off, uint32_t v) {
++    (void)ctx;
++    pci_config_write(pci_bus, pci_dev, pci_func, (uint8_t)off, v);
++}
++static volatile uint8_t *msi_bar(void *ctx, uint8_t bar, uint32_t off, uint32_t len) {
++    (void)ctx;
++    uint64_t va = map_bar_region(bar, off, len ? len : 0x1000);
++    return (volatile uint8_t *)(uintptr_t)va;
++}
++
+ static int parse_virtio_caps(void) {
+     uint16_t status = pci_read8_at(0x06) | (pci_read8_at(0x07) << 8);
+     if (!(status & PCI_STATUS_CAP_LIST)) return -1;
+@@ -99,6 +156,12 @@ static int parse_virtio_caps(void) {
+             uint64_t va = map_bar_region(bar, off, len ? len : 0x1000);
+             if (va) {
+                 if (cfg_type == 1) common_cfg = (volatile struct virtio_pci_common_cfg *)(uintptr_t)va;
++                else if (cfg_type == 4) {
++                    devcfg_base = (volatile uint8_t *)(uintptr_t)va;
++                }
++                else if (cfg_type == 3) {
++                    isr_base = (volatile uint8_t *)(uintptr_t)va;
++                }
+                 else if (cfg_type == 2) {
+                     notify_base = (volatile uint8_t *)(uintptr_t)va;
+                     notify_multiplier = pci_config_read(pci_bus, pci_dev, pci_func, cap + 16);
+@@ -156,6 +219,75 @@ static void notify_queue(void) {
+     *qn = 0;
+ }
+ 
++/* Interrupt handler: the virtio ISR read (read-to-clear) is the part the
++ * device cares about -- it deasserts the line / retires the message.  The
++ * request path still POLLS the used ring, which is deliberate: making I/O
++ * blocking-on-interrupt is a scheduler change (wait queues, IRQ-safe sleep),
++ * not a transport change, and this phase is scoped to the transport.  What
++ * the counter proves is exactly what the plan asks: the vector is programmed
++ * AND the device signals it. */
++static void virtio_blk_msi_handler(void *cookie)
++{
++    (void)cookie;
++    if (isr_base) (void)*isr_base;      /* read-to-clear: retires the message */
++    msi_irqs++;
++}
++
++static void virtio_blk_msi_attach(void) {
++    msi_pci_io_t io;
++    memset(&io, 0, sizeof(io));
++    io.ctx = 0;
++    io.cfg8 = msi_cfg8; io.cfg16 = msi_cfg16; io.cfg32 = msi_cfg32;
++    io.w16 = msi_w16; io.w32 = msi_w32; io.bar_map = msi_bar;
++
++    uint32_t vec = 0;
++    int rc = msi_attach_pci(&io, virtio_blk_msi_handler, 0, "virtio-blk", &vec);
++    if (rc != 0) {
++        /* Three distinguishable states, because a test lane asserts on each:
++         * off by knob (the fw_cfg line already said so -- say nothing),
++         * -1 no capability (the honest INTx case), and anything else refused
++         * (msi.c printed the reason).  The old code called a disabled build
++         * "attach refused", which is the sort of line that makes a log lie. */
++        if (rc == -1)
++            kprintf("[msi] virtio-blk: no MSI/MSI-X capability -- "
++                    "INTx/polling path\n");
++        else if (msi_enabled())
++            kprintf("[msi] virtio-blk: attach refused (see above) -- "
++                    "INTx/polling path\n");
++        return;
++    }
++    msi_vector = vec;
++
++    /* Tell the DEVICE which vector to use for queue 0.  Per the spec the
++     * device answers with VIRTIO_MSI_NO_VECTOR (0xFFFF) if it cannot honour
++     * the request, and reading back is the only way to know. */
++    /* The register takes the MSI-X TABLE INDEX (msi.h: MSI_TABLE_ENTRY),
++     * not the x86 vector: the vector is already inside the table entry this
++     * driver had programmed.  See msi.h for the measured NO_VECTOR that
++     * writing the vector here produces. */
++    common_cfg->queue_select = 0;
++    common_cfg->queue_msix_vector = (uint16_t)MSI_TABLE_ENTRY;
++    uint16_t got = common_cfg->queue_msix_vector;
++    if (got == 0xFFFF) {
++        kprintf("[msi] virtio-blk: device refused queue 0 vector %u "
++                "(NO_VECTOR); keeping INTx\n", (unsigned)vec);
++        msi_vector = 0;
++        return;
++    }
++    /* Configuration-change interrupts name the same vector: this driver never
++     * relies on them, but leaving the field at NO_VECTOR would mean the one
++     * device event we could also see was silently unrouted. */
++    common_cfg->msix_config = (uint16_t)MSI_TABLE_ENTRY;
++    kprintf("[msi] virtio-blk: queue 0 -> table entry %u (readback %u), "
++            "x86 vector %u\n", (unsigned)MSI_TABLE_ENTRY, (unsigned)got,
++            (unsigned)vec);
++}
++
++/* Forward declarations: init's self-test issues a request, and both the
++ * request path and the self-test share the once-only receipt. */
++static int  virtio_blk_transfer(uint32_t type, uint64_t lba, uint32_t count, void *buf);
++static void msi_receipt(void);
++
+ int virtio_blk_init(void) {
+     if (init_attempted) return init_result;
+     init_attempted = 1;
+@@ -172,18 +304,79 @@ int virtio_blk_init(void) {
+ 
+     common_cfg->device_status = 0;
+     common_cfg->device_status = 1 | 2; // ACK, DRIVER
++
++    /* Feature negotiation, which this driver used to skip entirely.  A
++     * modern (capability-based) transport is only honoured by the device
++     * once VIRTIO_F_VERSION_1 (feature bit 32) is acked: without it a
++     * transitional virtio-blk stays in legacy I/O-BAR mode, so the common
++     * config window accepts writes that mean nothing and the first request
++     * never completes.  Measured before this fix: the C4 self-test read
++     * failed (status never written) on a device whose probes all looked
++     * healthy.  Accept VERSION_1 and, when offered, MSI-X (bit 27) -- the
++     * latter is what makes queue_msix_vector meaningful. */
++    common_cfg->device_feature_select = 1;
++    uint32_t feat_hi = common_cfg->device_feature;
++    common_cfg->device_feature_select = 0;
++    uint32_t feat_lo = common_cfg->device_feature;
++
++    common_cfg->driver_feature_select = 1;
++    common_cfg->driver_feature = feat_hi & 1u;              /* VERSION_1 */
++    common_cfg->driver_feature_select = 0;
++    common_cfg->driver_feature = feat_lo & (1u << 27);      /* MSI-X */
++    msi_offered = (feat_lo >> 27) & 1u;
++
+     common_cfg->device_status |= 8;    // FEATURES_OK
++    /* A device that refuses the feature set clears FEATURES_OK here; going
++     * on would build rings the device will never look at. */
++    if (!(common_cfg->device_status & 8)) {
++        kprintf("[virtio-blk] device refused the feature set "
++                "(features %08x:%08x); driver will not use it\n",
++                feat_hi, feat_lo);
++        return -1;
++    }
+     common_cfg->device_status |= 4;    // DRIVER_OK
+ 
+     if (setup_queue() != 0) return -1;
+ 
+-    /* Read capacity: write 0 to queue, read back from config space or a specific request.
+-     * In modern virtio-blk, capacity is in the device config space. */
+-    uint32_t cap_low = pci_config_read(pci_bus, pci_dev, pci_func, 0x10);
+-    uint32_t cap_high = pci_config_read(pci_bus, pci_dev, pci_func, 0x14);
+-    device_capacity_sectors = ((uint64_t)cap_high << 32) | cap_low;
++    /* Capacity: the modern virtio-blk device-config region (cfg_type 4)
++     * holds a le64 sector count at offset 0.  It is read as two dwords on
++     * purpose -- config space is not required to tear-free a 64-bit read. */
++    if (devcfg_base) {
++        uint32_t lo = *(volatile uint32_t *)(devcfg_base + 0);
++        uint32_t hi = *(volatile uint32_t *)(devcfg_base + 4);
++        device_capacity_sectors = ((uint64_t)hi << 32) | lo;
++    } else {
++        device_capacity_sectors = 0;      /* unknown: the bound check refuses */
++    }
++
++    /* C4: after the queue exists (queue 0 is selected and enabled by
++     * setup_queue), attach the interrupt.  Failures leave the device on the
++     * polling path it had before this phase. */
++    virtio_blk_msi_attach();
+ 
+     kprintf("[virtio-blk] ready: capacity %llu sectors\n", device_capacity_sectors);
++
++    /* C4 self-test: the request path had no in-tree caller on x86_64, so a
++     * phase that claims "interrupts arrive" cannot be proven without issuing
++     * a request.  One read-only sector, into a static buffer, so neither the
++     * disk nor the arena allocator is disturbed. */
++    /* The self-test goes through the public request path, so the device has
++     * to be declared usable first -- otherwise virtio_blk_available() is
++     * still false and the transfer refuses before it touches the ring. */
++    init_result = 0;
++    static uint8_t selftest_buf[512];
++    if (device_capacity_sectors > 0 &&
++        virtio_blk_transfer(VIRTIO_BLK_T_IN, 0, 1, selftest_buf) == 0) {
++        for (uint32_t i = 0; i < 200000 && msi_irqs == 0; i++)
++            __asm__ volatile ("pause");
++        msi_receipt();
++        kprintf("[virtio-blk] self-test: LBA 0 read OK (%s)\n",
++                msi_vector ? (msi_irqs ? "interrupt delivered" : "no message")
++                           : "INTx/polling");
++    } else {
++        kprintf("[virtio-blk] self-test: LBA 0 read FAILED\n");
++    }
++
+     init_result = 0;
+     return 0;
+ }
+@@ -199,6 +392,16 @@ uint64_t virtio_blk_sector_count(void) { return device_capacity_sectors; }
+  * completes used to hang the kernel in an unbounded spin. */
+ #define VIRTIO_BLK_POLL_LIMIT  50000000u
+ 
++/* Prints the delivery receipt exactly once.  The message can trail the
++ * used-ring write by a few thousand cycles, so the self-test below gives it
++ * a grace window before deciding it never arrived. */
++static void msi_receipt(void) {
++    if (!msi_vector || msi_report_done || msi_irqs == 0) return;
++    msi_report_done = 1;
++    kprintf("[msi] virtio-blk: %u interrupt(s) delivered on vector %u\n",
++            (unsigned)msi_irqs, (unsigned)msi_vector);
++}
++
+ static uint64_t alloc_temp_page(void **virt) {
+     uint64_t phys = pmm_alloc_frame();
+     if (!phys) return 0;
+@@ -273,6 +476,13 @@ static int virtio_blk_transfer(uint32_t type, uint64_t lba, uint32_t count, void
+ 
+     pmm_free_frame(h_phys); pmm_free_frame(d_phys); pmm_free_frame(s_phys);
+     q.last_used_idx = q.used->idx;
++
++    /* C4 receipt: prove DELIVERY, once, on the first request after the
++     * interrupt has actually fired.  Printed from the request path because
++     * that is where the device's completion (and therefore its message)
++     * happens; printing at probe time would only prove a register was
++     * written. */
++    msi_receipt();
+     return res;
+ }
+ 
+diff --git a/kernel/arch/arch.h b/kernel/arch/arch.h
+index c0ba9e3..eb595e8 100644
+--- a/kernel/arch/arch.h
++++ b/kernel/arch/arch.h
+@@ -26,6 +26,37 @@
+ #ifndef AURALITE_ARCH_ARCH_H
+ #define AURALITE_ARCH_ARCH_H
+ 
++/* MSI / MSI-X (RESIDUE3 C4, ledger RES-36).  Message-signalled interrupts
++ * need a controller that can be told "deliver this vector here" -- the x86_64
++ * LAPIC is one, and the other arches in this tree are not (riscv64's PLIC and
++ * aarch64's GIC take a different, per-platform programming model that no
++ * driver here has been written against yet).
++ *
++ * So the x86_64 side forwards the real header, and everywhere else the two
++ * entry points are declared UNAVAILABLE rather than stubbed: a driver that
++ * silently never gets an interrupt is indistinguishable from a device that
++ * never raised one, and that is the bug shape C4 exists to catch.  Including
++ * arch.h stays legal on every arch -- only the first USE fails.
++ *
++ * This is also what keeps the two virtio drivers off ratchet 2: they used to
++ * name msi.h directly, and the width sweep caught it (72 > 69) the moment C4
++ * landed. */
++#if defined(__x86_64__)
++#  include "kernel/arch/x86_64/msi.h"
++#else
++#  include "drivers/pci/msi_caps.h"
++#  define AURALITE_NO_MSI_MSG \
++    "MSI/MSI-X needs a message-capable interrupt controller; only the " \
++    "x86_64 LAPIC port has one, and the virtio devices here use INTx or " \
++    "the virtio-mmio transport instead"
++static inline int msi_enabled(void)
++    __attribute__((unavailable(AURALITE_NO_MSI_MSG)));
++static inline int msi_attach_pci(const msi_pci_io_t *io,
++                                 void (*fn)(void *cookie), void *cookie,
++                                 const char *name, uint32_t *vector_out)
++    __attribute__((unavailable(AURALITE_NO_MSI_MSG)));
++#endif
++
+ /* Port I/O (the I6 block).  x86-only by nature: neither riscv64 nor
+  * aarch64 has a port address space -- device access there is MMIO
+  * through the HHDM, and a portable file that needs inb/outb is an
+diff --git a/kernel/arch/x86_64/fwcfg.c b/kernel/arch/x86_64/fwcfg.c
+index f41362c..dc7c93b 100644
+--- a/kernel/arch/x86_64/fwcfg.c
++++ b/kernel/arch/x86_64/fwcfg.c
+@@ -31,6 +31,7 @@
+ #include "kernel/fs/fsformat.h"
+ #include "kernel/fs/fscheck.h"
+ #include "kernel/lib/string.h"
++#include "kernel/arch/x86_64/msi.h"
+ 
+ #define FW_CFG_SELECTOR   0x510
+ #define FW_CFG_DATA       0x511
+@@ -40,6 +41,10 @@
+ #define SELFTEST_FILE     "opt/auralite.selftest"
+ #define FSFORMAT_FILE     "opt/auralite.fsformat"
+ #define FSCHECK_FILE      "opt/auralite.fscheck"
++/* RESIDUE3 C4 (RES-36): the MSI switch.  `off` is the INTx lane of the
++ * MSIX gate: it is the only way to prove the fallback path still works,
++ * because QEMU has no property that removes a device's MSI-X capability. */
++#define MSI_FILE          "opt/auralite.msi"
+ 
+ static uint32_t read_be32(void) {
+     uint32_t v = 0;
+@@ -161,3 +166,18 @@ void fwcfg_fscheck_probe(void) {
+     }
+     /* Unrecognised strings leave the default (off) in place. */
+ }
++
++void fwcfg_msi_probe(void) {
++    char val[16];
++    if (!fwcfg_read_string(MSI_FILE, val, (int)sizeof(val) - 1)) {
++        return;                       /* absent knob: the build default (on) */
++    }
++
++    if (strcmp(val, "off") == 0) {
++        msi_set_enabled(0, "fw_cfg opt/auralite.msi=off");
++    } else if (strcmp(val, "on") == 0) {
++        msi_set_enabled(1, "fw_cfg opt/auralite.msi=on");
++    }
++    /* Anything else leaves the default: a typo must not silently switch a
++     * device off the interrupt path it is supposed to use. */
++}
+diff --git a/kernel/arch/x86_64/isr.c b/kernel/arch/x86_64/isr.c
+index becbefd..72bb10b 100644
+--- a/kernel/arch/x86_64/isr.c
++++ b/kernel/arch/x86_64/isr.c
+@@ -6,6 +6,7 @@
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/cpu.h"
+ #include "kernel/arch/x86_64/lapic.h"
++#include "kernel/arch/x86_64/msi.h"
+ #include "kernel/arch/x86_64/paging.h"
+ #include "kernel/arch/x86_64/diagnostics.h"
+ #include "kernel/proc/scheduler.h"
+@@ -449,6 +450,13 @@ void isr_handler(struct registers *r) {
+          * here. */
+         extern void ipi_tlb_shootdown_handler(void);
+         ipi_tlb_shootdown_handler();
++    } else if (r->int_no >= MSI_VECTOR_BASE &&
++               r->int_no < MSI_VECTOR_BASE + MSI_VECTOR_COUNT) {
++        /* RESIDUE3 C4 (RES-36): a message-signalled interrupt.  The handler
++         * is a device callback with no universal signature -- it takes one
++         * cookie -- and msi_dispatch writes the LAPIC EOI after it, so this
++         * branch costs the IOAPIC/PIC paths nothing. */
++        (void)msi_dispatch((uint8_t)r->int_no);
+     } else {
+         kprintf("[isr] spurious/unknown interrupt vector %llu\n",
+                 (unsigned long long)r->int_no);
+diff --git a/kernel/arch/x86_64/msi.c b/kernel/arch/x86_64/msi.c
+new file mode 100644
+index 0000000..daa536f
+--- /dev/null
++++ b/kernel/arch/x86_64/msi.c
+@@ -0,0 +1,132 @@
++/* kernel/arch/x86_64/msi.c — the local-APIC half of MSI/MSI-X (RES-36).
++ * See msi.h for the vector map and for why the allocator is a block.
++ *
++ * EOI discipline: a message-signalled interrupt is an LAPIC interrupt like
++ * any other, so its handler owes the LAPIC an EOI.  It is written HERE, after
++ * the device handler ran, and not in irq_dispatch's early-EOI path: that path
++ * belongs to the IOAPIC/PIC lines, where the early EOI is deliberate (it
++ * reopens the line before the handler finishes so a second edge is not
++ * lost).  A per-vector EOI for the MSI block is the same rule the IOAPIC
++ * lines get, applied to the vectors that have no IOAPIC redirection entry.
++ */
++
++#include <stdint.h>
++
++#include "kernel/arch/x86_64/msi.h"
++#include "kernel/arch/x86_64/lapic.h"
++#include "kernel/lib/kprintf.h"
++
++struct msi_slot {
++    int      used;
++    void   (*fn)(void *cookie);
++    void    *cookie;
++    const char *name;
++    uint32_t delivered;          /* interrupts this vector has taken */
++};
++
++static struct msi_slot slots[MSI_VECTOR_COUNT];
++static uint32_t next_slot;
++static uint32_t total_delivered;
++static int      msi_on = 1;      /* build default until the knob says otherwise */
++
++int msi_enabled(void) { return msi_on; }
++
++void msi_set_enabled(int on, const char *source) {
++    msi_on = on ? 1 : 0;
++    if (!msi_on) {
++        /* Say it once, at boot, naming who asked: a lane that expects INTx
++         * needs to be able to tell "the knob worked" from "there was never a
++         * capability here". */
++        kprintf("[msi] disabled by %s -- devices keep their INTx/polling "
++                "path\n", source ? source : "(unknown source)");
++    }
++}
++
++int msi_alloc_vector(void (*fn)(void *cookie), void *cookie, const char *name) {
++    if (!msi_on || !fn) return -1;
++    while (next_slot < MSI_VECTOR_COUNT && slots[next_slot].used) next_slot++;
++    if (next_slot >= MSI_VECTOR_COUNT) return -1;
++    uint32_t i = next_slot++;
++    slots[i].used   = 1;
++    slots[i].fn     = fn;
++    slots[i].cookie = cookie;
++    slots[i].name   = name;
++    slots[i].delivered = 0;
++    return (int)(MSI_VECTOR_BASE + i);
++}
++
++int msi_dispatch(uint8_t vector) {
++    if (vector < MSI_VECTOR_BASE ||
++        vector >= MSI_VECTOR_BASE + MSI_VECTOR_COUNT)
++        return 0;
++    uint32_t i = (uint32_t)(vector - MSI_VECTOR_BASE);
++    struct msi_slot *s = &slots[i];
++    if (s->used && s->fn) {
++        s->fn(s->cookie);
++        s->delivered++;
++        total_delivered++;
++    }
++    /* EOI whether or not a handler was bound: an unclaimed vector in this
++     * block is a device we programmed and then forgot, and leaving the ISR
++     * in service would wedge every vector of lower priority on this CPU. */
++    lapic_eoi();
++    return 1;
++}
++
++int msi_attach_pci(const msi_pci_io_t *io, void (*fn)(void *cookie),
++                   void *cookie, const char *name, uint32_t *vector_out) {
++    if (!msi_on) return -4;
++
++    msi_caps_t caps;
++    int kind = msi_scan(io, &caps);
++    if (kind == MSI_KIND_NONE) {
++        /* No capability: this is the INTx case, and it is not an error. */
++        return -1;
++    }
++
++    int vec = msi_alloc_vector(fn, cookie, name);
++    if (vec < 0) {
++        kprintf("[msi] %s: vector block exhausted -- keeping INTx\n", name);
++        return -4;
++    }
++
++    /* Destination = this CPU's APIC id.  A device may name any CPU; naming
++     * the one that owns the driver keeps the handler cache-hot and, more
++     * importantly, keeps the EOI on the same LAPIC that took the interrupt. */
++    uint8_t dest = (uint8_t)lapic_read_id();
++
++    char why[64];
++    why[0] = '\0';
++    int rc = msi_program(io, &caps, (uint8_t)vec, dest, why, sizeof(why));
++    if (rc != 0) {
++        /* The vector stays reserved (it was never handed out, and reusing it
++         * would hand the same number to a second device while the first one
++         * may still be partially programmed).  The device keeps INTx. */
++        kprintf("[msi] %s: %s refused (%s) -- keeping INTx\n",
++                name, (kind == MSI_KIND_MSIX) ? "MSI-X" : "MSI",
++                why[0] ? why : "no reason given");
++        return -2;
++    }
++
++    if (vector_out) *vector_out = (uint32_t)vec;
++
++    /* The receipt the plan names.  "1 msg" is the multiple-message count we
++     * programmed (one message, one vector); the table size is printed because
++     * a device that offers 2 entries but needs 16 tells you its queue shape
++     * at a glance. */
++    kprintf("[msi] %s: %s vector %u (1 msg, %u entr%s)\n",
++            name, (kind == MSI_KIND_MSIX) ? "MSI-X" : "MSI",
++            (unsigned)vec, (unsigned)caps.n_vectors,
++            (caps.n_vectors == 1) ? "y" : "ies");
++    return 0;
++}
++
++uint32_t msi_vectors_allocated(void) { return next_slot; }
++uint32_t msi_interrupts_delivered(void) { return total_delivered; }
++
++/* Per-device delivered counter, for the drivers' own receipts. */
++uint32_t msi_vector_delivered(uint32_t vector) {
++    if (vector < MSI_VECTOR_BASE || vector >= MSI_VECTOR_BASE + MSI_VECTOR_COUNT)
++        return 0;
++    return slots[vector - MSI_VECTOR_BASE].delivered;
++}
+diff --git a/kernel/arch/x86_64/msi.h b/kernel/arch/x86_64/msi.h
+new file mode 100644
+index 0000000..b0c2933
+--- /dev/null
++++ b/kernel/arch/x86_64/msi.h
+@@ -0,0 +1,73 @@
++/* kernel/arch/x86_64/msi.h — message-signalled interrupts on the local APIC
++ * (RESIDUE3 C4 / RES-36).
++ *
++ * The device side (which capability, which table entry, which address/data
++ * pair) is portable and lives in kernel/drivers/pci/msi_caps.c.  This header
++ * is the OTHER half: the vectors a message may name, the handlers those
++ * vectors dispatch to, and the EOI they owe.
++ *
++ * Vector allocation is deliberately primitive: one fixed block, handed out in
++ * order, never reused.  A driver that needs a vector asks once at probe time;
++ * a driver that needed to hand one back would be a driver with a
++ * hot-plug/teardown path, and this kernel's virtio devices are probed once at
++ * boot.  Saying that here is cheaper than a free-list nobody exercises.
++ *
++ * The block sits ABOVE everything else in use, and the constants below are
++ * the whole map — an IDT gate exists for every one of the 256 vectors, so a
++ * message to an unclaimed vector in this range is a quiet no-op rather than a
++ * fault, but a message to a vector OUTSIDE it (a PIC IRQ, the TLB IPI) would
++ * run somebody else's handler.
++ */
++#ifndef AURALITE_ARCH_X86_64_MSI_H
++#define AURALITE_ARCH_X86_64_MSI_H
++
++#include <stdint.h>
++
++#include "drivers/pci/msi_caps.h"
++
++/* 0x20-0x2F  PIC-remapped IRQs         (kernel/arch/x86_64/irq.c)
++ * 0x30-0x3F  IOAPIC/PCI INTx lines     (same table, above the PIC block)
++ * 0xF0       TLB shootdown IPI         (lapic.h)
++ * 0x60-0x6F  THIS block: MSI/MSI-X vectors                       */
++#define MSI_VECTOR_BASE   0x60u
++#define MSI_VECTOR_COUNT  16
++
++/* The MSI-X TABLE INDEX this driver programs (always entry 0: one message
++ * per device is what a queue needs, and the table is per-function).  This is
++ * NOT the x86 vector -- the vector goes in the table entry's DATA field, the
++ * index goes in the device's own `queue_msix_vector` register.  Conflating
++ * the two is the mistake that makes a working MSI-X setup answer NO_VECTOR:
++ * measured on virtio-blk, whose table has 3 entries, so writing 96 there is
++ * out of range while writing it into the entry would be perfect. */
++#define MSI_TABLE_ENTRY  0u
++
++/* Does this build actually program MSI?  Off only via the fw_cfg knob
++ * (`-fw_cfg name=opt/auralite.msi,string=off`), which exists so the INTx
++ * fallback has a lane that is not a hope. */
++int  msi_enabled(void);
++void msi_set_enabled(int on, const char *source);
++
++/* Reserve a vector and bind a handler to it.  Returns the vector, or -1 when
++ * the block is exhausted or MSI is switched off.  The handler runs in
++ * interrupt context with interrupts disabled and MUST NOT sleep. */
++int  msi_alloc_vector(void (*fn)(void *cookie), void *cookie, const char *name);
++
++/* Call the handler bound to @vector and EOI it.  Returns 1 when the vector
++ * belonged to this block, 0 when it did not (the caller then treats it as the
++ * spurious/unknown case it is). */
++int  msi_dispatch(uint8_t vector);
++
++/* Attach a PCI function to a message-signalled interrupt in one step:
++ * scan its capabilities, reserve a vector, program the device, and print the
++ * receipt.  @io is the caller's transport (config accessors + BAR mapper).
++ * Returns 0 and sets *vector_out on success; -1 when there is no capability
++ * (INTx stays the default), -2 when the device refused, -3 on a transport
++ * error, -4 when MSI is switched off or the vector block is exhausted. */
++int  msi_attach_pci(const msi_pci_io_t *io, void (*fn)(void *cookie),
++                    void *cookie, const char *name, uint32_t *vector_out);
++
++/* Diagnostics for /proc and the gates. */
++uint32_t msi_vectors_allocated(void);
++uint32_t msi_interrupts_delivered(void);
++
++#endif /* AURALITE_ARCH_X86_64_MSI_H */
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index d414cca..38cde71 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -75,6 +75,7 @@
+ #include "drivers/bluetooth/bt.h"
+ #include "drivers/wifi/wifi.h"
+ #include "drivers/timer/pit.h"
++#include "kernel/arch/arch.h"   /* RESIDUE3 C4: MSI, via the width seam */
+ #include "drivers/vm/virtual_drivers.h"
+ #include "drivers/virtio_blk/virtio_blk.h"
+ #include "kernel/audio/audio.h"
+@@ -295,6 +296,19 @@ void kmain(boot_info_t *boot_info) {
+                 fscheck_source());
+     }
+ 
++    /* RESIDUE3 C4 (RES-36): the MSI switch, read with the other knobs so
++     * every device probed later sees the final answer. */
++    {
++        extern void fwcfg_msi_probe(void);
++        fwcfg_msi_probe();
++        /* The cause, not just the state: the disabled lane used to print
++         * "DISABLED (build default on)", which reads like a contradiction. */
++        kprintf("[msi] message-signalled interrupts: %s (%s)\n",
++                msi_enabled() ? "ENABLED" : "DISABLED",
++                msi_enabled() ? "build default on"
++                              : "fw_cfg opt/auralite.msi=off");
++    }
++
+     kprintf("[boot] initialising physical memory manager...\n");
+     pmm_init();
+     /* HW H3 follow-up: the fb console's RAM shadow needs frames; arm
+diff --git a/tests/integration/cases/test_msix.sh b/tests/integration/cases/test_msix.sh
+new file mode 100644
+index 0000000..7595fb4
+--- /dev/null
++++ b/tests/integration/cases/test_msix.sh
+@@ -0,0 +1,165 @@
++#!/usr/bin/env bash
++# test_msix.sh — RESIDUE3 C4 (RES-36) message-signalled interrupts on virtio.
++#
++# Four lanes, because "MSI works" is only half a claim until the fallback is
++# proven to still work:
++#
++#   1. virtio-blk  + MSI-X on   — the receipt names the vector, the device
++#                                 accepts the table entry, and a real request
++#                                 delivers a real message
++#   2. virtio-blk  + MSI off    — the fw_cfg knob keeps the device on its
++#                                 INTx/polling path, and NO msi receipt may
++#                                 appear
++#   3. virtio-gpu  + MSI-X on   — same three steps through the control queue
++#   4. virtio-gpu  + MSI off    — the GPU still comes up and still reaches
++#                                 the shell
++#
++# Why a disk and a GPU rather than a unit test: the vector programming is a
++# register write that a unit test CAN fake (tests/unit/test_msi_caps.c does,
++# 12 cases).  What a unit test cannot show is that a device honours the table
++# entry and signals the vector — that needs QEMU on the other side, which is
++# what these lanes are.
++#
++# QEMU notes measured while writing this:
++#   - NEITHER virtio-blk-pci nor virtio-gpu-pci in this QEMU build has an
++#     `msix` property: passing it is a hard error ("Property ... not found"),
++#     which is what the first run of this gate did -- every lane died before
++#     the firmware ran.  MSI-X is offered by both devices unconditionally; the
++#     plan's `virtio-blk-pci,msix=on` wording was a plan-time guess.
++#   - the ISO is a raw hybrid image the runner attaches with if=ide, so the
++#     virtio-blk lanes need their own scratch disk on if=none.
++#   - extra QEMU arguments go straight after the timeout (il_run_qemu appends
++#     "$@"); a "--" separator is NOT stripped, despite what lib.sh's own
++#     header comment says -- QEMU answers it with "invalid option".
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "RESIDUE3 C4 MSI/MSI-X on virtio (RES-36)"
++
++# A scratch disk for the virtio-blk lanes: the driver's self-test only READS
++# LBA 0, so eight zeroed megabytes are enough and nothing ever writes to it.
++DISK="$IL_LOGDIR/msix_scratch.img"
++if [ ! -f "$DISK" ] || [ "$(wc -c < "$DISK")" -lt 8388608 ]; then
++    dd if=/dev/zero of="$DISK" bs=1M count=8 status=none
++fi
++
++# IL_SELFTEST=fast: this gate is about interrupt transport, not about the
++# self-test corpus, and the full corpus is a minute of serial output the lanes
++# would only have to scroll through.  (lib.sh defaults to `full` for CI.)
++
++# ---------------------------------------------------------------- lane 1 ---
++il_section "lane 1/4 — virtio-blk with MSI-X enabled"
++
++LOG="$IL_LOGDIR/msix_blk_on.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "exit"
++
++IL_SELFTEST=fast il_run_qemu "$LOG" 90 \
++    -drive "file=$DISK,format=raw,if=none,id=hd,snapshot=on" \
++    -device "virtio-blk-pci,drive=hd"
++
++il_assert_grep_fixed "$LOG" "[msi] message-signalled interrupts: ENABLED (build default on)" \
++                     "the MSI switch is on by build default"
++il_assert_grep        "$LOG" "\[msi\] virtio-blk: MSI-X vector [0-9]+ \(1 msg, [0-9]+ entr" \
++                     "the MSI-X capability is parsed and a vector programmed"
++il_assert_grep_fixed "$LOG" "[msi] virtio-blk: queue 0 -> table entry 0 (readback 0)" \
++                     "the device accepted the MSI-X table entry"
++il_assert_grep        "$LOG" "\[msi\] virtio-blk: [0-9]+ interrupt\(s\) delivered on vector" \
++                     "an interrupt was actually DELIVERED on that vector"
++il_assert_grep_fixed "$LOG" "[virtio-blk] self-test: LBA 0 read OK (interrupt delivered)" \
++                     "a real request completed and the message arrived with it"
++il_assert_grep        "$LOG" "\[virtio-blk\] ready: capacity [1-9][0-9]* sectors" \
++                     "the device config capability yields a real capacity"
++il_assert_no_grep     "$LOG" "spurious interrupt" "no spurious-vector report"
++il_assert_no_grep     "$LOG" "PANIC|UNHANDLED EXCEPTION|from KERNEL mode" \
++                     "no kernel exception/panic"
++il_assert_grep_fixed "$LOG" "auralite#" "the boot still reaches the shell"
++
++# ---------------------------------------------------------------- lane 2 ---
++il_section "lane 2/4 — virtio-blk with MSI disabled (INTx fallback)"
++
++LOG="$IL_LOGDIR/msix_blk_off.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "exit"
++
++IL_SELFTEST=fast il_run_qemu "$LOG" 90 \
++    -drive "file=$DISK,format=raw,if=none,id=hd,snapshot=on" \
++    -device "virtio-blk-pci,drive=hd" \
++    -fw_cfg "name=opt/auralite.msi,string=off"
++
++il_assert_grep_fixed "$LOG" "[msi] message-signalled interrupts: DISABLED (fw_cfg opt/auralite.msi=off)" \
++                     "the knob turns MSI off and says so"
++il_assert_grep_fixed "$LOG" "[virtio-blk] self-test: LBA 0 read OK (INTx/polling)" \
++                     "the device still serves requests with MSI off"
++il_assert_no_grep     "$LOG" "delivered on vector" \
++                     "no MSI receipt appears on the fallback lane"
++il_assert_no_grep     "$LOG" "MSI-X vector" \
++                     "no vector is programmed on the fallback lane"
++il_assert_no_grep     "$LOG" "PANIC|UNHANDLED EXCEPTION|from KERNEL mode" \
++                     "no kernel exception/panic"
++il_assert_grep_fixed "$LOG" "auralite#" "the boot still reaches the shell"
++
++# ---------------------------------------------------------------- lane 3 ---
++il_section "lane 3/4 — virtio-gpu with MSI-X enabled"
++
++LOG="$IL_LOGDIR/msix_gpu_on.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "exit"
++
++# NOTE: no `msix=on` here -- seen above, this QEMU has no such property.
++IL_SELFTEST=fast il_run_qemu "$LOG" 90 -device "virtio-gpu-pci"
++
++il_assert_grep_fixed "$LOG" "[msi] virtio-gpu: MSI-X vector" \
++                     "the GPU's MSI-X capability is parsed and a vector programmed"
++il_assert_grep_fixed "$LOG" "[msi] virtio-gpu: queue 0 -> table entry 0 (readback 0)" \
++                     "the GPU accepted the MSI-X table entry"
++il_assert_grep        "$LOG" "\[msi\] virtio-gpu: [0-9]+ interrupt\(s\) delivered on vector" \
++                     "the GPU delivered a message on that vector"
++il_assert_grep        "$LOG" "\[virtio-gpu\] ready:" "the GPU driver came up"
++il_assert_no_grep     "$LOG" "spurious interrupt" "no spurious-vector report"
++il_assert_no_grep     "$LOG" "PANIC|UNHANDLED EXCEPTION|from KERNEL mode" \
++                     "no kernel exception/panic"
++il_assert_grep_fixed "$LOG" "auralite#" "the boot still reaches the shell with a GPU attached"
++
++# ---------------------------------------------------------------- lane 4 ---
++il_section "lane 4/4 — virtio-gpu with MSI disabled (INTx fallback)"
++
++LOG="$IL_LOGDIR/msix_gpu_off.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 8
++il_send "exit"
++
++IL_SELFTEST=fast il_run_qemu "$LOG" 90 \
++    -device "virtio-gpu-pci" \
++    -fw_cfg "name=opt/auralite.msi,string=off"
++
++il_assert_grep_fixed "$LOG" "[msi] message-signalled interrupts: DISABLED (fw_cfg opt/auralite.msi=off)" \
++                     "the knob turns MSI off on the GPU lane too"
++il_assert_grep        "$LOG" "\[virtio-gpu\] ready:" "the GPU still comes up with MSI off"
++il_assert_no_grep     "$LOG" "delivered on vector" \
++                     "no MSI receipt appears on the fallback lane"
++# A disabled build must NOT claim "no capability": the device has one, the
++# driver simply was not allowed to use it.  That distinction is the whole
++# reason the attach site has three branches rather than two.
++il_assert_no_grep     "$LOG" "MSI/MSI-X capability" \
++                     "a disabled build does not misreport the device"
++il_assert_no_grep     "$LOG" "PANIC|UNHANDLED EXCEPTION|from KERNEL mode" \
++                     "no kernel exception/panic"
++il_assert_grep_fixed "$LOG" "auralite#" "the boot still reaches the shell"
++
++il_summary
+diff --git a/tests/integration/cases/test_virgl_gpu.sh b/tests/integration/cases/test_virgl_gpu.sh
+index 522ed7a..3f86850 100644
+--- a/tests/integration/cases/test_virgl_gpu.sh
++++ b/tests/integration/cases/test_virgl_gpu.sh
+@@ -17,19 +17,25 @@
+ # What it is NOT tolerant about is dishonesty or breakage — whichever path is
+ # taken, GL_RENDERER must match it and every rendering check must still pass.
+ #
+-# KNOWN DEFECT, PREDATING THIS PHASE
++# KNOWN DEFECT, PREDATING THIS PHASE — MEASURED GONE, ATTRIBUTION OPEN
+ #
+-# The virtio-gpu DRIVER hangs during initialisation when a device is actually
+-# attached: the boot stops after "found modern GPU" and never reaches the
+-# shell.  Bisected to before phase G11d — commit 9188c85 hangs identically —
+-# so it is not something G13 introduced.  It was simply never exercised: no
+-# integration case attached a GPU until this one.
++# The comment that stood here said the virtio-gpu DRIVER hangs during
++# initialisation when a device is attached: the boot stopped after "found
++# modern GPU" and never reached the shell, bisected to before phase G11d
++# (commit 9188c85 hung identically), traced as far as the first
++# GET_DISPLAY_INFO command.
+ #
+-# Traced as far as the first GET_DISPLAY_INFO command.  The notify write
+-# completes, but the wait loop then makes zero iterations and still does not
+-# return, which points at the used-ring page rather than at the notification.
+-# Fixing it is virtio driver work, not GL work, and is recorded in TODO.md
+-# rather than folded into a GL phase.
++# Re-measured 2026-11-04 on the RESIDUE3 C4 tree (two boots, with a GPU
++# attached): the hang does NOT reproduce.  The boot reaches the shell and
++# prints `[virtio-gpu] ready: virgl=0 enabled=0 size=1280x800` and
++# `[virtio-gpu] 2D resource ready: 1024x768 backing=3072 KiB`, and a second
++# pair of boots with C4's GPU MSI-X code compiled out behaves identically --
++# so the fix, if it was a fix, predates C4 and is not claimed by it.  The
++# reproducer list above stays: if it returns, this is where to start.
++#
++# The assertions below stay as they are (the case is already green either
++# way); what changed is that the "known defect" branch below should now be
++# unreachable, and if it fires the NOTE above will say so.
+ #
+ # So this case asserts what it can today and states plainly what it cannot.
+ # The moment the driver is fixed, ENABLE_FULL_ASSERTS below turns the rest on
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 3e0cf99..44e02b3 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -201,6 +201,7 @@ ALL_CASES=(
+     test_dns_cache
+     test_dns_tcp
+     test_ip_frag
++    test_msix
+     test_e1000_irq
+     test_e1000_idle_drain
+     test_udp_blocking
+diff --git a/tests/unit/test_msi_caps.c b/tests/unit/test_msi_caps.c
+new file mode 100644
+index 0000000..71b0548
+--- /dev/null
++++ b/tests/unit/test_msi_caps.c
+@@ -0,0 +1,268 @@
++/*
++ * test_msi_caps.c — RESIDUE3 C4: the MSI/MSI-X capability walker, driven
++ * against a synthetic device.
++ *
++ * kernel/drivers/pci/msi_caps.c is compiled UNMODIFIED; the only thing this
++ * file supplies is a fake config space (256 bytes) and a fake MSI-X table
++ * page, reached through the same accessor table the real transports use.
++ *
++ * The cases are the ones a QEMU-only walker never sees:
++ *   - a device with MSI-X only, one with MSI only, one with both (MSI-X wins)
++ *     and one with none of them;
++ *   - the programming path for each kind, byte for byte (address, data,
++ *     mask, enable) — including that the enable is VERIFIED by read-back;
++ *   - two negative controls: a device that silently drops the enable bit
++ *     must be reported as refusing, and a self-referential capability list
++ *     must terminate instead of hanging.
++ */
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "drivers/pci/msi_caps.h"
++
++static int passed = 0, failed = 0, tn = 0;
++#define RUN(f) do { int b = failed; f(); tn++; if (failed == b) passed++; } while (0)
++#define CHECK(c) do { if (!(c)) { printf("  FAIL L%d: %s\n", __LINE__, #c); failed++; } } while (0)
++#define CHECK_EQ(a,e) do { long _a=(long)(a), _e=(long)(e); if (_a!=_e) { \
++    printf("  FAIL L%d: %s = %ld, want %ld\n", __LINE__, #a, _a, _e); failed++; } } while (0)
++
++/* ---- the fake device ---- */
++typedef struct {
++    uint8_t  cfg[256];
++    uint8_t  table[2048];   /* the fake BAR: offset 0x100 is entry 0 */    /* the MSI-X table BAR: offset 0x100 = entry 0 */
++    int      drop_enable;    /* negative control: writes do not stick */
++    int      bar_map_calls;
++    uint32_t bar_last_len;
++} fake_dev_t;
++
++static fake_dev_t dev;
++
++static uint8_t  f_cfg8 (void *c, uint16_t o) { fake_dev_t *d = c; return d->cfg[o & 0xFF]; }
++static uint16_t f_cfg16(void *c, uint16_t o) { fake_dev_t *d = c; uint16_t v = 0; \
++    memcpy(&v, &d->cfg[o & 0xFF], 2); return v; }
++/* 4-byte alignment (0xFC), not 8: the parked draft masked with 0xF8, so the
++ * MSI-X table dword at cap+4 (0x44) was read from 0x40 and the walker got the
++ * capability id back as a BAR offset -- a wild pointer and an ASan SEGV that
++ * looked like a driver bug and was a test-fixture bug. */
++static uint32_t f_cfg32(void *c, uint16_t o) { fake_dev_t *d = c; uint32_t v = 0; \
++    memcpy(&v, &d->cfg[o & 0xFC], 4); return v; }
++static void f_w16(void *c, uint16_t o, uint16_t v) {
++    fake_dev_t *d = c;
++    if (d->drop_enable) return;              /* negative control: swallowed */
++    memcpy(&d->cfg[o & 0xFF], &v, 2);
++}
++static void f_w32(void *c, uint16_t o, uint32_t v) {
++    fake_dev_t *d = c;
++    memcpy(&d->cfg[o & 0xFC], &v, 4);
++}
++/* the table entry 0 .. 3 dwords, as the walker sees them */
++static uint32_t *tbl_words(void) { return (uint32_t *)(void *)(dev.table + 0x100); }
++static uint32_t tbl_get(int i) { return tbl_words()[i]; }
++
++static volatile uint8_t *f_bar(void *c, uint8_t bar, uint32_t off, uint32_t len) {
++    fake_dev_t *d = c;
++    d->bar_map_calls++;
++    d->bar_last_len = len;
++    (void)bar;
++    return (volatile uint8_t *)((uint8_t *)d->table + off);
++}
++
++static msi_pci_io_t io;
++
++static void fake_reset(void) {
++    memset(&dev, 0, sizeof(dev));
++    io.ctx = &dev; io.cfg8 = f_cfg8; io.cfg16 = f_cfg16; io.cfg32 = f_cfg32;
++    io.w16 = f_w16; io.w32 = f_w32; io.bar_map = f_bar;
++    /* status: capability list present */
++    dev.cfg[0x06] = 0x10;
++}
++
++/* Lay out a capability list: [0x40]=MSI-X?, [0x50]=MSI?, chained. */
++static void build_caps(int want_msix, int want_msi, uint16_t msix_nvectors) {
++    fake_reset();
++    uint8_t first = 0, prev = 0;
++    if (want_msix) {
++        dev.cfg[0x40] = PCI_CAP_ID_MSIX;
++        dev.cfg[0x41] = 0;
++        uint16_t mc = (uint16_t)((msix_nvectors - 1u) & 0x7FFu);
++        memcpy(&dev.cfg[0x42], &mc, 2);
++        uint32_t tbl = (2u /* BIR 2 */) | (0x100u /* offset */);
++        memcpy(&dev.cfg[0x44], &tbl, 4);
++        first = 0x40; prev = 0x40;
++    }
++    if (want_msi) {
++        uint8_t at = 0x50;
++        dev.cfg[at] = PCI_CAP_ID_MSI;
++        dev.cfg[at + 1] = 0;
++        /* 64-bit capable, per-vector masking, 4 vectors capable */
++        uint16_t mc = (uint16_t)(0x0008u | 0x0010u | (2u << 11));
++        memcpy(&dev.cfg[at + 2], &mc, 2);
++        if (!first) { first = at; } else { dev.cfg[prev + 1] = at; }
++        prev = at;
++    }
++    if (first) dev.cfg[0x34] = first;
++}
++
++/* ---- cases ---- */
++
++static void test_scan_msix(void) {
++    msi_caps_t caps;
++    build_caps(1, 0, 4);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSIX);
++    CHECK_EQ(caps.n_vectors, 4);
++    CHECK_EQ(caps.bir, 2);
++    CHECK_EQ(caps.table_off, 0x100);
++    CHECK_EQ(caps.cap_off, 0x40);
++}
++
++static void test_scan_msi_only(void) {
++    msi_caps_t caps;
++    build_caps(0, 1, 0);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSI);
++    CHECK_EQ(caps.n_vectors, 4);        /* 1 << MMC */
++    CHECK_EQ(caps.cap64, 1);
++}
++
++static void test_msix_wins_when_both(void) {
++    msi_caps_t caps;
++    build_caps(1, 1, 2);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSIX);
++    CHECK_EQ(caps.cap_off, 0x40);
++}
++
++static void test_scan_none(void) {
++    msi_caps_t caps;
++    fake_reset();
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_NONE);
++    /* and no capability list at all */
++    dev.cfg[0x06] = 0;
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_NONE);
++}
++
++static void test_program_msix(void) {
++    msi_caps_t caps;
++    char why[96] = "";
++    build_caps(1, 0, 4);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSIX);
++    CHECK_EQ(msi_program(&io, &caps, 96, 0, why, sizeof(why)), 0);
++    /* entry 0: addr, addr-hi, data, control */
++    CHECK_EQ(tbl_get(0), MSI_APIC_ADDR_BASE | 0u);
++    CHECK_EQ(tbl_get(1), 0);
++    CHECK_EQ(tbl_get(2), 96);
++    CHECK_EQ(tbl_get(3), 0);                       /* unmasked */
++    /* the enable bit went in AND came back */
++    uint16_t mc; memcpy(&mc, &dev.cfg[0x42], 2);
++    CHECK(mc & 0x8000u);
++    CHECK_EQ(mc & 0x4000u, 0);
++    /* the table BAR was asked for once, with a 16-byte-entry length */
++    CHECK_EQ(dev.bar_map_calls, 1);
++    CHECK_EQ(dev.bar_last_len, 4u * 16u);
++}
++
++static void test_program_msix_destination(void) {
++    msi_caps_t caps;
++    build_caps(1, 0, 1);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSIX);
++    CHECK_EQ(msi_program(&io, &caps, 0x61, 3, NULL, 0), 0);
++    CHECK_EQ(tbl_get(0), MSI_APIC_ADDR_BASE | (3u << 12));
++    CHECK_EQ(tbl_get(2), 0x61);
++}
++
++static void test_program_msi(void) {
++    msi_caps_t caps;
++    char why[96] = "";
++    build_caps(0, 1, 0);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSI);
++    CHECK_EQ(msi_program(&io, &caps, 0x62, 1, why, sizeof(why)), 0);
++    uint32_t addr; memcpy(&addr, &dev.cfg[0x54], 4);
++    CHECK_EQ(addr, MSI_APIC_ADDR_BASE | (1u << 12));
++    uint32_t hi; memcpy(&hi, &dev.cfg[0x58], 4);
++    CHECK_EQ(hi, 0);                                 /* 64-bit: high = 0 */
++    uint16_t data; memcpy(&data, &dev.cfg[0x5C], 2);
++    CHECK_EQ(data, 0x62);
++    uint16_t mc; memcpy(&mc, &dev.cfg[0x52], 2);
++    CHECK(mc & 0x0001u);                             /* enabled */
++    CHECK_EQ(mc & 0x0700u, 0);                       /* one message */
++    uint32_t mask; memcpy(&mask, &dev.cfg[0x60], 4);
++    CHECK_EQ(mask, 0);                               /* unmasked */
++}
++
++static void test_negative_control_dropped_enable(void) {
++    /* A device that quietly refuses: every config write is swallowed, so the
++     * enable bit never sets.  The walker must NOT report success -- reading
++     * the enable back is the whole reason this is a separate step. */
++    msi_caps_t caps;
++    char why[96] = "";
++    build_caps(1, 0, 1);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSIX);
++    dev.drop_enable = 1;
++    CHECK_EQ(msi_program(&io, &caps, 0x60, 0, why, sizeof(why)), -2);
++    CHECK(why[0] != '\0');
++    dev.drop_enable = 0;
++    /* and the same device, once it accepts the write, succeeds: the failure
++     * above was the device's, not the walker's */
++    CHECK_EQ(msi_program(&io, &caps, 0x60, 0, why, sizeof(why)), 0);
++}
++
++static void test_negative_control_msi_dropped_enable(void) {
++    msi_caps_t caps;
++    char why[96] = "";
++    build_caps(0, 1, 0);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSI);
++    dev.drop_enable = 1;
++    CHECK_EQ(msi_program(&io, &caps, 0x61, 0, why, sizeof(why)), -2);
++    dev.drop_enable = 0;
++}
++
++static void test_transport_without_writer(void) {
++    /* A read-only transport cannot program anything and must say so rather
++     * than pretend: this is the shape a page-table-less early boot has. */
++    msi_caps_t caps;
++    char why[96] = "";
++    build_caps(1, 0, 1);
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_MSIX);
++    msi_pci_io_t ro = io;
++    ro.w16 = NULL;
++    CHECK_EQ(msi_program(&ro, &caps, 0x60, 0, why, sizeof(why)), -3);
++    CHECK(why[0] != '\0');
++}
++
++static void test_malformed_list_terminates(void) {
++    msi_caps_t caps;
++    fake_reset();
++    dev.cfg[0x40] = 0xEE;      /* not MSI, not MSI-X */
++    dev.cfg[0x41] = 0x40;      /* points at itself  */
++    dev.cfg[0x34] = 0x40;
++    /* Must return, not spin: the fuse is 48 hops. */
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_NONE);
++}
++
++static void test_program_without_caps(void) {
++    msi_caps_t caps;
++    char why[64] = "";
++    fake_reset();
++    CHECK_EQ(msi_scan(&io, &caps), MSI_KIND_NONE);
++    CHECK_EQ(msi_program(&io, &caps, 96, 0, why, sizeof(why)), -1);
++    CHECK(why[0] != '\0');
++}
++
++int main(void) {
++    printf("=== AuraLite OS MSI/MSI-X capability unit tests ===\n\n");
++    RUN(test_scan_msix);
++    RUN(test_scan_msi_only);
++    RUN(test_msix_wins_when_both);
++    RUN(test_scan_none);
++    RUN(test_program_msix);
++    RUN(test_program_msix_destination);
++    RUN(test_program_msi);
++    RUN(test_negative_control_dropped_enable);
++    RUN(test_negative_control_msi_dropped_enable);
++    RUN(test_transport_without_writer);
++    RUN(test_malformed_list_terminates);
++    RUN(test_program_without_caps);
++
++    printf("\n=== Results: %d/%d passed, %d failed ===\n", passed, tn, failed);
++    return failed == 0 ? 0 : 1;
++}
+diff --git a/tools/check_residue_claims.py b/tools/check_residue_claims.py
+index 65298d0..0790d3d 100644
+--- a/tools/check_residue_claims.py
++++ b/tools/check_residue_claims.py
+@@ -323,19 +323,34 @@ def claims():
+         # recorded here in the same commit that moves it: R12 closed at
+         # seven (RES-11/12/36/38/39/46/47), GL2 L7 took RES-41 (DONE@L7),
+         # RESIDUE2 F7 took RES-46 (DONE@F7), RESIDUE3 C1 flipped
+-        # RES-38/39 (DONE@T6) and RES-47 (DONE@T7), and RESIDUE3 C3 has now
+-        # taken RES-12 (DONE@C3, VBE) and handed RES-11 on to its own C3b
+-        # (the i386 compositor, HANDED-OFF@C3) — leaving ONE row still
+-        # promising an R12 close: RES-36 (MSI/MSI-X), owned by C4.
++        # RES-38/39 (DONE@T6) and RES-47 (DONE@T7), RESIDUE3 C3 took
++        # RES-12 (DONE@C3, VBE) and handed RES-11 on to its own C3b (the
++        # i386 compositor, HANDED-OFF@C3), and RESIDUE3 C4 took the LAST
++        # one — RES-36 (MSI/MSI-X, DONE@C4) — so the R12 set has now been
++        # empty for the first time in the ledger's history.  The clause is
++        # flipped rather than dropped: it used to assert "at least one R12
++        # hand-off is still tracked", which was the right assertion while
++        # one was; what it must assert now is the terminal state itself.
+         r12_rows = len(re.findall(
+             r"^\| RES-\d\d \| \w \| HANDED-OFF@R12 \|", ledger, re.M))
++        # Once the last hand-off closed (RES-36 at RESIDUE3 C4) the set is
++        # empty and MUST STAY empty: a new HANDED-OFF@R12 row would mean a
++        # closed plan reopened.  Every R12 row also carries its measured
++        # opener, which is what makes the emptiness checkable rather than
++        # hopeful.
++        # The R12 rows are gone by SUCCESSION, not by deletion: each one
++        # flipped to the phase that closed it, so the successors are what
++        # can be counted now (T6/T7 for RESIDUE2, C3/C4 for RESIDUE3).
++        r12_successors = len(re.findall(
++            r"^\| RES-\d\d \| \w \| DONE@(?:T6|T7|C3|C4) \|", ledger,
++            re.M))
+         checks.append((
+             "R12: the ledger is terminal — no row still promises "
+-            "future work 'at R12', and every S hand-off carries a "
+-            "measured opener",
++            "future work 'at R12' (the set is empty and stays empty), "
++            "and every R12 row carried a measured opener",
+             "at R12" not in ledger and
+             ledger.count("OPENER, measured") >= 8 and
+-            r12_rows >= 1))
++            r12_rows == 0 and r12_successors >= 5))
+         checks.append((
+             "R12: TODO.md is kept IN FULL and annotated — the headline "
+             "note names the ledger as the index, the file kept its "
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index 07df1c9..a006a82 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -21,7 +21,7 @@ REALINTERNET2_PLAN.md 8
+ REALINTERNET_PLAN.md 8
+ REALTEK_PLAN.md 5
+ RESIDUE2_PLAN.md 21
+-RESIDUE3_PLAN.md 47
++RESIDUE3_PLAN.md 51
+ RISCV_PLAN.md 9
+ SDK_PLAN.md 0
+ SELFHOST_PLAN.md 1

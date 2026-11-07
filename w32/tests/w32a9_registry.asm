@@ -124,7 +124,14 @@ extern SetFileSecurityW
 %define E_NOT_ALL_ASSIGNED 1300
 %define E_NONE_MAPPED      1332
 %define E_FILE_CORRUPT     1392
-%define E_NO_SUCH_PRIV     1530
+%define E_NO_SUCH_PRIV     1313  ; RESIDUE3 C8: this was 1530, which is
+                                  ; not a Windows error code.  Windows
+                                  ; defines ERROR_NO_SUCH_PRIVILEGE as
+                                  ; 1313, and this gate had pinned the
+                                  ; personality's own mistake in place --
+                                  ; found by test_w32_failclean_live,
+                                  ; which reads the code back from a real
+                                  ; import instead of from a header.
 %define E_NOT_SUPPORTED    50
 
 %define NTE_BAD_ALGID      0x80090008

@@ -34,6 +34,9 @@ This directory contains the technical documentation for AuraLite OS.
   security properties.
 - [`plans/WIN32_PLAN.md`](plans/WIN32_PLAN.md) — the Win32 personality plan, its
   legal grounding, and phase-by-phase status.
+- [`plans/RESIDUE3_PLAN.md`](plans/RESIDUE3_PLAN.md) — the successor to the
+  residue series: closes every remaining ledger row, the seven open TODO
+  boxes, and the plan-table drift class itself (C0 opens).
 
 ## Specialised references in this directory
 

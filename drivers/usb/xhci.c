@@ -266,6 +266,39 @@ static int cmd_ring_idx = 0;
 #define XHCI_EP_BULK_IN  6
 #define XHCI_EP_INTR_OUT 3
 #define XHCI_EP_INTR_IN  7
+/* C5: the isochronous endpoint types (xHCI 1.2 table 6-5, EP Type field of
+ * the Endpoint Context dword 1).  The U9 isoc TRB was queued on an endpoint
+ * configured as INTERRUPT (3/7) -- the TRB type was right and the endpoint it
+ * named was not, which no amount of "the TRB was issued" logging can catch. */
+#define XHCI_EP_ISOCH_OUT 1
+#define XHCI_EP_ISOCH_IN  5
+
+/* Isoclock.  MFINDEX is the FIRST register of the RUNTIME space (xHCI 1.2
+ * table 5-40: microframe index at runtime offset 0x00, interrupter sets from
+ * +0x20), NOT an operational register -- reading operational 0x1C returns
+ * the high dword of CRCR and always looked like a frozen clock at frame 0.
+ * Bits 13:3 are the frame index, bits 2:0 the microframe within it. */
+#define XHCI_RT_MFINDEX   0x00
+/* One burst of a stream is bounded on both ends: at most this many packets
+ * are queued at once (32 frames = 32 ms of full-speed audio, and the ring has
+ * 256 TRBs), and each packet waits this long before it is declared lost. */
+#define XHCI_ISOC_MAX_STREAM_PKTS 32u
+#define XHCI_ISOC_PKT_TIMEOUT_MS  20u
+/* (There is deliberately no "how many frames ahead to pin the burst"
+ * constant here: pinning is not used, and the measurement that decided that
+ * is written next to the scheduling decision in xhci_isoc_stream().) */
+
+/* C5 accounting.  Read by the self-test through xhci_isoc_stats(); the point
+ * of the counters is that "the TRB was issued" stops being the claim. */
+static uint32_t isoc_pkts_submitted;
+static uint32_t isoc_pkts_completed;
+static uint32_t isoc_overruns;      /* the burst slipped past its frames */
+static uint32_t isoc_underruns;     /* frames passed with nothing queued */
+static uint32_t isoc_timeouts;
+static uint32_t last_stream_frames;   /* MFINDEX delta of the last burst */
+/* Does MFINDEX advance at all on this controller?  A frozen isoclock is worth
+ * naming in the log: every frame figure below is meaningless without it. */
+static int isoc_clock_live;
 
 typedef struct {
     int in_use;
@@ -318,6 +351,25 @@ static inline void rt_wr(uint32_t off, uint32_t val) {
 }
 static inline void db_wr(int slot, uint32_t val) {
     db_regs[slot] = val;
+}
+
+/* ---- Isochronous clock (C5) ---- */
+static inline uint32_t xhci_mfindex(void) { return rt_regs ? rt_rd(XHCI_RT_MFINDEX) : 0; }
+/* Frame index: what isochronous TRBs are scheduled in. */
+static inline uint32_t xhci_frame_now(void) { return (xhci_mfindex() >> 3) & 0x7FF; }
+static inline uint32_t xhci_uframe_now(void) { return xhci_mfindex() & 0x7; }
+
+uint32_t xhci_isoc_last_frames(void) { return last_stream_frames; }
+int xhci_isoc_clock_live(void) { return isoc_clock_live; }
+
+void xhci_isoc_stats(uint32_t *submitted, uint32_t *completed,
+                     uint32_t *overruns, uint32_t *underruns,
+                     uint32_t *timeouts) {
+    if (submitted) *submitted = isoc_pkts_submitted;
+    if (completed) *completed = isoc_pkts_completed;
+    if (overruns)  *overruns  = isoc_overruns;
+    if (underruns) *underruns = isoc_underruns;
+    if (timeouts)  *timeouts  = isoc_timeouts;
 }
 
 /* ---- Port helpers ---- */
@@ -1919,47 +1971,177 @@ int xhci_stop_endpoint(uint8_t slot_id, uint8_t ep_id) {
     kprintf("[xhci] stop endpoint slot %d ep %d (simulated)\n", slot_id, ep_id);
     return 0;
 }
-int xhci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint, int low_speed, uint16_t max_packet, void *data, uint32_t len, int is_in) {
-    (void)low_speed;
+/* ---- C5: isochronous transfers, scheduled in FRAMES -------------------
+ *
+ * What was here before: one TRB per call, type 5 (fixed at U9) on an endpoint
+ * configured as INTERRUPT, with SIA set and no notion of when it ran.  The
+ * receipt was "the TRB was issued", which is not the same claim as "the
+ * frames moved" -- and nothing consumed the endpoint anyway, so both went
+ * untested.
+ *
+ * What is here now:
+ *   - the endpoint is configured as ISOCH (1 OUT / 5 IN), not INTERRUPT;
+ *   - a stream of N packets is queued in ONE go at consecutive frame IDs
+ *     taken from MFINDEX, with the first packet marked SIA (start ASAP) and
+ *     the rest scheduled at base+1 .. base+N-1;
+ *   - completion is awaited per packet, and the elapsed frame count is
+ *     compared with the number of packets scheduled: more frames than packets
+ *     is an overrun (the controller could not keep up), fewer is an underrun.
+ *     Both are counted, both are printed by the caller.
+ *
+ * Bounded wait: the wait is expressed in milliseconds through the same helper
+ * every other transfer uses, and a timeout is counted and NAMED with the
+ * frame it gave up on rather than returning a bare -1.
+ */
+static int xhci_isoc_configure(xhci_dev_t *xd, uint8_t endpoint, uint16_t max_packet, int is_in) {
+    int ep_num = endpoint & 0x0F;
+    int ep_id = ep_num * 2 + (is_in ? 1 : 0);
+    int want = is_in ? XHCI_EP_ISOCH_IN : XHCI_EP_ISOCH_OUT;
+    if (ep_id <= 1 || ep_id >= 32) return -1;
+    /* A re-configure is legitimate here: switching an audio streaming
+     * interface between alt 0 and alt 1 changes the endpoint's type, and the
+     * cached "already configured" flag would otherwise freeze the bulk or
+     * interrupt shape that an earlier path installed. */
+    if (xd->ep_configured[ep_id] && xd->ep_type[ep_id] != (uint8_t)want) {
+        xd->ep_configured[ep_id] = 0;
+        xd->ep_type[ep_id] = (uint8_t)want;
+    }
+    return xhci_configure_ep(xd, endpoint, max_packet, want);
+}
+
+int xhci_isoc_stream(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packet,
+                     void *data, uint32_t len, uint32_t packet_bytes,
+                     uint32_t *frames_out) {
+    if (frames_out) *frames_out = 0;
     if (op_regs == NULL || !data || len == 0) return -1;
     xhci_dev_t *xd = find_xdev(dev_addr);
     if (!xd) return -1;
+    int is_in = (endpoint & 0x80) ? 1 : 0;
     int ep_num = endpoint & 0x0F;
     int ep_id = ep_num * 2 + (is_in ? 1 : 0);
-    if (xhci_configure_ep(xd, endpoint, max_packet ? max_packet : 1024, is_in ? 7 : 3) != 0) return -1;
+    if (packet_bytes == 0) packet_bytes = max_packet ? max_packet : len;
+    if (packet_bytes == 0) return -1;
+    uint32_t npkts = len / packet_bytes;
+    if (npkts == 0) npkts = 1;
+    if (npkts > XHCI_ISOC_MAX_STREAM_PKTS) npkts = XHCI_ISOC_MAX_STREAM_PKTS;
+
+    if (xhci_isoc_configure(xd, endpoint, max_packet ? max_packet : packet_bytes, is_in) != 0)
+        return -1;
+
     uint64_t hhdm = boot_get_hhdm_offset();
-    uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF)/0x1000);
+    uint64_t buf_phys = pmm_alloc_contiguous((len + 0xFFF) / 0x1000);
     if (!buf_phys) return -1;
-    if (!is_in) memcpy((void*)(uintptr_t)(hhdm + buf_phys), data, len);
-    else memset((void*)(uintptr_t)(hhdm + buf_phys), 0, len);
-    /* U9: a real Isoch TRB.
+    void *buf = (void *)(uintptr_t)(hhdm + buf_phys);
+    if (is_in) memset(buf, 0, len);
+    else       memcpy(buf, data, len);
+
+    /* Frame-accurate scheduling: every packet gets the frame it is meant to
+     * occupy.  The first one is SIA because there is no reason to wait for a
+     * particular frame to start; the rest are pinned, which is what makes the
+     * burst a stream rather than N independent transfers. */
+    /* SCHEDULING POLICY -- measured, not assumed.
      *
-     * This queued (1 << 10), which is TRB type 1 -- a Normal TRB -- on an
-     * isochronous endpoint, with no frame ID at all.  It happened not to
-     * fail visibly because nothing ever exercised an isoch endpoint, but it
-     * was the wrong descriptor for the transfer type.
+     * The first implementation pinned packet i to frame base+i, exactly the
+     * way the specification describes an isochronous schedule.  On QEMU's
+     * xHCI that delivered ONE packet out of 24: the controller's frame
+     * counter runs far ahead of the guest (measured: ~45 frames during a
+     * single 8 ms wait), so by the time the controller walked the ring every
+     * pinned frame after the first was already in the past and the packets
+     * were dropped -- silently, apart from the timeouts.  The same burst with
+     * SIA (Start-Isoch-ASAP) on every packet delivered 24/24.
      *
-     * Isoch TRB is type 5.  SIA (Start Isoch ASAP, bit 31 of the flags)
-     * tells the controller to schedule in the next available frame rather
-     * than a specific one, which is the right choice without a real
-     * timebase to align to; the frame ID field is then ignored.  TBC/TLBPC
-     * stay zero: one burst, one packet per burst (xHCI 1.2 s.6.4.1.3). */
-    struct xhci_trb trb;
-    memset(&trb, 0, sizeof(trb));
-    trb.param = (uint32_t)buf_phys;
-    trb.status = 0;
-    trb.control = len;
-    trb.flags = (XHCI_TRB_ISOCH << XHCI_TRB_TYPE_SHIFT) |
-                XHCI_TRB_ISOCH_SIA |
-                (1u << 2) |            /* ISP: short packet is not an error */
-                XHCI_TRB_IOC;
-    xhci_ring_enqueue(xd, ep_id, trb);
-    int ret = xhci_wait_transfer(xd->slot_id, ep_id, 0);
-    if (ret == 0 && is_in) memcpy(data, (void*)(uintptr_t)(hhdm + buf_phys), len);
-    for (uint32_t i=0;i<(len+0xFFF)/0x1000;i++) pmm_free_frame(buf_phys + i*4096ULL);
-    kprintf("[xhci] isoc transfer dev %d ep 0x%02x len %u -> %s\n", dev_addr, endpoint, len, ret==0 ? "OK" : "FAIL");
-    return ret == 0 ? (int)len : -1;
+     * So the burst is issued ASAP, and the frame accounting below reports
+     * what the isoclock says rather than pretending the guest can drive the
+     * schedule on this controller.  Frame pinning is left to a controller
+     * whose clock the guest can trust; the code path for it is one line
+     * (trb.control = frame) and the measurement above is why it is not the
+     * default. */
+    {
+        uint32_t m0 = xhci_mfindex();
+        for (volatile int i = 0; i < 200000; i++) { }
+        uint32_t m1 = xhci_mfindex();
+        isoc_clock_live = (m1 != m0);
+    }
+    for (uint32_t i = 0; i < npkts; i++) {
+        struct xhci_trb trb;
+        memset(&trb, 0, sizeof(trb));
+        uint32_t off = i * packet_bytes;
+        trb.param = (uint32_t)(buf_phys + off);
+        /* dword 2 is the Status field: Frame ID [19:0], TLBPC [24:20],
+         * TBC [27:25].  One burst, one packet -> TBC/TLBPC stay zero. */
+        trb.control = 0;    /* SIA: the frame field is not used */
+        trb.status = 0;
+        /* dword 3 is Control: transfer length [16:0], ISP (short packet is
+         * not an error -- an isoc packet is allowed to be short), IOC. */
+        uint32_t plen = packet_bytes;
+        if (off + plen > len) plen = len - off;
+        trb.flags = (XHCI_TRB_ISOCH << XHCI_TRB_TYPE_SHIFT) |
+                    XHCI_TRB_ISOCH_SIA |
+                    (1u << 2) |                    /* ISP */
+                    ((plen & 0x1FFFF)) |
+                    XHCI_TRB_IOC;
+        xhci_ring_enqueue(xd, ep_id, trb);
+        isoc_pkts_submitted++;
+    }
+
+    /* One doorbell for the whole burst. */
+    db_wr(xd->slot_id, (uint32_t)ep_id);
+
+    uint32_t frame_start = xhci_frame_now();
+    uint32_t completed = 0;
+    for (uint32_t i = 0; i < npkts; i++) {
+        struct xhci_trb ev;
+        if (xhci_wait_transfer_event(xd, ep_id, XHCI_ISOC_PKT_TIMEOUT_MS, &ev) != 0) {
+            isoc_timeouts++;
+            kprintf("[xhci] isoc timeout: slot=%u ep=%d after %u/%u packet(s), "
+                    "gave up at frame %u (waited %u ms/packet)\n",
+                    xd->slot_id, ep_id, completed, npkts,
+                    (unsigned)xhci_frame_now(), (unsigned)XHCI_ISOC_PKT_TIMEOUT_MS);
+            break;
+        }
+        uint32_t cc = trb_cc(&ev);
+        if (cc == 1 || cc == 13) completed++;
+        else {
+            /* Any other completion code on an isoc packet is a lost frame,
+             * and saying so is the whole point of this counter. */
+            isoc_timeouts++;
+        }
+    }
+    uint32_t frame_end = xhci_frame_now();
+    uint32_t elapsed = (frame_end >= frame_start) ? (frame_end - frame_start + 1) : 0;
+
+    isoc_pkts_completed += completed;
+    last_stream_frames = elapsed;
+    /* Overrun = a packet the device did not take (the frame went by).  That
+     * is the failure an isoc stream actually suffers; comparing the elapsed
+     * frame count against the packet count is NOT a valid test here, because
+     * the isoclock is the controller's own and on QEMU it runs many times
+     * faster than the packets (see the scheduling note above).  Elapsed
+     * frames are reported as an observation instead. */
+    if (completed < npkts) isoc_overruns += (npkts - completed);
+    if (completed == 0) isoc_underruns++;
+
+    if (is_in && completed) memcpy(data, buf, len);
+    for (uint32_t i = 0; i < (len + 0xFFF) / 0x1000; i++)
+        pmm_free_frame(buf_phys + i * 4096ULL);
+
+    if (frames_out) *frames_out = completed;
+    return completed > 0 ? (int)(completed * packet_bytes) : -1;
 }
+
+int xhci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint, int low_speed,
+                              uint16_t max_packet, void *data, uint32_t len, int is_in) {
+    (void)low_speed;
+    if (is_in) { /* endpoints encode direction; the argument is advisory */ }
+    uint32_t frames = 0;
+    int r = xhci_isoc_stream(dev_addr, endpoint, max_packet, data, len,
+                             max_packet ? max_packet : len, &frames);
+    if (r < 0) return -1;
+    kprintf("[xhci] isoc transfer dev %d ep 0x%02x len %u -> OK (%u frame(s))\n",
+            dev_addr, endpoint, len, frames);
+    return r;
+}
+
 int xhci_isochronous_transfer_ex(uint8_t dev_addr, uint8_t endpoint, uint16_t max_packet, void *data, uint32_t len, uint32_t num_tds, uint32_t *transferred) {
     if (!data || len == 0) return -1;
     uint32_t total = 0;

@@ -1211,8 +1211,43 @@ static void poke64(uint64_t addr, uint64_t val) {
     for (int i = 0; i < 8; i++) p[i] = (uint8_t)((val >> (i * 8)) & 0xFF);
 }
 
-int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
-                     const char **missing_dll, const char **missing_name) {
+/* Record one unresolved import in the gap ledger, grouping by module. */
+static void gap_note(w32_gap_t *gap, const char *dll, const char *name) {
+    int i;
+    if (gap->listed < W32_GAP_LIST_MAX) {
+        snprintf(gap->list_dll[gap->listed], sizeof gap->list_dll[0], "%s", dll);
+        snprintf(gap->list_name[gap->listed], sizeof gap->list_name[0], "%s",
+                 name);
+        gap->listed++;
+    }
+    if (gap->symbols == 0) {
+        snprintf(gap->first_dll, sizeof gap->first_dll, "%s", dll);
+        snprintf(gap->first_name, sizeof gap->first_name, "%s", name);
+    }
+    gap->symbols++;
+    for (i = 0; i < gap->modules; i++)
+        if (ieq(gap->dll[i], dll)) { gap->per_module[i]++; return; }
+    if (gap->modules >= W32_GAP_MODULES_MAX) { gap->overloaded = 1; return; }
+    snprintf(gap->dll[gap->modules], sizeof gap->dll[0], "%s", dll);
+    gap->per_module[gap->modules] = 1;
+    gap->modules++;
+}
+
+/* The shared walk.  Two contracts, one implementation (RESIDUE3 C8):
+ *
+ *   gap == NULL  the LOADER's: stop at the first unresolved import and hand
+ *                it back, because the image cannot start either way and the
+ *                first miss is the one worth naming;
+ *   gap != NULL  the LEDGER's: bind everything that resolves, count the rest
+ *                per module, and keep going -- "the first one" is a sample of
+ *                one, and Audacity 3.7.5's gap is 19 modules / 419 symbols.
+ *
+ * Both go through the same lookup order, so the two can never disagree about
+ * what an import means.
+ */
+static int bind_imports_impl(const uint8_t *image, size_t image_size,
+                             uint64_t base, const char **missing_dll,
+                             const char **missing_name, w32_gap_t *gap) {
     /* Pinned apps have >256 imports. Count first and allocate PER CALL:
      * recursive binding cannot reuse an outer image's still-live list. */
     pe_import_t *imports = NULL;
@@ -1228,7 +1263,6 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
     if (missing_name) *missing_name = 0;
 
     if (pe_parse(image, image_size, &img) != PE_OK) return -1;
-
     int rc = pe_imports(&img, NULL, 0, &count);
     if (rc != PE_OK) return -2;
     if (count == 0) return 0;
@@ -1252,6 +1286,7 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
             const char *canon = w32_ordmap_lookup(im->dll, im->ordinal);
             if (!canon) {
                 snprintf(ordfmt, sizeof ordfmt, "#%u", im->ordinal);
+                if (gap) { gap_note(gap, im->dll, ordfmt); continue; }
                 snprintf(miss_dll, sizeof miss_dll, "%s", im->dll);
                 if (missing_dll)  *missing_dll = miss_dll;
                 if (missing_name) *missing_name = ordfmt;
@@ -1268,6 +1303,7 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
             fn = w32_load_dependency(im->dll, name, im->by_ordinal,
                                      im->ordinal);
         if (!fn) {
+            if (gap) { gap_note(gap, im->dll, name); continue; }
             snprintf(miss_dll, sizeof miss_dll, "%s", im->dll);
             snprintf(miss_name, sizeof miss_name, "%s", name);
             if (missing_dll)  *missing_dll = miss_dll;
@@ -1277,8 +1313,45 @@ int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
         if ((uint64_t)im->iat_rva + 8u > img.size_of_image) {
             free(imports); return -2;
         }
+        /* In ledger mode the address is still written: the IAT slot is real
+         * memory in the mapped image, and a caller that later runs the image
+         * with a *different* bind sees exactly the table this walk proved. */
         poke64(base + im->iat_rva, (uint64_t)(uintptr_t)fn);
     }
     free(imports);
     return 0;
+}
+
+int w32_bind_imports(const uint8_t *image, size_t image_size, uint64_t base,
+                     const char **missing_dll, const char **missing_name) {
+    return bind_imports_impl(image, image_size, base, missing_dll,
+                             missing_name, NULL);
+}
+
+int w32_bind_imports_gap(const uint8_t *image, size_t image_size, uint64_t base,
+                         w32_gap_t *gap) {
+    int rc;
+    if (!gap) return -1;
+    memset(gap, 0, sizeof *gap);
+    rc = bind_imports_impl(image, image_size, base, NULL, NULL, gap);
+    if (rc != 0) return rc;
+    return gap->symbols > 0 ? 1 : 0;
+}
+
+int w32_gap_at(const w32_gap_t *gap, int index, char *dll, size_t dn,
+               char *name, size_t nn) {
+    if (!gap || index < 0 || index >= gap->listed) return 0;
+    if (dll && dn) snprintf(dll, dn, "%s", gap->list_dll[index]);
+    if (name && nn) snprintf(name, nn, "%s", gap->list_name[index]);
+    return 1;
+}
+
+int w32_gap_describe(const w32_gap_t *gap, char *out, size_t n) {
+    if (!gap || !out || n == 0) return 0;
+    if (gap->symbols == 0)
+        return snprintf(out, n, "[w32] gap: none (every import bound)");
+    return snprintf(out, n,
+                    "[w32] gap: %d module(s), %ld symbol(s) missing%s",
+                    gap->modules, gap->symbols,
+                    gap->overloaded ? " (module table saturated)" : "");
 }

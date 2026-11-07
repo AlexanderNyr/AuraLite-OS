@@ -401,10 +401,19 @@ int pe_exports(const pe_image_t *img, pe_export_t *out, size_t max,
     return PE_OK;
 }
 
-int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
-                   size_t *count) {
-    if (!img || !count) return PE_ERR_ARG;
-    if (!out && max) return PE_ERR_ARG;
+/* Shared block walk (RESIDUE3 C8).
+ *
+ * Both front ends below run through this: one parser, so a block rule can only
+ * be changed in one place, and the streaming form inherits every validation
+ * the array form already had.
+ *
+ * The visitor returns 0 to continue and non-zero to stop; the walk then ends
+ * early and reports the count it reached.  That is what lets a relocator abort
+ * on the first bad entry without the parser having to know why.
+ */
+static int walk_relocation_blocks(const pe_image_t *img,
+                                  pe_reloc_visit_fn fn, void *ctx,
+                                  size_t *count) {
     *count = 0;
 
     if (img->num_directories <= PE_DIR_BASERELOC) return PE_OK;
@@ -446,20 +455,60 @@ int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
 
             if (type == PE_REL_ABSOLUTE) continue;   /* padding, skip */
 
-            pe_reloc_t r;
-            r.type = type;
             uint64_t rva = (uint64_t)page_rva + voff;
             if (rva > 0xFFFFFFFFull) return PE_ERR_MALFORMED;
-            r.rva = (uint32_t)rva;
 
-            if (total < max) out[total] = r;
+            /* Counted BEFORE the hand-over: an entry the visitor refused was
+             * still an entry the walk reached, and a receipt that reported 9
+             * for a refusal on the 10th would be off by one in the direction
+             * that hides the bad entry. */
             total++;
+            if (fn && fn(ctx, (uint32_t)type, (uint32_t)rva) != 0) {
+                *count = total;
+                return PE_OK;             /* the visitor stopped the walk */
+            }
         }
         consumed += block_size;
     }
 
     *count = total;
     return PE_OK;
+}
+
+typedef struct {
+    pe_reloc_t *out;
+    size_t      max;
+    size_t      total;
+} reloc_collect_t;
+
+static int reloc_collect(void *vctx, uint32_t type, uint32_t rva) {
+    reloc_collect_t *c = vctx;
+    if (c->total < c->max && c->out) {
+        c->out[c->total].type = (uint16_t)type;
+        c->out[c->total].rva  = rva;
+    }
+    c->total++;
+    return 0;
+}
+
+int pe_relocations(const pe_image_t *img, pe_reloc_t *out, size_t max,
+                   size_t *count) {
+    reloc_collect_t c;
+    if (!img || !count) return PE_ERR_ARG;
+    if (!out && max) return PE_ERR_ARG;
+    c.out = out; c.max = max; c.total = 0;
+    int rc = walk_relocation_blocks(img, reloc_collect, &c, count);
+    if (rc != PE_OK) return rc;
+    /* The array form's old contract: *count is the TOTAL found, even when it
+     * exceeds what was written, so a caller can size a buffer and come back. */
+    *count = c.total;
+    return PE_OK;
+}
+
+int pe_relocations_each(const pe_image_t *img, pe_reloc_visit_fn fn, void *ctx,
+                        size_t *count) {
+    if (!img || !count || !fn) return PE_ERR_ARG;
+    return walk_relocation_blocks(img, fn, ctx, count);
 }
 
 /* Walk the delay-load directory (W32A-1).

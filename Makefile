@@ -198,7 +198,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c kernel/boot_info.c drivers/framebuffer/fb.c drivers/framebuffer/psf.c drivers/framebuffer/graphics.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -1072,6 +1072,7 @@ W32_USER_OBJ := $(USER_BUILD)/w32_kernel32.o $(USER_BUILD)/w32_errno.o \
                 $(USER_BUILD)/w32_crt.o     $(USER_BUILD)/w32_argv.o \
                 $(USER_BUILD)/w32_seh.o \
                 $(USER_BUILD)/w32_module.o \
+                $(USER_BUILD)/w32_reloc.o \
                 $(USER_BUILD)/w32_oleaut32.o $(USER_BUILD)/w32_imm32.o \
                 $(USER_BUILD)/w32_ole32.o $(USER_BUILD)/w32_ole_drag.o $(USER_BUILD)/w32_clipfmt.o \
                 $(USER_BUILD)/w32_uxtheme.o $(USER_BUILD)/w32_manifest.o $(USER_BUILD)/w32_stubs_gen.o \
@@ -1179,6 +1180,12 @@ $(USER_BUILD)/w32_argv.o: w32/src/w32_argv.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 # W32-7: LoadLibrary/GetProcAddress/FreeLibrary over real DLL files.
 $(USER_BUILD)/w32_module.o: w32/src/w32_module.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
+# RESIDUE3 C8: base relocation, shared by the EXE loader (w32run) and the DLL
+# loader (w32_module.c).  Streams the directory, so the fixed 16384-entry
+# buffer both used to carry is gone -- Audacity 3.7.5's 90932 relocations were
+# the measured case that made it fatal.
+$(USER_BUILD)/w32_reloc.o: w32/src/w32_reloc.c w32/include/w32/w32_reloc.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
 
 # W32APP_PLAN.md W32A-1: BSTR/VARIANT (real), the manifest prober, and the
@@ -2949,6 +2956,7 @@ $(BUILD_DIR)/user/mantest_bad.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) 
 # genuinely compiler-emitted Win32 binary rather than only hand-written asm.
 MINGW_CC := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 MINGW_CXX := $(shell command -v x86_64-w64-mingw32-g++ 2>/dev/null)
+MINGW_OBJDUMP := $(shell command -v x86_64-w64-mingw32-objdump 2>/dev/null)
 W32_EXAMPLE_EXE := $(BUILD_DIR)/user/w32hello.exe
 W32_UNSUP_EXE   := $(BUILD_DIR)/user/w32unsup.exe
 
@@ -3102,6 +3110,60 @@ endif
 # WinVerifyTrust + SENSAPI probes).  No embedded resource: unlike 7-Zip, NPP's
 # tab/path surface needs no RT_BITMAP.
 W32A16_EXE := $(BUILD_DIR)/user/w32a16_npp.exe
+
+# RESIDUE3 C8 (box 3): the live FAIL-CLEAN receipts.  One mingw-w64 TU that
+# imports all 35 functions docs/win32.md generates and calls each one, so the
+# claim stops being about source code and becomes a receipt from the machine.
+W32C8_FC_EXE := $(BUILD_DIR)/user/w32c8_failclean.exe
+ifneq ($(MINGW_CC),)
+$(W32C8_FC_EXE): w32/tests/w32c8_failclean.c $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart \
+	    -lkernel32 -luser32 -lcomdlg32 -ladvapi32 -lcrypt32 -limm32 \
+	    -lsensapi -lwintrust -ldwmapi -lgcc
+	@echo "  [pe] $@ (RESIDUE3 C8 FAIL-CLEAN live fixture)"
+
+# RESIDUE3 C8 (box 2, RES-57): the static-only receipts.  The name table is
+# generated from the five app ledgers and the two export tables, so the guest
+# and the host cannot disagree about what the list is.
+W32C8_SO_EXE := $(BUILD_DIR)/user/w32c8_static_slice.exe
+W32C8_SO_H   := $(BUILD_DIR)/w32_static_slice.h
+$(W32C8_SO_H): tools/w32_static_slice.py $(wildcard w32/app_ledger/*.imports) \
+               w32/src/w32_bind.c w32/src/w32_stubs_gen.c
+	@mkdir -p $(BUILD_DIR)
+	$(PYTHON) $< > /dev/null
+
+ifneq ($(MINGW_CC),)
+$(W32C8_SO_EXE): w32/tests/w32c8_static_slice.c $(W32C8_SO_H) $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin -I$(BUILD_DIR) $< -o $@ \
+	    -nostdlib -Wl,--entry=winstart -lkernel32 -luser32 -lgcc
+	@echo "  [pe] $@ (RESIDUE3 C8 static-only receipts)"
+else
+$(W32C8_SO_EXE): $(W32C8_SO_H) $(W32_MINGW_STAMP)
+	@echo "  [pe] skipping $@ (no x86_64-w64-mingw32-gcc)"; : > $@
+endif
+
+else
+$(W32C8_FC_EXE): $(W32_MINGW_STAMP)
+	@echo "  [pe] skipping $@ (no x86_64-w64-mingw32-gcc)"; : > $@
+endif
+
+# RESIDUE3 C8: the loader's scale, generated from the PE grammar rather than
+# copied from a binary.  Audacity 3.7.5 (90932 base relocations, USER-SUPPLIED)
+# cannot be committed, so the gate runs an image with its measured SHAPE:
+# 90932 DIR64 fixups, a 3-symbol gap across 2 modules, and a HIGHLOW entry the
+# loader must refuse by type.  tools/w32_scale_fixture.py writes all three.
+W32SCALE_STAMP := $(BUILD_DIR)/user/.w32scale-fixtures
+W32SCALE_EXES := $(BUILD_DIR)/user/w32scale.exe $(BUILD_DIR)/user/w32gap.exe \
+                 $(BUILD_DIR)/user/w32type3.exe
+$(W32SCALE_STAMP): tools/w32_scale_fixture.py
+	@mkdir -p $(BUILD_DIR)/user
+	@python3 tools/w32_scale_fixture.py --out-dir $(BUILD_DIR)/user
+	@touch $@
+$(W32SCALE_EXES): $(W32SCALE_STAMP)
+	@:
 ifneq ($(MINGW_CC),)
 $(W32A16_EXE): w32/tests/w32a16_npp.c $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
@@ -3346,7 +3408,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32SCALE_EXES) $(W32C8_FC_EXE) $(W32C8_SO_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
@@ -3576,6 +3638,16 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@if [ -s $(W32A15_EXE) ]; then cp $(W32A15_EXE) $(INITRD_DIR)/tests/w32a15_7zip.exe; fi
 # W32A-16: the Notepad++ app-gate guest fixture, basename-preserved.
 	@if [ -s $(W32A16_EXE) ]; then cp $(W32A16_EXE) $(INITRD_DIR)/tests/w32a16_npp.exe; fi
+# RESIDUE3 C8: the scale fixtures (generated, always present).
+	@for f in $(W32SCALE_EXES); do cp $$f $(INITRD_DIR)/tests/; done
+# DOOM_PLAN.md D7: the Win32 DOOM build, when someone has made it.  NOT a
+# prerequisite: `make doom-win` fetches GPL sources, and the default image
+# must not do that on its own.
+	@if [ -s $(DOOM_W32_EXE) ]; then cp $(DOOM_W32_EXE) $(INITRD_DIR)/tests/doom_w32.exe; fi
+# RESIDUE3 C8: the live FAIL-CLEAN fixture (35 functions) and the static-only
+# receipts (820 pairs).
+	@if [ -s $(W32C8_FC_EXE) ]; then cp $(W32C8_FC_EXE) $(INITRD_DIR)/tests/w32c8_failclean.exe; fi
+	@if [ -s $(W32C8_SO_EXE) ]; then cp $(W32C8_SO_EXE) $(INITRD_DIR)/tests/w32c8_static_slice.exe; fi
 # WR-1: the SHELL32 namespace guest fixture, basename-preserved.
 	@if [ -s $(W32WR1_EXE) ]; then cp $(W32WR1_EXE) $(INITRD_DIR)/tests/wr1_shellns.exe; fi
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
@@ -3780,6 +3852,14 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_termios \
                 $(BUILD_DIR)/test_jobcontrol \
                 $(BUILD_DIR)/test_permissions \
+                $(BUILD_DIR)/test_aspace \
+                $(BUILD_DIR)/test_msi_caps \
+                $(BUILD_DIR)/test_usb_hid_report \
+                $(BUILD_DIR)/test_usb_ehci_qh \
+                $(BUILD_DIR)/test_usb_msc_csw \
+                $(BUILD_DIR)/test_bt_transport \
+                $(BUILD_DIR)/test_tcp_wscale \
+                $(BUILD_DIR)/test_nvme_proto \
                 $(BUILD_DIR)/test_cow \
                 $(BUILD_DIR)/test_slab \
                 $(BUILD_DIR)/test_virgl \
@@ -3847,6 +3927,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_accel \
                 $(BUILD_DIR)/test_w32_menu \
                 $(BUILD_DIR)/test_w32_pe \
+                $(BUILD_DIR)/test_w32_reloc \
                 $(BUILD_DIR)/test_w32_abi \
                 $(BUILD_DIR)/test_w32_kernel32 \
                 $(BUILD_DIR)/test_w32_argv \
@@ -3888,6 +3969,15 @@ $(BUILD_DIR)/test_w32_pe: tests/unit/test_w32_pe.c w32/src/w32_pe.c \
                           w32/include/w32/w32_pe.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< -o $@
+
+# RESIDUE3 C8: base relocation, shared by the exe and DLL loaders.  The fixture
+# is generated in memory at Audacity's measured scale (90932 relocations) --
+# the number that killed the old `static pe_reloc_t relocs[16384]` buffer.
+$(BUILD_DIR)/test_w32_reloc: tests/unit/test_w32_reloc.c w32/src/w32_reloc.c \
+                             w32/include/w32/w32_reloc.h w32/include/w32/w32_pe.h \
+                             w32/include/w32/w32_module.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 $(W32_INC) -I . $< w32/src/w32_reloc.c -o $@
 
 # WR-2: the RT_ACCELERATOR decoder (w32_rsrc.c) and its chord matcher, pinned
 # against the 16-byte table the 7-Zip 24.09 7zFM.exe ships.  w32_errno.c comes
@@ -4280,6 +4370,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # than compiled code, so it is a script rather than a C binary and cannot join
 # $(UNIT_TESTS), which is a list of executables to build.  It skips cleanly
 # when the archives have not been built.
+	@echo "[unit] running tests/unit/test_abi_align.sh"
+	@bash tests/unit/test_abi_align.sh || exit 1
+
 	@echo "[unit] running tests/unit/test_userlibs.sh"
 	@bash tests/unit/test_userlibs.sh || exit 1
 
@@ -4499,6 +4592,18 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # then prove it can fail.
 	@echo "[unit] running tests/unit/test_residue2_claims.sh"
 	@bash tests/unit/test_residue2_claims.sh || exit 1
+
+# RESIDUE3_PLAN.md C0: the plan-table / orphan-debt checker.  The seven
+# existing claim checkers pin *claims* to artefacts; none of them reads a
+# plan's phase table, a TODO box's phase tag, or the Definition-of-done
+# paragraph - the three places the RESIDUE3 audit found status drifting
+# with no claim changing (RES-38/39/47, five W32APP rows + RESIDUE2 T7,
+# all seven open TODO boxes).  Python only: no build, no QEMU.  The live
+# violations are pinned in tools/plan_tables_baseline.txt with the same
+# ratchet shape as the residue markers - a new violation is red and so is
+# a fixed one whose pin did not move in the same commit.
+	@echo "[unit] running tests/unit/test_plan_tables.sh"
+	@bash tests/unit/test_plan_tables.sh || exit 1
 
 # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
 # header self-containment sweep, matrix->archive drift check, negative
@@ -5547,6 +5652,61 @@ $(BUILD_DIR)/test_permissions: tests/unit/test_permissions.c lib/libc/include/un
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
 
+# RESIDUE3 C2: the refcount table, compiled from the SAME translation unit the
+# kernel links (kernel/mm/aspace.c) -- no mock of the logic under test.
+$(BUILD_DIR)/test_aspace: tests/unit/test_aspace.c kernel/mm/aspace.c \
+                          kernel/mm/aspace.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< kernel/mm/aspace.c -o $@
+
+# RESIDUE3 C4: the MSI/MSI-X capability walker, compiled from the SAME
+# translation unit the kernel links (drivers/pci/msi_caps.c) -- the transport
+# is injected as an accessor table, so no device is mocked, only config space.
+$(BUILD_DIR)/test_msi_caps: tests/unit/test_msi_caps.c drivers/pci/msi_caps.c \
+                            drivers/pci/msi_caps.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/pci/msi_caps.c -o $@
+
+# RESIDUE3 C5b: the HID report-descriptor parser, compiled from the SAME
+# translation unit the kernel links (drivers/usb/hid_report.c).  Descriptors
+# are byte arrays in the test, so the parser is exercised, not a mock of it.
+$(BUILD_DIR)/test_usb_hid_report: tests/unit/test_usb_hid_report.c \
+                                  drivers/usb/hid_report.c drivers/usb/hid_report.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/usb/hid_report.c -o $@
+
+# RESIDUE3 C5b: EHCI queue-head capability words (split-transaction fields).
+$(BUILD_DIR)/test_usb_ehci_qh: tests/unit/test_usb_ehci_qh.c \
+                              drivers/usb/ehci_qh.c drivers/usb/ehci_qh.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/usb/ehci_qh.c -o $@
+
+# RESIDUE3 C5b: USB BOT command-status wrapper (short / over-long / stale tag).
+$(BUILD_DIR)/test_usb_msc_csw: tests/unit/test_usb_msc_csw.c \
+                               drivers/usb/msc_csw.c drivers/usb/msc_csw.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/usb/msc_csw.c -o $@
+
+# RESIDUE3 C6: the Bluetooth HCI command/event round trip, driven by a
+# scripted controller (QEMU has no Bluetooth device at all).
+$(BUILD_DIR)/test_bt_transport: tests/unit/test_bt_transport.c \
+                                drivers/bluetooth/bt_transport.c \
+                                drivers/bluetooth/bt_transport.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/bluetooth/bt_transport.c -o $@
+
+# RESIDUE3 C7: window-scaling arithmetic (hostile option blocks included).
+$(BUILD_DIR)/test_tcp_wscale: tests/unit/test_tcp_wscale.c \
+                              kernel/net/tcp_wscale.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# RESIDUE3 C7b: NVMe queue/command encoding (the silent-death half).
+$(BUILD_DIR)/test_nvme_proto: tests/unit/test_nvme_proto.c \
+                              drivers/nvme/nvme_proto.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
 $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
@@ -5681,6 +5841,42 @@ DOOM_UPSTREAM_OBJS = $(shell sed -n 's/^SRC_DOOM = //p' \
 DOOM_ENGINE_SRCS = $(patsubst %.o,$(DOOM_SRC)/%.c, \
                      $(filter-out doomgeneric_xlib.o, \
                        $(DOOM_UPSTREAM_OBJS)))
+
+# ---------------------------------------------------------------------------
+# DOOM_PLAN.md D7: the WIN32 build of the same engine, through `w32run`.
+#
+# Same licence boundary as `doom` above: the GPL sources are fetched into
+# build/ and compiled there, never committed.  What differs is the platform
+# layer -- upstream's doomgeneric_win.c instead of doomgeneric_auralite.c --
+# because the point of D7 is to be a stranger's Win32 program knocking on the
+# W32 personality's door, not AuraLite's own code doing it.
+#
+# Upstream spells the header `<Windows.h>`; a case-sensitive filesystem has no
+# such file, and patching GPL sources to fix a case is not on the table.  So
+# the rule builds a one-file shim include directory instead.
+#
+#   make doom-win    -> build/doom/doom_w32.exe   (not on any default path)
+#
+DOOM_W32_EXE  := $(DOOM_DIR)/doom_w32.exe
+DOOM_W32_SHIM := $(DOOM_DIR)/winhdr/Windows.h
+
+$(DOOM_W32_SHIM):
+	@mkdir -p $(dir $@)
+	@printf '#include <windows.h>\n' > $@
+
+$(DOOM_W32_EXE): $(DOOM_SRC) $(DOOM_W32_SHIM) $(W32_MINGW_STAMP)
+	@mkdir -p $(dir $@)
+	@echo "[doom-win] compiling the Win32 build of the engine"
+	@$(MINGW_CC) -w -O2 -I $(DOOM_SRC) -I $(DOOM_DIR)/winhdr \
+	    $(DOOM_ENGINE_SRCS) $(DOOM_SRC)/doomgeneric_win.c -o $@ \
+	    -lkernel32 -luser32 -lgdi32 -lwinmm
+	@echo "[doom-win] $$(du -h $@ | cut -f1) $@ -- $$($(MINGW_OBJDUMP) -p $@ \
+	    | grep -c 'DLL Name') imported DLLs"
+
+doom-win: $(DOOM_W32_EXE)
+	@$(MINGW_OBJDUMP) -p $(DOOM_W32_EXE) | sed -n '/DLL Name/p'
+
+.PHONY: doom-win
 
 doom: $(DOOM_ELF)
 

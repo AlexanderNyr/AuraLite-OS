@@ -13,6 +13,12 @@
 #include "kernel/lib/string.h"
 #include "kernel/boot_info.h"
 #include "drivers/gpu/virtio_gpu.h"
+#if defined(__i386__)
+/* RES-11: declared here for the same reason fb.c declares it -- including
+ * kernel/arch/i386/fbmap32.h from a portable file would grow the arch-include
+ * count the width sweep measures, and arch.h has no framebuffer entry yet. */
+void *fb32_map_fb(uint32_t phys, uint32_t len);
+#endif
 
 static uint32_t *front_fb = NULL;   /* the visible Limine framebuffer */
 static uint32_t *back_fb  = NULL;   /* off-screen render target       */
@@ -79,7 +85,17 @@ void gfx_init(void) {
     /* boot_fb_t.phys_base is a raw physical address; the framebuffer is
      * accessed through the higher-half direct map established by the
      * bootloader (add hhdm_offset). */
+#if defined(__i386__)
+    /* RES-11: same seam as fb.c -- the 32-bit direct map stops at 896 MiB and
+     * the VBE framebuffer is at 0xFD000000, so the front buffer is the
+     * device-memory window fbmap32.c owns (and fb_init has already mapped
+     * it; the call here is what makes gfx_init independent of boot order). */
+    front_fb  = (uint32_t *)fb32_map_fb((uint32_t)fb->phys_base,
+                                        (uint32_t)(fb->pitch * fb->height));
+    if (!front_fb) return;
+#else
     front_fb  = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + fb->phys_base);
+#endif
     fb_width  = (uint32_t)fb->width;
     fb_height = (uint32_t)fb->height;
     fb_pitch  = (uint32_t)fb->pitch;
@@ -93,7 +109,10 @@ void gfx_init(void) {
     uint64_t buf_bytes = (uint64_t)fb_pitch * fb_height;
     back_fb = kmalloc(buf_bytes);
     if (back_fb) {
-        memset(back_fb, 0, buf_bytes);
+        /* Width sweep: memset takes a size_t, and on i386 that is 32 bits.
+         * buf_bytes is pitch*height for a screen (<= 16 MiB by the window
+         * size), so the narrowing is lossless -- but it is now explicit. */
+        memset(back_fb, 0, (size_t)buf_bytes);
     }
 }
 

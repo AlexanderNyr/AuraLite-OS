@@ -5,7 +5,8 @@
 #
 # Strategy: /selftest (run via the init shell) includes an H2 memory-reaping
 # section that calls get_free_frames() before and after 10 spawn+wait cycles.
-# The kernel also emits "[thread] reaped '<name>' (tid N, M frames)" for every
+# The kernel also emits "[thread] reaped '<name>' (tid N, M frames, aspace
+# refs R)" for every
 # exited user process — these appear in the boot log before the shell prompt.
 #
 # The test verifies:
@@ -45,10 +46,10 @@ il_assert_grep "$LOG" "\[heap\] PASS:" "heap self-test passes"
 # during boot; both are reaped before the shell becomes interactive.
 # The kernel log must contain "[thread] reaped '/bin/hello'" with a non-zero
 # frame count — confirming that paging_free_address_space() runs.
-il_assert_grep "$LOG" "\[thread\] reaped '/bin/hello' .*, [0-9]* frames)" \
+il_assert_grep "$LOG" "\[thread\] reaped '/bin/hello' .*, [0-9]* frames, aspace refs [0-9]+\)" \
     "at least one /hello reaped with non-zero frame count"
 
-il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames)" \
+il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames, aspace refs [0-9]+\)" \
     "at least one /execve_child reaped with non-zero frame count"
 
 # Parse the /hello reaped frame count and assert it is in a reasonable range.
@@ -56,7 +57,7 @@ il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames
 #   1 PML4 + 1 PDPT + 1 PD + 1 PT + ~15 data pages ≈ 20 frames.
 # Anything less than 5 frames would indicate broken reaping.
 reaped=$(grep "\[thread\] reaped '/bin/hello'" "$LOG" | head -1 | \
-         sed 's/.*(tid [0-9]*, \([0-9]*\) frames).*/\1/')
+         sed 's/.*(tid [0-9]*, \([0-9]*\) frames.*/\1/')
 if [ -n "$reaped" ] && [ "$reaped" -gt 0 ] 2>/dev/null; then
     echo "INFO: reaped frames per /hello: $reaped"
     if [ "$reaped" -ge 5 ]; then

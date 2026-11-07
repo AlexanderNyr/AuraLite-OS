@@ -29,6 +29,12 @@ void fb_arm_shadow(void);
 /* Disable / enable framebuffer console output (UART logging continues).
  * The GUI compositor owns the framebuffer once it starts, so the console
  * stops scribbling on top of windows. */
+/* RES-11: does a linear framebuffer console exist?  The i386 kprintf fan-out
+ * uses this to choose between the framebuffer and the VGA text fallback --
+ * the two sinks are mutually exclusive, because a machine in a VBE mode has
+ * no visible text buffer at 0xB8000. */
+int  fb_console_up(void);
+
 void fb_set_console_enabled(int on);
 int  fb_console_enabled(void);
 

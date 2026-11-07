@@ -1,0 +1,1796 @@
+diff --git a/Makefile b/Makefile
+index decb8c0..76745bd 100644
+--- a/Makefile
++++ b/Makefile
+@@ -198,7 +198,7 @@ KERNEL32_DIR  := kernel/arch/i386
+ # consumer.  Growth rule: a file lands here only when something on
+ # this side actually calls it.
+ KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
+-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c
++                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c kernel/boot_info.c drivers/framebuffer/fb.c drivers/framebuffer/psf.c drivers/framebuffer/graphics.c
+ KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
+ KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
+ KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
+diff --git a/boot/bios/stage2/stage2_start.asm b/boot/bios/stage2/stage2_start.asm
+index 4e5a101..8b9df47 100644
+--- a/boot/bios/stage2/stage2_start.asm
++++ b/boot/bios/stage2/stage2_start.asm
+@@ -75,8 +75,11 @@ stage2_entry:
+ 
+     ; Force VGA text mode 3.  SeaBIOS starts there; a leftover graphics
+     ; mode (or a firmware that never programmed the CRTC) would leave
+-    ; the monitor dark for the entire BIOS path — there is no VBE
+-    ; linear framebuffer in this loader.
++    ; the monitor dark for the entire BIOS path.  The VBE linear
++    ; framebuffer is set up at the END of this file (RES-12): probe the
++    ; modes late, print the choice while text mode is still live, and
++    ; only then switch -- a graphics mode set here would blind every
++    ; message the loader prints after it.
+     mov  ax, 0x0003
+     int  0x10
+ 
+@@ -389,6 +392,31 @@ stage2_entry:
+     call log16_puts
+ .initrd_done:
+ 
++    ; ---- RESIDUE3 C3 / RES-12: the linear framebuffer ----------------
++    ; Probe first (sets no mode, so the selection line reaches BOTH
++    ; consoles), then commit (sets the mode, fills boot_info_t.fb, and
++    ; reports on the UART only -- the text console is gone by then).
++    ; Failure is not fatal on either path: text mode 3 keeps working and
++    ; fb stays zero, which is exactly the pre-RES-12 behaviour.
++    call vbe_probe
++    jc   .vbe_none
++    cmp  byte [vbe_which], 1
++    jne  .vbe_800
++    mov  si, msg_vbe_1024
++    call log16_puts
++    jmp  .vbe_commit
++.vbe_800:
++    mov  si, msg_vbe_800
++    call log16_puts
++.vbe_commit:
++    ; vbe_commit reports its own failure on both consoles.
++    call vbe_commit
++    jmp  .vbe_done
++.vbe_none:
++    mov  si, msg_vbe_none
++    call log16_puts
++.vbe_done:
++
+     ; ---- Final hand-off: one of two exits, chosen by the BL10 verdict.
+     cmp  byte [lm_absent], 0
+     jne  .go_prot32
+@@ -536,6 +564,14 @@ msg_k_old_found:    db "[BL4] kernel.old located", 0x0D, 0x0A, 0
+ msg_k_old_load_ok:  db "[BL4] kernel.old loaded to 0x00200000", 0x0D, 0x0A, 0
+ msg_k_old_gone:     db "[BL4] KERNEL.OLD missing or unloadable; halting", 0x0D, 0x0A, 0
+ msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
++; RES-12: the VBE receipts.  The first four go to BOTH consoles (printed
++; before the mode switch, while text mode is still live); msg_vbe_ready is
++; printed by vbe_commit AFTER the switch and therefore on the UART only.
++msg_vbe_1024:    db "[vbe] selecting 1024x768x32 (linear framebuffer)", 0x0D, 0x0A, 0
++msg_vbe_800:     db "[vbe] selecting 800x600x32 (linear framebuffer)", 0x0D, 0x0A, 0
++msg_vbe_none:    db "[vbe] no 32-bpp linear-framebuffer mode; keeping VGA text 80x25", 0x0D, 0x0A, 0
++msg_vbe_fail:    db "[vbe] mode set refused by the BIOS; keeping VGA text 80x25", 0x0D, 0x0A, 0
++msg_vbe_ready:   db "[vbe] framebuffer live; boot_info.fb filled", 0x0D, 0x0A, 0
+ 
+ ; File names in 8.3 uppercase, space-padded, 11 bytes exact.
+ name_kernel:     db "KERNEL  ELF"
+@@ -546,6 +582,18 @@ name_initrd:   db "INITRD  TAR"
+ boot_drive: db 0
+ lm_absent:  db 0        ; BL10 verdict: 1 = no long mode, take the 32-bit path
+ 
++; RES-12 scratch.  These live INSIDE the Stage 2 image on purpose: DS stays 0
++; (with a 64 KiB limit) for the whole loader, so a buffer placed below 0x8000
++; or inside the BIOS's own segment would each cost a segment swap mid-scan.
++; Sitting here they are ordinary DS-relative data.
++vbe_mode:       dw 0    ; the VBE mode number vbe_scan picked
++vbe_which:      db 0    ; 1 = 1024x768x32, 2 = 800x600x32
++vbe_list_off:   dw 0    ; the BIOS's mode-list far pointer, as reported
++vbe_list_seg:   dw 0
++vbe_walk:       dw 0    ; scan cursor into vbe_list_copy
++vbe_list_copy:  times 512 db 0  ; VBE_LIST_MAX mode numbers + a terminator
++vbe_block_copy: times 256 db 0  ; the post-set ModeInfoBlock
++
+ ; --------------------------------------------------------------------------
+ ; Included modules (order matters only for symbol resolution)
+ ; --------------------------------------------------------------------------
+@@ -596,6 +644,7 @@ vga_puts:
+ %include "boot/bios/stage2/fat.inc"
+ %include "boot/bios/stage2/elf.inc"
+ %include "boot/bios/stage2/elf32.inc"
++%include "boot/bios/stage2/vbe.inc"    ; RES-12: VBE probe/commit
+ %include "boot/bios/stage2/paging.inc"
+ %include "boot/bios/stage2/longmode.inc"
+ %include "boot/bios/stage2/pmode32.inc"
+diff --git a/boot/bios/stage2/vbe.inc b/boot/bios/stage2/vbe.inc
+new file mode 100644
+index 0000000..8fd8e82
+--- /dev/null
++++ b/boot/bios/stage2/vbe.inc
+@@ -0,0 +1,355 @@
++; =============================================================================
++; boot/bios/stage2/vbe.inc -- RESIDUE3 C3 / RES-12: VBE linear framebuffer.
++;
++; Until this file existed the BIOS path never left VGA text mode 3, so the
++; i386 kernel could never have a framebuffer console (RES-11): boot_info_t.fb
++; was always zero on the BIOS path and only UEFI GOP ever filled it.  This
++; module closes that asymmetry from the loader side.
++;
++;   vbe_probe   -- VBE presence (INT 10h AX=4F00), copy the mode list into
++;                  the Stage 2 image, then scan it twice: 1024x768x32 first,
++;                  800x600x32 second.  Sets NO mode, so every message printed
++;                  between probe and commit still lands on the VGA text
++;                  console -- the caller prints the selection line on BOTH
++;                  consoles while text mode is still live.
++;   vbe_commit  -- INT 10h AX=4F02 with bit 14 set (LIN_FA), re-query the
++;                  mode block, fill boot_info_t.fb.
++;
++; Why the block is re-queried after the set: ModeInfoBlock values are what
++; the BIOS *promises* for a mode; PhysBasePtr and LinBytesPerScanLine after
++; 4F02 are what it actually did.  The published values come from the post-set
++; block, so the kernel never inherits a promise the BIOS did not keep.
++;
++; Failure is never fatal: no VBE, no 32-bpp linear mode, or a refused set
++; leaves the machine exactly as it was (text mode 3, fb block zero) -- a
++; working machine with a coarser console.
++;
++; Segment discipline (the reason for the copies below): Stage 2 runs in unreal
++; mode with FS and GS lifted flat; DS/ES/SS stay 0 with a 64 KiB limit.  A
++; BIOS mode list lives in the BIOS's own segment (often 0xC000), which DS
++; cannot reach, and swapping DS for the duration of the scan would cost access
++; to every variable in this file.  So both BIOS blocks are copied into buffers
++; inside the Stage 2 image (see vbe_list_copy / vbe_block_copy in
++; stage2_start.asm) and then addressed with plain DS-relative moves.  FS is
++; never touched: build_page_tables later runs 32-bit linear addresses through
++; it.
++;
++; Physical layout used:
++;   0x11200  VbeInfoBlock   (512 bytes)  ES = 0x1100, DI = VBE_INFO_OFF
++;   0x11400  ModeInfoBlock  (256 bytes)  ES = 0x1100, DI = VBE_MODE_OFF
++; =============================================================================
++
++VBE_INFO_SEG        equ 0x1100
++VBE_INFO_OFF        equ 0x0200          ; 0x11200
++VBE_MODE_OFF        equ 0x0400          ; 0x11400
++VBE_LIST_MAX        equ 256             ; 512 bytes of mode numbers is plenty
++VBE_MODE_MAX        equ 0xFFFF          ; the list terminator
++
++; ModeInfoBlock field offsets (VBE 2.0 spec s.4).
++VBE_MI_ATTR         equ 0
++VBE_MI_XRES         equ 18
++VBE_MI_YRES         equ 20
++VBE_MI_BPP          equ 25
++VBE_MI_PHYSBASE     equ 40
++VBE_MI_LINPITCH     equ 50
++VBE_MI_REDPOS       equ 55
++VBE_MI_GREENPOS     equ 57
++VBE_MI_BLUEPOS      equ 59
++
++VBE_AT_SUPPORTED    equ 0x0001
++VBE_AT_LINEAR       equ 0x0080
++
++; --------------------------------------------------------------------------
++; vbe_probe -- find a usable mode.  Returns CF=1 when there is none.  On
++; success [vbe_mode] holds the VBE mode number and [vbe_which] says which
++; candidate won (1 = 1024x768, 2 = 800x600).  Sets no video mode.
++; --------------------------------------------------------------------------
++vbe_probe:
++    push ds
++    push es
++    push si
++    push di
++    push cx
++    push dx
++    push bx
++    push ax
++
++    ; Zero the 512-byte VbeInfoBlock first: a BIOS that fills only part of it
++    ; must not leave a stale "VESA" signature from an earlier call.
++    mov  ax, VBE_INFO_SEG
++    mov  es, ax
++    mov  di, VBE_INFO_OFF
++    mov  cx, 256
++    xor  ax, ax
++    rep  stosw
++
++    mov  ax, 0x4F00                    ; controller information
++    mov  di, VBE_INFO_OFF
++    int  0x10
++    cmp  ax, 0x004F
++    jne  .fail
++    mov  di, VBE_INFO_OFF
++    cmp  dword [es:di], 0x41534556     ; "VESA", little-endian
++    jne  .fail
++
++    ; The mode list is a far pointer at +14 (offset) / +16 (segment).
++    mov  si, [es:di+14]
++    test si, si
++    jz   .fail
++    mov  [vbe_list_off], si
++    mov  ax, [es:di+16]
++    mov  [vbe_list_seg], ax
++
++    ; ---- copy up to VBE_LIST_MAX entries into the image buffer ----
++    mov  es, ax                        ; ES = the BIOS's list segment
++    mov  si, [vbe_list_off]
++    mov  di, vbe_list_copy             ; DS (0) side of the copy
++    mov  cx, VBE_LIST_MAX
++.copy:
++    mov  ax, [es:si]
++    add  si, 2
++    mov  [di], ax
++    add  di, 2
++    cmp  ax, VBE_MODE_MAX
++    je   .copied
++    dec  cx
++    jnz  .copy
++    ; Ran out of room without a terminator: pretend we saw one, so the scan
++    ; is bounded by a 0xFFFF word rather than by luck.
++    mov  word [di], VBE_MODE_MAX
++.copied:
++    mov  ax, VBE_INFO_SEG              ; ES back to the scratch segment
++    mov  es, ax
++
++    ; ---- pass 1: 1024x768x32, pass 2: 800x600x32 ----
++    mov  word [vbe_walk], vbe_list_copy
++    mov  dl, 1
++    call vbe_scan
++    jnc  .found
++    mov  word [vbe_walk], vbe_list_copy
++    mov  dl, 2
++    call vbe_scan
++    jnc  .found
++    jmp  .fail
++.found:
++    mov  [vbe_which], dl
++    clc
++    jmp  .out
++.fail:
++    stc
++.out:
++    pop  ax
++    pop  bx
++    pop  dx
++    pop  cx
++    pop  di
++    pop  si
++    pop  es
++    pop  ds
++    ret
++
++; --------------------------------------------------------------------------
++; vbe_scan -- walk the mode-list copy for the resolution named by DL.
++; In:  [vbe_walk] = list cursor, DL = 1 (1024x768x32) or 2 (800x600x32),
++;      ES = VBE_INFO_SEG (INT 10h AX=4F01 fills ES:DI).
++; Out: CF=0 and [vbe_mode] set on a hit, CF=1 otherwise.
++; The cursor lives in memory, not in a register: INT 10h may clobber any
++; general register, and a scan that loses its place because a BIOS reused SI
++; is a bug only real hardware would show.
++; --------------------------------------------------------------------------
++vbe_scan:
++    push ax
++    push bx
++    push cx
++    push dx
++    push di
++    push si
++.loop:
++    mov  si, [vbe_walk]
++    mov  bx, [si]                      ; mode number (DS = 0)
++    add  si, 2
++    mov  [vbe_walk], si
++    cmp  bx, VBE_MODE_MAX
++    je   .none
++    test bx, bx
++    jz   .none
++
++    mov  ax, 0x4F01                    ; mode information
++    mov  cx, bx
++    mov  di, VBE_MODE_OFF
++    int  0x10
++    cmp  ax, 0x004F
++    jne  .loop
++    mov  di, VBE_MODE_OFF
++
++    ; Supported AND linear-framebuffer capable: a banked mode is not a
++    ; console, and the kernel has nowhere to draw.
++    ; Note the bare [es:di]: VBE_MI_ATTR is 0, and nasm encodes a zero
++    ; displacement as NO displacement while mini-asm emits a +0x0 byte --
++    ; which the SH4 asm-parity gate would (correctly) report as a
++    ; difference.  Writing the no-displacement form keeps both assemblers
++    ; byte-identical.
++    mov  ax, [es:di]
++    and  ax, (VBE_AT_SUPPORTED | VBE_AT_LINEAR)
++    cmp  ax, (VBE_AT_SUPPORTED | VBE_AT_LINEAR)
++    jne  .loop
++
++    ; 32 bpp: the fb console, the compositor and paging_fb_set_wc all assume
++    ; 8:8:8:8.  Anything else is refused here, not discovered as a
++    ; wrong-coloured screen.
++    cmp  byte [es:di+VBE_MI_BPP], 32
++    jne  .loop
++
++    mov  ax, [es:di+VBE_MI_XRES]
++    mov  cx, [es:di+VBE_MI_YRES]
++    cmp  dl, 1
++    jne  .try800
++    cmp  ax, 1024
++    jne  .loop
++    cmp  cx, 768
++    jne  .loop
++    jmp  .hit
++.try800:
++    cmp  ax, 800
++    jne  .loop
++    cmp  cx, 600
++    jne  .loop
++.hit:
++    mov  [vbe_mode], bx
++    clc
++    jmp  .out
++.none:
++    stc
++.out:
++    pop  si
++    pop  di
++    pop  dx
++    pop  cx
++    pop  bx
++    pop  ax
++    ret
++
++; --------------------------------------------------------------------------
++; vbe_commit -- set [vbe_mode] with LIN_FA and publish the framebuffer.
++; CF=0: mode live, boot_info_t.fb filled.  CF=1: BIOS refused, fb left zero
++; and text mode keeps working.
++; --------------------------------------------------------------------------
++vbe_commit:
++    push ds
++    push es
++    push si
++    push di
++    push ax
++    push bx
++    push cx
++    push dx
++
++    mov  ax, VBE_INFO_SEG
++    mov  es, ax
++
++    mov  ax, 0x4F02                    ; set mode
++    mov  bx, [vbe_mode]
++    or   bx, 0x4000                    ; bit 14 = linear framebuffer
++    int  0x10
++    cmp  ax, 0x004F
++    jne  .setfail
++
++    ; Re-query: publish what the BIOS has now, not what it advertised.
++    mov  ax, 0x4F01
++    mov  cx, [vbe_mode]
++    mov  di, VBE_MODE_OFF
++    int  0x10
++    cmp  ax, 0x004F
++    jne  .setfail
++
++    ; Copy the 256-byte mode block into the image buffer, so the fb fields
++    ; below are readable with DS = 0 while ES points at boot_info_t.
++    push ds
++    mov  ax, VBE_INFO_SEG
++    mov  ds, ax                        ; DS:SI = the BIOS's block
++    xor  ax, ax
++    mov  es, ax                        ; ES:DI = our copy
++    mov  si, VBE_MODE_OFF
++    mov  di, vbe_block_copy
++    mov  cx, 128                       ; 128 words = 256 bytes
++.copy:
++    mov  ax, [si]
++    mov  [es:di], ax
++    add  si, 2
++    add  di, 2
++    dec  cx
++    jnz  .copy
++    pop  ds                            ; DS = 0 again
++
++    ; ---- fill boot_info_t.fb ----
++    push es
++    mov  ax, BOOT_INFO_SEG
++    mov  es, ax
++
++    ; phys_base: the block's 32-bit PhysBasePtr zero-extended into the
++    ; struct's 64-bit field (a VBE LFB is always below 4 GiB).
++    mov  eax, [vbe_block_copy + VBE_MI_PHYSBASE]
++    test eax, eax
++    jz   .nofb                         ; 0 base = no linear fb at all
++
++    mov  dword [es:BOOT_FB_PHYS_OFF], eax
++    mov  dword [es:BOOT_FB_PHYS_OFF + 4], 0
++
++    mov  eax, [vbe_block_copy + VBE_MI_XRES]
++    and  eax, 0x0000FFFF
++    mov  dword [es:BOOT_FB_WIDTH_OFF], eax
++    mov  eax, [vbe_block_copy + VBE_MI_YRES]
++    and  eax, 0x0000FFFF
++    mov  dword [es:BOOT_FB_HEIGHT_OFF], eax
++
++    ; pitch: LinBytesPerScanLine; 0 means "the BIOS declined to say", and a
++    ; 32-bpp LFB row is width*4 by construction.
++    movzx eax, word [vbe_block_copy + VBE_MI_LINPITCH]
++    test eax, eax
++    jnz  .pitch_ok
++    mov  eax, [vbe_block_copy + VBE_MI_XRES]
++    and  eax, 0x0000FFFF
++    shl  eax, 2
++.pitch_ok:
++    mov  dword [es:BOOT_FB_PITCH_OFF], eax
++
++    mov  byte [es:BOOT_FB_BPP_OFF], 32
++    mov  al, [vbe_block_copy + VBE_MI_REDPOS]
++    mov  [es:BOOT_FB_RSHIFT_OFF], al
++    mov  al, [vbe_block_copy + VBE_MI_GREENPOS]
++    mov  [es:BOOT_FB_GSHIFT_OFF], al
++    mov  al, [vbe_block_copy + VBE_MI_BLUEPOS]
++    mov  [es:BOOT_FB_BSHIFT_OFF], al
++    pop  es
++
++    ; Serial-only receipt: the mode switch has already happened, so the VGA
++    ; text console no longer exists -- INT 10h teletype here would scribble
++    ; into the framebuffer the kernel is about to own.
++    mov  si, msg_vbe_ready
++    call uart16_puts
++    clc
++    jmp  .out
++
++.nofb:
++    mov  dword [es:BOOT_FB_PHYS_OFF], 0
++    mov  dword [es:BOOT_FB_PHYS_OFF + 4], 0
++    pop  es
++    stc
++    jmp  .out
++
++.setfail:
++    ; Nothing was published (the block is still all-zero from the Stage 2
++    ; clear), so there is nothing to undo -- only to report.
++    mov  si, msg_vbe_fail
++    call log16_puts
++    stc
++.out:
++    pop  dx
++    pop  cx
++    pop  bx
++    pop  ax
++    pop  di
++    pop  si
++    pop  es
++    pop  ds
++    ret
+diff --git a/docs/plans/I386_PLAN.md b/docs/plans/I386_PLAN.md
+index 7917939..ae16b35 100644
+--- a/docs/plans/I386_PLAN.md
++++ b/docs/plans/I386_PLAN.md
+@@ -749,12 +749,24 @@ note below).
+ 
+ #### Tasks
+ 
+-- [x] **VGA text console** (`vga32.c`), not VBE: Stage 2's 32-bit path
+-      sets no video mode, so the machine is in text mode 3 — 80×25 at
++- [x] **VGA text console** (`vga32.c`) — the FALLBACK now: 80×25 at
+       `0xB8000` through the direct map, scroll/cursor/backspace.
+       `kprintf32` fans out to UART + VGA, the two-sink shape of the
+-      64-bit kprintf.  **VBE graphics are I8 residue**: a bring-up
+-      console wants the zero-mode-set path, and text mode is it.
++      64-bit kprintf.
++- [x] **VBE framebuffer console** (RESIDUE3 C3, 2026-11-04) — the I8
++      residue this row used to name.  Stage 2 sets 1024×768×32 with
++      `LIN_FA` (`boot/bios/stage2/vbe.inc`) and fills `boot_info_t.fb`;
++      the 32-bit kernel maps the LFB into a device-memory window
++      (`fbmap32.c`, `0xFE000000`) and draws with the SHARED
++      `drivers/framebuffer/fb.c` + `psf.c` + `graphics.c`, which are now
++      `KERNEL32_SHARED` rows.  `kprintf32` prefers the framebuffer and
++      keeps VGA text as the fallback for a machine whose BIOS has no VBE
++      mode.  Receipts: `[boot] framebuffer console online (1024x768x32,
++      pitch 4096, 128x48 cells at fe000000)`, a 1024×768 monitor
++      screendump, and `test_i386_vbe.sh` (14/14).
++      **Remaining residue, named: the 32-bit COMPOSITOR** (`wm.c`/`gui.c`
++      link, RESIDUE3 C3b) — the files compile at 32 bits with zero errors
++      but need the x86_64 process/scheduler/mouse surface.
+ - [x] **PS/2 keyboard** (`kbd32.c`): IRQ 1, scancode set 1, US map,
+       shift — the one modifier a shell cannot live without.  One input
+       ring, two producers (PS/2 + polled UART RX), so serial and
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 16afe82..731f1af 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,13 +1,14 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) all landed 2026-11-03, 3/11; every count in this file was measured on `26cb7fe` and every receipt below was re-measured on the C2 branch
++## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b, 4/11. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+ | C0 — the rig: the plan-table / orphan-debt checker | ✅ done (2026-11-03) | `patches/RESIDUE3_C0_rig.patch` |
+ | C1 — the reconciliation: flip what already landed, repair what drifted | ✅ done (2026-11-03) | `patches/RESIDUE3_C1_reconcile.patch` |
+ | C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table | ✅ done (2026-11-03) | `patches/RESIDUE3_C2_kernel.patch` |
+-| C3 — i386 graphics: VBE first, then the compositor (RES-12 → RES-11) | ⬜ planned | `patches/RESIDUE3_C3_i386gfx.patch` |
++| C3 — i386 graphics: VBE first, then the compositor (RES-12 → RES-11) | ✅ done (2026-11-04) — RES-12 + the i386 fb console; the compositor half is C3b | `patches/RESIDUE3_C3_i386gfx.patch` |
++| C3b — the i386 compositor: `wm.c`/`gui.c` on 32 bits | ⬜ planned — blocked on the i386 process/scheduler surface (blocker list in §C3) | `patches/RESIDUE3_C3b_compositor.patch` |
+ | C4 — MSI/MSI-X on virtio (RES-36) | ⬜ planned | `patches/RESIDUE3_C4_msi.patch` |
+ | C5 — USB: isochronous streaming and HID breadth (RES-38 survivors) | ⬜ planned | `patches/RESIDUE3_C5_usb.patch` |
+ | C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39 survivors) | ⬜ planned | `patches/RESIDUE3_C6_wireless.patch` |
+@@ -470,7 +471,9 @@ ratchet.
+ 
+ ### C3 — i386 graphics: VBE first, then the compositor
+ 
+-**Status:** ⬜ planned
++**Status:** ✅ done 2026-11-04 for RES-12 + the framebuffer console; the
++compositor half is carried to **C3b** with its blocker list measured, not
++guessed.
+ 
+ **Objective:** close RES-12 and then RES-11 in that order — the ledger's
+ own opener says the series starts at the fb seam, not the compositor.
+@@ -479,26 +482,80 @@ Measured: `grep -rn "4F02\|vbe" boot/` matches exactly one comment in
+ `stage2_start.asm` ("there is no VBE"); the i386 kernel references none
+ of `gui.c`/`wm.c`/`fb.c` (zero hits under `kernel/arch/i386/`).
+ 
+-- [ ] **RES-12:** VBE in Stage 2 — `INT 10h AX=4F01` to enumerate modes,
++- [x] **RES-12:** VBE in Stage 2 — `INT 10h AX=4F01` to enumerate modes,
+       `4F02` to set one with `LIN_FA` (1024×768×32 preferred, 800×600×32
+       fallback, text mode as the last resort), fill a 32-bit
+       `boot_info_t` framebuffer block through the same offset-checked
+       header the 64-bit path uses, and print the chosen mode on both
+       consoles. `tests/unit/test_boot_info_width.c` grows the fb fields.
+-- [ ] **RES-11:** the framebuffer console for i386 (8×8 PSF from
+-      `psf.c`, no allocator assumptions), then the portable `wm.c` +
+-      `gui.c` surface behind `arch.h` seams: the two arch couplings the
+-      width sweep will name (paging flags, IRQ enable) are the whole
+-      seam list — anything else is a finding, recorded.
++- [x] **RES-11 (console half):** the framebuffer console for i386 — the
++      SHARED `drivers/framebuffer/fb.c` + `psf.c` + `graphics.c`, admitted as
++      `KERNEL32_SHARED` rows, behind ONE arch seam: paging flags.  The seam is
++      `PAGE32_FLAG_MMIO` (PCD|PWT) in `paging32_map` plus
++      `kernel/arch/i386/fbmap32.c`, which owns the device-memory window and
++      the only VA arithmetic involved.  `kprintf32` fans out to `fb_putchar`
++      first and to the VGA text fallback second — mutually exclusive by
++      construction once Stage 2 sets a mode.
++- [ ] **RES-11 (compositor half) → C3b:** the portable `wm.c` + `gui.c`
++      surface on 32 bits.  MEASURED, not estimated: both files compile at
++      `--target=i686-elf` with the strict i386 flags and **0 errors** (the
++      width sweep already did its work); what is missing is the LINK.  `nm
++      -u` on the i386 object lists 45 undefined symbols; 37 already exist on
++      this side (graphics/psf/kprintf/kmalloc/kfree/string/spinlock/
++      perfstat), and the 8 that do not are the blocker: `sched_current`,
++      `timer_get_ticks`, `timer_get_frequency`, `keyboard_get_event`,
++      `keyboard_get_mods`, `mouse_get_event`, `mouse_get_position`,
++      `process_spawn` — the x86_64 process/scheduler/mouse surface, which
++      belongs with the i386 process work (I386_PLAN I4+), not with a
++      graphics phase.
+ - [ ] A VNC screenshot lane for i386 in `tests/integration/lib/gui_lane.sh`
+       (`-vga std`, `qemu-system-i386`), reusing the 64-bit assertions.
+ 
+ **Definition of done:** `qemu-system-i386 -vga std` boots to a graphical
+ console and a compositor window; the screenshot gate passes; the width
+-ratchet records the new i386 adoptions.
+-
+-**Test gate:** new `test_i386_vbe.sh`, `test_i386_gui.sh`; `i386_shell`
+-case extended; the existing 64-bit GUI shard unmodified.
++ratchet records the new i386 adoptions.  *Met for the console half; the
++compositor window is C3b's DoD.*
++
++**What landed (receipts, 2026-11-04):**
++
++| Claim | Receipt |
++|-------|---------|
++| Stage 2 sets a VBE mode | `[vbe] selecting 1024x768x32 (linear framebuffer)` on BOTH consoles, `[vbe] framebuffer live; boot_info.fb filled` on the UART |
++| the 32-bit struct is the carrier | `[boot] framebuffer console online (1024x768x32, pitch 4096, 128x48 cells at fe000000)` — offsets from `build/boot_offsets.inc`, pinned by `test_boot_info_width.c` |
++| pixels, not assertions | monitor screendump: 1024x768 P6 with 146 840 bg (16,16,28) and 10 447 fg (220,220,220) samples |
++| the 64-bit path improved too | `fb: WC via PAT4 (768 pages` on a SeaBIOS boot — it used to print `fb: none present; WC remap skipped` |
++| the fallback still works | `qemu-system-i386 -vga none` → `[vbe] no 32-bpp linear-framebuffer mode` + `[boot] VGA text console online` |
++| mini-asm parity held | `stage2_start.asm` still byte-identical to nasm (8 192 bytes); it cost one encoding fix — a zero displacement must be written bare, or mini-asm emits a `+0x0` byte nasm does not |
++
++**Two defects found while landing it (both fixed here, both recorded):**
++
++1. **The silent MMIO alias.** `fbmap32.c`'s first window choice was
++   `0xFD000000` — the address `net32.c` had already claimed for the e1000
++   BAR0.  `paging32_map` refuses an already-mapped PTE and net32 threw the
++   refusal away, so the NIC read its registers out of framebuffer pixels:
++   the MAC printed as `1c:10:10:00:dc:dc` and DHCP never answered, with no
++   line anywhere saying why, while the screen looked perfect.  Fixed by
++   moving the framebuffer window to `0xFE000000` (every window is now listed
++   in `fbmap32.h`) and by making net32 check the return value and name the
++   conflict.
++2. **A console that could not be built twice.** `fsglue32.c` defined
++   `fb_putchar` as a shim onto the VGA text console; linking the real `fb.c`
++   made it a duplicate symbol.  The shim is gone and the shared `kprintf`
++   now links the real glyph renderer.
++
++**Finding recorded rather than papered over:** the i386 console is
++*shadowless* — `[fb] shadowless console (i386: no contiguous allocator, no
++PAT); scrolls are in-place`.  `pmm32.h` has no contiguous multi-frame
++allocator; the box's "no allocator assumptions" clause is honoured by
++refusing the shadow out loud instead of growing one.
++
++**Test gate:** `tests/integration/test_i386_vbe.sh` (new, 14/14: x86_64
++lane, i386 lane, screenshot, and the `-vga none` negative control),
++`tests/integration/cases/test_i386_gui.sh` (new, registered in `ALL_CASES`,
++10/10: the BIOS-boot compositor with real pixel deltas plus the i386 console
++photograph), `i386_shell_smoke.sh` extended to assert the framebuffer sink
++AND the VGA fallback, `i386_boot32/cpu/proc_smoke.sh` still green, the
++64-bit GUI shard untouched.
+ 
+ ---
+ 
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index fe77aaa..6f89d9a 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -22,8 +22,8 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-08 | W | DONE@R2 | i386 shell fd layer initrd-only (PARITY P4/P7) | i386 shell cats /ext2 file through VFS; smoke pins it |
+ | RES-09 | W | DONE@R2 | no path-level VFS mounts on rv64/a64 (PARITY P2) | `[vfs] mounted /` printed on both tenants; smokes pin it |
+ | RES-10 | W | DONE@R3 | i386 TCP/sockets absent — net32 is miniproto only (I386 I8) | one TCP payload round-trips in an i386 smoke |
+-| RES-11 | S | HANDED-OFF@R12 | i386 compositor/GUI (I386 I8) | OPENER, measured: the portable GUI surface is 4089 lines (gui.c 3151 + wm.c 530 + fb.c 408, re-measured 2026-11-03); the i386 side references NONE of it (one grep hit in arch/i386, main32.c's VGA banner) — the series starts at the fb seam, not the compositor |
+-| RES-12 | S | HANDED-OFF@R12 | i386 VBE graphics; text mode is the console (I386 I7) | OPENER, measured: zero VBE code in ANY loader (grep 4F02/vbe across boot/ = 0 files); the console is VGA text at 0xB8000 — first deliverable is a mode-set in stage2/loader32 + a boot_info fb block |
++| RES-11 | S | HANDED-OFF@C3 | i386 compositor/GUI (I386 I8) | OPENER, measured 2026-11-04: the portable GUI surface is 4 669 lines (gui.c 3151 + wm.c 530 + fb.c 454 + psf.c 141 + graphics.c 393). The fb SEAM IS CLOSED — fb.c/psf.c/graphics.c are KERNEL32_SHARED rows and the i386 kernel draws 1024x768x32 (`[boot] framebuffer console online`). The console half is CLOSED at C3 (see RESIDUE3_PLAN §C3). What remains is the compositor LINK: gui.c/wm.c compile at 32 bits with 0 errors but need 8 x86_64 process/scheduler/mouse symbols (`sched_current`, `timer_get_ticks`, `timer_get_frequency`, `keyboard_get_event`, `keyboard_get_mods`, `mouse_get_event`, `mouse_get_position`, `process_spawn`). |
++| RES-12 | S | DONE@C3 | i386 VBE graphics; text mode is the console (I386 I7) | CLOSED (RESIDUE3 C3): boot/bios/stage2/vbe.inc probes VBE (INT 10h AX=4F00/4F01), sets 1024x768x32 with LIN_FA (800x600x32 second, text mode last) via 4F02, and fills boot_info_t.fb through the generated offsets. Receipts: `[vbe] selecting 1024x768x32 (linear framebuffer)` on BOTH consoles, `[vbe] framebuffer live; boot_info.fb filled` on the UART, `fb: WC via PAT4 (768 pages` on the 64-bit BIOS lane (that lane used to print `fb: none present; WC remap skipped`), and a 1024x768 monitor screendump from the i386 lane. Gates: tests/integration/test_i386_vbe.sh (14/14, incl. the `-vga none` negative control) and test_i386_gui.sh. |
+ | RES-13 | W | DONE@R4 | a64 -smp 16 needs GICv3; v2 = 8 ifaces architectural (PARITY P6) | a64_smp_smoke -smp 16 lane: 15 online, IPI 15/15 |
+ | RES-14 | W | DONE@R5 | tenant SMP receipts-only — R5: init runs at U-mode/EL0 ON a secondary on BOTH tenants (strictly serialized one-job mailbox; per-hart stvec/VBAR, adopted final translation roots).  Preemptive multi-CPU runqueues on tenants remain the S-class successor, folded into RES-46's hand-off notes | a user thread RUNS on a secondary; receipt counted |
+ | RES-15 | W | DONE@R5 | x86 "BSP-only" was the THIRD stale doc row: per-CPU runqueues + least-loaded placement + stealing landed at SMP 3.2 — R5 added the once-printed receipt (`user thread pid=N on AP cpu=M`) and test_fpu_smp pins it | user thread observed scheduled on an AP; case pins it |
+diff --git a/docs/status.md b/docs/status.md
+index b56ad8f..124d759 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -234,8 +234,8 @@ older CPUs get an honest two-console refusal, 386 included.
+ | Ring 3 + `int 0x80` | ✅ | AuraLite's own syscall numbers, Linux register convention (D4). Ring 3 faults contained, kernel survives. |
+ | ELF32 loader + initrd | ✅ | Shared `initrd.tar`, i386 binaries under `/bin32`; each kernel refuses the other's ELF class. |
+ | libc32 / init32 / shell | ✅ | `auralite#` interactive shell: SYS_READ (cooked), SYS_SPAWN (nested user images). Full libc port pending. |
+-| VGA text console + PS/2 keyboard | ✅ | Mode 3 at `0xB8000`; scancode set 1, shift. Framebuffer/VBE graphics: pending. |
+-| ATA PIO storage | ✅ | LBA28 on the boot controller; IDENTIFY + known-bytes read + write/readback/restore self-test. AHCI: waiting on a VFS consumer. |
++| Framebuffer console + PS/2 keyboard | ✅ | RESIDUE3 C3 (2026-11-04): Stage 2 sets VBE 1024×768×32 with LIN_FA and fills `boot_info_t.fb`; the i386 kernel draws with the shared PSF2 font into a device-memory window at `0xFE000000` (`[boot] framebuffer console online (1024x768x32, pitch 4096, 128x48 cells)`), VGA text mode 3 is the fallback when no VBE mode exists. Shadowless by finding (no contiguous allocator on `pmm32`), so scrolls are in-place. The 32-bit *compositor* is C3b. |
++| VBE mode setting (RES-12) | ✅ | `boot/bios/stage2/vbe.inc`: `INT 10h AX=4F00/4F01` enumerate, `AX=4F02` + `LIN_FA` set, 1024×768×32 → 800×600×32 → text mode. Every write is offset-checked against `build/boot_offsets.inc`; the post-set ModeInfoBlock is what is published, not the promise. `[vbe]` receipts on both consoles; `test_i386_vbe.sh` gates it including a `-vga none` negative control. || ATA PIO storage | ✅ | LBA28 on the boot controller; IDENTIFY + known-bytes read + write/readback/restore self-test. AHCI: waiting on a VFS consumer. |
+ | e1000 + DHCP/ARP/ICMP | ✅ | 82540EM; SLIRP lease + gateway ARP + payload-verified echo. Sockets/TCP/DNS: pending the net-stack port. |
+ | Crypto at 32-bit width | ✅ | RESIDUE R10: the COMPLETE suite (hash/AEAD/X25519/Ed25519/P-256, 104 checks) passes on the 32-bit limb path (`-DATLS_FE_FORCE32`, native host); the ILP32 `-m32` ABI lane needs `gcc-multilib` and is skipped where that is absent — `atls_fe.h` selects a packed 8×uint32 radix-2^32 field core and `atls_ecdsa.c` an 8×uint32 limb parameterisation where `__int128` is absent. Two lanes in `test_libatls_m32.sh`: `-DATLS_FE_FORCE32` on the native host (runs even without multilib) + the real `-m32` ABI. |
+ | VFS / FAT32 / ext2 / TCP / GUI | 🚧 | Residue tracked by ratchet 2 (x86_64-include count); lands as the shared subsystems finish the arch.h migration. **RESIDUE3 C1 (2026-11-03):** the number is measured rather than implied — `tools/check_width_sweep.py` pins `BASELINE_X64_INCLUDES = 69` x86_64 includes outside `kernel/arch/` (was 80; the `portio.h`→`arch.h` batch paid 11). The row flips when that ratchet reads 0, and every batch that lowers it must lower the pin in the same commit. |
+diff --git a/drivers/framebuffer/fb.c b/drivers/framebuffer/fb.c
+index ed94329..3c6cc0d 100644
+--- a/drivers/framebuffer/fb.c
++++ b/drivers/framebuffer/fb.c
+@@ -8,6 +8,16 @@
+ #include "kernel/mm/pmm.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/arch/arch.h"
++#if defined(__i386__)
++/* RESIDUE3 C3 / RES-11: the 32-bit kernel cannot reach the LFB through its
++ * direct map (that covers phys [0, 896 MiB); the VBE framebuffer sits at
++ * 0xFD000000), so fb_init maps it into a dedicated device-memory window.
++ * This declaration is the whole i386-side coupling of this file: WHICH
++ * window and WHICH page flags is a paging decision and lives in
++ * kernel/arch/i386/fbmap32.c. */
++void *fb32_map_fb(uint32_t phys, uint32_t len);
++#endif
++
+ #if defined(__x86_64__)
+ /* paging_map is x86_64-only.  Declared here instead of including
+  * kernel/arch/x86_64/paging.h: that include is ratchet-2 (portable
+@@ -100,7 +110,8 @@ static void fb_scroll(void) {
+             uint32_t *dst = fb_shadow + (y - font_height) * pitch32;
+             for (uint32_t x = 0; x < fb_width; x++) dst[x] = src[x];
+         }
+-        for (uint32_t y = fb_height - font_height; y < fb_height; y++) {
++        for (uint32_t y = (uint32_t)(fb_height - font_height);
++             y < fb_height; y++) {
+             uint32_t *row = fb_shadow + y * pitch32;
+             for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
+         }
+@@ -119,7 +130,8 @@ static void fb_scroll(void) {
+         uint32_t *dst = fb_addr + (y - font_height) * pitch32;
+         for (uint32_t x = 0; x < fb_width; x++) dst[x] = src[x];
+     }
+-    for (uint32_t y = fb_height - font_height; y < fb_height; y++) {
++    for (uint32_t y = (uint32_t)(fb_height - font_height);
++         y < fb_height; y++) {
+         uint32_t *row = fb_addr + y * pitch32;
+         for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
+     }
+@@ -219,24 +231,41 @@ void fb_init(void) {
+     const struct psf_font *f = psf_get_font();
+     if (!f) { fb_addr = NULL; return; }
+     font_width = f->width; font_height = f->height;
+-    /* boot_fb_t.phys_base is a raw physical address; add the HHDM
+-     * offset so the framebuffer is accessible in kernel virtual space. */
++    /* boot_fb_t.phys_base is a raw physical address; each width reaches it
++     * its own way.  x86_64: through the HHDM, whose 4 GiB of 2 MiB leaves
++     * already cover the LFB.  i386: through the explicit device-memory
++     * window in fbmap32.c, because the direct map stops at 896 MiB. */
++#if defined(__i386__)
++    fb_addr = (uint32_t *)fb32_map_fb((uint32_t)fb->phys_base,
++                                      fb->pitch * fb->height);
++    if (!fb_addr) {
++        kprintf("[fb] FAIL: no i386 framebuffer window for phys 0x%x\n",
++                (unsigned)fb->phys_base);
++        return;
++    }
++#else
+     fb_addr = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + fb->phys_base);
++#endif
+     fb_width = fb->width; fb_height = fb->height; fb_pitch = fb->pitch;
+     fb_r_shift = fb->red_shift;
+     fb_g_shift = fb->green_shift;
+     fb_b_shift = fb->blue_shift;
+     fb_fg = make_color(220, 220, 220);
+     fb_bg = make_color(16, 16, 28);
+-    fb_cols = fb_width / font_width;
+-    fb_rows = fb_height / font_height;
++    /* Width sweep (RES-11 adoption): fb_width/height are uint64_t because
++     * the x86_64 framebuffer path stores 64-bit geometry, but every
++     * geometry field in boot_fb_t is 32-bit and the cell counts are
++     * screen-sized, so these narrowings are lossless -- and now explicit,
++     * which is what the i386 -Wshorten-64-to-32 gate asks for. */
++    fb_cols = (int)(fb_width / font_width);
++    fb_rows = (int)(fb_height / font_height);
+     fb_cursor_col = fb_cursor_row = 0;
+     fb_clear();
+ }
+ 
+ void fb_clear(void) {
+     if (!fb_addr) return;
+-    uint32_t pitch32 = fb_pitch / 4;
++    uint32_t pitch32 = (uint32_t)(fb_pitch / 4);
+     for (uint32_t y = 0; y < fb_height; y++) {
+         uint32_t *row = fb_addr + y * pitch32;
+         for (uint32_t x = 0; x < fb_width; x++) row[x] = fb_bg;
+@@ -263,6 +292,7 @@ void fb_vga_lock_mmio(void) {
+ void fb_vga_lock_mmio(void) {}
+ #endif
+ 
++int  fb_console_up(void)            { return fb_addr != NULL; }
+ void fb_set_console_enabled(int on) { fb_console_on = on ? 1 : 0; }
+ int  fb_console_enabled(void)       { return fb_console_on; }
+ 
+@@ -305,6 +335,22 @@ void fb_arm_shadow(void) {
+     }
+     uint64_t bytes  = px * 4;
+     uint64_t frames = (bytes + 4095) / 4096;
++#if defined(__i386__)
++    /* FINDING, recorded rather than hidden (RES-11): the i386 PMM has no
++     * contiguous multi-frame allocator (kernel/arch/i386/pmm32.h offers
++     * single frames only) and its direct map stops at 896 MiB, so this
++     * console runs SHADOWLESS -- scrolls move pixels in place. That is
++     * correct, just slower, and on this path there is no PAT/WC entry to
++     * make the write path cheaper anyway: the LFB window is plain
++     * uncached, so a shadow would only trade UC reads for UC writes.
++     * The receipt line below says so at boot instead of pretending the
++     * x86_64 H3 discipline was adopted. */
++    (void)frames;
++    kprintf("[fb] shadowless console (i386: no contiguous allocator, "
++            "no PAT); scrolls are in-place\n");
++    fb_shadow = NULL;
++    return;
++#endif
+     paddr_t phys = pmm_alloc_contiguous(frames);
+     if (!phys) {
+         kprintf("[fb] no contiguous frames for the WC shadow; "
+diff --git a/drivers/framebuffer/fb.h b/drivers/framebuffer/fb.h
+index b163e9d..943bc59 100644
+--- a/drivers/framebuffer/fb.h
++++ b/drivers/framebuffer/fb.h
+@@ -29,6 +29,12 @@ void fb_arm_shadow(void);
+ /* Disable / enable framebuffer console output (UART logging continues).
+  * The GUI compositor owns the framebuffer once it starts, so the console
+  * stops scribbling on top of windows. */
++/* RES-11: does a linear framebuffer console exist?  The i386 kprintf fan-out
++ * uses this to choose between the framebuffer and the VGA text fallback --
++ * the two sinks are mutually exclusive, because a machine in a VBE mode has
++ * no visible text buffer at 0xB8000. */
++int  fb_console_up(void);
++
+ void fb_set_console_enabled(int on);
+ int  fb_console_enabled(void);
+ 
+diff --git a/drivers/framebuffer/graphics.c b/drivers/framebuffer/graphics.c
+index 7c35c95..52d162c 100644
+--- a/drivers/framebuffer/graphics.c
++++ b/drivers/framebuffer/graphics.c
+@@ -13,6 +13,12 @@
+ #include "kernel/lib/string.h"
+ #include "kernel/boot_info.h"
+ #include "drivers/gpu/virtio_gpu.h"
++#if defined(__i386__)
++/* RES-11: declared here for the same reason fb.c declares it -- including
++ * kernel/arch/i386/fbmap32.h from a portable file would grow the arch-include
++ * count the width sweep measures, and arch.h has no framebuffer entry yet. */
++void *fb32_map_fb(uint32_t phys, uint32_t len);
++#endif
+ 
+ static uint32_t *front_fb = NULL;   /* the visible Limine framebuffer */
+ static uint32_t *back_fb  = NULL;   /* off-screen render target       */
+@@ -79,7 +85,17 @@ void gfx_init(void) {
+     /* boot_fb_t.phys_base is a raw physical address; the framebuffer is
+      * accessed through the higher-half direct map established by the
+      * bootloader (add hhdm_offset). */
++#if defined(__i386__)
++    /* RES-11: same seam as fb.c -- the 32-bit direct map stops at 896 MiB and
++     * the VBE framebuffer is at 0xFD000000, so the front buffer is the
++     * device-memory window fbmap32.c owns (and fb_init has already mapped
++     * it; the call here is what makes gfx_init independent of boot order). */
++    front_fb  = (uint32_t *)fb32_map_fb((uint32_t)fb->phys_base,
++                                        (uint32_t)(fb->pitch * fb->height));
++    if (!front_fb) return;
++#else
+     front_fb  = (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + fb->phys_base);
++#endif
+     fb_width  = (uint32_t)fb->width;
+     fb_height = (uint32_t)fb->height;
+     fb_pitch  = (uint32_t)fb->pitch;
+@@ -93,7 +109,10 @@ void gfx_init(void) {
+     uint64_t buf_bytes = (uint64_t)fb_pitch * fb_height;
+     back_fb = kmalloc(buf_bytes);
+     if (back_fb) {
+-        memset(back_fb, 0, buf_bytes);
++        /* Width sweep: memset takes a size_t, and on i386 that is 32 bits.
++         * buf_bytes is pitch*height for a screen (<= 16 MiB by the window
++         * size), so the narrowing is lossless -- but it is now explicit. */
++        memset(back_fb, 0, (size_t)buf_bytes);
+     }
+ }
+ 
+diff --git a/kernel/arch/i386/fbmap32.c b/kernel/arch/i386/fbmap32.c
+new file mode 100644
+index 0000000..9edec7c
+--- /dev/null
++++ b/kernel/arch/i386/fbmap32.c
+@@ -0,0 +1,32 @@
++/* kernel/arch/i386/fbmap32.c -- the framebuffer window (RES-11).
++ * See fbmap32.h for the window layout and why it exists.
++ */
++
++#include <stdint.h>
++
++#include "kernel/arch/i386/fbmap32.h"
++#include "kernel/arch/i386/paging32.h"
++
++#define FRAME_32 0x1000u
++
++void *fb32_map_fb(uint32_t phys, uint32_t len)
++{
++    if (phys == 0 || len == 0 || len > FB32_WINDOW_SIZE)
++        return 0;
++
++    uint32_t start = phys & ~(FRAME_32 - 1u);
++    uint32_t end   = (phys + len + FRAME_32 - 1u) & ~(FRAME_32 - 1u);
++
++    for (uint32_t p = start; p < end; p += FRAME_32) {
++        uint32_t virt = FB32_WINDOW_BASE + (p - start);
++        /* Already mapped by an earlier call: that is success, not an
++         * error (paging32_map refuses to overwrite a live PTE). */
++        if (paging32_map(virt, p, PAGE32_FLAG_WRITE | PAGE32_FLAG_MMIO) != 0) {
++            uint32_t existing = 0;
++            if (!paging32_probe(virt, &existing) || existing != p)
++                return 0;
++        }
++    }
++
++    return (void *)(FB32_WINDOW_BASE + (phys - start));
++}
+diff --git a/kernel/arch/i386/fbmap32.h b/kernel/arch/i386/fbmap32.h
+new file mode 100644
+index 0000000..e0f0afe
+--- /dev/null
++++ b/kernel/arch/i386/fbmap32.h
+@@ -0,0 +1,48 @@
++/* kernel/arch/i386/fbmap32.h -- map the loader's linear framebuffer into
++ * the 32-bit kernel's address space (RESIDUE3 C3 / RES-11).
++ *
++ * Why this exists at all: the i386 direct map covers phys [0, 896 MiB) at
++ * 0xC0000000, and the VBE linear framebuffer QEMU hands out sits at
++ * 0xFD000000 (1024x768x32 with the default vgamem) -- far past that
++ * horizon.  p2v_32() cannot reach it, so the framebuffer console needs a
++ * window of its own.
++ *
++ * Window choice, measured (net32.c's e1000 window is the one that bit):
++ *   [0xC0000000, 0xF8000000)  direct map of phys [0, 896 MiB)
++ *   [0xF8000000, 0xFC000000)  kernel heap (64 MiB)
++ *   0xFC000000                the vmm self-test probe page (one 4 KiB
++ *                             page, mapped and unmapped per test)
++ *   [0xFD000000, 0xFD020000)  net32.c's e1000 BAR0 window (32 x 4 KiB)
++ *   [0xFE000000, 0xFF800000)  THIS window: 24 MiB of device memory, enough
++ *                             for 1920x1080x32 (8 MiB) with room to spare.
++ *
++ * The first draft of this file used 0xFD000000 -- the same address net32.c
++ * had already claimed for the NIC -- and the collision was silent for
++ * exactly one boot: paging32_map REFUSES an already-mapped PTE, fb_init won
++ * the race, and net32.c ignored the refusal, so the e1000 driver went on to
++ * read its registers out of framebuffer pixels (garbage MAC, DHCP never
++ * answered) while the screen looked perfect.  Two lessons are encoded here:
++ * the window is chosen with every other window written down, and net32.c
++ * now checks the return value instead of trusting the mapping.
++ *
++ * The mapping is PAGE32_FLAG_WRITE | PAGE32_FLAG_MMIO: uncached and
++ * write-through, because those are the only two memory-type bits a
++ * non-PAE PTE has.
++ */
++
++#ifndef AURALITE_ARCH_I386_FBMAP32_H
++#define AURALITE_ARCH_I386_FBMAP32_H
++
++#include <stdint.h>
++
++#define FB32_WINDOW_BASE  0xFE000000u
++#define FB32_WINDOW_SIZE  (24u * 1024u * 1024u)
++
++/* Map [phys, phys+len) into the window and return its virtual address,
++ * or NULL when the range does not fit or a page-table allocation fails.
++ * Idempotent-safe for the same phys: a second call re-maps nothing and
++ * returns the same address (paging32_map refuses an already-mapped PTE,
++ * which this function treats as "somebody did it first"). */
++void *fb32_map_fb(uint32_t phys, uint32_t len);
++
++#endif /* AURALITE_ARCH_I386_FBMAP32_H */
+diff --git a/kernel/arch/i386/fsglue32.c b/kernel/arch/i386/fsglue32.c
+index a13f539..85dc2c5 100644
+--- a/kernel/arch/i386/fsglue32.c
++++ b/kernel/arch/i386/fsglue32.c
+@@ -45,7 +45,12 @@ void uart_putchar(char c)
+     outb(COM1, (uint8_t)c);
+ }
+ 
+-void fb_putchar(char c)   { vga32_putc(c); }
++/* RESIDUE3 C3 / RES-11: fb_putchar USED to be a shim onto the VGA text
++ * console, because the i386 build had no framebuffer console to point at.
++ * It now has one -- drivers/framebuffer/fb.c is a KERNEL32_SHARED row, and
++ * the shared kprintf's fb sink links against the real glyph-drawing
++ * implementation.  Keeping the shim would be a duplicate symbol; keeping it
++ * under another name would be a second, divergent console. */
+ void klog_putchar(char c) { (void)c; }
+ 
+ /* ---- the heap names ext2.c links against ---------------------------- */
+diff --git a/kernel/arch/i386/kprintf32.c b/kernel/arch/i386/kprintf32.c
+index 4ab7f3f..417d276 100644
+--- a/kernel/arch/i386/kprintf32.c
++++ b/kernel/arch/i386/kprintf32.c
+@@ -9,6 +9,7 @@
+ #include "kernel/arch/i386/portio.h"
+ #include "kernel/arch/i386/kprintf32.h"
+ #include "kernel/arch/i386/vga32.h"
++#include "drivers/framebuffer/fb.h"
+ 
+ #define COM1 0x3F8
+ 
+@@ -42,11 +43,19 @@ void kputc32(char c)
+         kputc32('\r');
+     while (!(inb(COM1 + 5) & 0x20)) { }
+     outb(COM1 + 0, (uint8_t)c);
+-    /* Fan out to the VGA text console once it exists (I7) -- same
+-     * two-sink shape as the 64-bit kprintf.  VGA handles its own \n,
+-     * so skip the \r we synthesised for the serial line. */
+-    if (c != '\r' && vga32_active())
+-        vga32_putc(c);
++    /* Fan out to the screen once it exists -- same two-sink shape as the
++     * 64-bit kprintf.  RES-11: the framebuffer comes FIRST and the VGA text
++     * path is the fallback, because the two are mutually exclusive by
++     * construction: when Stage 2 sets a VBE mode (RES-12) there is nothing
++     * displayed from 0xB8000 any more, and when it cannot, fb_console_up()
++     * is 0 and the text buffer is all there is.  Both handle their own
++     * \n, so the \r synthesised for the serial line is skipped. */
++    if (c != '\r') {
++        if (fb_console_up())
++            fb_putchar(c);
++        else if (vga32_active())
++            vga32_putc(c);
++    }
+ }
+ 
+ void kputs32(const char *s)
+diff --git a/kernel/arch/i386/main32.c b/kernel/arch/i386/main32.c
+index 5cf1a0b..8b182fc 100644
+--- a/kernel/arch/i386/main32.c
++++ b/kernel/arch/i386/main32.c
+@@ -30,6 +30,9 @@
+ #include "kernel/arch/i386/user32.h"
+ #include "kernel/arch/i386/initrd32.h"
+ #include "kernel/arch/i386/vga32.h"
++#include "kernel/arch/i386/fbmap32.h"
++#include "drivers/framebuffer/fb.h"
++#include "kernel/boot_info.h"
+ #include "kernel/arch/i386/kbd32.h"
+ #include "kernel/arch/i386/ata32.h"
+ #include "kernel/arch/i386/fsglue32.h"
+@@ -75,6 +78,14 @@ static int boot_info_check(uint32_t phys)
+     }
+     kprintf32("[mm]    HHDM offset: %x (direct map, %u MiB)\n",
+               KERNEL_VBASE_32, DIRECT_MAP_BYTES / (1024 * 1024));
++
++    /* RESIDUE3 C3 / RES-11: hand the SAME block to the shared accessor
++     * layer (kernel/boot_info.c, now a KERNEL32_SHARED row).  The pointer
++     * passed is the direct-mapped one, which is what the non-x86_64 branch
++     * of boot_info_init() stores verbatim -- so boot_get_framebuffer() and
++     * boot_get_hhdm_offset() work at 32 bits with no second copy of the
++     * struct and no width-specific accessor. */
++    boot_info_init((boot_info_t *)boot_info);
+     return 0;
+ }
+ 
+@@ -232,10 +243,35 @@ void kmain32(uint32_t boot_info_phys)
+         goto halt;
+     }
+ 
+-    /* ---- I7: the console grows a screen and a keyboard ---- */
+-    vga32_init();
+-    kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
+-              "kprintf fans out to UART + VGA\n");
++    /* ---- I7 + RES-11: the console grows a screen and a keyboard ---- */
++    /* The framebuffer comes first: RES-12 makes Stage 2 set a VBE mode, so
++     * on any machine with a VBE BIOS the text buffer is invisible and the
++     * framebuffer is the only real screen.  vga32_init() still runs, but
++     * only owns the display when fb_init() found nothing -- kprintf32
++     * chooses between the two with fb_console_up(). */
++    fb_init();
++    if (fb_console_up()) {
++        boot_fb_t *fb = boot_get_framebuffer();
++        unsigned w = fb ? (unsigned)fb->width  : 0;
++        unsigned h = fb ? (unsigned)fb->height : 0;
++        unsigned p = fb ? (unsigned)fb->pitch  : 0;
++        kprintf32("[boot] framebuffer console online (%ux%ux32, pitch %u, "
++                  "%ux%u cells at %x)\n",
++                  w, h, p, w / 8, h / 16, FB32_WINDOW_BASE);
++        /* RES-11 finding, printed where an operator will see it: the i386
++         * console runs shadowless (no contiguous allocator, no PAT), so its
++         * scrolls move pixels in place.  Calling the shared arming routine
++         * is what emits that receipt -- it refuses on this width instead of
++         * silently pretending the x86_64 H3 discipline was adopted. */
++        fb_arm_shadow();
++        vga32_init();          /* kept warm: the fallback if fb dies */
++        kprintf32("[boot] VGA text console initialised as the fallback "
++                  "(80x25 at 0xB8000); kprintf prefers the framebuffer\n");
++    } else {
++        vga32_init();
++        kprintf32("[boot] VGA text console online (80x25 at 0xB8000); "
++                  "kprintf fans out to UART + VGA\n");
++    }
+     kbd32_init();
+ 
+     /* ---- I8: storage + network (the gates that moved from I7) ---- */
+diff --git a/kernel/arch/i386/net32.c b/kernel/arch/i386/net32.c
+index 5dea97f..84811ab 100644
+--- a/kernel/arch/i386/net32.c
++++ b/kernel/arch/i386/net32.c
+@@ -109,8 +109,22 @@ int net32_init(void)
+     /* BAR0 (0xFEBC0000-region on QEMU) is above the direct map: give
+      * it 4 KiB-page mappings in the probe window.  128 KiB register
+      * file = 32 pages. */
+-    for (uint32_t off = 0; off < 0x20000; off += PAGE_SIZE_32)
+-        paging32_map(0xFD000000u + off, bar0 + off, PAGE32_FLAG_WRITE);
++    /* RESIDUE3 C3: paging32_map REFUSES a PTE that is already present, and
++     * this loop used to throw that refusal away.  Measured cost of doing so:
++     * the framebuffer console took 0xFD000000 first (fbmap32.c's first
++     * window choice), every NIC register read then returned framebuffer
++     * pixels -- the MAC printed as 1c:10:10:00:dc:dc and DHCP never
++     * answered, with no line anywhere saying why.  A refused mapping now
++     * stops the probe and says whose window it is. */
++    for (uint32_t off = 0; off < 0x20000; off += PAGE_SIZE_32) {
++        if (paging32_map(0xFD000000u + off, bar0 + off,
++                         PAGE32_FLAG_WRITE) != 0) {
++            kprintf32("[net] FAIL: BAR0 window 0xFD000000+%x already mapped "
++                      "(phys %x); refusing to alias another driver's MMIO\n",
++                      off, bar0 + off);
++            return -1;
++        }
++    }
+     mmio = (volatile uint32_t *)0xFD000000u;
+ 
+     /* MAC from RAL/RAH (QEMU pre-loads them; EEPROM read not needed). */
+diff --git a/kernel/arch/i386/paging32.c b/kernel/arch/i386/paging32.c
+index 16065d4..cbf4251 100644
+--- a/kernel/arch/i386/paging32.c
++++ b/kernel/arch/i386/paging32.c
+@@ -23,6 +23,8 @@
+ #define PDE_US  (1u << 2)
+ #define PDE_PS  (1u << 7)
+ #define PTE_P   (1u << 0)
++#define PTE_PWT              (1u << 3)
++#define PTE_PCD              (1u << 4)
+ #define PTE_RW  (1u << 1)
+ #define PTE_US  (1u << 2)
+ 
+@@ -99,7 +101,13 @@ int paging32_map(uint32_t virt, uint32_t phys, uint32_t flags)
+ 
+     pt[pti] = (phys & ~0xFFFu) | PTE_P |
+               ((flags & PAGE32_FLAG_WRITE) ? PTE_RW : 0) |
+-              ((flags & PAGE32_FLAG_USER)  ? PTE_US : 0);
++              ((flags & PAGE32_FLAG_USER)  ? PTE_US : 0) |
++              /* RES-11: PCD|PWT = uncached device memory.  Without this
++               * the framebuffer would be mapped WB, and on a WC-less PTE
++               * the CPU is free to cache, merge and reorder pixel writes
++               * the device never sees -- the classic "the window flickers
++               * or never appears" bug. */
++              ((flags & PAGE32_FLAG_MMIO)  ? (PTE_PCD | PTE_PWT) : 0);
+     invlpg(virt);
+     return 0;
+ }
+diff --git a/kernel/arch/i386/paging32.h b/kernel/arch/i386/paging32.h
+index 7c088e8..5aaf00f 100644
+--- a/kernel/arch/i386/paging32.h
++++ b/kernel/arch/i386/paging32.h
+@@ -33,6 +33,12 @@
+ #define PAGE32_FLAG_WRITE    (1u << 0)
+ #define PAGE32_FLAG_USER     (1u << 1)
+ #define PAGE32_FLAG_NO_EXEC  (1u << 2)   /* accepted, unenforceable: no PAE */
++/* RESIDUE3 C3 / RES-11: device memory.  The framebuffer is MMIO, so its
++ * PTEs must be cache-disabled AND write-through; the x86_64 side gets the
++ * same effect from PAGE_FLAGS_MMIO plus the PAT/WC remap in
++ * paging_fb_set_wc().  Same bit the MMIO window uses everywhere else in
++ * this kernel, named here because a portable caller (fb.c) now needs it. */
++#define PAGE32_FLAG_MMIO     (1u << 3)
+ 
+ /* phys <-> direct-mapped virt (valid below DIRECT_MAP_BYTES only). */
+ static inline void *p2v_32(uint32_t phys) {
+diff --git a/kernel/arch/i386/vgpu32.c b/kernel/arch/i386/vgpu32.c
+new file mode 100644
+index 0000000..8db157d
+--- /dev/null
++++ b/kernel/arch/i386/vgpu32.c
+@@ -0,0 +1,43 @@
++/* kernel/arch/i386/vgpu32.c -- the virtio-gpu backend, honestly absent
++ * (RESIDUE3 C3 / RES-11).
++ *
++ * drivers/framebuffer/graphics.c flips its back buffer to whichever surface
++ * is visible: the linear framebuffer, or a virtio-gpu scanout when one is
++ * present.  The 32-bit kernel has the framebuffer half (fbmap32.c maps the
++ * VBE LFB into a device-memory window) and NOT the virtio-gpu half, because
++ * drivers/gpu/virtio_gpu.c speaks the modern virtio-pci transport through
++ * pci_config_read()/paging_map() with 64-bit BARs and queue addresses, none
++ * of which this port has been taught yet.
++ *
++ * Rather than teach graphics.c to know which architectures have a GPU (a
++ * portable file learning about hardware that is missing), the arch supplies
++ * the three symbols and answers 0.  The compositor's flip therefore always
++ * takes the framebuffer path here -- which is exactly what a machine with a
++ * VBE mode and no passed-through GPU should do.
++ *
++ * This is a FINDING for the C3 report, not a claim: on i386 the pixels go to
++ * the linear framebuffer and to nothing else.
++ */
++
++#include <stdint.h>
++
++int virtio_gpu_available(void)
++{
++    return 0;
++}
++
++int virtio_gpu_present(const void *pixels, uint32_t width, uint32_t height,
++                       uint32_t pitch_bytes)
++{
++    (void)pixels; (void)width; (void)height; (void)pitch_bytes;
++    return -1;
++}
++
++int virtio_gpu_present_rect(const void *pixels, uint32_t width, uint32_t height,
++                            uint32_t pitch_bytes, uint32_t x, uint32_t y,
++                            uint32_t w, uint32_t h)
++{
++    (void)pixels; (void)width; (void)height; (void)pitch_bytes;
++    (void)x; (void)y; (void)w; (void)h;
++    return -1;
++}
+diff --git a/tests/integration/cases/test_i386_gui.sh b/tests/integration/cases/test_i386_gui.sh
+new file mode 100755
+index 0000000..6c6d5a6
+--- /dev/null
++++ b/tests/integration/cases/test_i386_gui.sh
+@@ -0,0 +1,130 @@
++#!/usr/bin/env bash
++# test_i386_gui.sh — RESIDUE3 C3: the graphical lanes on SeaBIOS, with
++# photographs (the gui_lane screendump machinery, reused).
++#
++# Two lanes, one claim each:
++#
++#   1. x86_64 + VBE (RES-12): the framebuffer GUI composites REAL pixels on
++#      a firmware that until now could not show any.  The proof is the
++#      compositor's own counters moving between two /proc/perf reads plus a
++#      screenshot of the composited frame -- before RES-12 this lane
++#      composited into a 0x0 surface and every counter stayed 0.
++#   2. i386 + VBE (RES-11): the 32-bit kernel's framebuffer console draws
++#      with the shared PSF2 font into the device-memory window, and the
++#      screenshot shows the console's two colours on a 1024x768 surface.
++#      The same claim test_i386_vbe.sh makes with a raw monitor dump, here
++#      through the gate's own oracle so both lanes speak one language.
++#
++# The i386 *compositor* (wm.c/gui.c on 32 bits) is deliberately NOT asserted
++# here: it compiles clean at that width but links against the x86_64 process/
++# scheduler/mouse APIs, and carrying those over is C3b's job.  Naming the gap
++# is the point; the C3 report records the measured blocker list.
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64 qemu-system-i386 python3
++. lib/gui_lane.sh
++
++il_section "i386 graphics: VBE console + BIOS-boot compositor (RESIDUE3 C3)"
++
++# ---- lane 1: the 64-bit compositor, with pixels --------------------------
++GL_LOG="$IL_LOGDIR/i386_gui_x64.log"
++GL_QEMU_BIN="$IL_QEMU"
++export GL_QEMU_BIN
++if gl_boot_bios 'auralite#'; then
++    # The serial socket strips nothing, so the counter lines arrive with \r;
++    # the wait pattern is therefore substring-shaped, not anchored (an
++    # anchored '^compositor_pixels_composited' matched zero times and cost
++    # the first lane its first read).
++    gl_cmd "cat /proc/perf" 'compositor_pixels_flipped' 20 || true
++    sleep 4
++    gl_cmd "cat /proc/perf" 'compositor_pixels_flipped' 20 || true
++    gl_shot "i386_gui_x64" || true
++    gl_stop
++fi
++
++il_assert_grep "$GL_LOG" "\[vbe\] framebuffer live; boot_info.fb filled" \
++                          "RES-12: SeaBIOS boot has a VBE framebuffer"
++# The "[gfx] ... rendered" banner is emitted before the serial socket is
++# attached on this lane, so it cannot be pinned here; the pixel counters and
++# the photograph below are the stronger claim anyway.
++
++vals() { grep -aE "^$1 [0-9]+" "$GL_LOG" | grep -oE '[0-9]+'; }
++first() { echo "$1" | head -1; }
++last()  { echo "$1" | tail -1; }
++PX=$(vals compositor_pixels_composited)
++FL=$(vals compositor_pixels_flipped)
++if [ "$(echo "$PX" | wc -l)" -ge 2 ]; then
++    PX_D=$(( $(last "$PX") - $(first "$PX") ))
++    if [ "${PX_D:-0}" -gt 0 ]; then
++        il_pass "compositor composites real pixels on BIOS (delta ${PX_D} px)"
++    else
++        il_fail "compositor delta ${PX_D} px — the BIOS frame is still dimensionless"
++    fi
++else
++    il_fail "fewer than two compositor_pixels_composited reads"
++fi
++# Interleaving with the shell's own echo garbled one flipped line on a
++# measured run (2457600 arrived as "2457"), so the flip assertion is
++# "some frame reached the screen", read as a maximum rather than a delta.
++FL_MAX=$(echo "$FL" | sort -n | tail -1)
++if [ -n "${FL_MAX:-}" ] && [ "${FL_MAX:-0}" -gt 0 ]; then
++    il_pass "frames reach the screen (compositor_pixels_flipped max ${FL_MAX} px)"
++else
++    il_fail "nothing flipped on the BIOS lane"
++fi
++
++# the photograph itself: the composited frame must be brighter than black
++if [ -n "${GL_LAST_PPM:-}" ] && [ -s "${GL_LAST_PPM:-/nonexistent}" ]; then
++    if python3 "$GL_ORACLE" brightness "$GL_LAST_PPM" --floor 8 >/dev/null 2>&1; then
++        il_pass "BIOS screenshot is not a black frame ($(basename "$GL_LAST_PNG"))"
++    else
++        il_fail "BIOS screenshot is black"
++    fi
++else
++    il_fail "no screenshot captured on the BIOS lane"
++fi
++
++# ---- lane 2: the 32-bit framebuffer console ------------------------------
++GL_LOG="$IL_LOGDIR/i386_gui_k32.log"
++GL_QEMU_BIN="qemu-system-i386"
++export GL_QEMU_BIN
++GL_LAST_PPM=""
++GL_LAST_PNG=""
++# Wait for a marker AFTER the two lines asserted below: serial-wait stops
++# logging at its match, so waiting on the console line itself truncated it
++# in the log (measured: "[boot] framebuffer console online (1").  The
++# buffer-cache line comes a few dozen lines later and is stable.
++if gl_boot_bios 'Buffer cache initialised'; then
++    sleep 6
++    gl_shot "i386_gui_k32" || true
++    gl_stop
++fi
++
++il_assert_grep_fixed "$GL_LOG" "[boot] framebuffer console online (1024x768x32, pitch 4096" \
++                          "the 32-bit kernel parsed boot_info.fb (width contract)"
++il_assert_grep_fixed "$GL_LOG" "[fb] shadowless console (i386" \
++                          "the shadowless finding is stated, not hidden"
++
++if [ -n "${GL_LAST_PPM:-}" ] && [ -s "${GL_LAST_PPM:-/nonexistent}" ]; then
++    if python3 "$GL_ORACLE" find-color "$GL_LAST_PPM" 220 220 220 --tol 8 \
++            --min-frac 0.0005 >/dev/null 2>&1; then
++        il_pass "the 32-bit console's glyph colour is on screen"
++    else
++        il_fail "no (220,220,220) glyph pixels in the 32-bit screenshot"
++    fi
++    if python3 "$GL_ORACLE" find-color "$GL_LAST_PPM" 16 16 28 --tol 4 \
++            --min-frac 0.05 >/dev/null 2>&1; then
++        il_pass "the console background fills the surface"
++    else
++        il_fail "console background colour missing"
++    fi
++else
++    il_fail "no screenshot captured on the i386 lane"
++fi
++
++il_assert_no_grep "$GL_LOG" "PANIC"        "no kernel panic"
++il_assert_no_grep "$GL_LOG" "TRIPLE FAULT" "no triple fault"
++
++il_summary
+diff --git a/tests/integration/cases/test_perf_smoke.sh b/tests/integration/cases/test_perf_smoke.sh
+index 11a0ffb..d079a57 100644
+--- a/tests/integration/cases/test_perf_smoke.sh
++++ b/tests/integration/cases/test_perf_smoke.sh
+@@ -12,14 +12,17 @@
+ #   - the numbers themselves are archived to the log for the plan's §6
+ #     table, NOT gated on: TCG throughput is weather, not a contract.
+ #
+-# Measured fact recorded during O0 bring-up: the default (BIOS/SeaBIOS)
+-# test boot has NO 32-bpp framebuffer — the BIOS Stage 2 sets no VBE mode,
+-# so gfx_init() bails on bpp!=32 and every compositor pixel counter reads
+-# 0 while the GUI runs dimensionless.  The same image under OVMF gets a
+-# GOP framebuffer and the pixel counters light up (composited ≈ 14× flipped
+-# — O4's headroom, measured).  This case therefore asserts counter
+-# PRESENCE and the frames_full rate bound, both of which hold on either
+-# firmware; pixel-delta assertions belong to O4's UEFI-booted gate.
++# Measured fact at O0 bring-up: the default (BIOS/SeaBIOS) test boot had NO
++# 32-bpp framebuffer — BIOS Stage 2 set no VBE mode — so gfx_init() bailed on
++# bpp!=32 and every compositor pixel counter read 0 while the GUI ran
++# dimensionless; only the OVMF boot had pixels.  RESIDUE3 C3 / RES-12 ended
++# that asymmetry: Stage 2 now probes VBE and sets 1024x768x32 with LIN_FA, so
++# BOTH firmwares hand the kernel a framebuffer and both lanes light up.  This
++# case still asserts counter PRESENCE and the frames_full rate bound (weather
++# belongs to the perf archive, not the gate); pixel-delta assertions stay in
++# the GUI shard.  The "[vbe]" lines below are the proof that the pixels on
++# this lane are real: they are the loader's own receipt, not an inference
++# from a counter.
+ 
+ set -u
+ cd "$(dirname "$0")/.."
+@@ -130,13 +133,20 @@ il_assert_grep  "$LOG" "\[cpu\]   features: pat=[01] pcid=[01] invpcid=[01] erms
+ il_assert_grep  "$LOG" "\[cpu\]   IA32_PAT = 0x" "IA32_PAT readback printed (H3's starting point)"
+ il_assert_grep_fixed "$LOG" "memcpy small-copy crossover: 64 (no ERMS)" \
+                                                 "H2: qemu64 keeps the measured-good 64 threshold"
+-# HW H3 on the BIOS lane: PAT gets its WC entry everywhere, but this
+-# boot has no linear framebuffer -- the HONEST SKIP is the assertion
+-# (the WC-decoded PTE lines live in test_gui_dirty_uefi's UEFI lane).
++# HW H3 on the BIOS lane: PAT gets its WC entry everywhere.  Since RES-12
++# this boot HAS a linear framebuffer too, so the WC remap decodes here just
++# as it does on the UEFI lane (768 pages = 1024x768x32 at pitch 4096).  The
++# "no fb" refusal branch in paging_fb_set_wc is no longer reachable from a
++# stock QEMU boot -- every QEMU VGA model offers a VBE mode -- and it stays
++# in the code as the guard for a loader that fails to set one.
+ il_assert_grep_fixed "$LOG" "IA32_PAT: PA4=WC (readback 0x0007040100070406)" \
+                                                 "H3: PAT readback shows the WC entry"
+-il_assert_grep_fixed "$LOG" "fb: none present; WC remap skipped" \
+-                                                "H3: no fb on BIOS => the remap refuses honestly"
++il_assert_grep "$LOG" "\[vbe\] selecting 1024x768x32 .linear framebuffer." \
++                                                "RES-12: the loader set a VBE mode"
++il_assert_grep_fixed "$LOG" "[vbe] framebuffer live; boot_info.fb filled" \
++                                                "RES-12: boot_info.fb published"
++il_assert_grep "$LOG" "fb: WC via PAT4 \(768 pages" \
++                                                "H3: the BIOS lane now decodes WC too"
+ 
+ # --- membench ran to completion and produced the table ---
+ il_assert_grep  "$LOG" "MEMBENCH begin"        "membench started"
+diff --git a/tests/integration/i386_shell_smoke.sh b/tests/integration/i386_shell_smoke.sh
+index 6290fd2..a13a12b 100644
+--- a/tests/integration/i386_shell_smoke.sh
++++ b/tests/integration/i386_shell_smoke.sh
+@@ -76,7 +76,12 @@ rm -f "$LOG32"
+         -display none -serial stdio -no-reboot \
+         > "$LOG32" 2>/dev/null || true
+ 
+-assert_grep    "$LOG32" "VGA text console online"                      "i386: VGA console up (kprintf second sink)"
++# RESIDUE3 C3 / RES-11: the kprintf second sink is the FRAMEBUFFER now
++# whenever Stage 2 set a VBE mode (RES-12), and the VGA text console is the
++# fallback.  Both lines are asserted: the first is the console the operator
++# sees, the second proves the fallback is still armed underneath it.
++assert_grep    "$LOG32" "framebuffer console online"                    "i386: framebuffer console up (kprintf first sink)"
++assert_grep    "$LOG32" "VGA text console initialised as the fallback"  "i386: VGA text console armed as the fallback"
+ assert_grep    "$LOG32" "PS/2 keyboard on IRQ 1"                       "i386: keyboard driver up"
+ assert_grep    "$LOG32" "auralite# "                                   "i386: the auralite# prompt (the I5-deferred gate)"
+ assert_grep    "$LOG32" "AuraLite OS i386 (protected mode"             "i386: uname round-trip"
+diff --git a/tests/integration/lib/gui_lane.sh b/tests/integration/lib/gui_lane.sh
+index 29be682..ee6479f 100644
+--- a/tests/integration/lib/gui_lane.sh
++++ b/tests/integration/lib/gui_lane.sh
+@@ -1,16 +1,23 @@
+ #!/usr/bin/env bash
+ # tests/integration/lib/gui_lane.sh — WR-0 (W32RUN_PLAN.md) the live-GUI lane.
+ #
+-# Sourced AFTER lib/lib.sh + il_init.  It boots AuraLite under OVMF — the only
+-# firmware with a linear framebuffer (BIOS Stage 2 sets no VBE mode; the GUI
+-# composes off-screen and the frame is black — fb.c's own comment, and the
+-# skip precedent in test_gui_dirty_uefi.sh) — with two UNIX sockets: a serial
+-# socket (the shell) and a monitor socket (HMP: screendump, sendkey, mouse).
+-# Every live-frame gate (WR-2..WR-4) drives the app through these.
++# Sourced AFTER lib/lib.sh + il_init.  It boots AuraLite with two UNIX
++# sockets: a serial socket (the shell) and a monitor socket (HMP:
++# screendump, sendkey, mouse).  Every live-frame gate (WR-2..WR-4) drives the
++# app through these.
++#
++# Firmware: gl_boot uses OVMF (GOP), which was the ONLY framebuffer source
++# until RESIDUE3 C3 / RES-12 taught BIOS Stage 2 to set a VBE mode.  Since
++# then a SeaBIOS boot has a 1024x768x32 linear framebuffer too, and
++# gl_boot_bios (below) is the second entry point: same monitor machinery,
++# no pflash, GL_QEMU_BIN selects qemu-system-x86_64 or qemu-system-i386.
+ #
+ # The three lessons WR-0 bring-up paid for, encoded here so no gate repeats
+ # them:
+-#   * OVMF, not SeaBIOS — BIOS has no framebuffer;
++#   * OVMF, not SeaBIOS — that used to be forced because a BIOS boot had no
++#     framebuffer at all.  RES-12 changed the fact, so both are supported
++#     now; gl_boot stays the OVMF path the existing gates were built on and
++#     gl_boot_bios is the VBE path those gates were protecting against;
+ #   * the ISO is a hybrid MBR disk, attach if=ide + `-boot order=c`, NOT
+ #     media=cdrom (that drops OVMF to the UEFI Shell with no FS mapping);
+ #   * the monitor screendumps the GOP framebuffer even under -display none.
+@@ -37,6 +44,10 @@
+ # GL_LOG accumulates the serial transcript for il_assert_grep.
+ 
+ GL_TOOLS="${GL_TOOLS:-$IL_ROOT/tools}"
++# RES-12: which QEMU binary the BIOS lane runs.  Default is the same one
++# lib.sh uses for every other case; test_i386_gui.sh sets it to
++# qemu-system-i386 to photograph the 32-bit console.
++GL_QEMU_BIN="${GL_QEMU_BIN:-$IL_QEMU}"
+ GL_CONSOLE="$GL_TOOLS/gui_input.py"
+ GL_ORACLE="$GL_TOOLS/fb_oracle.py"
+ 
+@@ -153,6 +164,52 @@ gl_wait() {
+         --pattern "$1" --timeout "${2:-30}" --log "$GL_LOG"
+ }
+ 
++# gl_boot_bios <wait-regex> [extra qemu args...] — the RES-12 lane: SeaBIOS
++# + the VBE linear framebuffer Stage 2 now sets.  Same sockets and same
++# gl_shot/gl_send/gl_cmd machinery as gl_boot; the only differences are the
++# absent pflash drives and GL_QEMU_BIN (x86_64 or i386) plus the wait regex
++# the caller chooses (the 64-bit kernel reaches `auralite#`, the 32-bit one
++# stops at its console line).  `-vga std` is mandatory: `-vga none` has no
++# VBE and the whole point of the lane is the pixels.
++gl_boot_bios() {
++    local wait_re="$1"; shift || true
++    local selftest="${GL_SELFTEST:-fast}"
++    GL_TIMEOUT="${GL_TIMEOUT:-90}"
++    GL_SHOTDIR="${GL_SHOTDIR:-$IL_LOGDIR/gui-lane-shots}"
++    mkdir -p "$GL_SHOTDIR"
++    GL_LOG="${GL_LOG:-$IL_LOGDIR/gui_lane_bios.log}"
++    : > "$GL_LOG"
++    IL_LAST_LOG="$GL_LOG"
++    GL_SER="$IL_LOGDIR/gl_bios_ser.$$.sock"
++    GL_MON="$IL_LOGDIR/gl_bios_mon.$$.sock"
++    GL_QMP=""          # no QMP on this lane: no absolute pointer is needed
++    GL_VARS=""         # and no pflash
++    rm -f "$GL_SER" "$GL_MON"
++
++    "$GL_QEMU_BIN" \
++        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
++        -boot order=c -no-reboot -no-shutdown \
++        -m ${GL_QEMU_MEM:-512M} -smp "${IL_SMP:-2}" -cpu "${IL_CPU:-qemu64}" \
++        -fw_cfg "name=opt/auralite.selftest,string=$selftest" \
++        -vga std -display none \
++        -serial "unix:$GL_SER,server,nowait" \
++        -monitor "unix:$GL_MON,server,nowait" \
++        "$@" >/dev/null 2>&1 &
++    GL_QEMU_PID=$!
++
++    local i
++    for i in $(seq 1 50); do
++        [ -S "$GL_SER" ] && [ -S "$GL_MON" ] && break
++        kill -0 "$GL_QEMU_PID" 2>/dev/null || { echo "  [gui-lane] QEMU died on launch"; return 1; }
++        sleep 0.2
++    done
++    echo "  [gui-lane] BIOS/VBE booting ($GL_QEMU_BIN; up to ${GL_TIMEOUT}s)..."
++    python3 "$GL_CONSOLE" serial-wait --serial "$GL_SER" \
++        --pattern "$wait_re" --timeout "$GL_TIMEOUT" --log "$GL_LOG" || {
++            echo "  [gui-lane] never matched '$wait_re' (see $GL_LOG)"; return 1; }
++    return 0
++}
++
+ gl_shot() {
+     local name="$1"
+     GL_LAST_PPM="$GL_SHOTDIR/$name.ppm"
+@@ -180,6 +237,9 @@ gl_stop() {
+     [ -n "${GL_QEMU_PID:-}" ] || return 0
+     kill "$GL_QEMU_PID" 2>/dev/null || true
+     wait "$GL_QEMU_PID" 2>/dev/null || true
+-    rm -f "$GL_SER" "$GL_MON" "$GL_QMP" "$GL_VARS" 2>/dev/null || true
++    # The BIOS lane (gl_boot_bios) has neither QMP nor a pflash vars copy;
++    # set -u makes an unguarded reference a gate failure rather than a
++    # cleanup detail, which is how this was found.
++    rm -f "${GL_SER:-}" "${GL_MON:-}" "${GL_QMP:-}" "${GL_VARS:-}" 2>/dev/null || true
+     GL_QEMU_PID=""
+ }
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 3b3bd77..3e0cf99 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -55,6 +55,7 @@ fi
+ ALL_CASES=(
+     test_boot_to_shell
+     test_perf_smoke
++    test_i386_gui
+     test_metal_null
+     test_selftest_modes
+     test_gui_dirty_uefi
+diff --git a/tests/integration/test_i386_vbe.sh b/tests/integration/test_i386_vbe.sh
+new file mode 100755
+index 0000000..5f51d75
+--- /dev/null
++++ b/tests/integration/test_i386_vbe.sh
+@@ -0,0 +1,154 @@
++#!/usr/bin/env bash
++# tests/integration/test_i386_vbe.sh -- RESIDUE3 C3 / RES-12: the VBE path.
++#
++# Three lanes and one screenshot, all on the real `make iso` image:
++#
++#   1. qemu-system-x86_64 (SeaBIOS): Stage 2 probes VBE, sets 1024x768x32
++#      with LIN_FA, publishes boot_info.fb, and the 64-bit kernel's WC
++#      remap decodes the new framebuffer (768 pages at pitch 4096).  Before
++#      RES-12 this lane printed "fb: none present" -- the BIOS boot had no
++#      pixels at all.
++#   2. qemu-system-i386: same loader lines, and the 32-bit kernel parses the
++#      SAME boot_info_t at 32 bits (the width contract) and brings up a
++#      PSF2 framebuffer console at the device-memory window 0xFD000000.
++#      Its shadowless line is a recorded finding, not a failure.
++#   3. Negative control, qemu-system-i386 -vga none: no VGA device, so no
++#      VBE -- the loader must say so and the kernel must fall back to the
++#      VGA text console.  A gate that only ever sees the happy path cannot
++#      tell "VBE worked" from "VBE was never asked".
++#
++# The screenshot is the part no grep can substitute for: lane 2 dumps the
++# framebuffer through the QEMU monitor and the pixel census must show the
++# console's own two colours (bg 16,16,28 / fg 220,220,220) on a 1024x768
++# surface.  "The kernel says it drew" and "pixels exist" are different
++# claims, and this case asserts the second.
++set -u
++
++ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
++BUILD="$ROOT/build"
++ISO="$BUILD/auralite.iso"
++LOG64="$BUILD/i386_vbe_x64.log"
++LOG32="$BUILD/i386_vbe_k32.log"
++LOGNONE="$BUILD/i386_vbe_none.log"
++SHOT="$BUILD/i386_vbe_k32.ppm"
++MON="$BUILD/i386_vbe_k32.mon"
++
++[ -s "$ISO" ] || make -C "$ROOT" iso >/dev/null
++
++if ! command -v qemu-system-i386 >/dev/null 2>&1; then
++    echo "[i386-vbe] SKIP: qemu-system-i386 not installed" >&2
++    exit 0
++fi
++
++fail=0
++ok()   { printf '  [i386-vbe] OK   %s\n' "$1"; }
++bad()  { printf '  [i386-vbe] FAIL %s\n' "$1"; fail=1; }
++
++assert_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then ok "$desc"; else bad "$desc (no match: $pat)"; fi
++}
++assert_no_grep() {
++    local log="$1" pat="$2" desc="$3"
++    if grep -q "$pat" "$log"; then bad "$desc (matched: $pat)"; else ok "$desc"; fi
++}
++
++echo "[i386-vbe] RES-12: VBE linear framebuffer"
++
++# ---- lane 1: the 64-bit kernel on the BIOS path ---------------------------
++rm -f "$LOG64"
++timeout 60 qemu-system-x86_64 \
++    -drive format=raw,file="$ISO",if=ide,snapshot=on -boot order=c \
++    -m 512M -vga std -display none -serial "file:$LOG64" -no-reboot \
++    -fw_cfg name=opt/auralite.selftest,string=fast \
++    >/dev/null 2>&1 || true
++assert_grep "$LOG64" "\[vbe\] selecting 1024x768x32 (linear framebuffer)" \
++            "loader picked 1024x768x32"
++assert_grep "$LOG64" "\[vbe\] framebuffer live; boot_info.fb filled" \
++            "loader published boot_info.fb"
++assert_grep "$LOG64" "\[boot\] framebuffer console initialised" \
++            "64-bit kernel brought the console up"
++assert_grep "$LOG64" "fb: WC via PAT4 (768 pages" \
++            "H3 WC remap now decodes the BIOS framebuffer"
++
++# ---- lane 2: the 32-bit kernel, with a screenshot -------------------------
++rm -f "$LOG32" "$SHOT" "$MON"
++timeout 75 qemu-system-i386 \
++    -drive format=raw,file="$ISO",if=ide,snapshot=on -boot order=c \
++    -m 512M -vga std -display none -serial "file:$LOG32" -no-reboot \
++    -monitor "unix:$MON,server,nowait" \
++    >/dev/null 2>&1 &
++QPID=$!
++for _ in $(seq 1 100); do [ -S "$MON" ] && break; sleep 0.2; done
++# Let the 32-bit kernel reach its console, then capture the actual surface.
++sleep 22
++python3 - "$MON" "$SHOT" <<'PY' || true
++import socket, sys, time
++mon, shot = sys.argv[1], sys.argv[2]
++s = socket.socket(socket.AF_UNIX)
++s.connect(mon)
++time.sleep(0.3)
++s.send(b"screendump " + shot.encode() + b"\n")
++time.sleep(1.5)
++try:
++    s.recv(65536)
++except OSError:
++    pass
++s.send(b"quit\n")
++PY
++wait "$QPID" 2>/dev/null || true
++
++assert_grep "$LOG32" "\[vbe\] selecting 1024x768x32 (linear framebuffer)" \
++            "32-bit lane: loader picked 1024x768x32"
++assert_grep "$LOG32" "\[vbe\] framebuffer live; boot_info.fb filled" \
++            "32-bit lane: boot_info.fb published"
++assert_grep "$LOG32" "\[boot\] framebuffer console online (1024x768x32, pitch 4096" \
++            "32-bit kernel read the fb block through boot_info_t"
++assert_grep "$LOG32" "\[fb\] shadowless console (i386" \
++            "32-bit console states its shadowless finding"
++assert_no_grep "$LOG32" "\[boot\] VGA text console online" \
++            "the VGA console is NOT the primary sink any more"
++
++if [ -s "$SHOT" ]; then
++    ok "monitor screendump captured $(wc -c < "$SHOT") bytes"
++    if python3 - "$SHOT" <<'PY'
++import sys
++from collections import Counter
++data = open(sys.argv[1], "rb").read()
++head = data.split(b"\n", 3)
++assert head[0] == b"P6", "not a P6 PPM"
++w, h = (int(v) for v in head[1].split())
++px = head[3]
++assert (w, h) == (1024, 768), "surface is %dx%d, expected 1024x768" % (w, h)
++c = Counter()
++for i in range(0, len(px) - 2, 3 * 5):
++    c[(px[i], px[i + 1], px[i + 2])] += 1
++bg, fg = (16, 16, 28), (220, 220, 220)
++assert c[bg] > 0, "console background colour absent"
++assert c[fg] > 200, "console glyph colour only %d samples (want > 200)" % c[fg]
++print("      %dx%d surface, %d bg + %d fg samples"
++      % (w, h, c[bg], c[fg]))
++PY
++    then ok "screenshot shows the 32-bit console's own pixels"
++    else bad "screenshot pixel census"; fi
++else
++    bad "no screendump produced"
++fi
++
++# ---- lane 3: the negative control ----------------------------------------
++rm -f "$LOGNONE"
++timeout 40 qemu-system-i386 \
++    -drive format=raw,file="$ISO",if=ide,snapshot=on -boot order=c \
++    -m 512M -vga none -display none -serial "file:$LOGNONE" -no-reboot \
++    -fw_cfg name=opt/auralite.selftest,string=fast \
++    >/dev/null 2>&1 || true
++assert_grep "$LOGNONE" "\[vbe\] no 32-bpp linear-framebuffer mode" \
++            "no VGA device => the loader refuses honestly"
++assert_grep "$LOGNONE" "\[boot\] VGA text console online" \
++            "no framebuffer => the 32-bit kernel keeps text mode"
++
++if [ "$fail" -ne 0 ]; then
++    echo "[i386-vbe] FAILED"
++    exit 1
++fi
++echo "[i386-vbe] PASS"
+diff --git a/tests/unit/test_boot_info_width.c b/tests/unit/test_boot_info_width.c
+index 460e4a2..643c79a 100644
+--- a/tests/unit/test_boot_info_width.c
++++ b/tests/unit/test_boot_info_width.c
+@@ -49,6 +49,22 @@ _Static_assert(sizeof(boot_info_t) == BOOT_INFO_SIZEOF_C,
+ 
+ /* Sub-struct layout that the framebuffer console and the mmap walk
+  * depend on at both widths. */
++/* RESIDUE3 C3 (RES-12): Stage 2 now WRITES the framebuffer block field by
++ * field (INT 10h AX=4F01/4F02 is the source), so these numbers stopped being
++ * a description and became an interface the assembly depends on.  Pinned as
++ * literals on purpose: the generated macros are self-consistent by
++ * construction, and would happily follow a boot_fb_t that grew a field --
++ * while the hand-written `mov dword [es:BOOT_FB_WIDTH_OFF], eax` in
++ * boot/bios/stage2/vbe.inc would silently start writing mid-struct. */
++_Static_assert(BOOT_FB_PHYS_OFF_C  == 8,  "boot_fb_t.phys_base moved");
++_Static_assert(BOOT_FB_WIDTH_OFF_C == 16, "boot_fb_t.width moved");
++_Static_assert(BOOT_FB_HEIGHT_OFF_C== 20, "boot_fb_t.height moved");
++_Static_assert(BOOT_FB_PITCH_OFF_C == 24, "boot_fb_t.pitch moved");
++_Static_assert(BOOT_FB_BPP_OFF_C   == 28, "boot_fb_t.bpp moved");
++_Static_assert(BOOT_FB_RSHIFT_OFF_C== 29, "boot_fb_t.red_shift moved");
++_Static_assert(BOOT_FB_GSHIFT_OFF_C== 30, "boot_fb_t.green_shift moved");
++_Static_assert(BOOT_FB_BSHIFT_OFF_C== 31, "boot_fb_t.blue_shift moved");
++
+ _Static_assert(sizeof(boot_mmap_entry_t) == 24, "mmap entry size");
+ _Static_assert(sizeof(boot_fb_t) == 24 + 8,     "fb struct size");
+ _Static_assert(offsetof(boot_mmap_entry_t, type) == 16, "mmap.type");
+diff --git a/tools/check_hw_claims.py b/tools/check_hw_claims.py
+index b0bbae2..3240fa2 100644
+--- a/tools/check_hw_claims.py
++++ b/tools/check_hw_claims.py
+@@ -137,12 +137,15 @@ def claims():
+          "fb: WC via PAT4" in read("kernel", "arch", "x86_64",
+                                    "paging.c") and
+          "paging_fb_set_wc" in read("kernel", "kernel.c")),
+-        ("H3: both lanes pinned -- the UEFI WC decode and the BIOS "
+-         "honest skip",
++        ("H3: both lanes pinned -- the UEFI WC decode (1000 pages at "
++         "1280x1024) and, since RESIDUE3 C3 / RES-12 gave the BIOS path a "
++         "VBE framebuffer, the BIOS decode (768 pages at 1024x768)",
+          "fb: WC via PAT4 (1000 pages" in
+          read("tests", "integration", "cases",
+               "test_gui_dirty_uefi.sh") and
+-         "fb: none present; WC remap skipped" in
++         "fb: WC via PAT4 \\(768 pages" in
++         read("tests", "integration", "cases", "test_perf_smoke.sh") and
++         "[vbe] framebuffer live; boot_info.fb filled" in
+          read("tests", "integration", "cases", "test_perf_smoke.sh")),
+ 
+         # --- H4: PCID -- the written design + the deferral protocol ---
+diff --git a/tools/check_residue_claims.py b/tools/check_residue_claims.py
+index d53ef72..65298d0 100644
+--- a/tools/check_residue_claims.py
++++ b/tools/check_residue_claims.py
+@@ -322,9 +322,11 @@ def claims():
+         # two.  The floor moves as successors close rows, each move
+         # recorded here in the same commit that moves it: R12 closed at
+         # seven (RES-11/12/36/38/39/46/47), GL2 L7 took RES-41 (DONE@L7),
+-        # RESIDUE2 F7 took RES-46 (DONE@F7), and RESIDUE3 C1 flipped
+-        # RES-38/39 (DONE@T6) and RES-47 (DONE@T7) — leaving three, all
+-        # owned by RESIDUE3's C3 (RES-11/12) and C4 (RES-36).
++        # RESIDUE2 F7 took RES-46 (DONE@F7), RESIDUE3 C1 flipped
++        # RES-38/39 (DONE@T6) and RES-47 (DONE@T7), and RESIDUE3 C3 has now
++        # taken RES-12 (DONE@C3, VBE) and handed RES-11 on to its own C3b
++        # (the i386 compositor, HANDED-OFF@C3) — leaving ONE row still
++        # promising an R12 close: RES-36 (MSI/MSI-X), owned by C4.
+         r12_rows = len(re.findall(
+             r"^\| RES-\d\d \| \w \| HANDED-OFF@R12 \|", ledger, re.M))
+         checks.append((
+@@ -333,7 +335,7 @@ def claims():
+             "measured opener",
+             "at R12" not in ledger and
+             ledger.count("OPENER, measured") >= 8 and
+-            r12_rows >= 3))
++            r12_rows >= 1))
+         checks.append((
+             "R12: TODO.md is kept IN FULL and annotated — the headline "
+             "note names the ledger as the index, the file kept its "
+diff --git a/tools/gen_boot_offsets.c b/tools/gen_boot_offsets.c
+index f495126..d9ce8d5 100644
+--- a/tools/gen_boot_offsets.c
++++ b/tools/gen_boot_offsets.c
+@@ -23,10 +23,25 @@ struct offset_entry {
+ };
+ 
+ #define ENTRY(name, field) { name, offsetof(boot_info_t, field) }
++/* RESIDUE3 C3 (RES-12): BIOS Stage 2 now fills boot_info_t.fb from VBE, so the
++ * individual field offsets inside the sub-struct need names too.  They are
++ * derived from the SAME struct the C kernels read -- which is the entire
++ * point of this generator: the assembler never learns a number a compiler
++ * did not print. */
++#define FB_ENTRY(name, member) \
++    { name, offsetof(boot_info_t, fb) + offsetof(boot_fb_t, member) }
+ 
+ static const struct offset_entry offsets[] = {
+     ENTRY("BOOT_MAGIC_OFF", magic),
+     ENTRY("BOOT_FB_OFF", fb),
++    FB_ENTRY("BOOT_FB_PHYS_OFF",    phys_base),
++    FB_ENTRY("BOOT_FB_WIDTH_OFF",   width),
++    FB_ENTRY("BOOT_FB_HEIGHT_OFF",  height),
++    FB_ENTRY("BOOT_FB_PITCH_OFF",   pitch),
++    FB_ENTRY("BOOT_FB_BPP_OFF",     bpp),
++    FB_ENTRY("BOOT_FB_RSHIFT_OFF",  red_shift),
++    FB_ENTRY("BOOT_FB_GSHIFT_OFF",  green_shift),
++    FB_ENTRY("BOOT_FB_BSHIFT_OFF",  blue_shift),
+     ENTRY("BOOT_MMAP_OFF", mmap),
+     ENTRY("BOOT_MMAP_CNT_OFF", mmap_count),
+     ENTRY("BOOT_HHDM_OFF", hhdm_offset),
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index f6a9013..07df1c9 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -8,7 +8,7 @@ GL2_PLAN.md 27
+ GL_PLAN.md 1
+ HARDENING_PLAN.md 0
+ HW_PLAN.md 16
+-I386_PLAN.md 12
++I386_PLAN.md 15
+ INTERNET_PLAN.md 7
+ LX_COMPAT_PLAN.md 6
+ MATURITY_PLAN.md 10
+@@ -21,7 +21,7 @@ REALINTERNET2_PLAN.md 8
+ REALINTERNET_PLAN.md 8
+ REALTEK_PLAN.md 5
+ RESIDUE2_PLAN.md 21
+-RESIDUE3_PLAN.md 46
++RESIDUE3_PLAN.md 47
+ RISCV_PLAN.md 9
+ SDK_PLAN.md 0
+ SELFHOST_PLAN.md 1

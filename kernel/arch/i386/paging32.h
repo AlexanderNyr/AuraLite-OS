@@ -33,6 +33,12 @@
 #define PAGE32_FLAG_WRITE    (1u << 0)
 #define PAGE32_FLAG_USER     (1u << 1)
 #define PAGE32_FLAG_NO_EXEC  (1u << 2)   /* accepted, unenforceable: no PAE */
+/* RESIDUE3 C3 / RES-11: device memory.  The framebuffer is MMIO, so its
+ * PTEs must be cache-disabled AND write-through; the x86_64 side gets the
+ * same effect from PAGE_FLAGS_MMIO plus the PAT/WC remap in
+ * paging_fb_set_wc().  Same bit the MMIO window uses everywhere else in
+ * this kernel, named here because a portable caller (fb.c) now needs it. */
+#define PAGE32_FLAG_MMIO     (1u << 3)
 
 /* phys <-> direct-mapped virt (valid below DIRECT_MAP_BYTES only). */
 static inline void *p2v_32(uint32_t phys) {

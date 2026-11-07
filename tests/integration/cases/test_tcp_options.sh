@@ -34,11 +34,16 @@ il_run_qemu "$LOG" 75 \
 # before M6c the SYN was a bare 20-byte header and this line cannot appear.
 # The byte counts are derived from the header actually built, so a SYN that
 # loses its options fails here even if the peer still answers.
-il_assert_grep_fixed "$LOG" "[tcp] SYN options: 8 bytes, hdr=28, mss=1460 sack-perm" \
-    "our SYN carries MSS + SACK-permitted (28-byte header)"
+# C7 widened this block: MSS + SACK-permitted + a window scale, so the
+# header is 32 bytes rather than 28.  The assertion stays byte-derived --
+# the numbers come from the header actually built, so an option that stops
+# being emitted still turns this red.
+il_assert_grep_fixed "$LOG" "[tcp] SYN options: 12 bytes, hdr=32, mss=1460 sack-perm wscale=0" \
+    "our SYN carries MSS + SACK-permitted + a window scale (32-byte header)"
 
 # The peer's option block was parsed at all.  SLIRP always offers an MSS,
 # so this line appearing at all is the proof the parser ran on real bytes.
+# (C7 appended the window-scale field to this line.)
 il_assert_grep "$LOG" "\[tcp\] peer options: mss=[0-9]+" \
     "the peer's TCP options were parsed"
 

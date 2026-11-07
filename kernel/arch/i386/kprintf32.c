@@ -9,6 +9,7 @@
 #include "kernel/arch/i386/portio.h"
 #include "kernel/arch/i386/kprintf32.h"
 #include "kernel/arch/i386/vga32.h"
+#include "drivers/framebuffer/fb.h"
 
 #define COM1 0x3F8
 
@@ -42,11 +43,19 @@ void kputc32(char c)
         kputc32('\r');
     while (!(inb(COM1 + 5) & 0x20)) { }
     outb(COM1 + 0, (uint8_t)c);
-    /* Fan out to the VGA text console once it exists (I7) -- same
-     * two-sink shape as the 64-bit kprintf.  VGA handles its own \n,
-     * so skip the \r we synthesised for the serial line. */
-    if (c != '\r' && vga32_active())
-        vga32_putc(c);
+    /* Fan out to the screen once it exists -- same two-sink shape as the
+     * 64-bit kprintf.  RES-11: the framebuffer comes FIRST and the VGA text
+     * path is the fallback, because the two are mutually exclusive by
+     * construction: when Stage 2 sets a VBE mode (RES-12) there is nothing
+     * displayed from 0xB8000 any more, and when it cannot, fb_console_up()
+     * is 0 and the text buffer is all there is.  Both handle their own
+     * \n, so the \r synthesised for the serial line is skipped. */
+    if (c != '\r') {
+        if (fb_console_up())
+            fb_putchar(c);
+        else if (vga32_active())
+            vga32_putc(c);
+    }
 }
 
 void kputs32(const char *s)

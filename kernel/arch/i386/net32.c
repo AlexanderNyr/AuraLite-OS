@@ -109,8 +109,22 @@ int net32_init(void)
     /* BAR0 (0xFEBC0000-region on QEMU) is above the direct map: give
      * it 4 KiB-page mappings in the probe window.  128 KiB register
      * file = 32 pages. */
-    for (uint32_t off = 0; off < 0x20000; off += PAGE_SIZE_32)
-        paging32_map(0xFD000000u + off, bar0 + off, PAGE32_FLAG_WRITE);
+    /* RESIDUE3 C3: paging32_map REFUSES a PTE that is already present, and
+     * this loop used to throw that refusal away.  Measured cost of doing so:
+     * the framebuffer console took 0xFD000000 first (fbmap32.c's first
+     * window choice), every NIC register read then returned framebuffer
+     * pixels -- the MAC printed as 1c:10:10:00:dc:dc and DHCP never
+     * answered, with no line anywhere saying why.  A refused mapping now
+     * stops the probe and says whose window it is. */
+    for (uint32_t off = 0; off < 0x20000; off += PAGE_SIZE_32) {
+        if (paging32_map(0xFD000000u + off, bar0 + off,
+                         PAGE32_FLAG_WRITE) != 0) {
+            kprintf32("[net] FAIL: BAR0 window 0xFD000000+%x already mapped "
+                      "(phys %x); refusing to alias another driver's MMIO\n",
+                      off, bar0 + off);
+            return -1;
+        }
+    }
     mmio = (volatile uint32_t *)0xFD000000u;
 
     /* MAC from RAL/RAH (QEMU pre-loads them; EEPROM read not needed). */

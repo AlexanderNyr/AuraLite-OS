@@ -26,6 +26,37 @@
 #ifndef AURALITE_ARCH_ARCH_H
 #define AURALITE_ARCH_ARCH_H
 
+/* MSI / MSI-X (RESIDUE3 C4, ledger RES-36).  Message-signalled interrupts
+ * need a controller that can be told "deliver this vector here" -- the x86_64
+ * LAPIC is one, and the other arches in this tree are not (riscv64's PLIC and
+ * aarch64's GIC take a different, per-platform programming model that no
+ * driver here has been written against yet).
+ *
+ * So the x86_64 side forwards the real header, and everywhere else the two
+ * entry points are declared UNAVAILABLE rather than stubbed: a driver that
+ * silently never gets an interrupt is indistinguishable from a device that
+ * never raised one, and that is the bug shape C4 exists to catch.  Including
+ * arch.h stays legal on every arch -- only the first USE fails.
+ *
+ * This is also what keeps the two virtio drivers off ratchet 2: they used to
+ * name msi.h directly, and the width sweep caught it (72 > 69) the moment C4
+ * landed. */
+#if defined(__x86_64__)
+#  include "kernel/arch/x86_64/msi.h"
+#else
+#  include "drivers/pci/msi_caps.h"
+#  define AURALITE_NO_MSI_MSG \
+    "MSI/MSI-X needs a message-capable interrupt controller; only the " \
+    "x86_64 LAPIC port has one, and the virtio devices here use INTx or " \
+    "the virtio-mmio transport instead"
+static inline int msi_enabled(void)
+    __attribute__((unavailable(AURALITE_NO_MSI_MSG)));
+static inline int msi_attach_pci(const msi_pci_io_t *io,
+                                 void (*fn)(void *cookie), void *cookie,
+                                 const char *name, uint32_t *vector_out)
+    __attribute__((unavailable(AURALITE_NO_MSI_MSG)));
+#endif
+
 /* Port I/O (the I6 block).  x86-only by nature: neither riscv64 nor
  * aarch64 has a port address space -- device access there is MMIO
  * through the HHDM, and a portable file that needs inb/outb is an

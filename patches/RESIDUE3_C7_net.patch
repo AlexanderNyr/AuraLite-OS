@@ -1,0 +1,1634 @@
+diff --git a/Makefile b/Makefile
+index ea2ad20..5e0eb84 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3786,6 +3786,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_usb_ehci_qh \
+                 $(BUILD_DIR)/test_usb_msc_csw \
+                 $(BUILD_DIR)/test_bt_transport \
++                $(BUILD_DIR)/test_tcp_wscale \
+                 $(BUILD_DIR)/test_cow \
+                 $(BUILD_DIR)/test_slab \
+                 $(BUILD_DIR)/test_virgl \
+@@ -5611,6 +5612,12 @@ $(BUILD_DIR)/test_bt_transport: tests/unit/test_bt_transport.c \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< drivers/bluetooth/bt_transport.c -o $@
+ 
++# RESIDUE3 C7: window-scaling arithmetic (hostile option blocks included).
++$(BUILD_DIR)/test_tcp_wscale: tests/unit/test_tcp_wscale.c \
++                              kernel/net/tcp_wscale.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
++
+ $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/TODO.md b/TODO.md
+index 6808e4d..0268cb1 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -702,6 +702,20 @@ build when a box and the plan disagree.
+   (1 MiB through window-full waits) and `test_tcp_ordering` (512 KiB
+   position-dependent pattern verified both directions, ~3 MB/s over
+   SLIRP). (class: networking) (RESIDUE2 T5)
++- ~~**The TCP window is stuck at 64240 bytes.**~~ **Done (RESIDUE3 C7):**
++  window scaling is negotiated (WSCALE in the SYN, the peer's shift read from
++  its SYN-ACK, `snd_wnd = field << shift`, our own window encoded with a
++  shift derived from the buffer we actually hold — 0, and the receipt says
++  why). Two ceilings had to go with it: `ssthresh` was pinned at
++  `TCP_WINDOW` under the comment "arbitrarily high" (it is not, once a peer
++  can grant gigabytes — measured: in-flight stuck at exactly 64240), and the
++  established path reset the negotiated shift immediately after learning it.
++  Receipt: a megabyte to a real Linux peer with **395660 bytes in flight**,
++  and a window-clamped peer holding the same transfer inside 16 bits as the
++  control (`test_tcp_wscale` 19/19; the scaled lane needs a TAP link and skips
++  loudly without one). A real **NVMe** driver is the other half of what was
++  once RES-46's successor and is now `RESIDUE3_PLAN.md` C7b — opened, not
++  started. (class: networking) (RESIDUE3 C7)
+ 
+ ### Graphics / GUI
+ 
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 226fc74..4801634 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,6 +1,6 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04; C5 (isochronous streaming) landed 2026-11-04 with its HID/EHCI survivors carried to C5b, which landed 2026-11-04 as well; C6 (Bluetooth/Wi-Fi) landed 2026-11-04 with RES-61's metal half: 8/11. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
++## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) landed 2026-11-03; C3 (i386 graphics) landed 2026-11-04 with its compositor half carried to C3b; C4 (MSI/MSI-X on virtio) landed 2026-11-04; C5 (isochronous streaming) landed 2026-11-04 with its HID/EHCI survivors carried to C5b, which landed 2026-11-04 as well; C6 (Bluetooth/Wi-Fi) landed 2026-11-04 with RES-61's metal half; C7 (TCP window scaling) landed 2026-11-04 with its NVMe half carried to C7b (opener measured): 9/12. Every count in this file was measured on `26cb7fe`; every receipt below was re-measured on its own phase branch
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+@@ -13,7 +13,8 @@
+ | C5 — USB: isochronous streaming and HID breadth (RES-38 survivors) | ✅ done (2026-11-04) — isoc streaming + the short-CSW line; HID breadth and the EHCI split series are C5b | `patches/RESIDUE3_C5_usb.patch` |
+ | C5b — USB survivors: HID report IDs, EHCI split transactions, the short-CSW case (RES-62) | ✅ done (2026-11-04) — report-ID parser + kernel selftest, PSPD decode + host-tested QH caps, CSW validator; the TT *device* case is impossible on QEMU and says so | `patches/RESIDUE3_C5b_usbhid.patch` |
+ | C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39 survivors) | ✅ done (2026-11-04) — HCI transport injected + host-tested, Wi-Fi over the virtual AP reaches the IP stack; RES-61 keeps the metal | `patches/RESIDUE3_C6_wireless.patch` |
+-| C7 — network: window scaling (RES-52) and the NIC/storage successor of RES-46 | ⬜ planned | `patches/RESIDUE3_C7_net.patch` |
++| C7 — network: window scaling (RES-52) | ✅ done (2026-11-04) — RES-52 flips: wscale negotiated both ways, a megabyte with 395660 bytes in flight, a window-clamped peer as the control | `patches/RESIDUE3_C7_net.patch` |
++| C7b — NVMe: a queue-pair driver over PCIe (RES-46's storage successor) | ⬜ opened (2026-11-04) — carried out of C7 with a measured opener (QEMU has the device, the tree has no NVMe code at all, the blkdev seam exists) | — |
+ | C8 — Win32: the dynamic-scale loader, live FAIL-CLEAN receipts, DOOM D7 (RES-57/58/59) | ⬜ planned | `patches/RESIDUE3_C8_w32.patch` |
+ | C9 — GL: the GLSL AST → TGSI back end (RES-54) | ⬜ planned | `patches/RESIDUE3_C9_tgsi.patch` |
+ | C10 — close-out: the arithmetic, the honest zero, the parked M class | ⬜ planned | `patches/RESIDUE3_C10_close.patch` |
+@@ -968,37 +969,130 @@ runner — pre-existing, unrelated, and named at C5/C5b as well.
+ 
+ ---
+ 
+-### C7 — network: window scaling (RES-52) and RES-46's successor
++### C7 — network: window scaling (RES-52) — DONE; NVMe carried to C7b
++
++**Status:** ✅ window scaling done (2026-11-04) — RES-52 flips; the NVMe half
++of RES-46's successor is **carried to C7b** with a measured opener, because
++the phase's own definition of done (a 1 MiB lane) and a queue-pair driver are
++not the same afternoon's work and this plan does not pretend otherwise.
++
++**Objective (as planned):** close the TCP window box and the storage/NIC half
++RES-46 left standing.
++
++**What was measured before the work:** `TCP_WINDOW` was 64240 and the window
++field was a constant; `wscale`/`shift_cnt` had zero hits in tcp.c+tcp.h. A
++16-bit window caps a connection at 65535 bytes in flight. Two more ceilings
++turned up while working, neither of them in the plan:
++
++1. **`ssthresh` WAS the ceiling.** `ssthresh = TCP_WINDOW` carried the comment
++   "arbitrarily high" — true while the window itself was capped, and false the
++   moment a peer could grant 16 MiB. Measured: with a 16 MiB peer window, peak
++   in-flight stopped at *exactly* 64240 on a 1 MiB transfer.
++2. **The connection silently forgot its shift.** The established-path code
++   reset `snd_shift = 0` right after the SYN-ACK parser had learned it, so a
++   correctly negotiated connection fell back to a 16-bit window the instant
++   the handshake finished. Measured: `peer options: … wscale=8` followed by
++   `ESTABLISHED, peer shift 0`.
++
++**Result.** `kernel/net/tcp_wscale.h` holds the arithmetic (parse / emit /
++apply / encode / shift-for-buffer / engaged), pure and host-pinned by
++`tests/unit/test_tcp_wscale.c` — **56/56**, including the cases a happy path
++never writes: shift 255 clamped to 14, a WSCALE with the wrong length ignored,
++an option block that ends mid-option, a zero-length option (the classic way to
++spin a parser), and a buffer one byte short of the next shift.
++
++`tcp.c` emits a WSCALE in its SYN (option block 8 → 12 bytes, header 28 → 32),
++reads the peer's answer in the SYN-ACK, applies `snd_wnd = field << shift`, and
++encodes its own advertised window with `rcv_wnd >> shift`. **Our shift is 0 and
++that is a decision, not an omission:** the receive path streams data straight
++to the caller and holds only the single out-of-order stash, so the honest
++promise is one unscaled window (`TCP_RCV_BUF_BYTES = TCP_WINDOW`). Advertising
++a shift we cannot back would invite the peer to put megabytes in flight that we
++would drop. The receipt says so out loud: `our shift 0 (64240-byte receive
++buffer)`.
++
++**The 1 MiB lane.** `kernel/net/tcp_ws_lane.c`, opt-in through fw_cfg
++(`opt/auralite.tcp_ws=<big>:<clamped>`), so every other boot in the suite is
++untouched. It moves a megabyte to a real Linux peer twice and prints what the
++connection did:
+ 
+-**Status:** ⬜ planned
++| Claim | Receipt |
++|-------|---------|
++| the peer's 16-bit field means megabytes through the shift | `[tcp] wscale: peer shift=8 -> snd_wnd=16776960 (field 65535); our shift 0 (64240-byte receive buffer)` |
++| a megabyte crossed, and more than 65535 bytes were in flight | `[tcp] wscale lane (big): sent 1048576 bytes in 460 ms, peak in-flight 395660 bytes, peer window 1502208 (shift 8)` |
++| the ceiling was passed | `[tcp] wscale lane (big): PASS 395660 bytes were in flight at once — above the 65535-byte unscaled ceiling` |
++| a clamped peer holds the SAME transfer inside 16 bits | `[tcp] wscale lane (clamped): PASS peak in-flight 14600 stayed inside the 65535-byte window the peer actually granted` |
++| a peer that omits the option is told apart | `[tcp] wscale: peer did not offer a window scale; snd_wnd=65535 stays 16-bit` |
++
++The control lane is what makes the first lane mean anything: without it, a
++guest that simply believed any number would pass.
++
++**Two substitutions, both measured, neither hidden:**
++
++- **The 200 ms RTT is not there.** QEMU has no netem; a userspace peer cannot
++  delay ACKs without also shrinking the window it grants (delaying reads does
++  nothing until the receive buffer fills, and filling it is the opposite of
++  granting a large window). "200 ms" and "window above 64 KiB" cannot both hold
++  through such a peer, so the lane measures **bytes in flight** and reports the
++  elapsed time. The plan's intent — prove the window grew past 64240 — survives
++  intact; its clock does not.
++- **The lane needs a TAP link, and the case says so.** SLIRP terminates TCP
++  itself and never offers a window scale, so a scaled peer cannot exist behind
++  it. `test_tcp_wscale.sh` therefore creates a TAP (`10.0.2.2/24`), which needs
++  `sudo` + `/dev/net/tun`; without them it prints an asserted SKIP and claims
++  nothing. Its SLIRP half is a case in its own right: SLIRP *is* the peer that
++  omits the option.
++- **`il_run_qemu` cannot be used for the TAP lane** — the library always
++  appends `-netdev user` + its own NIC, and with two NICs the SLIRP one wins
++  registration. Measured (and fixed): the lane ran over SLIRP while the TAP
++  peer still received its megabyte — a green-looking half-truth. The case
++  drives `$IL_QEMU` directly.
++
++**Test gate:** `test_tcp_wscale` **19/19**; `test_tcp_options` 5/5 (updated:
++the SYN's option block is 12 bytes now, and the assertion is still derived from
++the header built); `test_networking` 8/8, `test_tcp_x5` 12/12,
++`test_tcp_ordering` 10/10 unchanged; `test_e1000e` 14/14 and `test_vmxnet3`
++14/14 re-derived (the plan's fourth bullet: T6's receipts still hold, so that
++half is closed explicitly rather than rebuilt); unit `test_tcp_wscale` 56/56 in
++`make test-unit`; registry 222 cases.
++
++**NVMe: carried to C7b, with the opener measured now.**
++
++- `qemu-system-x86_64 -device nvme,help` lists a full device (queues, AER,
++  `num_queues`, `nsid`, …) — the emulator half exists.
++- `grep -rli nvme drivers/ kernel/` finds **one** file, and it is a comment in
++  `drivers/vm/virtual_drivers.c`: there is no NVMe code in this tree at all.
++- The seam it must land on exists: `kernel/fs/blkdev.h` (`blkdev_register`,
++  `blkdev_read/write`, `blkdev_sector_count`), which is how AHCI and virtio-blk
++  already become mountable filesystems.
++- There is no `kernel/arch/x86_64/pci_ecam.c` in the tree (the plan assumed
++  one); PCI access is `drivers/pci/pci.c` with `msi_caps.c` beside it.
++
++So C7b is queue pairs + PRP lists + identify + a blkdev registration, then a
++mount — a phase, not a bullet.
++
++---
++
++### C7b — NVMe: a queue-pair driver over PCIe (RES-46's storage successor)
++
++**Status:** ⬜ opened (2026-11-04) — the opener above is measured; no code yet.
++
++**Objective:** an NVMe namespace that becomes a block device and mounts ext2 —
++RES-46's storage successor closes with a mounted filesystem, not a probe.
++
++- [ ] Admin queue (identify controller/namespace), then one I/O queue pair,
++      PRP1/PRP-list addressing, one command in flight at a time to start.
++- [ ] Poll-based completion first (no MSI/MSI-X until the queue works);
++      `-device nvme` on QEMU is the target, with `num_queues=1`.
++- [ ] Register the namespace through `blkdev_register` and mount an ext2 image
++      from it in a case.
++- [ ] `test_nvme.sh`: the guest prints the controller's own identity
++      (`mn`/`sn` from Identify), reads block 0, and mounts.
++
++**Definition of done:** `test_nvme.sh` mounts ext2 from an NVMe namespace; the
++blkdev row lists `nvme0`.
+ 
+-**Objective:** close the TCP window box and the storage/NIC half RES-46
+-left standing.
+-
+-Measured: `TCP_WINDOW` is 64240; `wscale`/`shift_cnt`/`TCPOPT` have zero
+-hits in `kernel/net/tcp.c`+`tcp.h`; T6 landed vmxnet3 + e1000e with
+-receipts, so their half is verified rather than rebuilt; there is no
+-NVMe driver anywhere in `drivers/`.
+-
+-- [ ] **Window scaling:** parse and emit `WSCALE` in SYN/SYN-ACK, keep
+-      the peer's shift per connection, apply `snd_wnd << shift` /
+-      `rcv_wnd >> shift`, and refuse gracefully when the peer omits it.
+-- [ ] A 1 MiB transfer receipt over a 200 ms-RTT lane (the harness can
+-      shape with `-netdev user` + a paced sender) proving the window
+-      grew past 64240.
+-- [ ] **NVMe:** a queue-pair driver over PCIe (admin + one I/O queue,
+-      PRP lists, `nvme` namespace → block device → a mountable ext2
+-      lane), reusing `pci_ecam.c`; QEMU `-device nvme` is the target.
+-      RES-46's storage successor closes with a mounted filesystem, not a
+-      probe.
+-- [ ] Re-derive vmxnet3/e1000e receipts (T6's are the proof; the row
+-      says so) and close that half explicitly.
+-
+-**Definition of done:** `test_tcp_options` extended with the 1 MiB lane;
+-new `test_nvme.sh` mounts ext2 from an NVMe namespace; RES-52 and RES-46's
+-successor flip with receipts.
+-
+-**Test gate:** `net` + `fs` shards; `make test-unit` unchanged.
++**Test gate:** `fs` shard; `make test-unit` unchanged.
+ 
+ ---
+ 
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index db7c3a9..a4bc0f0 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -63,7 +63,7 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ | RES-49 | M | PENDING-USER@Y7 | Live-web PQ-hybrid fetch against a real host (the X9 PEER_EOF sentence) | paste `[tls] group=X25519MLKEM768` from `run http https://www.ietf.org/` into docs/live_web.md |
+ | RES-50 | N | RE-AFFIRMED@Y7 | Happy-eyeballs connection racing — dual-stack still picks then falls back serially (REALINTERNET2 §4) | re-affirmed; no racing |
+ | RES-51 | N | RE-AFFIRMED@Y7 | No DTLS, no QUIC, no TLS client certificates, no standalone ML-KEM TLS group, no kernel-side TLS (D4 + §4) | re-affirmed |
+-| RES-52 | S | HANDED-OFF@Y7 | TCP window scaling — the 64240 window stays | OPENER, measured: `TCP_WINDOW` is 64240; grep `wscale`/`TCPOPT`/`shift_cnt` across tcp.c+tcp.h is 0 |
++| RES-52 | S | DONE@C7 | TCP window scaling — CLOSED at RESIDUE3 C7 (2026-11-04), and the 64240 window is gone | OPENER, measured: `TCP_WINDOW` was 64240 and grep `wscale`/`TCPOPT`/`shift_cnt` across tcp.c+tcp.h was 0. What C7 found underneath the opener: (a) `ssthresh = TCP_WINDOW` — commented "arbitrarily high" — became the real ceiling the moment a peer could grant gigabytes (measured: peak in-flight stopped at exactly 64240 against a 16 MiB peer window); (b) the established path reset `snd_shift = 0` right after the SYN-ACK parser learned it, so a correctly scaled connection silently reverted to 16 bits at handshake completion. Both fixed. What landed: `kernel/net/tcp_wscale.h` (parse/emit/apply/encode/shift-for-buffer, pure, 56/56 host checks including shift 255 clamped to 14, wrong-length WSCALE ignored, truncated block, zero-length option that must not spin); a WSCALE in every SYN (option block 8 -> 12 bytes, header 28 -> 32); the peer's shift parsed from the SYN-ACK and applied as `snd_wnd = field << shift`; our own window encoded as `rcv_wnd >> shift` with rcv shift 0, derived from the receive buffer we actually hold and printed with the reason. | `[tcp] wscale: peer shift=8 -> snd_wnd=16776960 (field 65535); our shift 0 (64240-byte receive buffer)`; `[tcp] wscale lane (big): PASS 395660 bytes were in flight at once — above the 65535-byte unscaled ceiling`; `[tcp] wscale lane (clamped): PASS peak in-flight 14600 stayed inside the 65535-byte window the peer actually granted`; test_tcp_wscale 19/19 |
+ | RES-53 | W | DONE | TLS CertificateVerify: `rsa_pss_rsae_sha256` — RSASSA-PSS SHA-256 / MGF1 / saltLen=32; host `test_atls_tls` 41/41 (openssl vector + RSA s_server) | PSS verify lands; rust-lang.org CV is no longer the refusal |
+ | RES-54 | S | OPEN | GLSL AST → TGSI retarget (GL2 D7) | OPENER, measured: the canned triangle GL2 L6 shipped is hand-written TGSI dword arrays in glvirgl.c, and G11's compiler still produces an interpreted AST with no back end — a real TGSI retarget is compiler work (a successor plan, not a GL2 phase). The seam it would hang on is live: gl_backend_t.draw is wired, the eligibility screen and the whole-draw fallback are tested host-side (test_glvirgl 73) |
+ | RES-55 | W | DONE@RT3 | Realtek 8169/8168 gigabit NIC — REALTEK_PLAN.md (RT0-RT3). The 8169 is the one catalogued NIC QEMU cannot emulate, so the gate is INVERTED: the register/descriptor surface is host-pinned (r8169_desc.h, test_r8169_desc 74 checks) and the driver core is proved end-to-end against a register-level chip model on the host (test_r8169_driver 1635 checks: probe → MAC → TX → RX → IRQ; negative controls proven), then wired into net_init after e1000e and catalogued/docs flipped. Real silicon is the M-class successor (RES-56) | host gates + check_realtek_claims.py green in make test-unit; net_init chain includes r8169 |
+@@ -92,6 +92,11 @@ RESIDUE2 T3: RES-07 → DONE@T3 (narrowed close recorded in the row); OPEN then
+ RESIDUE3 C5: RES-60 → DONE@C5 (isoc streaming proved on QEMU usb-audio);
+ +1 row RES-62 (HID report-ID breadth / EHCI split series / short-CSW case,
+ HANDED-OFF@C5 → C5b), which is where the S pin goes 13 → 14.
++RESIDUE3 C7: RES-52 → DONE@C7 (was HANDED-OFF@Y7).  Table arithmetic
++unchanged: 62 rows, W 36 · M 8 · N 4 · S 14.  RES-46's NVMe successor did NOT
++close — it was carried out of C7 into C7b with a measured opener (QEMU's
++`-device nvme` exists, the tree has no NVMe code at all, and the blkdev seam it
++must land on does).
+ RESIDUE3 C6: RES-61 stays PENDING-USER@C6 (moved from @C1) — the metal half
+ is a real dongle and a real 802.11 chip; the protocol half is now proved on
+ both stacks (HCI transport injected and scripted-controller tested; Wi-Fi
+diff --git a/docs/status.md b/docs/status.md
+index 9326fad..a125384 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -387,7 +387,7 @@ recurs: guest-time TD waits).
+ ## Known low-priority limitations
+ 
+ - **SMP scheduling (corrected by the residue ledger's R5 pass — this row was stale twice over).**  Per-CPU run queues, least-loaded placement and work stealing have been live since SMP 3.2, and user threads DO run on APs: the scheduler prints a one-time receipt (`[sched] R5 receipt: user thread pid=N on AP cpu=M`) and `test_fpu_smp` pins it.  The former named gap — a DEVICE interrupt waking a hlt-ed AP (RES-16) — closed at RESIDUE2 T2: receipt `[smpwake] PASS: 9 RTC(GSI8) device IRQs delivered to cpu1 … hlt looper woken 8 times`, pinned by `tests/integration/cases/test_irq_ap_wake.sh`.
+-- **TCP is small but not minimal.** 16 concurrent connections with a sliding send window (min(cwnd, peer window)), RFC 6928 initial window, RFC 6298-style adaptive RTO, dup-ACK classification with fast retransmit/recovery and the RFC 5681 §3.2 ssthresh arithmetic, SACK, Nagle, delayed ACK, TIME_WAIT, listen backlog, SO_REUSEADDR and RFC 1122 keepalive (MATURITY M6, REALINTERNET X5, RINET2 Y1–Y2).  What it still lacks versus production stacks: selective window scaling, ECN, and a per-route congestion state; fixed ISNs per handle remain a documented simplification.
++- **TCP is small but not minimal.** 16 concurrent connections with a sliding send window (min(cwnd, peer window)), RFC 6928 initial window, RFC 6298-style adaptive RTO, dup-ACK classification with fast retransmit/recovery and the RFC 5681 §3.2 ssthresh arithmetic, SACK, Nagle, delayed ACK, TIME_WAIT, listen backlog, SO_REUSEADDR and RFC 1122 keepalive (MATURITY M6, REALINTERNET X5, RINET2 Y1–Y2).  **RESIDUE3 C7 (2026-11-04): window scaling is no longer on that list.** WSCALE is offered in the SYN (option block 8→12 bytes), the peer's shift is parsed from its SYN-ACK and applied as `snd_wnd = field << shift`, and our own window is encoded with our shift — 0, deliberately, because the receive path streams to the caller and an advertised shift we cannot back would be a promise of buffer we do not have (`test_tcp_wscale` 19/19: a megabyte with 395660 bytes in flight against a real Linux peer over a TAP link, and a clamped peer holding the same transfer inside 16 bits as the control). What it still lacks versus production stacks: ECN, and a per-route congestion state; fixed ISNs per handle remain a documented simplification.
+ - **Advanced filesystems are experimental but complete-surfaced.** Since FSFULL F2–F7, `ext4`, `btrfs`, `f2fs`, `exFAT` and `NTFS` sit on the shared buffer-cache block path and carry full (or, for NTFS, deliberately read-only) mutation surfaces with external interop gates (`mkfs.ext4`/`fsck.ext4`, `fsck.exfat`, `mkntfs`, in-kernel structural fscks) registered in the `fsfull` CI shard.  They remain hobby-OS implementations: no foreign JBD2 recovery, no btrfs subvolumes/snapshots, no f2fs GC, ASCII-only NTFS transcoding — the deliberate gaps are listed per-driver in the matrix above.
+ - **Hardware coverage is mostly virtualized.** Integration coverage is QEMU-first, with some VirtualBox/VMware-oriented device IDs; broad real-hardware validation is still pending.
+ 
+diff --git a/kernel/arch/x86_64/fwcfg.c b/kernel/arch/x86_64/fwcfg.c
+index dc7c93b..93bd754 100644
+--- a/kernel/arch/x86_64/fwcfg.c
++++ b/kernel/arch/x86_64/fwcfg.c
+@@ -65,7 +65,7 @@ static uint16_t read_be16(void) {
+  * Returns 1 on success, 0 when fw_cfg is absent, the file is missing,
+  * or the value is implausibly large — each of which must degrade to the
+  * build defaults, never to noise. */
+-static int fwcfg_read_string(const char *wanted, char *out, int out_max) {
++int fwcfg_read_opt(const char *wanted, char *out, int out_max) {
+     /* Signature: absent fw_cfg reads as open bus, not "QEMU". */
+     outw(FW_CFG_SELECTOR, FW_CFG_SIGNATURE);
+     char sig[4];
+@@ -118,7 +118,7 @@ static int fwcfg_read_string(const char *wanted, char *out, int out_max) {
+ 
+ void fwcfg_selftest_probe(void) {
+     char val[16];
+-    if (!fwcfg_read_string(SELFTEST_FILE, val, (int)sizeof(val) - 1)) {
++    if (!fwcfg_read_opt(SELFTEST_FILE, val, (int)sizeof(val) - 1)) {
+         return;
+     }
+ 
+@@ -135,7 +135,7 @@ void fwcfg_selftest_probe(void) {
+ 
+ void fwcfg_fsformat_probe(void) {
+     char val[16];
+-    if (!fwcfg_read_string(FSFORMAT_FILE, val, (int)sizeof(val) - 1)) {
++    if (!fwcfg_read_opt(FSFORMAT_FILE, val, (int)sizeof(val) - 1)) {
+         return;
+     }
+ 
+@@ -155,7 +155,7 @@ void fwcfg_fsformat_probe(void) {
+  * -fw_cfg name=opt/auralite.fscheck,string=1 and gets named findings. */
+ void fwcfg_fscheck_probe(void) {
+     char val[16];
+-    if (!fwcfg_read_string(FSCHECK_FILE, val, (int)sizeof(val) - 1)) {
++    if (!fwcfg_read_opt(FSCHECK_FILE, val, (int)sizeof(val) - 1)) {
+         return;
+     }
+ 
+@@ -169,7 +169,7 @@ void fwcfg_fscheck_probe(void) {
+ 
+ void fwcfg_msi_probe(void) {
+     char val[16];
+-    if (!fwcfg_read_string(MSI_FILE, val, (int)sizeof(val) - 1)) {
++    if (!fwcfg_read_opt(MSI_FILE, val, (int)sizeof(val) - 1)) {
+         return;                       /* absent knob: the build default (on) */
+     }
+ 
+diff --git a/kernel/arch/x86_64/fwcfg.h b/kernel/arch/x86_64/fwcfg.h
+new file mode 100644
+index 0000000..c8e56b4
+--- /dev/null
++++ b/kernel/arch/x86_64/fwcfg.h
+@@ -0,0 +1,16 @@
++#ifndef AURALITE_ARCH_X86_64_FWCFG_H
++#define AURALITE_ARCH_X86_64_FWCFG_H
++
++/*
++ * fw_cfg option access (QEMU's `-fw_cfg name=opt/...`).
++ *
++ * One entry point, because every caller so far has wanted the same thing: a
++ * single string a test harness can put on the QEMU command line to ask the
++ * guest to take a measurement.  Returns 1 when the option exists (with `out`
++ * NUL-terminated, at most out_max-1 characters), 0 when fw_cfg is absent, the
++ * key is missing, or the value is implausibly large — all of which must
++ * degrade to the build defaults rather than to noise.
++ */
++int fwcfg_read_opt(const char *wanted, char *out, int out_max);
++
++#endif /* AURALITE_ARCH_X86_64_FWCFG_H */
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 25fa4ec..31b920e 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -451,6 +451,17 @@ void kmain(boot_info_t *boot_info) {
+         kprintf("[net] network unavailable; continuing boot without online self-tests\n");
+     }
+ 
++    /* C7: the 1 MiB window-scaling lane.  It runs whenever fw_cfg asks for
++     * it (opt/auralite.tcp_ws=big:clamped) and prints nothing otherwise.
++     * Deliberately OUTSIDE the net_status==0 branch above: the lane's peer is
++     * a real Linux host on a TAP link, which serves no DHCP — so the guest
++     * reaches it through the static fallback, exactly the case that branch
++     * skips. */
++    {
++        extern void tcp_ws_lane_boot_probe(void);
++        tcp_ws_lane_boot_probe();
++    }
++
+     /* F2 (FSFULL_PLAN.md): the buffer cache is created BEFORE any
+      * filesystem touches a device, so exFAT/NTFS (which already read
+      * through bc_get) and now ext4/btrfs/f2fs (which read through the
+diff --git a/kernel/net/tcp.c b/kernel/net/tcp.c
+index e6abaea..7b3a125 100644
+--- a/kernel/net/tcp.c
++++ b/kernel/net/tcp.c
+@@ -23,6 +23,7 @@
+ #include "kernel/net/tcp_cc.h"
+ #include "kernel/net/tcp_m6.h"
+ #include "kernel/net/tcp_m6c.h"
++#include "kernel/net/tcp_wscale.h"
+ #include "kernel/net/tcp_m6d.h"
+ #include "kernel/net/tcp_m6e.h"
+ #include "kernel/net/netl3.h"
+@@ -42,6 +43,30 @@
+ #define TCP_ACK  0x10
+ 
+ #define TCP_WINDOW  64240   /* a generous window */
++
++/*
++ * C7: the receive buffer we are willing to PROMISE, in bytes.
++ *
++ * This is not a tuning knob -- it is the input to our window-scale choice.
++ * The stack streams received data straight to the caller (tcp_recv_h) and
++ * keeps only the single out-of-order stash, so the honest promise is one
++ * unscaled window: TCP_WINDOW.  A shift derived from a buffer we do not have
++ * would invite the peer to put megabytes in flight that we would drop.
++ */
++#define TCP_RCV_BUF_BYTES TCP_WINDOW
++
++/*
++ * C7: "arbitrarily high" ssthresh, spelled as what it means.
++ *
++ * RFC 5681 s3.1 starts the connection in slow start and expects ssthresh to
++ * be set by the first loss; before that it is unbounded.  This stack wrote
++ * `ssthresh = TCP_WINDOW` with that comment -- which was fine while the
++ * window itself was capped at 64240, and became a real ceiling the moment
++ * C7 let a peer grant 16 MiB: slow start would stop at 64240 bytes in flight
++ * and the scaled window could never be spent (measured: peak in-flight
++ * exactly 64240 on a 1 MiB transfer with a 16 MiB window available).
++ */
++#define TCP_SSTHRESH_INITIAL 0x7FFFFFFFu
+ #define TCP_MSS     NETL3_V4_MSS  /* default; the live value is ops->mss() */
+ #define TCP_RECV_TIMEOUT_TICKS 100
+ #define TCP_RTO_TICKS 20
+@@ -128,6 +153,15 @@ typedef struct {
+     tcpm6e_ka_t      ka;       /* M6e: keepalive */
+     uint8_t          reuseaddr;
+     uint16_t     peer_mss;     /* M6c: peer's advertised MSS (0 = none) */
++
++    /* C7: window scaling (RFC 7323).  snd_shift is the shift the peer granted
++     * for ITS window; rcv_shift is the shift WE offered for ours.  Both are
++     * decided in the handshake and never renegotiated. */
++    uint8_t      ws_peer_offered;
++    uint8_t      snd_shift;
++    uint8_t      rcv_shift;
++    uint16_t     snd_wnd_raw;    /* the 16-bit field last seen, unscaled */
++    uint32_t     inflight_peak;  /* C7 receipt: peak unacknowledged bytes */
+     uint32_t     time_wait_tick;
+ 
+     uint8_t      retx_valid;
+@@ -157,6 +191,21 @@ static int active_h = -1;
+ /* Defined next to tcp_recv() below; resets the per-connection RX stash. */
+ static void tcp_rx_stash_reset(void);
+ 
++/*
++ * C7: read a peer window field the way the handshake said to read it.
++ *
++ * `field` is the raw 16-bit value from the segment; with a negotiated shift
++ * it means field<<shift.  The old code substituted TCP_WINDOW for a zero
++ * field (a genuinely closed window) to avoid stalling pre-handshake; that
++ * fallback is kept for shift 0 only, and scaling never invents a window the
++ * peer did not grant.
++ */
++static void tcp_set_peer_window(tcp_conn_t *c, uint16_t field) {
++    c->snd_wnd_raw = field;
++    uint32_t raw = field ? (uint32_t)field : (uint32_t)TCP_WINDOW;
++    c->snd_wnd = tcp_ws_apply(raw, c->snd_shift);
++}
++
+ /* ---- Send a TCP segment ---- */
+ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_len,
+                                 uint32_t seq, uint32_t ack) {
+@@ -167,16 +216,25 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
+      * hardcoded to 5<<4, so the stack had never emitted a single TCP
+      * option -- it could not advertise its MSS, and could not ask for
+      * SACK.  Options ride the SYN only; data segments stay 20 bytes. */
+-    uint8_t optbuf[8];
++    uint8_t optbuf[16];
+     uint32_t optlen = 0;
+     if (flags & TCP_SYN) {
+         optlen = tcpm6c_build_syn_opts(optbuf, mss, 1);
++        /* C7: offer a window scale in the handshake.  The shift is derived
++         * from the receive buffer we actually have (see TCP_RCV_BUF_BYTES);
++         * if there is no room left in the option block we drop the option
++         * rather than truncate it, and record that we offered nothing. */
++        uint8_t shift = conns[active_h].rcv_shift;
++        uint32_t ws = tcp_ws_emit(optbuf + optlen, 16u - optlen, shift);
++        if (ws > 0) optlen += ws;
++        else shift = 0;
+         /* Report what actually went on the wire, derived from the header
+          * length we are about to write -- not from a constant.  The gate
+          * greps this, so a SYN that silently loses its options (the state
+          * this phase started from) turns the case red. */
+-        kprintf("[tcp] SYN options: %u bytes, hdr=%u, mss=%u sack-perm\n",
+-                optlen, 20u + optlen, (unsigned)mss);
++        kprintf("[tcp] SYN options: %u bytes, hdr=%u, mss=%u sack-perm "
++                "wscale=%u\n",
++                optlen, 20u + optlen, (unsigned)mss, (unsigned)shift);
+     }
+ 
+     uint32_t tcp_hdr_len = 20 + optlen;
+@@ -192,7 +250,10 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
+     tcp->ack        = htonl_(ack);
+     tcp->data_offset = tcpm6c_data_offset(optlen);   /* M6c */
+     tcp->flags      = flags;
+-    tcp->window     = htons_(TCP_WINDOW);
++    /* C7: what we advertise is rcv_wnd encoded with OUR shift -- the same
++     * number read with the peer's shift is the space we promise. */
++    tcp->window     = htons_(tcp_ws_encode(conns[active_h].rcv_wnd,
++                                           conns[active_h].rcv_shift));
+     tcp->checksum   = 0;
+     tcp->urgent_ptr = 0;
+ 
+@@ -339,10 +400,10 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
+         /* Found a segment for our connection. */
+         memcpy(out_tcp, tcp, 20);
+ 
+-        /* N3: keep the advertised window fresh. */
++        /* N3: keep the advertised window fresh.  C7: through the peer's
++         * shift, so a scaled window is not silently read as 16-bit. */
+         if (active_h >= 0 && active_h < TCP_MAX_CONNS) {
+-            conns[active_h].snd_wnd = ntohs_(tcp->window) ?
+-                                      ntohs_(tcp->window) : TCP_WINDOW;
++            tcp_set_peer_window(&conns[active_h], ntohs_(tcp->window));
+         }
+ 
+         /* Extract payload (if any).
+@@ -363,15 +424,54 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
+             active_h >= 0 && active_h < TCP_MAX_CONNS) {
+             tcpm6c_opts_t peer_opts;
+             const uint8_t *optp = (const uint8_t *)tcp + 20;
++            tcp_ws_opt_t ws;
++            int ws_rc = tcp_ws_parse(optp, tcp_hdr_bytes - 20, &ws);
+             if (tcpm6c_parse_opts(optp, tcp_hdr_bytes - 20, &peer_opts) == 0) {
+                 conns[active_h].sack_ok = peer_opts.sack_permitted;
+                 conns[active_h].peer_mss = peer_opts.mss;
+                 if (peer_opts.mss && peer_opts.mss < conns[active_h].eff_mss)
+                     conns[active_h].eff_mss = peer_opts.mss;
+-                kprintf("[tcp] peer options: mss=%u sack=%s\n",
++                kprintf("[tcp] peer options: mss=%u sack=%s wscale=%s%u\n",
+                         peer_opts.mss,
+-                        peer_opts.sack_permitted ? "yes" : "no");
++                        peer_opts.sack_permitted ? "yes" : "no",
++                        ws.offered ? "" : "none/",
++                        (unsigned)ws.shift);
+             }
++            /* C7: the handshake is the ONLY place a shift is agreed.  A
++             * peer that offered nothing keeps the 16-bit window, and says
++             * so in the log rather than silently reading a scaled number
++             * as unscaled (or the reverse). */
++            conns[active_h].ws_peer_offered = ws.offered;
++            conns[active_h].snd_shift =
++                tcp_ws_engaged(1, &ws) ? ws.shift : 0;
++            tcp_set_peer_window(&conns[active_h], ntohs_(tcp->window));
++            if (ws_rc != 0)
++                kprintf("[tcp] wscale: peer option block malformed; its "
++                        "window is read unscaled\n");
++            if (conns[active_h].snd_shift)
++                kprintf("[tcp] wscale: peer shift=%u -> snd_wnd=%u "
++                        "(field %u); our shift %u (%u-byte receive buffer)\n",
++                        (unsigned)conns[active_h].snd_shift,
++                        conns[active_h].snd_wnd,
++                        (unsigned)conns[active_h].snd_wnd_raw,
++                        (unsigned)conns[active_h].rcv_shift,
++                        (unsigned)TCP_RCV_BUF_BYTES);
++            else
++                kprintf("[tcp] wscale: peer did not offer a window scale; "
++                        "snd_wnd=%u stays 16-bit\n",
++                        conns[active_h].snd_wnd);
++        }
++
++        /* C7: a SYN with a bare 20-byte header offered no options at all.
++         * Say it in the log, because "no wscale line" and "wscale refused"
++         * would otherwise look the same to a reader of the receipt. */
++        if ((tcp->flags & TCP_SYN) && tcp_hdr_bytes == 20 &&
++            active_h >= 0 && active_h < TCP_MAX_CONNS) {
++            conns[active_h].ws_peer_offered = 0;
++            conns[active_h].snd_shift = 0;
++            tcp_set_peer_window(&conns[active_h], ntohs_(tcp->window));
++            kprintf("[tcp] wscale: peer SYN carries no options; window "
++                    "stays 16-bit\n");
+         }
+ 
+         /* M6d: a non-SYN segment may carry SACK blocks.  Decode them here,
+@@ -428,11 +528,19 @@ static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
+ /* M6e: `listen_h` is the listening handle, so a SYN from a DIFFERENT peer
+  * that arrives while we are mid-handshake can be queued on its backlog
+  * instead of being dropped on the floor. */
++/* C7: what the peer's SYN offered, carried from the place the SYN is read to
++ * the place the connection is created.  Passive open has no other channel:
++ * tcp_accept() sees the backlog entry, not the option bytes. */
++static uint8_t pending_ws_offered = 0;
++static uint8_t pending_ws_shift = 0;
++
+ static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
+                            uint32_t *out_src_ip, uint16_t *out_src_port,
+                            int listen_h) {
+     uint8_t buf[2048];
+     int got_one = 0;
++    pending_ws_offered = 0;
++    pending_ws_shift = 0;
+     uint64_t deadline = timer_get_ticks() + TCP_RECV_TIMEOUT_TICKS;
+     while (timer_get_ticks() < deadline) {
+         uint64_t now = timer_get_ticks();
+@@ -450,6 +558,22 @@ static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
+         if (ntohs_(tcp->dst_port) != src_port) continue;
+         if (!(tcp->flags & TCP_SYN)) continue;
+ 
++        /* C7: read the peer's window-scale offer now, while the option
++         * bytes are in hand. */
++        if (!got_one) {
++            uint8_t words = tcp->data_offset >> 4;
++            if (words > 5 && words <= 15) {
++                tcp_ws_opt_t ws;
++                tcp_ws_parse((const uint8_t *)tcp + 20,
++                             (uint32_t)(words - 5) * 4u, &ws);
++                pending_ws_offered = ws.offered;
++                pending_ws_shift = ws.shift;
++                kprintf("[tcp] wscale: peer SYN %s shift=%u (passive open)\n",
++                        ws.offered ? "offers" : "omits",
++                        (unsigned)ws.shift);
++            }
++        }
++
+         /* Found a SYN segment for our listening port! */
+         uint32_t sip = netl3_v4_host(&pkt.src);
+         uint16_t sport = ntohs_(tcp->src_port);
+@@ -676,12 +800,16 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port)
+     conns[new_h].time_wait_tick = 0;
+     tcpm6e_ka_init(&conns[new_h].ka, (uint32_t)timer_get_ticks());
+     conns[new_h].snd_nxt = conn_seq;
+-    conns[new_h].snd_wnd = (!pend && ntohs_(rx.window)) ?
+-                           ntohs_(rx.window) : TCP_WINDOW;
++    conns[new_h].ws_peer_offered = pending_ws_offered;   /* C7 */
++    conns[new_h].snd_shift = pending_ws_offered ? pending_ws_shift : 0;
++    conns[new_h].rcv_shift = tcp_ws_shift_for_buffer(TCP_RCV_BUF_BYTES);
++    tcp_set_peer_window(&conns[new_h],
++                        (!pend && ntohs_(rx.window)) ? ntohs_(rx.window)
++                                                     : TCP_WINDOW);
+     conns[new_h].rcv_wnd = TCP_WINDOW;
+     conns[new_h].cwnd    = tcpcc_iw(TCP_MSS);  /* Y1: RFC 6928 IW */
+-    conns[new_h].ssthresh= TCP_WINDOW;         /* "arbitrarily high",
+-                                                * RFC 5681 §3.1 */
++    conns[new_h].ssthresh= TCP_SSTHRESH_INITIAL; /* C7: unbounded until the
++                                                  * first loss (RFC 5681 §3.1) */
+ 
+     /* Quick poll for the ACK */
+     struct tcp_hdr ack_rx;
+@@ -750,6 +878,12 @@ tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port) {
+     conn_seq = 0x1000 + (uint32_t)h * 0x100;
+     conn_ack = 0;
+     conn_state = TCP_SYN_SENT;
++    /* C7: our shift must exist before the SYN carries it. */
++    conns[h].rcv_shift = tcp_ws_shift_for_buffer(TCP_RCV_BUF_BYTES);
++    conns[h].snd_shift = 0;
++    conns[h].ws_peer_offered = 0;
++    conns[h].snd_wnd_raw = 0;
++    conns[h].inflight_peak = 0;
+     tcp_rx_stash_reset();   /* no leftovers may leak across connections */
+ 
+     if (conn_peer.family == NETL3_AF_INET) {
+@@ -812,12 +946,16 @@ tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port) {
+     conns[h].nodelay = 0;
+     conns[h].time_wait_tick = 0;
+     conns[h].snd_nxt = conn_seq;
+-    conns[h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
++    /* C7: conns[h].snd_shift was decided by the SYN-ACK parser above; it
++     * must NOT be reset here or the connection silently falls back to a
++     * 16-bit window after the handshake completes. */
++    conns[h].rcv_shift = tcp_ws_shift_for_buffer(TCP_RCV_BUF_BYTES);
++    tcp_set_peer_window(&conns[h], ntohs_(rx.window));
+     conns[h].rcv_wnd = TCP_WINDOW;
+     conns[h].cwnd    = tcpcc_iw(TCP_MSS);      /* Y1: RFC 6928 IW —
+                                                 * slow start actually
+                                                 * RUNS from here */
+-    conns[h].ssthresh= TCP_WINDOW;             /* "arbitrarily high" */
++    conns[h].ssthresh= TCP_SSTHRESH_INITIAL;   /* C7: unbounded until loss */
+ 
+     kprintf("[tcp] [h=%d] ESTABLISHED (seq=%u, ack=%u, peer_wnd=%u)\n",
+             h, conn_seq, conn_ack, conns[h].snd_wnd);
+@@ -897,6 +1035,24 @@ tcp_state_t tcp_state_h(tcp_handle_t h) {
+     return conns[h].state;
+ }
+ 
++/* C7 receipts: the peak unacknowledged byte count and the peer window that
++ * was in force.  These exist so the lane's receipt measures the connection
++ * instead of restating a number the lane already knew. */
++uint32_t tcp_inflight_peak_h(tcp_handle_t h) {
++    if (!handle_valid(h)) return 0;
++    return conns[h].inflight_peak;
++}
++
++uint32_t tcp_snd_wnd_h(tcp_handle_t h) {
++    if (!handle_valid(h)) return 0;
++    return conns[h].snd_wnd;
++}
++
++uint8_t tcp_snd_shift_h(tcp_handle_t h) {
++    if (!handle_valid(h)) return 0;
++    return conns[h].snd_shift;
++}
++
+ /* Legacy global handle, allocated lazily by tcp_connect(). */
+ static int legacy_h = -1;
+ 
+@@ -1007,6 +1163,10 @@ int tcp_send(const void *data, uint32_t len) {
+             (c->snd_nxt - c->snd_una) + chunk >= c->cwnd) {
+             perfstat_add(PERF_TCP_CWND_LIMITED_SENDS, 1);
+         }
++        if (chunk > 0) {
++            uint32_t inflight = (c->snd_nxt - c->snd_una) + chunk;
++            if (inflight > c->inflight_peak) c->inflight_peak = inflight;
++        }
+         if (chunk == 0) {
+             /* Window full: wait one *effective* (adaptive) RTO.  Visible
+              * (throttled): the piecemeal-ACK gate greps this marker. */
+@@ -1036,7 +1196,7 @@ int tcp_send(const void *data, uint32_t len) {
+                 tcpm6_ack_kind_t kind =
+                     tcpm6_on_ack(&c->dupack, c->snd_una, acked, c->snd_nxt,
+                                  data_len > 0,
+-                                 ntohs_(rx.window) != (uint16_t)c->snd_wnd);
++                                 ntohs_(rx.window) != c->snd_wnd_raw);
+ 
+                 /* M6d: apply any SACK blocks before deciding what to do.
+                  * The peer has told us exactly which segments it holds, so
+@@ -1125,9 +1285,13 @@ int tcp_send(const void *data, uint32_t len) {
+                          * forever the moment ssthresh went live. */
+                         c->cwnd = c->ssthresh;
+                     }
++                    /* C7: cwnd is bounded by what we may actually SEND —
++                     * the peer's (possibly scaled) window — not by a
++                     * 64240-byte constant that predates window scaling. */
+                     c->cwnd = tcpcc_ack_grow(c->cwnd, c->ssthresh,
+                                              c->eff_mss, acked_delta,
+-                                             TCP_WINDOW);   /* Y1: SS/CA */
++                                             c->snd_wnd ? c->snd_wnd
++                                                        : TCP_WINDOW);
+                 }
+             } else {
+                 /* Timeout: congestion (or a swallowed segment).  Back the
+diff --git a/kernel/net/tcp.h b/kernel/net/tcp.h
+index 66a4f45..5d5fc1b 100644
+--- a/kernel/net/tcp.h
++++ b/kernel/net/tcp.h
+@@ -79,6 +79,10 @@ int          tcp_send_h(tcp_handle_t h, const void *data, uint32_t len);
+ int          tcp_recv_h(tcp_handle_t h, void *buf, uint32_t bufsize);
+ int          tcp_close_h(tcp_handle_t h);
+ tcp_state_t  tcp_state_h(tcp_handle_t h);
++/* C7 receipts: what the connection's window arithmetic actually did. */
++uint32_t     tcp_inflight_peak_h(tcp_handle_t h);
++uint32_t     tcp_snd_wnd_h(tcp_handle_t h);
++uint8_t      tcp_snd_shift_h(tcp_handle_t h);
+ 
+ /* Legacy single-connection API (deprecated; preserved for the in-kernel
+  * self-test and the legacy SYS_NET_* syscalls).  These map onto a single
+diff --git a/kernel/net/tcp_ws_lane.c b/kernel/net/tcp_ws_lane.c
+new file mode 100644
+index 0000000..66682c8
+--- /dev/null
++++ b/kernel/net/tcp_ws_lane.c
+@@ -0,0 +1,162 @@
++/* tcp_ws_lane.c — the 1 MiB window-scaling lane (RESIDUE3 C7).
++ *
++ * Moves a megabyte to a host peer over a real TCP connection and prints what
++ * the connection did, twice:
++ *
++ *   BIG    the peer leaves its receive window large (a scaled window), so the
++ *          send scheduler may put more than 65535 bytes in flight — which is
++ *          impossible with an unscaled 16-bit window, and is therefore the
++ *          proof that scaling is in force.
++ *   CLAMP  the same peer clamps its window to 65535 (TCP_WINDOW_CLAMP), so
++ *          scaling cannot help it.  The negative control: if the guest
++ *          reports more than 65535 in flight here, the guest is inventing
++ *          window and the measurement above means nothing.
++ *
++ * Both runs send the same payload to the same peer script; only the peer's
++ * socket options differ.  See tests/integration/lib/paced_peer.py.
++ */
++#include "kernel/net/tcp_ws_lane.h"
++
++#include <stdint.h>
++
++#include "kernel/lib/kprintf.h"
++#include "kernel/lib/string.h"
++#include "kernel/net/netl3.h"
++#include "kernel/net/tcp.h"
++#include "drivers/timer/pit.h"
++
++#define LANE_BYTES   (1024u * 1024u)
++#define LANE_CHUNK   16384u
++/* The 16-bit ceiling an unscaled connection can never exceed. */
++#define LANE_16BIT   65535u
++
++/* fw_cfg, reached the way the rest of the portable tree reaches it: a local
++ * extern declaration rather than an include of an arch header (the width
++ * sweep's ratchet counts direct x86_64 includes from portable code, and it is
++ * right to).  kernel/kernel.c does the same for the other probes. */
++extern int fwcfg_read_opt(const char *wanted, char *out, int out_max);
++
++/* 10.0.2.2 — SLIRP's host alias, the same peer net_self_test() pings. */
++#define LANE_HOST_V4 0x0A000202u
++
++static uint8_t lane_buf[LANE_CHUNK];
++
++static int lane_once(const char *name, uint16_t port, int expect_scaled) {
++    kprintf("[tcp] wscale lane (%s): connecting to 10.0.2.2:%u for %u bytes\n",
++            name, (unsigned)port, (unsigned)LANE_BYTES);
++
++    tcp_handle_t h = tcp_open(LANE_HOST_V4, port);
++    if (h < 0) {
++        kprintf("[tcp] wscale lane (%s): connect failed (%d)\n", name, h);
++        return -1;
++    }
++    if (tcp_state_h(h) != TCP_ESTABLISHED) {
++        kprintf("[tcp] wscale lane (%s): handshake did not complete (state %d)\n",
++                name, (int)tcp_state_h(h));
++        tcp_close_h(h);
++        return -1;
++    }
++
++    uint8_t shift = tcp_snd_shift_h(h);
++    uint32_t wnd = tcp_snd_wnd_h(h);
++    kprintf("[tcp] wscale lane (%s): ESTABLISHED, peer shift %u, snd_wnd %u\n",
++            name, (unsigned)shift, wnd);
++
++    memset(lane_buf, 'A', sizeof(lane_buf));
++    uint64_t t0 = timer_get_ticks();
++    uint32_t sent = 0;
++    while (sent < LANE_BYTES) {
++        uint32_t chunk = LANE_BYTES - sent;
++        if (chunk > LANE_CHUNK) chunk = LANE_CHUNK;
++        int rc = tcp_send_h(h, lane_buf, chunk);
++        if (rc <= 0) {
++            kprintf("[tcp] wscale lane (%s): send failed at %u bytes (%d)\n",
++                    name, sent, rc);
++            tcp_close_h(h);
++            return -1;
++        }
++        sent += (uint32_t)rc;
++    }
++    uint64_t t1 = timer_get_ticks();
++    uint32_t peak = tcp_inflight_peak_h(h);
++    uint32_t ms = (uint32_t)((t1 - t0) * (1000u / 100u));   /* PIT is 100 Hz */
++
++    kprintf("[tcp] wscale lane (%s): sent %u bytes in %u ms, "
++            "peak in-flight %u bytes, peer window %u (shift %u)\n",
++            name, sent, ms, peak, tcp_snd_wnd_h(h), (unsigned)shift);
++
++    int ok = 1;
++    if (expect_scaled) {
++        /* The whole point: more than a 16-bit window can express was in
++         * flight, so the peer's advertised window was genuinely scaled. */
++        if (peak > LANE_16BIT)
++            kprintf("[tcp] wscale lane (%s): PASS %u bytes were in flight at "
++                    "once — above the %u-byte unscaled ceiling\n",
++                    name, peak, LANE_16BIT);
++        else {
++            kprintf("[tcp] wscale lane (%s): FAIL peak in-flight %u never "
++                    "cleared the %u-byte unscaled ceiling\n",
++                    name, peak, LANE_16BIT);
++            ok = 0;
++        }
++    } else {
++        /* Negative control: clamped peer, so nothing above 16 bits may
++         * appear.  If it does, the BIG result is an artefact. */
++        if (peak <= LANE_16BIT)
++            kprintf("[tcp] wscale lane (%s): PASS peak in-flight %u stayed "
++                    "inside the %u-byte window the peer actually granted\n",
++                    name, peak, LANE_16BIT);
++        else {
++            kprintf("[tcp] wscale lane (%s): FAIL peak in-flight %u exceeds "
++                    "the %u-byte window the peer granted — the guest is "
++                    "inventing window\n", name, peak, LANE_16BIT);
++            ok = 0;
++        }
++    }
++
++    tcp_close_h(h);
++    return ok ? 0 : -1;
++}
++
++int tcp_ws_lane_run(uint16_t big_port, uint16_t clamp_port) {
++    uint64_t t0 = timer_get_ticks();
++    int a = lane_once("big", big_port, 1);
++    int b = lane_once("clamped", clamp_port, 0);
++    uint32_t ms = (uint32_t)((timer_get_ticks() - t0) * (1000u / 100u));
++
++    if (a == 0 && b == 0) {
++        kprintf("[tcp] wscale lane: PASS 1 MiB over a scaled window, and a "
++                "clamped peer held the same transfer inside 16 bits (%u ms "
++                "total)\n", ms);
++        return 0;
++    }
++    kprintf("[tcp] wscale lane: FAIL (big=%d clamped=%d)\n", a, b);
++    return -1;
++}
++
++/* Read `opt/auralite.tcp_ws` = "<big>,<clamped>" and run the lane.  Absent
++ * (or unparseable) means the lane does not run and prints nothing: a boot
++ * that was not asked for this measurement must not pretend to have made it. */
++void tcp_ws_lane_boot_probe(void) {
++    char val[32];
++    if (!fwcfg_read_opt("opt/auralite.tcp_ws", val, (int)sizeof(val))) return;
++
++    uint16_t ports[2] = { 0, 0 };
++    int n = 0;
++    const char *p = val;
++    while (*p && n < 2) {
++        uint32_t v = 0;
++        while (*p >= '0' && *p <= '9') { v = v * 10u + (uint32_t)(*p - '0'); p++; }
++        if (v == 0 || v > 65535u) return;         /* refuse, do not guess */
++        ports[n++] = (uint16_t)v;
++        if (*p == ',' || *p == ' ' || *p == ':') p++;
++        else break;
++    }
++    if (n != 2) {
++        kprintf("[tcp] wscale lane: fw_cfg opt/auralite.tcp_ws=%s is not "
++                "big,clamped; lane not run\n", val);
++        return;
++    }
++    kprintf("[tcp] wscale lane: asked for by fw_cfg (%s)\n", val);
++    tcp_ws_lane_run(ports[0], ports[1]);
++}
+diff --git a/kernel/net/tcp_ws_lane.h b/kernel/net/tcp_ws_lane.h
+new file mode 100644
+index 0000000..cb04740
+--- /dev/null
++++ b/kernel/net/tcp_ws_lane.h
+@@ -0,0 +1,34 @@
++#ifndef AURALITE_NET_TCP_WS_LANE_H
++#define AURALITE_NET_TCP_WS_LANE_H
++
++#include <stdint.h>
++
++/*
++ * The 1 MiB window-scaling lane (RESIDUE3 C7).
++ *
++ * WHY A BOOT LANE AND NOT A UNIT TEST.  test_tcp_wscale.c pins the arithmetic
++ * of kernel/net/tcp_wscale.h, and that is necessary but not sufficient: it
++ * cannot show that tcp.c actually carries a scaled window to a peer, nor that
++ * the send scheduler spends it.  This lane moves a megabyte across a real TCP
++ * connection to a host peer and prints what the connection did.
++ *
++ * WHY THE PORT COMES FROM fw_cfg.  A lane that always runs would slow every
++ * boot and fail noisily whenever no peer is listening, and a lane that runs
++ * "when it feels like it" is a silent gap.  The harness that wants this
++ * measurement says so on the QEMU command line:
++ *
++ *     -fw_cfg name=opt/auralite.tcp_ws,string=18099,18100
++ *
++ * two ports: the open lane and its negative control (a peer whose window is
++ * clamped to 16 bits, so it can never grant more than 65535).  Absent the
++ * option, the lane does not run and prints nothing at all.
++ */
++
++/* Returns 0 when both lanes behaved as their configuration demands, -1
++ * otherwise.  Never called unless fw_cfg named the ports. */
++int tcp_ws_lane_run(uint16_t big_port, uint16_t clamp_port);
++
++/* fw_cfg probe: reads opt/auralite.tcp_ws and runs the lane when present. */
++void tcp_ws_lane_boot_probe(void);
++
++#endif /* AURALITE_NET_TCP_WS_LANE_H */
+diff --git a/kernel/net/tcp_wscale.h b/kernel/net/tcp_wscale.h
+new file mode 100644
+index 0000000..eda3369
+--- /dev/null
++++ b/kernel/net/tcp_wscale.h
+@@ -0,0 +1,157 @@
++#ifndef AURALITE_NET_TCP_WSCALE_H
++#define AURALITE_NET_TCP_WSCALE_H
++
++#include <stdint.h>
++
++/*
++ * TCP window scaling (RFC 7323 s2.2 / s2.3) — RESIDUE3 C7.
++ *
++ * The 16-bit window field caps a connection at 65535 bytes in flight.  With
++ * a 200 ms path that is 65535 * 8 / 0.2 = 2.6 Mbit/s no matter how fast the
++ * link is, which is why every modern stack negotiates a shift count in the
++ * handshake: both sides then read the window field as "field << shift".
++ *
++ * This header is pure: no kernel state, no I/O.  tcp.c applies the results,
++ * and tests/unit/test_tcp_wscale.c pins them, including the malformed cases
++ * a parser on network bytes has to survive.
++ *
++ * THE RULE THAT MATTERS MOST: the shift is offered in the SYN and answered in
++ * the SYN-ACK, and it is NEVER negotiated again for that connection.  A
++ * window field arriving on a later segment with a peer that never offered a
++ * shift must be read unscaled — scaling it would invent a window the peer
++ * never granted.
++ */
++
++/* RFC 7323: the shift count is 14 bits at most.  A peer that sends more is
++ * misbehaving; clamping keeps every shift computation in range. */
++#define TCP_WS_SHIFT_MAX 14u
++
++#define TCP_WS_KIND      3u   /* option kind */
++#define TCP_WS_OPT_LEN   3u   /* kind, length, shift */
++
++/* What a peer's option block said about window scaling. */
++typedef struct {
++    uint8_t offered;   /* 1 = the peer put a WSCALE option in its SYN */
++    uint8_t shift;     /* the shift it asked us to use (already clamped) */
++} tcp_ws_opt_t;
++
++static inline void tcp_ws_opt_init(tcp_ws_opt_t *o) {
++    o->offered = 0;
++    o->shift = 0;
++}
++
++/*
++ * Walk a TCP option block and report the window-scale option.
++ *
++ * Returns 0 if the block was well-formed (even when no WSCALE was found, in
++ * which case `out->offered` stays 0), -1 if it was malformed.  The caller
++ * uses whatever was found: a peer that fills the block with garbage still
++ * gets its window read unscaled, which is the safe reading.
++ *
++ * Every iteration consumes at least one byte.  That is not defensive
++ * decoration: a zero-length option is the classic way to spin a parser
++ * forever, and this runs before anything has been validated.
++ */
++static inline int tcp_ws_parse(const uint8_t *p, uint32_t len,
++                               tcp_ws_opt_t *out) {
++    tcp_ws_opt_init(out);
++    uint32_t i = 0;
++    int well_formed = 1;
++    while (i < len) {
++        uint8_t kind = p[i];
++        if (kind == 0u) break;                  /* End of option list */
++        if (kind == 1u) { i++; continue; }      /* NOP */
++        if (i + 1u >= len) { well_formed = 0; break; }
++        uint8_t olen = p[i + 1u];
++        if (olen < 2u) { well_formed = 0; i++; continue; }
++        if (i + olen > len) { well_formed = 0; break; }
++        if (kind == TCP_WS_KIND) {
++            if (olen == TCP_WS_OPT_LEN) {
++                uint8_t s = p[i + 2u];
++                if (s > TCP_WS_SHIFT_MAX) s = TCP_WS_SHIFT_MAX;
++                out->offered = 1;
++                out->shift = s;
++            } else {
++                /* Right kind, wrong length: not a scale we may act on. */
++                well_formed = 0;
++            }
++        }
++        i += olen;
++    }
++    return well_formed ? 0 : -1;
++}
++
++/*
++ * Write a WSCALE option into `buf`, padded to a 4-byte boundary with NOPs so
++ * the following options (and the header length) stay aligned.
++ *
++ * Returns the number of bytes written, or 0 when there is not enough room —
++ * in which case the caller must forget the option rather than emit a
++ * half-built one, because a truncated option block is worse than none.
++ */
++static inline uint32_t tcp_ws_emit(uint8_t *buf, uint32_t cap, uint8_t shift) {
++    if (shift > TCP_WS_SHIFT_MAX) shift = TCP_WS_SHIFT_MAX;
++    if (cap < 4u) return 0;
++    uint32_t i = 0;
++    buf[i++] = TCP_WS_KIND;
++    buf[i++] = TCP_WS_OPT_LEN;
++    buf[i++] = shift;
++    buf[i++] = 1u;                     /* NOP padding to the 4-byte boundary */
++    return i;
++}
++
++/* Window field -> real window: `field << shift`, saturating.  A shift of 0
++ * is the identity, which is exactly what an unscaled peer means. */
++static inline uint32_t tcp_ws_apply(uint32_t field, uint8_t shift) {
++    if (shift > TCP_WS_SHIFT_MAX) shift = TCP_WS_SHIFT_MAX;
++    if (shift == 0u) return field;
++    if (field > (0xFFFFFFFFu >> shift)) return 0xFFFFFFFFu;
++    return field << shift;
++}
++
++/* Real window -> the 16-bit field to put on the wire, for OUR advertised
++ * window: `wnd >> shift`, clamped to 65535. */
++static inline uint16_t tcp_ws_encode(uint32_t window, uint8_t shift) {
++    if (shift > TCP_WS_SHIFT_MAX) shift = TCP_WS_SHIFT_MAX;
++    uint32_t v = window >> shift;
++    if (v > 0xFFFFu) v = 0xFFFFu;
++    return (uint16_t)v;
++}
++
++/*
++ * The shift we may ask for, given a receive buffer of `buf_bytes`.
++ *
++ * This is not a tuning knob: it is the promise we make to the peer about how
++ * much unread data we can hold.  A buffer smaller than one window needs no
++ * shift (0), and every doubling of the buffer above 65535 buys one bit —
++ * flooring, never rounding up, because rounding up would advertise space
++ * that does not exist.
++ */
++static inline uint8_t tcp_ws_shift_for_buffer(uint32_t buf_bytes) {
++    uint8_t s = 0;
++    /* Largest shift whose maximum encodable window (65535 << s) still fits
++     * in the buffer: every value we could then advertise is one we can hold.
++     * Floor, never round up.
++     *
++     * 32-bit arithmetic on purpose: the largest candidate shift is 15, and
++     * 0xFFFF << 15 still fits a uint32_t, so no 64-bit widening is needed —
++     * and this tree ratchets widening casts in portable code, correctly. */
++    while (s < TCP_WS_SHIFT_MAX &&
++           (0xFFFFu << (uint32_t)(s + 1u)) <= buf_bytes)
++        s++;
++    return s;
++}
++
++/*
++ * Should we scale this connection at all?
++ *
++ * RFC 7323 s2.2: scaling is negotiated in the handshake and must not be
++ * applied unless the peer also offered it.  `we_offered` is what we put in
++ * our SYN/SYN-ACK; the peer's answer decides the shift we use for ITS window
++ * and for OURS.  Returns 1 when scaling is in force.
++ */
++static inline int tcp_ws_engaged(int we_offered, const tcp_ws_opt_t *peer) {
++    return we_offered && peer && peer->offered;
++}
++
++#endif /* AURALITE_NET_TCP_WSCALE_H */
+diff --git a/tests/integration/cases/test_tcp_options.sh b/tests/integration/cases/test_tcp_options.sh
+index a2b6d05..7001de5 100644
+--- a/tests/integration/cases/test_tcp_options.sh
++++ b/tests/integration/cases/test_tcp_options.sh
+@@ -34,11 +34,16 @@ il_run_qemu "$LOG" 75 \
+ # before M6c the SYN was a bare 20-byte header and this line cannot appear.
+ # The byte counts are derived from the header actually built, so a SYN that
+ # loses its options fails here even if the peer still answers.
+-il_assert_grep_fixed "$LOG" "[tcp] SYN options: 8 bytes, hdr=28, mss=1460 sack-perm" \
+-    "our SYN carries MSS + SACK-permitted (28-byte header)"
++# C7 widened this block: MSS + SACK-permitted + a window scale, so the
++# header is 32 bytes rather than 28.  The assertion stays byte-derived --
++# the numbers come from the header actually built, so an option that stops
++# being emitted still turns this red.
++il_assert_grep_fixed "$LOG" "[tcp] SYN options: 12 bytes, hdr=32, mss=1460 sack-perm wscale=0" \
++    "our SYN carries MSS + SACK-permitted + a window scale (32-byte header)"
+ 
+ # The peer's option block was parsed at all.  SLIRP always offers an MSS,
+ # so this line appearing at all is the proof the parser ran on real bytes.
++# (C7 appended the window-scale field to this line.)
+ il_assert_grep "$LOG" "\[tcp\] peer options: mss=[0-9]+" \
+     "the peer's TCP options were parsed"
+ 
+diff --git a/tests/integration/cases/test_tcp_wscale.sh b/tests/integration/cases/test_tcp_wscale.sh
+new file mode 100755
+index 0000000..d6e7ad0
+--- /dev/null
++++ b/tests/integration/cases/test_tcp_wscale.sh
+@@ -0,0 +1,164 @@
++#!/usr/bin/env bash
++# test_tcp_wscale.sh — RESIDUE3 C7: TCP window scaling (RES-52).
++#
++# The stack could not scale its window: `TCP_WINDOW` was 64240, the window
++# field was a constant, and `wscale`/`shift_cnt` had zero hits in tcp.c+tcp.h.
++# A 16-bit window caps a connection at 65535 bytes in flight, whatever the
++# link speed is.
++#
++# TWO LANES, because one of them cannot exist on SLIRP.
++#
++#   Case 1 (TAP, needs privileges): the guest talks to a REAL Linux peer over
++#   a TAP link.  Linux negotiates a window scale, so the peer's 16-bit field
++#   really means megabytes — and the measurement is the peak number of bytes
++#   in flight: above 65535 is impossible with an unscaled window, so it can
++#   only be scaling.  The same boot also runs the negative control (a peer
++#   whose window is bounded to 16 KiB), where the identical megabyte transfer
++#   must stay inside 16 bits.
++#
++#   Case 2 (SLIRP, no privileges): SLIRP terminates TCP itself and offers no
++#   window scale at all, which makes it the perfect "peer that omits the
++#   option" — the graceful path C7 must not confuse with a granted scale.
++#
++# THE 200 ms RTT THE PLAN ASKED FOR IS NOT HERE.  QEMU 10 has no netem and
++# SLIRP has no shaper; a userspace peer cannot delay ACKs without also
++# shrinking the window it grants (delaying reads does nothing until the
++# receive buffer fills, and filling it is the opposite of granting a large
++# window). "200 ms" and "window bigger than 64 KiB" cannot both hold through a
++# userspace peer, so the lane measures bytes in flight and REPORTS the elapsed
++# time instead. The substitution is written down in the plan, not hidden.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64 python3
++
++BIG_PORT="${BIG_PORT:-18499}"
++CLAMP_PORT="${CLAMP_PORT:-18500}"
++TAP="alws$RANDOM"
++LANE_RAN=0
++
++cleanup() {
++    kill "$PEER_PID" 2>/dev/null || true
++    wait "$PEER_PID" 2>/dev/null || true
++    if [ "${TAP_CREATED:-0}" = "1" ]; then
++        sudo -n ip link del "$TAP" 2>/dev/null || true
++    fi
++    il_dump_on_error
++}
++
++# --- Case 1: the real peer over a TAP link --------------------------------
++il_section "TCP window scaling (C7): a megabyte past the 16-bit ceiling"
++
++if sudo -n true 2>/dev/null && sudo -n ip tuntap add dev "$TAP" mode tap 2>/dev/null; then
++    TAP_CREATED=1
++    sudo -n ip addr add 10.0.2.2/24 dev "$TAP" 2>/dev/null || true
++    sudo -n ip link set "$TAP" up 2>/dev/null || true
++
++    LOG="$IL_LOGDIR/tcp_wscale.log"
++    PEERLOG="$IL_LOGDIR/tcp_wscale_peer.log"
++    IL_LAST_LOG="$LOG"
++    IL_LAST_PEERLOG="$PEERLOG"
++
++    python3 lib/paced_peer.py "$BIG_PORT" "$CLAMP_PORT" >"$PEERLOG" 2>&1 &
++    PEER_PID=$!
++    trap cleanup EXIT
++    sleep 1
++
++    # $IL_QEMU directly, NOT il_run_qemu: the library always appends
++    # `-netdev user,id=net0 -device $IL_NIC,netdev=net0`, and with two NICs
++    # the SLIRP one wins registration — measured: the lane then ran over
++    # SLIRP (which offers no window scale) while the TAP peer still received
++    # its megabyte, i.e. exactly the kind of half-truth this suite exists to
++    # avoid.
++    set +e
++    timeout --foreground 120 "$IL_QEMU" \
++        -drive "file=$IL_ISO,format=raw,if=ide,snapshot=on" \
++        -boot order=c -m 512M -smp 2 -display none -no-reboot -cpu qemu64 \
++        -serial "file:$LOG" \
++        -netdev "tap,ifname=$TAP,script=no,downscript=no,id=n0" \
++        -device e1000,netdev=n0 \
++        -fw_cfg "name=opt/auralite.tcp_ws,string=$BIG_PORT:$CLAMP_PORT" \
++        >/dev/null 2>&1
++    set -e
++    LANE_RAN=1
++
++    # 1. What we put on the wire.  Before C7 the SYN's option block was MSS +
++    #    SACK-permitted only: 8 bytes, header 28.  A scale makes it 12/32.
++    il_assert_grep_fixed "$LOG" "[tcp] SYN options: 12 bytes, hdr=32, mss=1460 sack-perm wscale=0" \
++        "our SYN carries MSS + SACK-permitted + a window scale (32-byte header)"
++
++    # 2. What the peer answered, and what we made of it.  `field 65535` with
++    #    shift 8 is the same 16-bit field meaning 16 MiB — the arithmetic in
++    #    one line.
++    il_assert_grep "$LOG" "\\[tcp\\] wscale: peer shift=[1-9][0-9]* -> snd_wnd=[0-9]+ \\(field [0-9]+\\)" \
++        "the peer offered a shift and its window was read through it"
++    il_assert_grep "$LOG" "our shift 0 \\(64240-byte receive buffer\\)" \
++        "our own shift is 0, derived from the receive buffer we actually hold"
++
++    # 3. The measurement.  The number is compared AS A NUMBER: a grep for
++    #    "PASS" would accept a lane that reported six bytes in flight.
++    il_assert_grep "$LOG" "\\[tcp\\] wscale lane \\(big\\): ESTABLISHED, peer shift [1-9][0-9]*, snd_wnd [0-9]+" \
++        "the megabyte lane negotiated a scale with its own peer"
++    il_assert_grep "$LOG" "\\[tcp\\] wscale lane \\(big\\): sent 1048576 bytes in [0-9]+ ms, peak in-flight [0-9]+ bytes" \
++        "a megabyte crossed the connection"
++
++    PEAK="$(grep -oE 'wscale lane \(big\): sent 1048576 bytes in [0-9]+ ms, peak in-flight [0-9]+' "$LOG" \
++            | tail -1 | grep -oE 'peak in-flight [0-9]+' | grep -oE '[0-9]+$')"
++    IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
++    if [ -n "${PEAK:-}" ] && [ "$PEAK" -gt 65535 ]; then
++        il_pass "peak in-flight was $PEAK bytes — above the 65535 the 16-bit field can express"
++    else
++        il_fail "peak in-flight was '${PEAK:-none}' bytes — not above 65535"
++    fi
++    il_assert_grep "$LOG" "wscale lane \\(big\\): PASS [0-9]+ bytes were in flight at once" \
++        "the lane itself agrees the ceiling was passed"
++
++    # 4. The negative control: same payload, peer window bounded to 16 KiB.
++    il_assert_grep "$LOG" "\\[tcp\\] wscale lane \\(clamped\\): ESTABLISHED, peer shift 0, snd_wnd [0-9]+" \
++        "the control peer granted no scale"
++    il_assert_grep "$LOG" "wscale lane \\(clamped\\): PASS peak in-flight [0-9]+ stayed inside the 65535-byte window" \
++        "the same transfer stayed inside 16 bits when the peer allowed no more"
++    il_assert_grep_fixed "$LOG" "[tcp] wscale lane: PASS 1 MiB over a scaled window, and a clamped peer held the same transfer inside 16 bits" \
++        "both lanes agreed"
++
++    # 5. The peer's own receipt — guest bytes are not evidence they arrived.
++    il_assert_grep_fixed "$PEERLOG" "peer[big]: received 1048576 of 1048576 bytes (window free to grow)" \
++        "the big peer read all 1 MiB"
++    il_assert_grep_fixed "$PEERLOG" "peer[clamped]: received 1048576 of 1048576 bytes (window bounded to 16 KiB)" \
++        "the clamped peer read all 1 MiB"
++
++    il_assert_no_grep "$LOG" "PANIC|page fault in kernel" "no kernel fault"
++    il_assert_no_grep "$LOG" "\[tcp\] wscale lane: FAIL" "no lane failure"
++else
++    IL_LAST_LOG="$IL_LOGDIR/tcp_wscale_skipped.log"
++    : > "$IL_LAST_LOG"
++    il_skip "cannot create a TAP link (needs sudo + /dev/net/tun): the scaled-window lane did not run"
++    il_skip "and therefore NO claim is made about a window above 65535 bytes in this environment"
++fi
++
++# --- Case 2: a peer that omits the option entirely (SLIRP) ----------------
++il_section "TCP window scaling (C7): a peer that never offers a scale"
++
++SLOG="$IL_LOGDIR/tcp_wscale_slirp.log"
++IL_LAST_LOG="$SLOG"
++# SLIRP lane: the library's own invocation (one NIC, user-mode net).
++il_run_qemu "$SLOG" 90 \
++    -drive file="$IL_BUILD/auralite.iso",format=raw,if=ide,snapshot=on \
++    -boot order=c -m 512M -smp 2 -display none -no-reboot -cpu qemu64
++
++il_assert_grep_fixed "$SLOG" "[tcp] SYN options: 12 bytes, hdr=32, mss=1460 sack-perm wscale=0" \
++    "we offer a scale even to a peer that will not take it"
++il_assert_grep "$SLOG" "\\[tcp\\] wscale: peer did not offer a window scale; snd_wnd=[0-9]+ stays 16-bit" \
++    "a peer that omits the option is told apart from one that grants shift 0"
++il_assert_grep "$SLOG" "ESTABLISHED" \
++    "the handshake still completes — refusing to scale is not a failure"
++il_assert_no_grep "$SLOG" "PANIC|page fault in kernel" "no kernel fault"
++
++if [ "$LANE_RAN" = "1" ]; then
++    il_assert_grep_fixed "$SLOG" "[tcp] wscale: peer did not offer a window scale" \
++        "the SLIRP peer (which terminates TCP itself) is the omitting-peer case"
++fi
++
++il_summary
+diff --git a/tests/integration/lib/paced_peer.py b/tests/integration/lib/paced_peer.py
+new file mode 100755
+index 0000000..0666058
+--- /dev/null
++++ b/tests/integration/lib/paced_peer.py
+@@ -0,0 +1,128 @@
++#!/usr/bin/env python3
++"""paced_peer.py — the peer for the 1 MiB window-scaling lane (RESIDUE3 C7).
++
++Two listeners, deliberately different, on two ports:
++
++  BIG    a peer whose receive window may be large.  Linux negotiates a window
++         scale in the handshake (net.ipv4.tcp_window_scaling, on by default)
++         and with an 8 MiB receive buffer it grants far more than 64 KiB, so
++         the guest may legitimately have >65535 bytes in flight.
++  CLAMP  the same peer with TCP_WINDOW_CLAMP = 65535, which pins its
++         advertised window to 16 bits: scaling cannot buy it anything.  This
++         is the negative control — a guest that reports more than 65535 bytes
++         in flight here is inventing window, and the BIG result is an
++         artefact.
++
++Each listener reads until it has 1 MiB, or until the connection closes, and
++prints a one-line receipt to stdout so the case file can assert on what the
++peer actually saw (guest bytes are not evidence that they arrived).
++
++WHY THERE IS NO 200 ms DELAY HERE.  The plan asked for a 200 ms-RTT lane.  On
++a SLIRP link there is no way to shape one from userspace: delaying this
++process's reads does not delay the guest's ACKs unless the receive buffer is
++small enough to fill, and shrinking the buffer is the opposite of granting a
++large window — so "200 ms" and "window bigger than 64 KiB" cannot both hold
++through a userspace peer.  The lane therefore measures what the window
++arithmetic does (bytes in flight) and reports the elapsed time it took, which
++is the part of the plan's intent that survives the emulator.
++"""
++
++import socket
++import sys
++import threading
++
++BIND_ADDR = "0.0.0.0"
++BYTES = 1024 * 1024
++RCVBUF_BIG = 8 * 1024 * 1024
++TCP_WINDOW_CLAMP = 16          # Linux: 0x10
++
++results = {}
++lock = threading.Lock()
++
++
++def serve(port, clamped, label):
++    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++    if clamped:
++        # The window a peer grants is decided at accept time from the
++        # listener's receive buffer, so this must be set HERE, before the
++        # handshake — that is also why TCP_WINDOW_CLAMP on the listener is
++        # refused (EINVAL, measured) and is only applied best-effort to the
++        # accepted socket below.
++        try:
++            srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16384)
++        except OSError as e:                    # pragma: no cover
++            print(f"{label}: cannot shrink window: {e}", flush=True)
++    else:
++        try:
++            srv.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, RCVBUF_BIG)
++        except OSError as e:                    # pragma: no cover
++            print(f"{label}: cannot enlarge window: {e}", flush=True)
++    # Bind every interface: the guest reaches this peer through a TAP link
++    # whose host side is 10.0.2.2, or through SLIRP's alias of the same
++    # address.  127.0.0.1 would only ever serve the SLIRP case.
++    srv.bind((BIND_ADDR, port))
++    srv.listen(1)
++    srv.settimeout(120)
++
++    try:
++        conn, _ = srv.accept()
++    except socket.timeout:                       # pragma: no cover
++        print(f"{label}: no guest connection (timeout)", flush=True)
++        with lock:
++            results[label] = None
++        return
++
++    conn.settimeout(120)
++    # Drain in large reads: the advertised window only stays open if the
++    # application keeps up, and a window that shrinks under the guest's feet
++    # would make the "bytes in flight" figure a property of this script
++    # rather than of the guest's window arithmetic.
++    read_chunk = 262144 if not clamped else 65536
++    if clamped:
++        try:
++            conn.setsockopt(socket.IPPROTO_TCP, TCP_WINDOW_CLAMP, 16384)
++        except OSError:
++            pass          # best-effort: the small rcvbuf already bounds it
++    got = 0
++    try:
++        while got < BYTES:
++            chunk = conn.recv(read_chunk)
++            if not chunk:
++                break
++            got += len(chunk)
++    except (socket.timeout, OSError) as e:        # pragma: no cover
++        print(f"{label}: read stopped: {e}", flush=True)
++    finally:
++        conn.close()
++        srv.close()
++
++    with lock:
++        results[label] = got
++    print(f"peer[{label}]: received {got} of {BYTES} bytes "
++          f"(window {'bounded to 16 KiB' if clamped else 'free to grow'})",
++          flush=True)
++
++
++def main():
++    if len(sys.argv) != 3:                       # pragma: no cover
++        print("usage: paced_peer.py BIGPORT CLAMPEDPORT", flush=True)
++        return 2
++    big, clamp = int(sys.argv[1]), int(sys.argv[2])
++
++    threads = [
++        threading.Thread(target=serve, args=(big, False, "big"), daemon=True),
++        threading.Thread(target=serve, args=(clamp, True, "clamped"), daemon=True),
++    ]
++    for t in threads:
++        t.start()
++    for t in threads:
++        t.join(timeout=180)
++
++    # Exit status is the harness's signal that the peer saw what it should.
++    ok = (results.get("big") == BYTES and results.get("clamped") == BYTES)
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 95d4d2d..360da71 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -218,6 +218,7 @@ ALL_CASES=(
+     test_wifi_virtual_ap
+     test_realweb_rustlang
+     test_tcp_options
++    test_tcp_wscale
+     test_ipv6_ping6
+     test_tcp6
+     test_https6
+diff --git a/tests/unit/test_tcp_wscale.c b/tests/unit/test_tcp_wscale.c
+new file mode 100644
+index 0000000..feb4b3c
+--- /dev/null
++++ b/tests/unit/test_tcp_wscale.c
+@@ -0,0 +1,191 @@
++/* test_tcp_wscale.c — host pin for kernel/net/tcp_wscale.h (RESIDUE3 C7).
++ *
++ * Window scaling is arithmetic on bytes that arrive from the network, so the
++ * cases that matter are the ones a happy-path implementation gets wrong:
++ *
++ *   - a peer that never offers a shift (the window must stay unscaled),
++ *   - a peer that offers shift 15..255 (clamped to 14, not trusted),
++ *   - a WSCALE option with the wrong length (ignored, not acted on),
++ *   - an option block that ends mid-option (parsed, reported malformed),
++ *   - a zero-length option (must not spin),
++ *   - a receive buffer smaller than one window (shift 0, no promise).
++ *
++ * Build: cc -std=c11 -Wall -Wextra -Werror -I . tests/unit/test_tcp_wscale.c
++ */
++#include <stdio.h>
++#include <string.h>
++#include <stdint.h>
++
++#include "kernel/net/tcp_wscale.h"
++
++static int checks = 0, fails = 0;
++
++#define CHECK(cond, fmt, ...)                                              \
++    do {                                                                   \
++        checks++;                                                          \
++        if (!(cond)) {                                                     \
++            fails++;                                                       \
++            printf("  FAIL: " fmt "\n", ##__VA_ARGS__);                    \
++        }                                                                  \
++    } while (0)
++
++static void t_parse_absent(void) {
++    printf("parse: no WSCALE offered\n");
++    tcp_ws_opt_t o;
++    /* MSS only, as SLIRP sends: kind 2, len 4, mss 1460, END. */
++    const uint8_t opts[] = { 2, 4, 0x05, 0xB4, 0 };
++    CHECK(tcp_ws_parse(opts, sizeof opts, &o) == 0, "well-formed block");
++    CHECK(o.offered == 0, "offered stays 0");
++    CHECK(o.shift == 0, "shift stays 0");
++
++    /* Empty block: legal (a SYN may carry no options at all). */
++    CHECK(tcp_ws_parse(NULL, 0, &o) == 0, "empty block is well-formed");
++    CHECK(o.offered == 0, "empty block offers nothing");
++}
++
++static void t_parse_present(void) {
++    printf("parse: WSCALE present\n");
++    tcp_ws_opt_t o;
++    /* MSS, NOP, NOP, WS(3,3,7), END -- a real Linux SYN layout. */
++    const uint8_t opts[] = { 2, 4, 0x05, 0xB4, 1, 1, 3, 3, 7, 0 };
++    CHECK(tcp_ws_parse(opts, sizeof opts, &o) == 0, "well-formed");
++    CHECK(o.offered == 1, "offered");
++    CHECK(o.shift == 7, "shift 7 read from the wire");
++
++    /* shift 0 is a legal, meaningful value: the peer scales, by nothing. */
++    const uint8_t zero[] = { 3, 3, 0, 1 };
++    CHECK(tcp_ws_parse(zero, sizeof zero, &o) == 0, "well-formed");
++    CHECK(o.offered == 1 && o.shift == 0, "shift 0 is offered, not absent");
++}
++
++static void t_parse_hostile(void) {
++    printf("parse: hostile option blocks\n");
++    tcp_ws_opt_t o;
++
++    /* Shift beyond the RFC's 14 bits: clamp, never trust. */
++    const uint8_t big[] = { 3, 3, 255, 1 };
++    tcp_ws_parse(big, sizeof big, &o);
++    CHECK(o.offered == 1 && o.shift == TCP_WS_SHIFT_MAX,
++          "shift 255 clamps to %u", TCP_WS_SHIFT_MAX);
++
++    /* Right kind, wrong length: the bytes after it are not a shift count. */
++    const uint8_t badlen[] = { 3, 4, 7, 0, 1 };
++    CHECK(tcp_ws_parse(badlen, sizeof badlen, &o) == -1, "reports malformed");
++    CHECK(o.offered == 0, "does not act on a malformed WSCALE");
++
++    /* Ends mid-option: parse what is there, say it was malformed. */
++    const uint8_t trunc[] = { 2, 4, 0x05 };
++    CHECK(tcp_ws_parse(trunc, sizeof trunc, &o) == -1, "truncated option");
++    CHECK(o.offered == 0, "nothing offered");
++
++    /* A zero-length option must not spin: this call returning at all is the
++     * assertion, and the WSCALE after it must still be found. */
++    const uint8_t zerolen[] = { 2, 1, 3, 3, 5, 1 };
++    CHECK(tcp_ws_parse(zerolen, sizeof zerolen, &o) == -1,
++          "zero-length option reported malformed");
++    CHECK(o.offered == 1 && o.shift == 5, "parser still reaches the WSCALE");
++
++    /* All NOPs: consumable, no option. */
++    const uint8_t nops[] = { 1, 1, 1, 1 };
++    CHECK(tcp_ws_parse(nops, sizeof nops, &o) == 0, "NOPs are well-formed");
++    CHECK(o.offered == 0, "NOPs offer nothing");
++}
++
++static void t_emit(void) {
++    printf("emit: the option we put on the wire\n");
++    uint8_t buf[8];
++    memset(buf, 0xAA, sizeof buf);
++    uint32_t n = tcp_ws_emit(buf, sizeof buf, 7);
++    CHECK(n == 4, "4 bytes written (option + NOP padding)");
++    CHECK(buf[0] == 3 && buf[1] == 3 && buf[2] == 7, "kind/length/shift");
++    CHECK(buf[3] == 1, "padded to the 4-byte boundary");
++    CHECK(buf[4] == 0xAA, "nothing written past the option");
++
++    /* Not enough room: refuse rather than emit a truncated option. */
++    memset(buf, 0xAA, sizeof buf);
++    CHECK(tcp_ws_emit(buf, 3, 7) == 0, "refuses when it cannot fit");
++    CHECK(buf[0] == 0xAA, "buffer untouched on refusal");
++
++    /* Our own emit must round-trip through our own parser, with padding. */
++    tcp_ws_opt_t o;
++    memset(buf, 0, sizeof buf);
++    n = tcp_ws_emit(buf, sizeof buf, 12);
++    CHECK(tcp_ws_parse(buf, n, &o) == 0, "our own option block parses");
++    CHECK(o.offered == 1 && o.shift == 12, "shift survives the round trip");
++}
++
++static void t_apply_encode(void) {
++    printf("apply/encode: field <-> real window\n");
++    CHECK(tcp_ws_apply(65535, 0) == 65535, "shift 0 is the identity");
++    CHECK(tcp_ws_apply(65535, 7) == 65535u * 128u, "65535 << 7");
++    CHECK(tcp_ws_apply(0, 7) == 0, "a zero window stays zero (peer is closed)");
++    CHECK(tcp_ws_apply(0xFFFFFFFFu, 14) == 0xFFFFFFFFu, "saturates, no wrap");
++    CHECK(tcp_ws_apply(100, 200) == tcp_ws_apply(100, TCP_WS_SHIFT_MAX),
++          "out-of-range shift clamps");
++
++    CHECK(tcp_ws_encode(64240, 0) == 64240, "unscaled encode");
++    CHECK(tcp_ws_encode(64240u * 128u, 7) == 64240, "scaled encode");
++    CHECK(tcp_ws_encode(0xFFFFFFFFu, 0) == 0xFFFF, "clamps at 16 bits");
++    CHECK(tcp_ws_encode(1u << 20, 14) == 64, "1 MiB >> 14");
++
++    /* The property that makes scaling worth having: the same 16-bit field
++     * means different windows depending on the negotiated shift. */
++    CHECK(tcp_ws_apply(65024, 0) == 65024, "unscaled field");
++    CHECK(tcp_ws_apply(65024, 7) == 65024u * 128u, "scaled field is 128x");
++    CHECK(tcp_ws_apply(65024, 7) > 64240, "and it clears the 64240 ceiling");
++}
++
++static void t_shift_for_buffer(void) {
++    printf("negotiation: the shift we may honestly ask for\n");
++    CHECK(tcp_ws_shift_for_buffer(0) == 0, "no buffer -> no scale");
++    CHECK(tcp_ws_shift_for_buffer(1024) == 0, "tiny buffer -> no scale");
++    CHECK(tcp_ws_shift_for_buffer(65535) == 0, "one window -> no scale");
++    CHECK(tcp_ws_shift_for_buffer(65535) == 0, "exactly one window -> 0");
++    CHECK(tcp_ws_shift_for_buffer(65536) == 0,
++          "a hair over one window still -> 0 (65535 fits)");
++    CHECK(tcp_ws_shift_for_buffer(131070) == 1, "two windows -> 1");
++    CHECK(tcp_ws_shift_for_buffer(131069) == 0,
++          "one byte short of two windows -> 0 (floor, never round up)");
++    CHECK(tcp_ws_shift_for_buffer(256u * 1024u) == 2, "256 KiB -> shift 2");
++    CHECK(tcp_ws_shift_for_buffer(1u << 20) == 4, "1 MiB -> shift 4");
++    CHECK(tcp_ws_shift_for_buffer(0xFFFFFFFFu) == TCP_WS_SHIFT_MAX,
++          "clamps at 14");
++
++    printf("negotiation: when scaling is in force\n");
++    tcp_ws_opt_t o;
++    const uint8_t ws6[] = { 3, 3, 6, 1 };
++    tcp_ws_parse(ws6, sizeof ws6, &o);
++    CHECK(tcp_ws_engaged(1, &o) == 1, "we offered, peer offered -> engaged");
++    CHECK(tcp_ws_engaged(0, &o) == 0, "we did not offer -> not engaged");
++    tcp_ws_opt_init(&o);
++    CHECK(tcp_ws_engaged(1, &o) == 0, "peer did not offer -> not engaged");
++    CHECK(tcp_ws_engaged(1, NULL) == 0, "no peer answer -> not engaged");
++}
++
++static void t_graceful(void) {
++    printf("graceful: a peer that omits the option\n");
++    /* The RFC's own guidance: if the peer does not offer a shift, the
++     * connection still works, it just keeps the 16-bit ceiling.  Modelled
++     * here as a field -> window mapping that never exceeds 65535. */
++    tcp_ws_opt_t o;
++    tcp_ws_opt_init(&o);
++    uint8_t shift = tcp_ws_engaged(1, &o) ? o.shift : 0;
++    CHECK(shift == 0, "no shift is applied");
++    CHECK(tcp_ws_apply(65535, shift) == 65535, "window stays 16-bit");
++    CHECK(tcp_ws_apply(65535, shift) <= 64240u + 1295u,
++          "and never clears the old ceiling (that is the point)");
++}
++
++int main(void) {
++    printf("=== AuraLite OS TCP window scaling tests (RESIDUE3 C7) ===\n\n");
++    t_parse_absent();
++    t_parse_present();
++    t_parse_hostile();
++    t_emit();
++    t_apply_encode();
++    t_shift_for_buffer();
++    t_graceful();
++    printf("\n=== Results: %d/%d passed, %d failed ===\n",
++           checks - fails, checks, fails);
++    return fails == 0 ? 0 : 1;
++}

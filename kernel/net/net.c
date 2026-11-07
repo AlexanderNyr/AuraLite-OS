@@ -13,6 +13,7 @@
 #include "drivers/r8169/r8169.h"
 #include "drivers/rtl8139/rtl8139.h"
 #include "kernel/net/netdev.h"
+#include "drivers/wifi/wifi_netdev.h"   /* C6: the virtual wireless link as a NIC */
 #include "kernel/net/dns.h"
 #include "kernel/net/ip_reasm.h"
 #include "kernel/net/ipv6.h"
@@ -136,7 +137,11 @@ struct icmp_hdr {
 static uint8_t  our_mac[6];
 static uint32_t our_ip;
 static uint32_t gateway_ip;
-static uint32_t subnet_mask = 0;  /* set by DHCP */
+static uint32_t subnet_mask = 0;  /* set by DHCP (or the wifi static path) */
+/* RESIDUE3 C6: the active NIC is the virtual wireless link (kernel/net's
+ * last fallback), so DHCP is skipped and the ping in net_self_test() is the
+ * 802.11 data-path receipt. */
+static int wireless_nic = 0;
 /* RESIDUE2 T5: ARP REQUESTs answered from the idle drain (net_passive_input). */
 static volatile uint32_t net_arp_passive_replies = 0;
 /* Accessors for TCP (tcp.c). */
@@ -1141,6 +1146,13 @@ int net_init(void) {
     } else if (rtl8139_init() == 0) {
         rtl8139_register_netdev();
         have_nic = 1;
+    } else if (wifi_virt_netdev_attach() == 0) {
+        /* RESIDUE3 C6: no wired NIC in this machine.  The Wi-Fi MAC layer's
+         * reference backend becomes the NIC, so the 802.11 data path carries
+         * real IP traffic.  It is LAST on purpose: a machine with a wired NIC
+         * never changes behaviour because of this branch. */
+        have_nic = 1;
+        wireless_nic = 1;
     }
     if (!have_nic || !netdev_active()) {
         kprintf("[net] no NIC available\n");
@@ -1164,6 +1176,21 @@ int net_init(void) {
      * the offline NDP/ICMPv6 helper self-test. */
     net_ipv6_init();
     net_ipv6_self_test();
+
+    if (wireless_nic) {
+        /* A virtual AP has no DHCP server, so asking would burn the stack's
+         * retry budget to learn nothing.  The static fallback (10.0.2.15/24,
+         * AP at 10.0.2.2) is what the rest of the stack already assumes, and
+         * the quote below is the measured reason, not a shrug. */
+        subnet_mask = 0xFFFFFF00u;
+        kprintf("[net] wifi: virtual AP has no DHCP server; static %u.%u.%u.%u/24, "
+                "AP %u.%u.%u.%u\n",
+                OUR_IP_O0, OUR_IP_O1, OUR_IP_O2, OUR_IP_O3,
+                GW_IP_O0, GW_IP_O1, GW_IP_O2, GW_IP_O3);
+        /* The stack is usable, so let the caller run net_self_test(): its ping
+         * is the end-to-end receipt for this NIC. */
+        return 0;
+    }
 
     /* Try DHCP to get a real IP. If it fails, fall back to the hardcoded
      * QEMU defaults (10.0.2.15 / 10.0.2.2). */

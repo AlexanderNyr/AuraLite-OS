@@ -16,6 +16,7 @@
 #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
 #include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
 #include "kernel/arch/x86_64/apwake.h"  /* SYS_IRQ_AP_WAKE: RES-16 receipt */
+#include "kernel/lib/abi_probe.h"  /* RESIDUE3 C2: ABI receipt */
 #include "kernel/tty/termios.h"
 #include "kernel/tty/tty.h"
 #include "kernel/fs/devfs.h"   /* RESIDUE2 T4: devfs_fd_tty */
@@ -875,6 +876,12 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
  * pointer under real SMP).  Called on every context switch (schedule()) and
  * at thread first-run (user.c/clone.c/process.c). */
 void set_syscall_stack(uint64_t stack_top) {
+    /* RESIDUE3 C2: syscall_entry.asm's 7-push + 1-slot prologue is only
+     * 16-byte-aligned if THIS value is; the asm carries an @abi-anchor that
+     * names this function as the guarantee's source, and the model in
+     * tools/check_abi_align.py trusts the marker only because this check
+     * exists.  One AND per context switch buys a permanent receipt. */
+    ASSERT((stack_top & 0xF) == 0);
     struct cpu_local *c = get_cpu_local();
     if (c) c->syscall_kernel_rsp = stack_top;
 }
@@ -1015,6 +1022,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
      * reads below.  (If GS points at unmapped memory the read itself
      * faults, which is equally loud.) */
     ASSERT(read_gs_base() == *(uint64_t *)(uintptr_t)read_gs_base());
+
+    /* RESIDUE3 C2: the syscall-context half of the 16-byte C ABI receipt.
+     * This runs before anything else in the syscall path, so the RSP we are
+     * testing is exactly the one syscall_entry.asm handed to C. */
+    abi_probe_syscall();
 
     /* Capture the user-mode return frame into the current TCB so subsequent
      * context switches in this syscall cannot corrupt it via the globals. */

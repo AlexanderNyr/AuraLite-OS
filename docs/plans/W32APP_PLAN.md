@@ -1,28 +1,28 @@
 # AuraLite OS — Win32 Applications Plan (w32 breadth + the OSS ladder)
 
-## Status: ACTIVE — see each phase's heading and receipts; W32A-0..W32A-17 are done (App horizon / Audacity closed 2026-09-29, OUTCOME B: does not run — gap ledger committed)
+## Status: ACTIVE — see each phase's heading and receipts; C1 repair (2026-11-03) flipped five table rows that still read ⬜ planned while their own sections read ✅ (W32A-1/2/5/12/18); W32A-0..W32A-17 are done (App horizon / Audacity closed 2026-09-29, OUTCOME B: does not run — gap ledger committed)
 
 | Phase | State |
 |---|---|
 | W32A-0 Import ledgers, receipt protocol, claim checker | ✅ done |
-| W32A-1 Loader: ordinals, delay-load, DLL chains, manifests | ⬜ planned |
-| W32A-2 `KERNEL32` breadth I — files, paths, time, process info | ⬜ planned |
+| W32A-1 Loader: ordinals, delay-load, DLL chains, manifests | ✅ done |
+| W32A-2 `KERNEL32` breadth I — files, paths, time, process info | ✅ done |
 | W32A-3 Threads and per-thread TLS (the one kernel change) | ✅ done |
 | W32A-4 The table-driven SEH unwinder | ✅ done |
-| W32A-5 `USER32` breadth I — windows and messages, the `W` core | ⬜ planned |
+| W32A-5 `USER32` breadth I — windows and messages, the `W` core | ✅ done |
 | W32A-6 `USER32` breadth II — dialogs, menus, clipboard, resources | ✅ shipped |
 | W32A-7 `GDI32` breadth — DCs, blitting, regions, fonts | ✅ shipped |
 | W32A-8 `COMCTL32` — toolbar, status, listview, treeview, tabs, ImageLists | ✅ shipped |
 | W32A-9 Registry and `ADVAPI32` — the hive, SIDs, CryptoAPI, security stubs | ✅ shipped |
 | W32A-10 `SHELL32` + `COMDLG32` + `SHLWAPI` + `VERSION` | ✅ shipped |
 | W32A-11 `OLE32`-lite, drag-and-drop, `OLEAUT32`, `IMM32` stubs | ✅ done |
-| W32A-12 `WS2_32` WinSock over the native socket stack | ⬜ planned |
+| W32A-12 `WS2_32` WinSock over the native socket stack | ✅ done |
 | W32A-13 The `msvcrt` bridge (data exports, `_beginthreadex`, EH names) | ✅ done |
 | W32A-14 App gate I — PuTTY | ✅ done |
 | W32A-15 App gate II — 7-Zip File Manager | ✅ done |
 | W32A-16 App gate III — Notepad++ | ✅ done (2026-09-29) |
 | W32A-17 App horizon — Audacity, or a documented gap list | ✅ done (2026-09-29, OUTCOME B) |
-| W32A-18 Integration, documentation and the honest matrix | ⬜ planned |
+| W32A-18 Integration, documentation and the honest matrix | ✅ done |
 
 This document answers one question:
 

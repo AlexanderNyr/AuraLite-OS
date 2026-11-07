@@ -31,6 +31,7 @@
 #include "kernel/fs/fsformat.h"
 #include "kernel/fs/fscheck.h"
 #include "kernel/lib/string.h"
+#include "kernel/arch/x86_64/msi.h"
 
 #define FW_CFG_SELECTOR   0x510
 #define FW_CFG_DATA       0x511
@@ -40,6 +41,10 @@
 #define SELFTEST_FILE     "opt/auralite.selftest"
 #define FSFORMAT_FILE     "opt/auralite.fsformat"
 #define FSCHECK_FILE      "opt/auralite.fscheck"
+/* RESIDUE3 C4 (RES-36): the MSI switch.  `off` is the INTx lane of the
+ * MSIX gate: it is the only way to prove the fallback path still works,
+ * because QEMU has no property that removes a device's MSI-X capability. */
+#define MSI_FILE          "opt/auralite.msi"
 
 static uint32_t read_be32(void) {
     uint32_t v = 0;
@@ -60,7 +65,7 @@ static uint16_t read_be16(void) {
  * Returns 1 on success, 0 when fw_cfg is absent, the file is missing,
  * or the value is implausibly large — each of which must degrade to the
  * build defaults, never to noise. */
-static int fwcfg_read_string(const char *wanted, char *out, int out_max) {
+int fwcfg_read_opt(const char *wanted, char *out, int out_max) {
     /* Signature: absent fw_cfg reads as open bus, not "QEMU". */
     outw(FW_CFG_SELECTOR, FW_CFG_SIGNATURE);
     char sig[4];
@@ -113,7 +118,7 @@ static int fwcfg_read_string(const char *wanted, char *out, int out_max) {
 
 void fwcfg_selftest_probe(void) {
     char val[16];
-    if (!fwcfg_read_string(SELFTEST_FILE, val, (int)sizeof(val) - 1)) {
+    if (!fwcfg_read_opt(SELFTEST_FILE, val, (int)sizeof(val) - 1)) {
         return;
     }
 
@@ -130,7 +135,7 @@ void fwcfg_selftest_probe(void) {
 
 void fwcfg_fsformat_probe(void) {
     char val[16];
-    if (!fwcfg_read_string(FSFORMAT_FILE, val, (int)sizeof(val) - 1)) {
+    if (!fwcfg_read_opt(FSFORMAT_FILE, val, (int)sizeof(val) - 1)) {
         return;
     }
 
@@ -150,7 +155,7 @@ void fwcfg_fsformat_probe(void) {
  * -fw_cfg name=opt/auralite.fscheck,string=1 and gets named findings. */
 void fwcfg_fscheck_probe(void) {
     char val[16];
-    if (!fwcfg_read_string(FSCHECK_FILE, val, (int)sizeof(val) - 1)) {
+    if (!fwcfg_read_opt(FSCHECK_FILE, val, (int)sizeof(val) - 1)) {
         return;
     }
 
@@ -160,4 +165,19 @@ void fwcfg_fscheck_probe(void) {
         fscheck_set(0, "fw_cfg");
     }
     /* Unrecognised strings leave the default (off) in place. */
+}
+
+void fwcfg_msi_probe(void) {
+    char val[16];
+    if (!fwcfg_read_opt(MSI_FILE, val, (int)sizeof(val) - 1)) {
+        return;                       /* absent knob: the build default (on) */
+    }
+
+    if (strcmp(val, "off") == 0) {
+        msi_set_enabled(0, "fw_cfg opt/auralite.msi=off");
+    } else if (strcmp(val, "on") == 0) {
+        msi_set_enabled(1, "fw_cfg opt/auralite.msi=on");
+    }
+    /* Anything else leaves the default: a typo must not silently switch a
+     * device off the interrupt path it is supposed to use. */
 }

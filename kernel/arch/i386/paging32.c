@@ -23,6 +23,8 @@
 #define PDE_US  (1u << 2)
 #define PDE_PS  (1u << 7)
 #define PTE_P   (1u << 0)
+#define PTE_PWT              (1u << 3)
+#define PTE_PCD              (1u << 4)
 #define PTE_RW  (1u << 1)
 #define PTE_US  (1u << 2)
 
@@ -99,7 +101,13 @@ int paging32_map(uint32_t virt, uint32_t phys, uint32_t flags)
 
     pt[pti] = (phys & ~0xFFFu) | PTE_P |
               ((flags & PAGE32_FLAG_WRITE) ? PTE_RW : 0) |
-              ((flags & PAGE32_FLAG_USER)  ? PTE_US : 0);
+              ((flags & PAGE32_FLAG_USER)  ? PTE_US : 0) |
+              /* RES-11: PCD|PWT = uncached device memory.  Without this
+               * the framebuffer would be mapped WB, and on a WC-less PTE
+               * the CPU is free to cache, merge and reorder pixel writes
+               * the device never sees -- the classic "the window flickers
+               * or never appears" bug. */
+              ((flags & PAGE32_FLAG_MMIO)  ? (PTE_PCD | PTE_PWT) : 0);
     invlpg(virt);
     return 0;
 }

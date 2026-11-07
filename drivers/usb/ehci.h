@@ -28,6 +28,9 @@ int ehci_isochronous_transfer(uint8_t dev_addr, uint8_t endpoint,
                               int low_speed, uint16_t max_packet,
                               void *data, uint32_t len, int is_in);
 int ehci_split_transaction_setup(uint8_t hub_addr, uint8_t hub_port, uint8_t dev_addr, uint8_t endpoint);
+/* RESIDUE3 C5b: PORTSC.PSPD, 0=full 1=low 2=high, 0xFF when nothing is
+ * connected.  Used by usb_core so an EHCI port is not assumed high-speed. */
+uint8_t ehci_port_speed_code(int port);
 void ehci_self_test(void);
 
 #endif

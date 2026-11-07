@@ -49,6 +49,22 @@ _Static_assert(sizeof(boot_info_t) == BOOT_INFO_SIZEOF_C,
 
 /* Sub-struct layout that the framebuffer console and the mmap walk
  * depend on at both widths. */
+/* RESIDUE3 C3 (RES-12): Stage 2 now WRITES the framebuffer block field by
+ * field (INT 10h AX=4F01/4F02 is the source), so these numbers stopped being
+ * a description and became an interface the assembly depends on.  Pinned as
+ * literals on purpose: the generated macros are self-consistent by
+ * construction, and would happily follow a boot_fb_t that grew a field --
+ * while the hand-written `mov dword [es:BOOT_FB_WIDTH_OFF], eax` in
+ * boot/bios/stage2/vbe.inc would silently start writing mid-struct. */
+_Static_assert(BOOT_FB_PHYS_OFF_C  == 8,  "boot_fb_t.phys_base moved");
+_Static_assert(BOOT_FB_WIDTH_OFF_C == 16, "boot_fb_t.width moved");
+_Static_assert(BOOT_FB_HEIGHT_OFF_C== 20, "boot_fb_t.height moved");
+_Static_assert(BOOT_FB_PITCH_OFF_C == 24, "boot_fb_t.pitch moved");
+_Static_assert(BOOT_FB_BPP_OFF_C   == 28, "boot_fb_t.bpp moved");
+_Static_assert(BOOT_FB_RSHIFT_OFF_C== 29, "boot_fb_t.red_shift moved");
+_Static_assert(BOOT_FB_GSHIFT_OFF_C== 30, "boot_fb_t.green_shift moved");
+_Static_assert(BOOT_FB_BSHIFT_OFF_C== 31, "boot_fb_t.blue_shift moved");
+
 _Static_assert(sizeof(boot_mmap_entry_t) == 24, "mmap entry size");
 _Static_assert(sizeof(boot_fb_t) == 24 + 8,     "fb struct size");
 _Static_assert(offsetof(boot_mmap_entry_t, type) == 16, "mmap.type");

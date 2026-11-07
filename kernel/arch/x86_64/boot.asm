@@ -60,7 +60,13 @@ _start:
     rep stosb                  ; memset(rdi, 0, rcx)
 
     ; Now that .bss is zeroed, install our own deterministic stack.
+    ; RESIDUE3 C2: the C ABI requires RSP%16 == 0 at the call.  stack_top is
+    ; 16-aligned by its definition in .bss, but the loader' correctness is not
+    ; something this file should have to assume -- one AND makes the phase a
+    ; property of this file (check_abi_align.py models it; before the fix the
+    ; tool reported this call as reaching C with an unknown phase).
     lea rsp, [rel stack_top]
+    and rsp, -16
 
     ; Restore boot_info pointer into RDI -- first argument to kmain per
     ; the System V AMD64 ABI.

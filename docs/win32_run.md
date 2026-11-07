@@ -36,6 +36,25 @@ What the six states mean:
 | Audacity 3.7.5 | ❌ never binds | ❌ never binds | ❌ never binds | ❌ never binds | ❌ never binds | ❌ never binds | Outcome B (`W32A-17`): 19 modules / 419 symbols unmet, `w32/app_ledger/audacity-3.7.5.gap`; never binds, so no downstream state is reachable. |
 <!-- END GENERATED: w32 run matrix -->
 
+### What RESIDUE3 C8 changed about *loading* (and did not change about *running*)
+
+C8 rebuilt the loader underneath these rows: one relocation path for both the
+kernel and the personality, streaming the `.reloc` directory with no fixed cap
+(Audacity 3.7.5's 90932 relocations, DOOM's 1661, both measured), a 256/128/32
+module/keepalive/depth table, and a gap report that *names* the symbols it
+cannot bind. None of that moves a cell in the matrix above — the four apps'
+six states are unchanged, and the row for each still cites the same gate. What
+C8 added is two gates that measure the personality's own surface rather than an
+app's: `test_w32_failclean_live` (all 35 FAIL-CLEAN functions called by name
+and checked against `docs/win32.md`, 42/42) and `test_w32_static_slice` (820
+`static-only` pairs resolved through LoadLibrary + GetProcAddress, 38/38).
+
+The one thing C8 found that *does* touch "binds": `LoadLibraryA` answered NULL
+for `imm32.dll`, `ole32.dll` and `uxtheme.dll` — modules the personality
+implements and the static tables export, but which were never registered as
+loadable, so the classic delay-load shape failed while IAT binding worked. Fixed
+in `w32/src/w32_module.c`; `test_w32_static_slice` now asserts 20/20 modules.
+
 A green cell is never the whole story: the evidence column names the gaps
 the green does not cover (a clean-extract error box, an undriven dialog,
 a missing frame digest). Gaps are SKIP lines in the gates and prose here,

@@ -19,6 +19,7 @@
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/lx/lx.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/mm/aspace.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/mm/vma.h"
@@ -535,6 +536,7 @@ int64_t do_fork(void) {
         return -EAGAIN;   /* POSIX fork: resource shortage is EAGAIN */
     }
     child->pml4_phys = child_pml4;
+    aspace_get(child_pml4);   /* RESIDUE3 C2: the fork child is owner #1 */
     child->parent    = parent;
     /* Snapshot the user-mode return frame NOW (it lives in globals that the
      * parent will clobber on its very next syscall, well before the child
@@ -587,6 +589,9 @@ int64_t do_fork(void) {
                 vma_free_all(&child->vma_list);
                 child->vma_list = NULL;
                 if (child->pml4_phys) {
+                    /* RESIDUE3 C2: the child already holds a reference; drop
+                     * it before the direct free or the table keeps a ghost. */
+                    (void)aspace_put(child->pml4_phys);
                     (void)paging_free_address_space(child->pml4_phys);
                     child->pml4_phys = 0;
                 }
@@ -937,7 +942,13 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
          * every other per-image TCB update lives. */
         cur->persona = lx_path_is_lx(path) ? PERSONA_LX : PERSONA_NATIVE;
     }
-    if (old_pml4 && old_pml4 != new_pml4) {
+    /* RESIDUE3 C2: the exec'ing thread TAKES the new space and DROPS the old
+     * one.  It must not free the old page tables here: with CLONE_VM siblings
+     * still running, this thread is not necessarily the old space's last
+     * owner.  Before C2 that free was unconditional — an exec in one thread
+     * tore the address space out from under every other thread in the group. */
+    aspace_get(new_pml4);
+    if (old_pml4 && old_pml4 != new_pml4 && aspace_put(old_pml4)) {
         (void)paging_free_address_space(old_pml4);
     }
 
@@ -1306,6 +1317,7 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
         return -EAGAIN;
     }
     child->pml4_phys = new_pml4;
+    aspace_get(new_pml4);     /* RESIDUE3 C2: the spawned child is owner #1 */
     child->vma_list = NULL;
     child->parent = sched_current();
     /* LX_COMPAT L1: spawn loads the ELF through its own path (below),

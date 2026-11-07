@@ -45,6 +45,10 @@ ReactOS.
 | `tests/crt_test.asm` | A PE with a TLS directory and `.CRT` table |
 | `include/w32/w32_module.h` | `LoadLibrary`/`GetProcAddress` interface (W32-7) |
 | `src/w32_module.c` | Module table and the DLL load path |
+| `include/w32/w32_reloc.h` | Base-relocation API shared by both loaders (RESIDUE3 C8) |
+| `src/w32_reloc.c` | The relocation walk: streaming, no fixed cap (RESIDUE3 C8) |
+| `tests/w32c8_failclean.c` | Live FAIL-CLEAN fixture: calls all 35 generated functions by name (RESIDUE3 C8) |
+| `tests/w32c8_static_slice.c` | Live static-only receipts: resolves 820 ledger pairs by name and calls a slice (RESIDUE3 C8) |
 | `tests/testdll.asm`, `tests/testdll.def` | A real DLL fixture (W32-7) |
 | `examples/console-app/hello.c` | Console example, mingw-w64 built (W32-8) |
 | `examples/gui-app/window.c` | GUI example over the compositor (W32-8) |

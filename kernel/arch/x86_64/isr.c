@@ -2,9 +2,11 @@
 
 #include <stdint.h>
 #include "kernel/arch/x86_64/isr.h"
+#include "kernel/lib/abi_probe.h"
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/cpu.h"
 #include "kernel/arch/x86_64/lapic.h"
+#include "kernel/arch/x86_64/msi.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/proc/scheduler.h"
@@ -432,6 +434,10 @@ void isr_handler(struct registers *r) {
             tcb_t *cur = sched_current();
             if (cur) cur->sampled_rip = r->rip;
         }
+        /* RESIDUE3 C2: the in-guest half of the 16-byte C ABI receipt.  Runs
+         * once, in genuine interrupt context, where a misaligned entry would
+         * have already #GP'd the C handler above. */
+        abi_probe_irq();
         irq_dispatch((int)(r->int_no - 32), r);
         /* On the way back to Ring 3, deliver any pending unblocked signal
          * (e.g. one posted by kill() from another thread, or SIGALRM). */
@@ -444,6 +450,13 @@ void isr_handler(struct registers *r) {
          * here. */
         extern void ipi_tlb_shootdown_handler(void);
         ipi_tlb_shootdown_handler();
+    } else if (r->int_no >= MSI_VECTOR_BASE &&
+               r->int_no < MSI_VECTOR_BASE + MSI_VECTOR_COUNT) {
+        /* RESIDUE3 C4 (RES-36): a message-signalled interrupt.  The handler
+         * is a device callback with no universal signature -- it takes one
+         * cookie -- and msi_dispatch writes the LAPIC EOI after it, so this
+         * branch costs the IOAPIC/PIC paths nothing. */
+        (void)msi_dispatch((uint8_t)r->int_no);
     } else {
         kprintf("[isr] spurious/unknown interrupt vector %llu\n",
                 (unsigned long long)r->int_no);

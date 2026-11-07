@@ -23,10 +23,25 @@ struct offset_entry {
 };
 
 #define ENTRY(name, field) { name, offsetof(boot_info_t, field) }
+/* RESIDUE3 C3 (RES-12): BIOS Stage 2 now fills boot_info_t.fb from VBE, so the
+ * individual field offsets inside the sub-struct need names too.  They are
+ * derived from the SAME struct the C kernels read -- which is the entire
+ * point of this generator: the assembler never learns a number a compiler
+ * did not print. */
+#define FB_ENTRY(name, member) \
+    { name, offsetof(boot_info_t, fb) + offsetof(boot_fb_t, member) }
 
 static const struct offset_entry offsets[] = {
     ENTRY("BOOT_MAGIC_OFF", magic),
     ENTRY("BOOT_FB_OFF", fb),
+    FB_ENTRY("BOOT_FB_PHYS_OFF",    phys_base),
+    FB_ENTRY("BOOT_FB_WIDTH_OFF",   width),
+    FB_ENTRY("BOOT_FB_HEIGHT_OFF",  height),
+    FB_ENTRY("BOOT_FB_PITCH_OFF",   pitch),
+    FB_ENTRY("BOOT_FB_BPP_OFF",     bpp),
+    FB_ENTRY("BOOT_FB_RSHIFT_OFF",  red_shift),
+    FB_ENTRY("BOOT_FB_GSHIFT_OFF",  green_shift),
+    FB_ENTRY("BOOT_FB_BSHIFT_OFF",  blue_shift),
     ENTRY("BOOT_MMAP_OFF", mmap),
     ENTRY("BOOT_MMAP_CNT_OFF", mmap_count),
     ENTRY("BOOT_HHDM_OFF", hhdm_offset),

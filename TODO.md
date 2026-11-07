@@ -140,9 +140,13 @@ build when a box and the plan disagree.
   agree)` — a disagreeing machine gets named at boot), and virtio-net
   IRQ RX landed at RESIDUE R9 / ledger RES-28 (`wq_wait_deadline`
   sleeps, the `RX via IRQ wake` receipt is CI-pinned).  Still open:
-  Interrupt Source Overrides from the MADT, device IRQ waking a
-  hlt-ed AP (ledger RES-16), and MSI/MSI-X (ledger RES-36, opener
-  measured: the virtio-pci cap walk parses only vendor caps today).
+  Interrupt Source Overrides from the MADT and device IRQ waking a
+  hlt-ed AP (ledger RES-16).  **MSI/MSI-X is done** — RESIDUE3 C4 /
+  ledger RES-36: the cap walk, the LAPIC vector block and the two
+  virtio attaches landed 2026-11-04, receipt
+  `[msi] virtio-blk: MSI-X vector 96 (1 msg, 3 entries)` →
+  `1 interrupt(s) delivered on vector 96`, and `opt/auralite.msi=off`
+  keeps both devices on INTx (test_msix.sh 28/28).
 - [x] Interrupt Source Overrides from the ACPI MADT (**Done, RESIDUE2 T2:**
   the redirection table is programmed from the type-2 ISO entries with
   polarity/trigger, PC-standard defaults remain the fallback, divergences
@@ -250,12 +254,23 @@ build when a box and the plan disagree.
   dedicated stub fix is the proper cure; the M5 signal path works around it
   with a runtime-aligned scratch. test_stopped is also failing for an unrelated
   Ctrl+Z sendkey timing reason (pre-existing, fails on M1 too).
-- [ ] IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (the M5
-  signal path works around it with a runtime-aligned scratch).
-  (class: kernel) (RESIDUE2 T1)
-- [ ] SMP-safety sweep: atomic OFD refcounts, per-vnode write lock for
-  O_APPEND, atomic `sig_pending`, per-CPU SYSCALL state. (class:
-  kernel/SMP) (RESIDUE2 T1)
+- [x] IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (the M5
+  signal path worked around it with a runtime-aligned scratch, and that
+  workaround is gone). **Done (RESIDUE3 C2):** the metric was wrong — `align
+  16` aligns code, not the stack — so the invariant is now modelled on the
+  path: `tools/check_abi_align.py` tracks RSP%16 through push/pop/sub/add for
+  all 14 assembly files (7 call sites, 0 violations) and the tree's three real
+  misalignments are fixed (x86_64 boot stack, i386 boot stack, i386 IRQ stub);
+  the in-guest half runs `fxsave`+`movaps` inside a real IRQ and a real
+  syscall (`[abi] PASS` ×2), pinned by `test_stack_alignment.sh` 8/8.
+  (class: kernel) (RESIDUE3 C2)
+- [x] SMP-safety sweep: atomic OFD refcounts, per-vnode write lock for
+  O_APPEND, atomic `sig_pending`, per-CPU SYSCALL state. **Done (RESIDUE2 T1,
+  proved at RESIDUE3 C2):** all four mechanisms are atomic on inspection and
+  `test_smp_procstress` pins them under `-smp 4` — six appenders × 200 records
+  through six independent OFDs, 100 fork+exit cycles through the parent/child
+  table, and a SIGUSR1 storm against `sig_pending` (5/5). (class:
+  kernel/SMP) (RESIDUE3 C2)
 - ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
   console stdin path and /dev/tty0 line discipline generate these via ISIG and
   the tty->fg_pgid indirection. Full per-process-group routing arrives in P6.
@@ -403,8 +418,14 @@ build when a box and the plan disagree.
   waitpid + reparent-to-init confirmed present.
 - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
   bundled demos/tests, but not POSIX-complete.
-- [ ] POSIX-completeness for `fork`/`execve`/`wait4` beyond what the
-  demos need. (class: POSIX/proc) (RESIDUE2 T1)
+- [x] POSIX-completeness for `fork`/`execve`/`wait4` beyond what the
+  demos need. **Done:** `vfork`-class requests are refused loudly with
+  `-ENOSYS` at the syscall boundary; `execve` honours `FD_CLOEXEC`; `wait4`
+  fills a rusage from the child's `cpu_ticks` captured before the reaper runs
+  (selftest asserts `ru_utime > 0`); `waitpid` covers -1/0/<0, `WNOHANG`,
+  `ECHILD`, `WUNTRACED`, `WCONTINUED` and `-EINTR`
+  (`test_posix_p10` 27/27, `test_selftest`, `stoptest`).
+  (class: POSIX/proc) (RESIDUE3 C2)
 - **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
   lazy VMAs and true file-backed `MAP_SHARED` remain future work.
 - ~~Lazy VMAs and true file-backed `MAP_SHARED` write-back.~~ **Done
@@ -603,21 +624,45 @@ build when a box and the plan disagree.
   auto-detected at hotplug with a read-only /usb/ext2 view over real
   mke2fs/debugfs images (`test_usb_ext2_automount`). (class: USB)
   (RESIDUE2 T6)
-- [ ] Real isochronous STREAMING (narrowed 2026-09-06): frame-accurate
-  ISOCH TRBs on xHCI + a device that consumes them (usb-audio with a
-  real audiodev); today only the framework and attach gates exist and
-  say so honestly (`test_usb_isoc`). (class: USB) (RESIDUE2 T6)
-- **USB HID generic support is partial.** Boot keyboard/mouse works through UHCI,
-  OHCI, high-speed EHCI and xHCI; generic keyboard and mouse/tablet report
-  descriptors are parsed for common QEMU-tested layouts. Full HID collections/usages
-  and EHCI full/low-speed split transactions remain future work.
-- **Bluetooth and Wi-Fi have no silicon.** Both protocol stacks are
-  now pure, host-pinned and complete at the wire level (bt_hci.h,
-  wifi_proto.h; RESIDUE2 T6): the BT transport rides the
-  controller-agnostic usb_core API and the Wi-Fi MAC layer ingests real
-  RX frames (scan/auth/AID from parsed bytes, proven over the wifi_virt
-  virtual AP).  What is still absent is a chipset register driver —
-  QEMU models neither radio, so real hardware remains a loud D2 skip.
+- [x] Real isochronous STREAMING (**Done, RESIDUE3 C5, 2026-11-04:** the
+  xHCI isoc path is wired — it used to route to a BULK transfer — the
+  endpoint is configured as ISOCH (1/5) instead of INTERRUPT (3/7), and
+  `usb_audio_stream_selftest()` streams a guest-generated 440 Hz sine
+  through QEMU `usb-audio`: `[isoc] PASS: 24 packet(s) streamed on xHCI
+  ep 0x01 (192 B/packet, 440 Hz sine, 1152 frames of audio)` with
+  `frames: scheduled 24, completed 24, lost 0, timeouts 0`.
+  `test_usb_isoc` flips SKIP→PASS.  Measured while landing it: pinning
+  packets to frames delivered 1/24 (QEMU's isoclock runs far ahead of
+  the guest), so the burst is issued SIA with MFINDEX accounting — both
+  numbers are in the code.  The HID-breadth half of the same narrowing
+  did NOT land: it is RES-62 / C5b.) (class: USB) (RESIDUE3 C5)
+- **USB HID generic support covers report IDs, not every usage.** Boot
+  keyboard/mouse works through UHCI, OHCI, EHCI and xHCI; generic report
+  descriptors are parsed by `drivers/usb/hid_report.c`, which carries a
+  `report_id` per field and a bit cursor per report, so a descriptor with IDs 1
+  and 2 decodes each report against its own layout (**Done, RESIDUE3 C5b,
+  2026-11-04**: 8/8 host cases, a kernel selftest over a two-ID descriptor, and
+  the LED-output-report bug that made a 8-byte input report look 10 bytes long
+  is fixed and pinned). What is still not there, and is named rather than
+  implied: the EHCI split-transaction path for an FS/LS device behind a
+  high-speed hub is verified as an encoding (`drivers/usb/ehci_qh.c`, 9/9 host
+  cases) plus a runtime log line, never as a transfer — QEMU has no high-speed
+  hub (its `usb-hub` is full-speed and refuses a high-speed bus, asserted by
+  `test_usb_ehci_split.sh`), so no TT has ever been seen on silicon here.
+- **Bluetooth and Wi-Fi: the protocol halves are done; the silicon is not.**
+  Both stacks were pure, host-pinned and complete at the wire level since
+  RESIDUE2 T6 (bt_hci.h, wifi_proto.h).  **Done, RESIDUE3 C6, 2026-11-04:**
+  the HCI command/event round trip now lives in `bt_transport.{h,c}` with the
+  transport injected and is driven against a scripted CSR-class controller
+  (10/10 host, plus a kernel self-test quoting the controller's own BD_ADDR),
+  and the Wi-Fi MAC layer reaches the IP stack — `wifi_virt` answers ARP and
+  ICMP for its address and `wifi_netdev.c` exposes the link as a `struct
+  netdev`, so `net_ping` succeeds over 802.11 with no wired NIC present.
+  What is still absent is the chip, and the measurement is blunt: **QEMU
+  removed its Bluetooth subsystem in 9.0** (`-bt` is an invalid option, no
+  `usb-bt-dongle` device exists) and QEMU has no 802.11 radio at all, so a
+  real dongle and a real Wi-Fi chip remain RES-61's metal half
+  (`PENDING-USER@C6`) — attach one and the same code paths run against it.
 
 ### Networking
 
@@ -657,6 +702,20 @@ build when a box and the plan disagree.
   (1 MiB through window-full waits) and `test_tcp_ordering` (512 KiB
   position-dependent pattern verified both directions, ~3 MB/s over
   SLIRP). (class: networking) (RESIDUE2 T5)
+- ~~**The TCP window is stuck at 64240 bytes.**~~ **Done (RESIDUE3 C7):**
+  window scaling is negotiated (WSCALE in the SYN, the peer's shift read from
+  its SYN-ACK, `snd_wnd = field << shift`, our own window encoded with a
+  shift derived from the buffer we actually hold — 0, and the receipt says
+  why). Two ceilings had to go with it: `ssthresh` was pinned at
+  `TCP_WINDOW` under the comment "arbitrarily high" (it is not, once a peer
+  can grant gigabytes — measured: in-flight stuck at exactly 64240), and the
+  established path reset the negotiated shift immediately after learning it.
+  Receipt: a megabyte to a real Linux peer with **395660 bytes in flight**,
+  and a window-clamped peer holding the same transfer inside 16 bits as the
+  control (`test_tcp_wscale` 19/19; the scaled lane needs a TAP link and skips
+  loudly without one). A real **NVMe** driver is the other half of what was
+  once RES-46's successor and is now `RESIDUE3_PLAN.md` C7b — opened, not
+  started. (class: networking) (RESIDUE3 C7)
 
 ### Graphics / GUI
 
@@ -761,9 +820,22 @@ that — so the parked lx items stay bullets, not boxes):
 - [x] User `mmap` / `munmap` / `brk` baseline syscalls (eager private mappings; true lazy/shared VMAs remain future work).
 - [x] Slab allocator for common fixed-size kernel objects.
 - [x] Guard pages around kernel/user stacks, with explicit overflow diagnosis in the `#PF` handler (`kernel/proc/guard.c`; kernel-stack hit is fatal, user-stack hit → SIGSEGV). Heap-region guard pages remain future work.
-- [ ] Large-page support for selected kernel mappings. (RESIDUE2 T1)
+- [x] Large-page support for selected kernel mappings. **Done (RESIDUE2 T1,
+  accounted at RESIDUE3 C2):** `kheap_expand()` commits whole 2 MiB leaves
+  (4 KiB head, 2 MiB bulk, 4 KiB tail, 4 KiB fallback) and now COUNTS them —
+  `[heap] large-page audit: 3 x 2MiB + 0 x 4KiB = 6144 KiB (100% of the heap
+  rides 2MiB leaves)`, with the 1 GiB refusal printed as a number and a
+  reason. (RESIDUE3 C2)
 - [x] `paging_free_address_space()` walker (user half) with PMM accounting.
-- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land. (RESIDUE2 T1)
+- [x] Wire it on for all reaped zombies once TLB shootdown + per-PML4
+  refcounting land. **Done (RESIDUE3 C2):** `kernel/mm/aspace.{c,h}` is a
+  refcount table keyed by the PML4 root, wired at every creator and dropper
+  (clone/fork/spawn `get`, execve `get(new)`+`put(old)`, reap `put`), so the
+  LAST owner frees the page tables — including pthread zombies, which had no
+  waiter at all and leaked a TCB + 32 KiB stack each. Receipt
+  (`test_aspace_refs` 8/8): `reaped 'pthread' … aspace refs 4` → `… 1` → the
+  leader `reaped '/tests/fpustress' (… 1046 frames, aspace refs 0)`.
+  (RESIDUE3 C2)
 
 ### Scheduling and processes
 
@@ -771,7 +843,12 @@ that — so the parked lx items stay bullets, not boxes):
 - [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
 - [x] Full address-space/page-table reaping via `paging_free_address_space()` in `thread_reap_zombies()`.
 - [x] BLOCKED state, wait queues and sleepable kernel primitives baseline.
-- [ ] Real parent/child process table and precise `waitpid` semantics. (RESIDUE2 T1)
+- [x] Real parent/child process table and precise `waitpid` semantics.
+  **Done (RESIDUE2 T1, order-proved at RESIDUE3 C2):** the children list
+  answers reapable-exit/ECHILD/selector in O(children); the refcounted
+  address space makes the reap order explicit (`test_aspace_refs` 8/8) and
+  `test_smp_procstress` cycles 100 forks through link → wait → unlink on
+  `-smp 4`. (RESIDUE3 C2)
 - [x] Basic per-process FD tables.
 - [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
 - [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
@@ -785,7 +862,7 @@ that — so the parked lx items stay bullets, not boxes):
 - [x] Add baseline file timestamps for VFS stat plus tmpfs, diskfs, ext2 and FAT32. Remaining permission-mode persistence/audit across every experimental FS stays future work.
 - [x] Add symbolic links (**Done:** `kernel/fs/symlink.c`; `test_fifo_symlinks` runs in the posix CI shard).  Richer path handling (canonicalisation) stays live — see the VFS entry above.
 - [x] Add block cache and writeback policy instead of direct synchronous writes (the LAYER exists on x86_64 — `kernel/fs/buffer_cache.c`, status 🧪; port adoption is ledger RES-07). (**Done, RESIDUE2 T3:** stores mark buffers dirty; durability comes from eviction, the new 1 Hz `bc_tick()` PIT drain (try-lock, never blocks in IRQ), `.sync`/fs_cache_sync and kernel_halt; FAT32/ext2/diskfs routed through `fs_read_block`/`fs_write_block` with `.sync = fs_cache_sync`; `test_bc_writeback.sh` proves hard-kill survival and coalescing (e.g. 472 stores → 140 device writes); ledger RES-07 closed — buffer_cache/tmpfs/devfs now live in all three port shared lists with runtime receipts on i386/rv64/a64.) (RESIDUE2 T3)
-- [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).
+- [x] Add virtio-blk as a modern virtual storage target (**Done:** `drivers/virtio_blk/` on x86_64, virtio-mmio vblk on both DTB tenants, virtio-pci as the second transport at RESIDUE R7).  ~~virtio-scsi / NVMe stay future work (ledger RES-46's neighbourhood).~~ **NVMe is done (RESIDUE3 C7b):** `drivers/nvme/` drives a QEMU `-device nvme` namespace through `blkdev` and ext2 mounts off it (`test_nvme` 23/23); virtio-scsi is still future work.
 
 ### Networking
 

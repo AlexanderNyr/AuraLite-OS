@@ -1,0 +1,1323 @@
+diff --git a/Makefile b/Makefile
+index dffb962..5c94bd1 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4500,6 +4500,18 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
+ 	@echo "[unit] running tests/unit/test_residue2_claims.sh"
+ 	@bash tests/unit/test_residue2_claims.sh || exit 1
+ 
++# RESIDUE3_PLAN.md C0: the plan-table / orphan-debt checker.  The seven
++# existing claim checkers pin *claims* to artefacts; none of them reads a
++# plan's phase table, a TODO box's phase tag, or the Definition-of-done
++# paragraph - the three places the RESIDUE3 audit found status drifting
++# with no claim changing (RES-38/39/47, five W32APP rows + RESIDUE2 T7,
++# all seven open TODO boxes).  Python only: no build, no QEMU.  The live
++# violations are pinned in tools/plan_tables_baseline.txt with the same
++# ratchet shape as the residue markers - a new violation is red and so is
++# a fixed one whose pin did not move in the same commit.
++	@echo "[unit] running tests/unit/test_plan_tables.sh"
++	@bash tests/unit/test_plan_tables.sh || exit 1
++
+ # Q12 (POSIX2024_PLAN.md): the POSIX.1-2024 conformance harness, host layer —
+ # header self-containment sweep, matrix->archive drift check, negative
+ # control, and the Q-family unit sub-suites.  Skips cleanly when the libc
+diff --git a/docs/README.md b/docs/README.md
+index d3b8cbd..c031e53 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -34,6 +34,9 @@ This directory contains the technical documentation for AuraLite OS.
+   security properties.
+ - [`plans/WIN32_PLAN.md`](plans/WIN32_PLAN.md) — the Win32 personality plan, its
+   legal grounding, and phase-by-phase status.
++- [`plans/RESIDUE3_PLAN.md`](plans/RESIDUE3_PLAN.md) — the successor to the
++  residue series: closes every remaining ledger row, the seven open TODO
++  boxes, and the plan-table drift class itself (C0 opens).
+ 
+ ## Specialised references in this directory
+ 
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+new file mode 100644
+index 0000000..136b0cf
+--- /dev/null
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -0,0 +1,625 @@
++# AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
++
++## Status: IN PROGRESS — C0 landed 2026-11-03 (the rig, 1/11); every count in this file was measured on `26cb7fe`
++
++| Phase | State | Deliverable |
++|-------|-------|-------------|
++| C0 — the rig: the plan-table / orphan-debt checker | ✅ done (2026-11-03) | `patches/RESIDUE3_C0_rig.patch` |
++| C1 — the reconciliation: flip what already landed, repair what drifted | ⬜ planned | `patches/RESIDUE3_C1_reconcile.patch` |
++| C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table | ⬜ planned | `patches/RESIDUE3_C2_kernel.patch` |
++| C3 — i386 graphics: VBE first, then the compositor (RES-12 → RES-11) | ⬜ planned | `patches/RESIDUE3_C3_i386gfx.patch` |
++| C4 — MSI/MSI-X on virtio (RES-36) | ⬜ planned | `patches/RESIDUE3_C4_msi.patch` |
++| C5 — USB: isochronous streaming and HID breadth (RES-38 survivors) | ⬜ planned | `patches/RESIDUE3_C5_usb.patch` |
++| C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39 survivors) | ⬜ planned | `patches/RESIDUE3_C6_wireless.patch` |
++| C7 — network: window scaling (RES-52) and the NIC/storage successor of RES-46 | ⬜ planned | `patches/RESIDUE3_C7_net.patch` |
++| C8 — Win32: the dynamic-scale loader, live FAIL-CLEAN receipts, DOOM D7 (RES-57/58/59) | ⬜ planned | `patches/RESIDUE3_C8_w32.patch` |
++| C9 — GL: the GLSL AST → TGSI back end (RES-54) | ⬜ planned | `patches/RESIDUE3_C9_tgsi.patch` |
++| C10 — close-out: the arithmetic, the honest zero, the parked M class | ⬜ planned | `patches/RESIDUE3_C10_close.patch` |
++
++## 1. Where this plan comes from
++
++Two instructions, one audit. The user's instruction after the RESIDUE2
++close-out: **close every remaining item**, not one subsystem. The audit
++re-ran the tree the way R12's and RESIDUE2's sweeps did, but this time
++the question was neither "which claims are stale" (R12) nor "which
++debts exist only as prose" (RESIDUE2) but **"which debts are recorded
++and still have no owner"**.
++
++Measured on `26cb7fe` (2026-11-03), this tree:
++
++| Source | Count | Composition |
++|---|---|---|
++| Ledger rows, non-DONE | **20** | OPEN 1 (RES-54) · HANDED-OFF 10 · PENDING-USER 6 · RE-AFFIRMED 4 |
++| `TODO.md` unchecked boxes | **7** | 6 tagged `(RESIDUE2 T1)`, 1 tagged `(RESIDUE2 T6)` |
++| `docs/status.md` 🚧 rows | **4** | OpenGL/libgl · Bluetooth HCI · Wi-Fi MAC · the arch.h migration ratchet (the harvester's 6th line is the legend itself) |
++| Plan-level open work | **3** | DOOM `D7` (Win32 DOOM) · SELFHOST `SH9` (cross-arch in-guest toolchains) · the W32 live-matrix PARTIAL gaps |
++| **Drift defects (new to this audit)** | **5 classes** | below — the reason C0 exists |
++
++### 1.1 The five drift classes this audit found (each with its receipt)
++
++**D1 — three ledger rows whose own phase claims closure, and the row
++never flipped.** `RESIDUE2_PLAN.md` T6 §"Definition of done" reads
++"RES-38 and RES-39 close", and T6's Result is `DONE`; T7's Result reads
++"all four RES-47 boxes closed with receipts". The ledger still carries
++`RES-38 HANDED-OFF@R12`, `RES-39 HANDED-OFF@R12`, `RES-47
++HANDED-OFF@R12`. This is the exact class RES-45 documented for TODO.md
++("the file claimed something the tree had already closed") — one layer
++down, in the ledger itself, where nothing checks it.
++
++**D2 — plan tables that disagree with their own sections.**
++`W32APP_PLAN.md`'s table shows `⬜ planned` for **W32A-1, W32A-2,
++W32A-5, W32A-12, W32A-18** while its own Status header says
++"W32A-0..W32A-17 are done" and `docs/status.md` claims W32A-0..W32A-18
++landed. `RESIDUE2_PLAN.md`'s table shows `T7 … ⬜ planned` while §T7
++reads `**Status: ✅ COMPLETE**` with a filled Result. `check_w32app_claims.py`
++does not catch this because it validates the *status document's* matrix,
++not the plan's own phase table.
++
++**D3 — every open TODO box is tagged with a phase that is already ✅.**
++Six carry `(RESIDUE2 T1)`, one carries `(RESIDUE2 T6)`; T1 and T6 are
++both `✅ COMPLETE`. RESIDUE2 §2's contract only required *"a phase is
++tagged by ≥ 1 box"* — nobody checked the implication "a ✅ phase owns no
++open box". The seven boxes are therefore orphaned by construction: they
++are real work (large pages, waitpid, SMP-safety, isoc streaming, POSIX
++depth) with a tag that points at a closed plan. Worse, re-measuring
++them (§3 C2) shows **four of the six kernel boxes name mechanisms that
++already exist in the tree** — atomics on the OFD refcount, an
++`O_APPEND` lock, an atomic `sig_pending`, 2 MiB leaves — so the debt
++is partly *unproven* rather than *unimplemented*, and nobody could see
++which without re-deriving it.
++
++**D4 — a measured opener that went stale *in the row's own favour*.**
++RES-39 says "the tree has ZERO [registered wireless NIC]" and cites
++`wifi.c 370 lines`. Measured now: `wifi.c` 333 + `wifi_virt.c` 136
++(landed at T6, per its own header: "the RESIDUE2 T6 reference backend"),
++auto-registered at `wifi.c:288` when no driver is present — and the boot
++log of a plain `make iso` already prints `[wifi] PASS: virtual AP: scan
++found 'AuraVirt' ch6`, auth/AID and 78 data bytes. The Wi-Fi half of
++RES-39 is closed by receipt and the row says the opposite.
++
++**D5 — stale line counts in the ledger's openers.** RES-11 cites the
++portable GUI surface as "3198 lines (gui.c 2461 + wm.c 530 + fb.c 207)";
++measured now: **3151 + 530 + 408 = 4089**. RES-38 cites "xhci 1995
++lines" and `bt.c 215`; measured now: **2093** and **193**. An opener is
++supposed to be a measurement other people can re-run; these cannot be.
++
++None of the five is a code defect. All five are the same defect: **a
++status that nothing re-derives from the tree.** C0 exists to make that
++class impossible, and C1 is the one-time repair of what it finds.
++
++### 1.2 What is genuinely open (the work this plan schedules)
++
++| Ledger row | Class | What is actually left |
++|---|---|---|
++| RES-54 | S/OPEN | GLSL AST → TGSI retarget (GL2's D7 hand-off): a real back end, not the canned dword triangle |
++| RES-11 | S | i386 has no compositor: it references none of the 4089-line portable surface |
++| RES-12 | S | i386 has no linear framebuffer at all: zero VBE code in any loader; the console is VGA text at 0xB8000 |
++| RES-36 | S | `virtio_pci.c` walks only cap id `0x09`; zero mentions of `0x05`/`0x11` anywhere — no MSI/MSI-X |
++| RES-38 | S | its five named boxes measured STALE at T6; the survivor is frame-accurate isochronous streaming (`test_usb_isoc` is a framework SKIP) |
++| RES-39 | S | Wi-Fi closed by receipt (D4); Bluetooth has protocol + `usb_core` transport but has never talked to a controller QEMU can attach |
++| RES-52 | S | `TCP_WINDOW` is 64240 and `grep wscale\|shift_cnt\|TCPOPT kernel/net/tcp.*` is 0 hits |
++| RES-57 | S | 1694 `static-only` symbols in the W32 app ledgers are bound but never called at runtime |
++| RES-58 | S | 35 FAIL-CLEAN functions assert an honest failure nobody has watched return in-guest |
++| RES-59 | S | Audacity Outcome B: 90932 relocations vs a 16384-entry buffer, a 117-DLL graph, 19-module/419-symbol gap |
++
++## 2. The coverage contract
++
++| Rule | Enforced by |
++|---|---|
++| Every non-DONE ledger row is either named by a phase of a **live** plan, or is class `M` (metal, needs the user's silicon) / `N` (re-affirmed non-goal) | C0 checker |
++| Every `- [ ]` box in TODO.md carries a tag naming a phase that is **not** ✅ | C0 checker |
++| A phase marked ✅ owns no open box and no OPEN ledger row, unless this file's §4 names it | C0 checker |
++| Every `docs/plans/*_PLAN.md` phase-table row agrees with that plan's per-phase `**Status:` line and Result | C0 checker |
++| Every measured opener (a line count, a grep-zero, a file size) in the ledger re-derives from the tree, or the row is edited | C0 checker (`--openers` mode: re-runs the greps the rows quote) |
++| Marker counts ratchet against `tools/residue_baseline.txt`; the ledger arithmetic pins (`LEDGER_ROWS`, `CLASS_PIN`) move in the same commit as the rows | the existing residue ratchet |
++| A phase flips to ✅ only with its Result filled and its gate green in the same commit | the GL2 L7 convention |
++
++Closing a ledger row means: the row's status changes with a receipt in
++the row itself, the phase Result cites the receipt, and — when the
++closure narrows — the survivor is a **new row or a box**, never a
++sentence.
++
++## 3. Phases
++
++### C0 — the rig: the plan-table / orphan-debt checker
++
++**Status:** ✅ COMPLETE
++
++**Objective:** make the drift class of §1.1 impossible. Seven checkers
++already pin claims to artefacts; none of them reads the *phase tables*,
++the *box tags*, or re-derives the *openers*. This one does all three.
++
++**Design:** `tools/check_plan_tables.py` (`--check`, `--openers`,
++`--selftest`) + `tests/unit/test_plan_tables.sh`, wired into
++`make test-unit` beside the GL2/RESIDUE2 wrappers.
++
++- [ ] Rule set as in §2, each violation printed with file:line and the
++      two disagreeing values.
++- [ ] `--selftest` runs against a doctored tree (a planted stale table
++      row, a planted orphan box, a planted missing successor) and must
++      fail there — a checker that never fails checks nothing.
++- [ ] **The live negative control:** at birth, on `26cb7fe`, the
++      checker must report exactly the twelve violations this audit
++      found: **16 items in three classes** — D1 ×3 (RES-38/39/47),
++      D2 ×6 (five W32APP rows + the RESIDUE2 T7 row), D3 ×7 boxes —
++      and C1 turns it green. The birth report is pasted into this
++      file's C1 Result.
++- [ ] `tools/residue_baseline.txt` gains the `RESIDUE3_PLAN.md <n>` row
++      in the same commit (this file ships with `<n>` markers; see C10).
++
++**Definition of done:** `make test-unit` runs the wrapper; deleting a
++tag from a TODO box, un-flipping a plan-table row, or closing a plan
++phase while its box is open each turn the build red.
++
++**Test gate:** selftest 8/8; live tree matches the 16-line pin;
++`--openers` re-derives the D5 numbers.
++
++**Result (2026-11-03):** DONE. `tools/check_plan_tables.py` (four rules,
++`--check` / `--report` / `--openers` / `--bless` / `--selftest`) +
++`tests/unit/test_plan_tables.sh` + `tools/plan_tables_baseline.txt`, the
++wiring in `make test-unit` (`make -n` shows the wrapper as line 818 of
++the recipe). Three things the landing proved that the audit could not:
++
++1. **The checker found debt in the plan that added it.** Its first live
++   run flagged `r1` three times on RES-57/58/59 — C8 named the rows in
++   prose but outside its own phase section, so the phase did not own
++   them. Fixed in this same commit (C8 now lists the three rows as
++   owned); without the fix the pin would have been 19, not 16.
++2. **Two false-positive classes had to be removed before the pin was
++   honest**, and both are now regression-tested: a plan's *dependency*
++   table also begins rows with a phase id (`| W32A-8 | COMCTL32: needs
++   … |`), and a Result may name a row it does not claim to close
++   (`T9: "ledger OPEN 6 → 1 (RES-54)"`). Rules `r4` and `r3` were
++   narrowed accordingly — a checker whose first act is a false positive
++   gets switched off.
++3. **`--openers` independently re-derived D5**: RES-11 `gui.c` 2461→3151
++   and `fb.c` 207→408, RES-39 `bt.c` 215→193 and `wifi.c` 370→333 — four
++   of the audit's five stale measurements, without being told which rows
++   to look at. The fifth (`xhci 1995`) quotes a bare basename, which the
++   mode deliberately does not guess at; that one stays a human fix in C1
++   and the mode says so in its docstring.
++
++**Live negative controls, run on this tree after the landing** (each one
++reverted immediately; the pin's answer is the receipt):
++
++| Planted change | Checker |
++|---|---|
++| `W32APP_PLAN.md` W32A-1 row `⬜ planned` → `✅ done` (a pin the tree no longer needs) | **FAIL** — `FIXED r4:W32APP_PLAN.md:W32A-1 (move the pin in the same commit)` |
++| a new TODO box tagged `(RESIDUE2 T1)` | **FAIL** — `NEW r2:TODO.md:a brand new debt tagged with a finished phase.` |
++| the tag stripped from the ABI-alignment box | **FAIL** — `FIXED r2:TODO.md:IRQ/syscall entry stubs …` |
++| nothing (restored tree) | **OK** — 16 pinned violations match the tree |
++
++So the rig fails in both directions a ratchet must: new debt is red, and
++debt that silently disappears without the pin moving is red as well.
++
++---
++
++### C1 — the reconciliation: flip what already landed, repair what drifted
++
++**Status:** ⬜ planned
++
++**Objective:** pay the audit's own findings before writing new code. No
++feature work in this phase; every change is a status that now matches a
++receipt that already exists.
++
++**Measured at C0 birth** (to be pasted verbatim): D1 ×3, D2 ×6, D3 ×7.
++
++- [ ] **RES-38 → DONE@T6**, survivor narrows to frame-accurate
++      isochronous streaming, which becomes RES-60 (class W — QEMU has
++      `usb-audio` + `-audiodev`, so it is provable) and stays the C5
++      target. Receipt quoted from T6's Result (five boxes measured
++      stale, 13-gate USB sweep re-run).
++- [ ] **RES-39 → DONE@T6**, survivor narrows to the Bluetooth
++      controller attach, which becomes RES-61 (class M for real
++      silicon, but C6 keeps a QEMU-provable lane) — and the Wi-Fi half
++      cites the printed `[wifi] PASS: virtual AP …` receipt rather than
++      "the tree has ZERO".
++- [ ] **RES-47 → DONE@T7** (its four boxes closed with receipts at T7:
++      owner gates, clipboard ACL, settings, `gclip`), with the named
++      survivors restated as boxes if any are still open.
++- [ ] **W32APP table:** five rows `⬜ planned` → `✅ done` (W32A-1/2/5/12/18),
++      matching the plan's own Status header and `docs/status.md`.
++- [ ] **RESIDUE2 table:** T7 row `⬜ planned` → `✅ done (2026-09-06)`.
++- [ ] **Re-tag the seven TODO boxes** `(RESIDUE2 T1/T6)` → `(RESIDUE3 C2)`
++      (six: ABI alignment, SMP-safety, POSIX depth, large pages, zombie
++      reaping, process table) and `(RESIDUE3 C5)` (isochronous streaming).
++- [ ] **Re-derive the stale openers** (D5): RES-11's 3198 → 4089 and
++      RES-38/39's line counts, or drop the numbers and keep the grep.
++- [ ] **status.md 🚧 rows:** each of the four gets a row-level verdict —
++      OpenGL/libgl flips to 🧪 with GL2's receipts or keeps 🚧 with the
++      named remainder; Bluetooth/Wi-Fi keep 🚧 and cite RES-61; the
++      arch.h ratchet row either names its remaining file list or flips.
++- [ ] Ledger arithmetic pins move in the same commit: rows 59 → **61**
++      (RES-60/61), `CLASS_PIN` W 35→36, M 7→8; `check_residue_claims.py`
++      updated with the same numbers.
++
++**Definition of done:** C0's checker green; `check_residue_claims.py`
++green with the new pins; `git diff` touches no `.c`/`.h` file except
++`docs/status.md`'s rows.
++
++**Test gate:** C0 green; RESIDUE2's own checker still green (its pins
++read the ledger, which this phase edits — the edit is the proof the two
++checkers agree).
++
++---
++
++### C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table
++
++**Status:** ⬜ planned
++
++**Objective:** the six kernel boxes — the deepest, least glamorous
++cluster, and the one every demo hides least.
++
++Opening measurement (this audit, `26cb7fe`) — and it changes what the
++phase is: **four of the six boxes name mechanisms that already exist**,
++so most of C2 is proof, not implementation. That is D3's substance, not
++a footnote:
++
++| Box | What the tree actually has |
++|---|---|
++| 16-byte C-ABI alignment | **real gap**: `grep -c "align 16" isr_stubs.asm` = **0** |
++| SMP-safety sweep (atomic OFD refcounts, per-vnode `O_APPEND` lock, atomic `sig_pending`, per-CPU SYSCALL state) | **4 of 4 mechanisms present**: `__sync_sub_and_fetch`/`__sync_add_and_fetch` on the OFD refcount (`vfs.c:306/318`), `vn_append_lock()` (`vfs.c:944`, used `975`), `__sync_and_and_fetch` on `sig_pending` (`signal.c:91`, labelled "RESIDUE2 T1 (SMP sweep)"), per-CPU SYSCALL state (RES-02/T8) — what is missing is a **test that can fail** |
++| Large pages for kernel mappings | **2 MiB leaves already exist**: both loaders map with `PTE_PS` (`efi_paging.c:88/100–102`, `paging.inc:33`) and the kernel splits them on demand (`split_huge_page()`, `paging.c:268`); the gap is *choosing* large pages for kernel allocations and accounting for them |
++| Per-PML4 refcounting → all zombies reaped | partially there; the reaper names the subset it frees |
++| Real parent/child table + precise `waitpid` | `parent_pid` and a zombie matcher exist (`thread.h:335`); precision is the gap |
++| POSIX depth for `fork`/`execve`/`wait4` | unknown until measured — the READ step decides |
++
++- [ ] **16-byte C-ABI alignment at every entry stub** — fix the stubs
++      (`align 16` before the C call, padding accounted in
++      `struct registers`), drop the M5 runtime-scratch workaround, and
++      prove it: a host test that models the stack, plus an in-guest lane
++      that runs an aligned SSE op (`fxsave`) from an IRQ context.
++- [ ] **SMP-safety sweep, as a proof:** keep the four mechanisms, add
++      the receipts that can fail — a host test with a contended
++      refcount negative control, an `O_APPEND` two-writer lane, and an
++      SMP stress case under `-smp 4`. If a mechanism turns out
++      non-atomic on inspection, that is a finding named in the Result.
++- [ ] **Large pages** where they pay: 2 MiB leaves for the heap's
++      contiguous expansions and the HHDM window, with the walker's
++      split path re-tested (`split_huge_page` already exists); 1 GiB
++      refused with a number. The mm accounting must not lie about order.
++- [ ] **Per-PML4 refcounting → wire every zombie:** with the refcount
++      in place, `thread_reap_zombies()` calls
++      `paging_free_address_space()` for *all* dead threads, not the
++      subset; the boot log shows every reaped thread with its frame
++      count (it already prints for `/hello` — the box asks for all).
++- [ ] **Real parent/child table + precise `waitpid`:** extend the
++      existing `parent_pid` matching to `waitpid(-1)` scanning,
++      `WNOHANG`, `ECHILD` for non-children, zombie reparenting to init,
++      and Linux-compatible status encoding (`WIFEXITED`/`WEXITSTATUS`).
++- [ ] **POSIX depth for `fork`/`execve`/`wait4`** beyond the floor:
++      `vfork`-class semantics refused loudly, `execve` keeping fd flags,
++      `wait4` rusage filled — or explicitly refused with `-ENOSYS`,
++      loudly, per the LX precedent.
++
++
++**Definition of done:** six boxes closed with receipts; host tests for
++the process table, the refcount and the stub alignment; `posix` and
++`core` shards green.
++
++**Test gate:** `make test-unit` (new `test_proctable`, `test_ofd_refcount`);
++integration `test_waitpid_precise.sh` (new), `test_stack_alignment.sh`
++(new), existing `posix` shard unmodified.
++
++---
++
++### C3 — i386 graphics: VBE first, then the compositor
++
++**Status:** ⬜ planned
++
++**Objective:** close RES-12 and then RES-11 in that order — the ledger's
++own opener says the series starts at the fb seam, not the compositor.
++
++Measured: `grep -rn "4F02\|vbe" boot/` matches exactly one comment in
++`stage2_start.asm` ("there is no VBE"); the i386 kernel references none
++of `gui.c`/`wm.c`/`fb.c` (zero hits under `kernel/arch/i386/`).
++
++- [ ] **RES-12:** VBE in Stage 2 — `INT 10h AX=4F01` to enumerate modes,
++      `4F02` to set one with `LIN_FA` (1024×768×32 preferred, 800×600×32
++      fallback, text mode as the last resort), fill a 32-bit
++      `boot_info_t` framebuffer block through the same offset-checked
++      header the 64-bit path uses, and print the chosen mode on both
++      consoles. `tests/unit/test_boot_info_width.c` grows the fb fields.
++- [ ] **RES-11:** the framebuffer console for i386 (8×8 PSF from
++      `psf.c`, no allocator assumptions), then the portable `wm.c` +
++      `gui.c` surface behind `arch.h` seams: the two arch couplings the
++      width sweep will name (paging flags, IRQ enable) are the whole
++      seam list — anything else is a finding, recorded.
++- [ ] A VNC screenshot lane for i386 in `tests/integration/lib/gui_lane.sh`
++      (`-vga std`, `qemu-system-i386`), reusing the 64-bit assertions.
++
++**Definition of done:** `qemu-system-i386 -vga std` boots to a graphical
++console and a compositor window; the screenshot gate passes; the width
++ratchet records the new i386 adoptions.
++
++**Test gate:** new `test_i386_vbe.sh`, `test_i386_gui.sh`; `i386_shell`
++case extended; the existing 64-bit GUI shard unmodified.
++
++---
++
++### C4 — MSI/MSI-X on virtio (RES-36)
++
++**Status:** ⬜ planned
++
++**Objective:** give virtio-blk and virtio-gpu real message-signalled
++interrupts, with INTx kept as the fallback.
++
++Measured: `virtio_pci.c` parses capability id `0x09` only; `0x05`/`0x11`
++appear zero times in `virtio_pci.c` and `pci.c`; the ISR register is
++read-to-clear INTx.
++
++- [ ] Extend the cap walk to `0x05` (MSI) and `0x11` (MSI-X), parse the
++      tables (multiple-message capable/enable, table + PBA BAR offsets),
++      and allocate vectors from the LAPIC (per-vector LVT entries on the
++      x86_64 side, `irq.c` dispatch keyed by vector).
++- [ ] Per-vector EOI in `irq.c` (today's early-EOI path assumes one
++      controller); INTx stays the default when the guest sees no caps.
++- [ ] virtio-blk + virtio-gpu attach over MSI-X when
++      `-device virtio-blk-pci,msix=on` / `virtio-gpu-pci,msix=on` are
++      present, with a printed receipt naming the vector.
++
++**Definition of done:** `[msi] virtio-blk: MSI-X vector 42 (1 msg)`
++printed and pinned; both devices still work with MSI disabled.
++
++**Test gate:** new `test_msix.sh` (two lanes: MSI-X on, INTx fallback);
++existing `vblk`/`virgl` cases green unmodified.
++
++---
++
++### C5 — USB: isochronous streaming and HID breadth (RES-38's survivors)
++
++**Status:** ⬜ planned
++
++**Objective:** close the two survivors the T6 measurement left standing:
++frame-accurate isochronous transfers, and HID beyond the boot protocol.
++
++Measured: `test_usb_isoc` is a framework SKIP (`[isoc] SKIP: no
++isochronous endpoint exercised`); `hid.c` 533 lines parses boot-layout
++descriptors; `xhci.c` 2093 lines carries rings but no ISOCH TRB type.
++
++- [ ] xHCI isochronous TRBs (type 5) with frame-accurate scheduling from
++      the MFINDEX, ring underrun/overrun accounting, and a bounded-wait
++      policy that names the tick count.
++- [ ] A device that consumes them: `-device usb-audio` with
++      `-audiodev`, streaming a 440 Hz sine into the USB audio class
++      driver already in the tree; count frames, not "attached".
++- [ ] EHCI split transactions for full/low-speed devices behind a
++      high-speed hub (the T6 sweep's named remainder) + a case.
++- [ ] HID breadth: parse full report descriptors (collections, usage
++      pages, report IDs), not only the boot layout; a `usb-tablet` and a
++      `usb-kbd` with a multi-report-ID fixture.
++- [ ] BOT short-packet line in `msc.c` (a CSW shorter than 13 bytes is
++      an error with a name, not a memcpy of whatever follows).
++
++**Definition of done:** `test_usb_isoc` flips from SKIP to PASS with a
++frame count; `todo` box "Real isochronous STREAMING" closes; new HID
++case green.
++
++**Test gate:** `usb` shard green; new `test_usb_hid_full.sh`,
++`test_usb_msc_short.sh`; the 13-gate USB sweep re-run unmodified.
++
++---
++
++### C6 — Bluetooth and Wi-Fi: the hardware backends (RES-39's survivors)
++
++**Status:** ⬜ planned
++
++**Objective:** the last mile of both protocol stacks: a controller the
++emulator can actually attach.
++
++Measured: `bt.c` (193 lines) already sends `HCI_RESET` through the
++controller-agnostic `usb_core` API and prints `[bt] PASS: HCI protocol
++layer ready (no controller detected)`; `wifi.c` auto-registers
++`wifi_virt.c` (136 lines) and already prints the virtual-AP receipt.
++
++- [ ] **Bluetooth:** QEMU's `-device usb-bt-dongle` (CSR-class HCI over
++      USB) → a real `HCI_Reset`/`Read_Local_Version`/`Read_BD_ADDR`
++      round trip with the controller's own bytes printed; then an
++      inquiry, and a named refusal for pairing (out of scope here).
++- [ ] **Wi-Fi:** promote the virtual AP from a self-test to a **data
++      path**: `wifi_virt` frames reach the IP stack (the LLC/SNAP path
++      already carries 78 bytes at T6), so `ping` over the virtual AP is
++      a real receipt; the real-chip backend stays RES-61's M half.
++- [ ] The two status.md rows keep 🚧 and cite the split explicitly
++      (protocol ✅ / silicon M) instead of implying nothing works.
++
++**Definition of done:** new `test_bt_dongle.sh` green with the
++controller's BD_ADDR; `test_wifi_virtual_ap` promoted to assert an
++end-to-end echo; RES-61 records the metal remainder.
++
++**Test gate:** `usb` + `net` shards; both new cases registered in
++`ALL_CASES` and the shard partition (`--check-groups` green).
++
++---
++
++### C7 — network: window scaling (RES-52) and RES-46's successor
++
++**Status:** ⬜ planned
++
++**Objective:** close the TCP window box and the storage/NIC half RES-46
++left standing.
++
++Measured: `TCP_WINDOW` is 64240; `wscale`/`shift_cnt`/`TCPOPT` have zero
++hits in `kernel/net/tcp.c`+`tcp.h`; T6 landed vmxnet3 + e1000e with
++receipts, so their half is verified rather than rebuilt; there is no
++NVMe driver anywhere in `drivers/`.
++
++- [ ] **Window scaling:** parse and emit `WSCALE` in SYN/SYN-ACK, keep
++      the peer's shift per connection, apply `snd_wnd << shift` /
++      `rcv_wnd >> shift`, and refuse gracefully when the peer omits it.
++- [ ] A 1 MiB transfer receipt over a 200 ms-RTT lane (the harness can
++      shape with `-netdev user` + a paced sender) proving the window
++      grew past 64240.
++- [ ] **NVMe:** a queue-pair driver over PCIe (admin + one I/O queue,
++      PRP lists, `nvme` namespace → block device → a mountable ext2
++      lane), reusing `pci_ecam.c`; QEMU `-device nvme` is the target.
++      RES-46's storage successor closes with a mounted filesystem, not a
++      probe.
++- [ ] Re-derive vmxnet3/e1000e receipts (T6's are the proof; the row
++      says so) and close that half explicitly.
++
++**Definition of done:** `test_tcp_options` extended with the 1 MiB lane;
++new `test_nvme.sh` mounts ext2 from an NVMe namespace; RES-52 and RES-46's
++successor flip with receipts.
++
++**Test gate:** `net` + `fs` shards; `make test-unit` unchanged.
++
++---
++
++### C8 — Win32: the dynamic-scale loader, live FAIL-CLEAN receipts, DOOM D7
++
++**Status:** ⬜ planned
++
++**Objective:** the three W32U hand-offs (RES-57, RES-58, RES-59) plus
++DOOM's last phase — the part of the tree where "asserted by ledger"
++still outruns "observed at runtime".
++
++Owned rows: **RES-57** (`static-only` surfaces never called live),
++**RES-58** (FAIL-CLEAN functions never observed failing live),
++**RES-59** (Audacity's Outcome-B walls).
++
++Measured: `w32/app_ledger/*.imports` carry **1694** `static-only`
++markers; `docs/win32.md` generates **35** FAIL-CLEAN functions
++(crypt32 8, advapi32 9, + imm32/print/network); the Audacity gap ledger
++records 90932 relocations against w32run's 16384-entry buffer, a 117-DLL
++graph and a 19-module/419-symbol hole; `DOOM_PLAN.md` D7 is `⬜ todo`.
++
++- [ ] **Dynamic-scale loader:** growable relocation storage (chunked,
++      no fixed cap), DLL graph loading over 117 nodes with a cycle
++      guard, and a symbol-gap report that names the missing imports
++      instead of failing to bind. Target: Audacity reaches its message
++      loop or the plan records a *new*, smaller Outcome B with numbers.
++- [ ] **Live `static-only` receipts:** a fixture that resolves those
++      symbols through `LoadLibrary`/`GetProcAddress` and calls a
++      representative slice, so the marker count drops by measurement,
++      not by relabelling.
++- [ ] **Live FAIL-CLEAN receipts:** a harness that calls each of the 35
++      and greps the documented failure, printing
++      `[w32] FAIL-CLEAN <fn> -> <code> (as documented)`; anything that
++      returns success is a real bug and becomes a box.
++- [ ] **DOOM D7:** build `doomgeneric_win.c` with mingw-w64 against the
++      personality, run it through `/apps/w32run`, and record per-call
++      implement-or-refuse decisions in `DOOM_PLAN.md`.
++- [ ] Regenerate `docs/win32_run.md`'s matrix and
++      `w32/tests/W32A1.bindreport` in the same commit.
++
++**Definition of done:** three ledger rows flip with pasted in-guest
++receipts; D7 flips in `DOOM_PLAN.md`; the `w32-*` shards green.
++
++**Test gate:** `w32-core` / `w32-gui` / `w32-apps` shards; new
++`test_w32_failclean_live.sh`, `test_doom_w32.sh`; the committed
++bindreport regenerated and diffed.
++
++---
++
++### C9 — GL: the GLSL AST → TGSI back end (RES-54)
++
++**Status:** ⬜ planned
++
++**Objective:** replace the canned TGSI dword triangle with a real
++compiler back end, so `glDrawArrays` is driven by GLSL source.
++
++Measured: `glvirgl.c` ships hand-written dword arrays; `glsl_*` (lex,
++type, parse, sema, exec) produces an interpreted AST with no back end;
++`gl_backend_t.draw` is wired and `test_glvirgl` (73 checks) pins the
++seam.
++
++- [ ] AST → TGSI: declarations, temporaries, ALU ops for the subset the
++      sema already proves, `DCL`/`MOV`/`MAD`/`DP4` lowering, and a
++      text+dword emitter with a round-trip test.
++- [ ] Feed `CREATE_SHADER` from it for arbitrary `glDrawArrays`
++      batches; the canned arrays become a *fixture*, not the feature.
++- [ ] A host test (`test_glsl_tgsi`) with vector cases and a negative
++      control (an unsupported construct refused by name).
++
++**Definition of done:** a GLSL vertex+fragment pair compiles to TGSI in
++guest and draws through the virgl path; `gltest` stays 373/373;
++RES-54 flips DONE with the receipt.
++
++**Test gate:** `gui` shard + `make test-unit` (`test_glsl_tgsi`,
++`test_glvirgl` unmodified in behaviour).
++
++---
++
++### C10 — close-out: the arithmetic, the honest zero, the parked M class
++
++**Status:** ⬜ planned
++
++**Objective:** end the series with the same arithmetic discipline every
++other close-out used, and with a ledger whose non-DONE rows are only
++the two classes that *cannot* be closed by code.
++
++- [ ] Final pins: `LEDGER_ROWS`, `CLASS_PIN`, the harvest baseline row
++      for this file, and `tools/check_plan_tables.py`'s own baseline.
++- [ ] `docs/status.md`, `README.md`, `TODO.md`, `CHANGELOG.md` rows for
++      every phase; the seven boxes get their
++      `~~strikethrough~~ **Done (RESIDUE3 C#)**` receipts in TODO.md's
++      own style.
++- [ ] The terminal table (§5) filled with measured numbers, including
++      the rows this plan could not move (M and N classes) and *why*.
++- [ ] `--selftest` of C0 red on planted drift, green on the closed tree.
++
++**Definition of done:** every checker in `make test-unit` green; the
++ledger's non-DONE rows are exactly {M} ∪ {N}; nothing else.
++
++---
++
++## 4. What this plan deliberately does not do
++
++- **The six PENDING-USER rows (RES-30, RES-32, RES-33, RES-48, RES-49,
++  RES-56).** No code closes them: they are measurement packages waiting
++  for the user's silicon, and "pending-user" is a status, not a failure.
++  C10 documents them as the plan's honest boundary. (RES-49's live-web
++  fetch is *reproducible* under QEMU user-net — this audit measured real
++  DNS in the boot log — but the PQ-hybrid number must come from a real
++  path, so the row stays.)
++- **The four RE-AFFIRMED non-goals (RES-43, RES-44, RES-50, RES-51).**
++  Deferred W32 surfaces, registry/COM/DirectX decisions, happy-eyeballs,
++  QUIC/DTLS — re-affirmed with their D-numbers; this plan does not
++  reverse a recorded decision.
++- **Self-hosting SH9.** The cross-arch in-guest toolchains are
++  `SELFHOST_PLAN.md`'s own successor series with its own opener
++  (one tcc per `--cpu`), not a residue sweep.
++- **The hobby-grade FS edges (FSFULL F6).** JBD2 recovery, btrfs
++  subvolumes, f2fs GC, NTFS writing stay refused by their own plan.
++- **The OTA and LX parked items.** They are bullets with reasons in
++  TODO.md by the plans' own convention; none of them becomes a box here.
++- **Re-opening a completed plan.** A bug found while landing C* is that
++  phase's bug; it never becomes a secret twelfth phase.
++- **Performance re-tuning (OPT).** If a phase moves a number, the number
++  is recorded in that phase; no global re-benchmark is scheduled.
++
++## 5. Predicted terminal arithmetic (filled at close)
++
++| Metric | Audit (2026-11-03) | Predicted at close |
++|---|---|---|
++| Ledger rows, non-DONE | 20 | **10** = 6 PENDING-USER + 4 RE-AFFIRMED (the two classes no code can move) |
++| Ledger rows, OPEN | 1 (RES-54) | **0** |
++| Ledger rows, HANDED-OFF | 10 | **0** (each flips DONE or narrows into a scheduled row) |
++| Ledger total rows | 59 | **61+** (RES-60 isoc streaming, RES-61 BT/Wi-Fi silicon; +1 per narrowing that C0 forces) |
++| `TODO.md` unchecked boxes | 7 | **0** |
++| `docs/status.md` 🚧 rows | 4 | **2** (Bluetooth and Wi-Fi stay 🚧 for their silicon half, citing RES-61) |
++| Plan tables with a stale row | 2 files / 6 rows | **0** |
++| Ledger rows whose phase claimed closure | 3 | **0** |
++| Phases ✅ | 0/11 | **11/11** |
++
++## Workflow (mandatory for every phase)
++
++The GL_PLAN.md / GL2_PLAN.md / RESIDUE2 loop, unchanged:
++
++```
++1. READ    — read ALL affected files before writing anything
++2. PLAN    — this file: Status → IN PROGRESS on the phase
++3. DESIGN  — show struct/API changes, list callers; cite a ledger row
++             instead of re-arguing
++4. IMPL    — code → host test → in-guest gate → docs
++5. BUILD   — zero warnings, -Wall -Wextra -Werror
++6. TEST    — host gate; QEMU gate; existing suites unmodified
++7. DOCS    — this file's Result + table tick, TODO.md Done receipt,
++             CHANGELOG.md, baselines and ledger pins moved in the
++             same commit
++```
++
++Deliver as `.patch` files against the explicit base, exactly like every
++series in this tree: `git apply --check` on a pristine clone before
++presenting.
+diff --git a/tests/unit/test_plan_tables.sh b/tests/unit/test_plan_tables.sh
+new file mode 100755
+index 0000000..642ea80
+--- /dev/null
++++ b/tests/unit/test_plan_tables.sh
+@@ -0,0 +1,50 @@
++#!/usr/bin/env bash
++# test_plan_tables.sh — the plan-table / orphan-debt checker (RESIDUE3 C0).
++#
++# WHY THIS TEST EXISTS
++#
++# Three ways a status drifts away from the tree without any claim changing,
++# all three measured on 26cb7fe:
++#
++#   1. a ledger row whose own phase says it closes, while the row still
++#      reads HANDED-OFF (RES-38, RES-39, RES-47);
++#   2. a plan's phase table disagreeing with that same plan's per-phase
++#      status (W32APP_PLAN.md's five "⬜ planned" rows; RESIDUE2 T7);
++#   3. a TODO box tagged with a phase that is already ✅ (all seven open
++#      boxes carried RESIDUE2 tags for closed phases).
++#
++# None of the seven existing claim checkers reads tables, box tags or the
++# Definition-of-done paragraph, so none of the three could ever fail a build.
++# tools/check_plan_tables.py does, and its live violations are pinned in
++# tools/plan_tables_baseline.txt the way the residue ratchet pins marker
++# counts: a new violation is red, and so is a fixed one whose pin did not
++# move in the same commit.
++#
++# Run by `make test-unit`.  Python only: no build, no QEMU.
++
++set -u
++cd "$(dirname "$0")/../.."
++
++fail=0
++
++echo "[unit] check_plan_tables --selftest (a doctored tree must fail)"
++if ! python3 tools/check_plan_tables.py --selftest; then
++    echo "  FAIL: the checker does not detect its own planted violations"
++    fail=1
++fi
++
++echo "[unit] check_plan_tables --check (live tree against the pin)"
++if ! python3 tools/check_plan_tables.py --check; then
++    echo "  FAIL: the plan tables, TODO tags or ledger drifted out of the pin"
++    echo "  fix the drift (a plan phase owns it) or, when the drift is the"
++    echo "  point, move tools/plan_tables_baseline.txt in the SAME commit"
++    fail=1
++fi
++
++echo "[unit] check_plan_tables --openers (quoted line counts re-derived)"
++python3 tools/check_plan_tables.py --openers || fail=1
++
++if [ "$fail" -ne 0 ]; then
++    exit 1
++fi
++echo "[unit] test_plan_tables: PASS"
+diff --git a/tools/check_plan_tables.py b/tools/check_plan_tables.py
+new file mode 100755
+index 0000000..10b9c5c
+--- /dev/null
++++ b/tools/check_plan_tables.py
+@@ -0,0 +1,547 @@
++#!/usr/bin/env python3
++"""Cross-check the plan tables, the TODO box tags and the ledger against each other.
++
++RESIDUE3 C0 (the rig).  Seven checkers already pin *claims* to
++artefacts; none of them reads the three places where a status can drift
++away from the tree without any claim changing:
++
++  R1  orphan residue  — a W/S ledger row that no live plan phase owns;
++  R2  stale box tag   — a TODO `- [ ]` box tagged with a phase already ✅;
++  R3  closure claim   — a ✅ phase whose prose says a RES row closes while
++                        the row is still OPEN/HANDED-OFF;
++  R4  table drift     — a plan's phase table disagreeing with that same
++                        plan's per-phase status (heading glyph or
++                        `**Status:` line).
++
++R1..R4 are the classes the RESIDUE3 audit found, one rule each.  The
++live violations are pinned in `tools/plan_tables_baseline.txt` the way
++`tools/residue_baseline.txt` pins marker counts: a NEW violation fails,
++and so does a FIXED one that did not move the pin in the same commit
++(a ratchet that can silently shrink is not a ratchet).
++
++Usage:
++    tools/check_plan_tables.py            # --check against the pin
++    tools/check_plan_tables.py --report   # live list, no pin compare
++    tools/check_plan_tables.py --openers  # re-derive quoted line counts
++    tools/check_plan_tables.py --bless    # print the pin the tree needs
++    tools/check_plan_tables.py --selftest # doctored-tree receipts
++"""
++
++import glob
++import os
++import re
++import sys
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++PIN = os.path.join("tools", "plan_tables_baseline.txt")
++LEDGER = os.path.join("docs", "residue_ledger.md")
++TODO = "TODO.md"
++
++PLAN_GLOB = os.path.join("docs", "plans", "*_PLAN.md")
++
++# A phase id as the tables and headings write them: C0, T8, R12, Y7, L7,
++# D7, G13, W32A-12, WR-4, SH7d, RT3, V0, Q12, M5, O9, H3, FS9, F7.
++PHASE_ID = re.compile(r"^(?=.{2,9}$)(?=.*\d)[A-Z][A-Z0-9]*(-[A-Z0-9]+)?[a-z]?$")
++PHASE_ID_ANY = re.compile(r"\b([A-Z][A-Z0-9]{0,4}(?:-[A-Z0-9]{1,3})?[a-z]?)\b")
++
++LEDGER_ROW = re.compile(r"^\| (RES-\d\d) \| (\w) \| ([A-Z@R\d-]+) \|")
++DONE_STATES = ("DONE",)
++
++# Words that turn "this row is mentioned" into "this row is claimed closed".
++CLOSURE_VERB = re.compile(
++    r"\b(close[sd]?|closing|flip(s|ped)?|flipped|DONE@|landed|shipped)\b", re.I)
++
++STATUS_GLYPHS = (("\u2705", "done"), ("\U0001F7E8", "partial"),
++                 ("\u2B1C", "planned"))
++STATUS_WORDS = (("COMPLETE", "done"), ("PARTIAL", "partial"),
++                ("IN PROGRESS", "inprogress"), ("PLANNED", "planned"))
++
++
++# --------------------------------------------------------------------------
++# reading helpers
++# --------------------------------------------------------------------------
++
++def read(*parts):
++    try:
++        with open(os.path.join(ROOT, *parts), "r", encoding="utf-8",
++                  errors="replace") as fh:
++            return fh.read()
++    except OSError:
++        return ""
++
++
++def plan_files():
++    return sorted(glob.glob(os.path.join(ROOT, PLAN_GLOB)))
++
++
++def status_of(text):
++    """Classify a status fragment: heading tail or a `**Status:` body."""
++    if not text:
++        return None
++    for glyph, name in STATUS_GLYPHS:
++        if glyph in text:
++            return name
++    upper = text.upper()
++    for word, name in STATUS_WORDS:
++        if word in upper:
++            return name
++    return None
++
++
++# --------------------------------------------------------------------------
++# plan parsing: table rows and phase sections
++# --------------------------------------------------------------------------
++
++STATE_CELL = re.compile(r"^\s*(?:\u2705|\U0001F7E8|\u2B1C|"
++                        r"done\b|planned\b|partial\b|todo\b|shipped\b)",
++                        re.I)
++
++
++def table_rows(text):
++    """[(phase_id, state, line_no)] from a plan's phase table.
++
++    The state cell must START with a state glyph or a bare state word:
++    a plan's *dependency* tables also begin their rows with a phase id
++    ("| W32A-8 | COMCTL32: needs windows ... |"), and reading those as
++    status claims was this checker's first false positive.
++    """
++    out = []
++    for n, line in enumerate(text.split("\n"), 1):
++        if not line.startswith("|"):
++            continue
++        cells = [c.strip() for c in line.strip().strip("|").split("|")]
++        if len(cells) < 2:
++            continue
++        first = cells[0].split("\u2014")[0].split(" ")[0].strip()
++        if not PHASE_ID.match(first):
++            continue
++        if not STATE_CELL.match(cells[1]):
++            continue
++        state = status_of(cells[1])
++        if state is None:
++            continue
++        out.append((first, state, n))
++    return out
++
++
++def phase_sections(text):
++    """{phase_id: (state, [lines])} from `### ...` phase sections.
++
++    Two shapes exist in this tree and both are read:
++
++        ### Phase W32A-1 - Loader ... ✅ DONE     (status in the heading)
++        ### T7 - GUI / **Status: ✅ COMPLETE**    (status on its own line)
++    """
++    lines = text.split("\n")
++    sections = {}
++    starts = []
++    for n, line in enumerate(lines):
++        if not line.startswith("### "):
++            continue
++        hit = None
++        for tok in PHASE_ID_ANY.findall(line):
++            if PHASE_ID.match(tok):
++                hit = tok
++                break
++        if hit:
++            starts.append((n, hit))
++    for i, (n, pid) in enumerate(starts):
++        end = starts[i + 1][0] if i + 1 < len(starts) else len(lines)
++        body = lines[n:end]
++        state = status_of(body[0])
++        if state is None:
++            for candidate in body[:12]:
++                stripped = candidate.replace("*", "").strip()
++                if stripped.lower().startswith("status:"):
++                    state = status_of(stripped.split(":", 1)[1])
++                    break
++        sections[pid] = (state, body)
++    return sections
++
++
++# --------------------------------------------------------------------------
++# the four rules
++# --------------------------------------------------------------------------
++
++def ledger_rows():
++    rows = {}
++    for line in read(LEDGER).split("\n"):
++        m = LEDGER_ROW.match(line)
++        if m:
++            rows[m.group(1)] = {"class": m.group(2),
++                                "status": re.split(r"[@(]", m.group(3))[0]}
++    return rows
++
++
++def dod_paragraph(body):
++    """The lines of a phase's `**Definition of done:**` paragraph."""
++    out = []
++    inside = False
++    for line in body:
++        if line.strip().lower().startswith("**definition of done"):
++            inside = True
++            out.append(line)
++            continue
++        if inside:
++            stripped = line.strip()
++            if not stripped:
++                break
++            if stripped.startswith("**") and stripped.endswith(":**"):
++                break
++            out.append(line)
++    return out
++
++
++def todo_boxes():
++    """[(line_no, slug, [tags])] for every `- [ ]` box in TODO.md."""
++    lines = read(TODO).split("\n")
++    out = []
++    for i, line in enumerate(lines):
++        if not line.startswith("- [ ]"):
++            continue
++        block = [line]
++        j = i + 1
++        while j < len(lines) and lines[j].startswith("  "):
++            block.append(lines[j])
++            j += 1
++        text = " ".join(b.strip() for b in block)
++        tags = re.findall(r"\((RESIDUE\d?)\s+([A-Z]{1,3}\d+[a-z]?)\)", text)
++        slug = re.sub(r"\s+", " ", line[6:].strip())[:60].rstrip()
++        out.append((i + 1, slug, tags))
++    return out
++
++
++def tag_plan(series):
++    return "docs/plans/%s_PLAN.md" % series
++
++
++def violates(sections_by_plan, rows):
++    """Return the sorted list of live violation ids."""
++    found = set()
++
++    # R1 - a W/S row no plan phase mentions at all.
++    mentioned = set()
++    for _plan, sections in sections_by_plan.items():
++        for _state, body in sections.values():
++            for line in body:
++                for rid in re.findall(r"RES-\d\d", line):
++                    mentioned.add(rid)
++    for rid, row in rows.items():
++        if row["status"] == "DONE":
++            continue
++        if row["class"] in ("M", "N"):
++            continue          # metal-pending / re-affirmed non-goals
++        if rid not in mentioned:
++            found.add("r1:%s" % rid)
++
++    # R2 - a TODO box tagged with a phase that is already done.
++    for _line_no, slug, tags in todo_boxes():
++        for series, pid in tags:
++            plan = tag_plan(series)
++            sections = sections_by_plan.get(plan)
++            if not sections or pid not in sections:
++                continue
++            if sections[pid][0] == "done":
++                found.add("r2:TODO.md:%s" % slug)
++
++    # R3 - a done phase whose *Definition of done* claims a row closes,
++    # while the row is still OPEN/HANDED-OFF.  The DoD paragraph is the
++    # claim; a phase's Result is the receipt, and a Result may name a row
++    # without claiming it (T9's "ledger OPEN 6 -> 1 (RES-54)" is arithmetic,
++    # not a closure) - so the rule reads the claim and never the receipt.
++    for _plan, sections in sections_by_plan.items():
++        for pid, (state, body) in sections.items():
++            if state != "done":
++                continue
++            for line in dod_paragraph(body):
++                if not CLOSURE_VERB.search(line):
++                    continue
++                for rid in re.findall(r"RES-\d\d", line):
++                    if rid in rows and rows[rid]["status"] not in DONE_STATES:
++                        found.add("r3:%s" % rid)
++
++    # R4 - a table row disagreeing with its own plan's section status.
++    for path in plan_files():
++        name = os.path.basename(path)
++        body = read(path)
++        sections = phase_sections(body)
++        for pid, state, _n in table_rows(body):
++            if pid not in sections:
++                continue
++            sec = sections[pid][0]
++            if sec is None:
++                continue
++            if state != sec:
++                found.add("r4:%s:%s" % (name, pid))
++
++    return sorted(found)
++
++
++def collect():
++    sections_by_plan = {}
++    for path in plan_files():
++        sections_by_plan[os.path.relpath(path, ROOT)] = \
++            phase_sections(read(path))
++    return violates(sections_by_plan, ledger_rows())
++
++
++# --------------------------------------------------------------------------
++# openers: re-derive the line counts the ledger quotes
++# --------------------------------------------------------------------------
++
++QUOTED = re.compile(r"([a-z0-9_]+\.(?:c|h|asm|S))\s+(\d+)\b")
++
++
++def opener_drift():
++    """Lines in non-DONE ledger rows quoting a file's line count.
++
++    Only the `name.c N` form is re-derived.  A row that quotes a bare
++    basename ("xhci 1995 lines", RES-38) is NOT caught here - that needs a
++    human - so the mode reports what it can prove and says nothing about
++    the rest rather than implying a clean bill of health.
++    """
++    out = []
++    for line in read(LEDGER).split("\n"):
++        m = LEDGER_ROW.match(line)
++        if not m:
++            continue
++        rid = m.group(1)
++        if re.split(r"[@(]", m.group(3))[0] == "DONE":
++            continue
++        for name, quoted in QUOTED.findall(line):
++            hits = glob.glob(os.path.join(ROOT, "**", name), recursive=True)
++            hits = [h for h in hits if "/build/" not in h]
++            if not hits:
++                continue
++            try:
++                actual = sum(1 for _ in open(hits[0], encoding="utf-8",
++                                             errors="replace"))
++            except OSError:
++                continue
++            if actual != int(quoted):
++                out.append("%s %s quoted %s, actual %d (%s)"
++                           % (rid, name, quoted, actual,
++                              os.path.relpath(hits[0], ROOT)))
++    return out
++
++
++# --------------------------------------------------------------------------
++# pin handling
++# --------------------------------------------------------------------------
++
++def read_pin():
++    try:
++        with open(os.path.join(ROOT, PIN), encoding="utf-8") as fh:
++            return sorted(l.split("#")[0].strip() for l in fh
++                          if l.split("#")[0].strip())
++    except OSError:
++        return None
++
++
++# --------------------------------------------------------------------------
++# selftest: a doctored tree must fail, class by class
++# --------------------------------------------------------------------------
++
++FIXTURE_PLAN = """# Fixture plan
++
++## Status: PLANNED - 0/2 phases landed
++
++| Phase | State |
++|-------|-------|
++| X0 - the clean phase | \u2705 done |
++| X1 - the open phase | \u2B1C planned |
++
++### X0 - the clean phase
++
++**Status:** \u2705 COMPLETE
++
++**Definition of done:** nothing here claims a ledger row.
++
++### X1 - the open phase
++
++**Status:** \u2B1C planned
++
++Owns RES-02 (the row this fixture keeps open).
++
++- [ ] a task
++"""
++
++FIXTURE_LEDGER = """| ID | Class | Status | Item (source) | Exit gate |
++|----|-------|--------|---------------|-----------|
++| RES-01 | W | DONE@X0 | closed at X0 | gate |
++| RES-02 | W | OPEN | named by X1 | gate |
++| RES-03 | M | PENDING-USER@X0 | metal | gate |
++"""
++
++FIXTURE_TODO = "- [ ] a task owned by X1. (RESIDUE3 X1)\n"
++
++
++def selftest():
++    """Build doctored trees in a temp dir; each planted class must report."""
++    import shutil
++    import tempfile
++
++    cases = []
++
++    def build(plan=FIXTURE_PLAN, ledger=FIXTURE_LEDGER, todo=FIXTURE_TODO,
++              pin=None):
++        tmp = tempfile.mkdtemp(prefix="plantables-")
++        os.makedirs(os.path.join(tmp, "docs", "plans"), exist_ok=True)
++        os.makedirs(os.path.join(tmp, "tools"), exist_ok=True)
++        open(os.path.join(tmp, "docs", "plans", "RESIDUE3_PLAN.md"),
++             "w").write(plan)
++        open(os.path.join(tmp, "docs", "residue_ledger.md"), "w").write(ledger)
++        open(os.path.join(tmp, "TODO.md"), "w").write(todo)
++        if pin is not None:
++            open(os.path.join(tmp, "tools", "plan_tables_baseline.txt"),
++                 "w").write("\n".join(pin) + "\n")
++        return tmp
++
++    def run(tmp):
++        global ROOT
++        saved = ROOT
++        ROOT = tmp
++        try:
++            return collect()
++        finally:
++            ROOT = saved
++
++    # 1 - the clean fixture reports nothing.
++    tmp = build()
++    got = run(tmp)
++    cases.append(("clean fixture reports no violation", got == [], got))
++    shutil.rmtree(tmp)
++
++    # 2 - planted table drift: the table says planned, the section is done.
++    tmp = build(plan=FIXTURE_PLAN.replace(
++        "| X0 - the clean phase | \u2705 done |",
++        "| X0 - the clean phase | \u2B1C planned |"))
++    got = run(tmp)
++    cases.append(("planted table drift reports r4",
++                  any(v.startswith("r4:") for v in got), got))
++    shutil.rmtree(tmp)
++
++    # 3 - planted orphan box: a box tagged on the done phase X0.
++    tmp = build(todo="- [ ] a task owned by X0. (RESIDUE3 X0)\n")
++    got = run(tmp)
++    cases.append(("planted stale box tag reports r2",
++                  any(v.startswith("r2:") for v in got), got))
++    shutil.rmtree(tmp)
++
++    # 4 - planted closure claim: a done phase's DoD says RES-02 closes.
++    tmp = build(plan=FIXTURE_PLAN.replace(
++        "nothing here claims a ledger row.",
++        "RES-02 closes with this phase."))
++    got = run(tmp)
++    cases.append(("planted closure claim reports r3",
++                  any(v.startswith("r3:") for v in got), got))
++    shutil.rmtree(tmp)
++
++    # 5 - planted orphan residue: the phase stops naming RES-02.
++    tmp = build()
++    got = run(tmp)
++    cases.append(("a named row is not orphaned", "r1:RES-02" not in got, got))
++    tmp2 = build(plan=FIXTURE_PLAN.replace(
++        "Owns RES-02 (the row this fixture keeps open).", "Owns nothing."))
++    got2 = run(tmp2)
++    cases.append(("planted orphan residue reports r1",
++                  "r1:RES-02" in got2, got2))
++    shutil.rmtree(tmp)
++    shutil.rmtree(tmp2)
++
++    # 6 - the pin ratchet: an exact pin passes, a stale pin fails.
++    tmp = build(todo="- [ ] a task owned by X0. (RESIDUE3 X0)\n",
++                pin=["r2:TODO.md:a task owned by X0. (RESIDUE3 X0)"])
++    got = run(tmp)
++    saved = ROOT
++    globals()["ROOT"] = tmp
++    try:
++        exact = (read_pin() == got)
++    finally:
++        globals()["ROOT"] = saved
++    cases.append(("an exact pin matches the live list", exact, got))
++    shutil.rmtree(tmp)
++
++    tmp = build(todo="- [ ] a task owned by X0. (RESIDUE3 X0)\n",
++                pin=["r2:TODO.md:some earlier wording"])
++    saved = ROOT
++    globals()["ROOT"] = tmp
++    try:
++        pin = read_pin()
++    finally:
++        globals()["ROOT"] = saved
++    live = run(tmp)
++    cases.append(("a stale pin is detected",
++                  sorted(pin) != sorted(live), (pin, live)))
++    shutil.rmtree(tmp)
++
++    failed = 0
++    for name, ok, detail in cases:
++        print(("  ok   " if ok else "  FAIL ") + name +
++              ("" if ok else "  -> %r" % (detail,)))
++        if not ok:
++            failed += 1
++    print("check_plan_tables --selftest: %d/%d" % (len(cases) - failed,
++                                                   len(cases)))
++    return 0 if failed == 0 else 1
++
++
++# --------------------------------------------------------------------------
++# main
++# --------------------------------------------------------------------------
++
++def main(argv):
++    root = os.environ.get("PLAN_TABLES_ROOT")
++    if root:
++        globals()["ROOT"] = root
++
++    if "--selftest" in argv:
++        return selftest()
++
++    live = collect()
++
++    if "--report" in argv:
++        for v in live:
++            print(v)
++        print("check_plan_tables: %d live violation(s)" % len(live))
++        return 0
++
++    if "--openers" in argv:
++        drift = opener_drift()
++        for line in drift:
++            print("opener drift: " + line)
++        print("check_plan_tables --openers: %d stale opener(s)" % len(drift))
++        return 0
++
++    if "--bless" in argv:
++        for v in live:
++            print(v)
++        return 0
++
++    pin = read_pin()
++    if pin is None:
++        print("check_plan_tables: FAIL - %s is missing (pin the tree with "
++              "--bless and commit the file)" % PIN)
++        return 1
++
++    new = [v for v in live if v not in pin]
++    fixed = [v for v in pin if v not in live]
++    for v in new:
++        print("check_plan_tables: NEW   " + v)
++    for v in fixed:
++        print("check_plan_tables: FIXED " + v +
++              " (move the pin in the same commit)")
++
++    if new or fixed:
++        print("check_plan_tables: FAIL - %d new, %d fixed, %d pinned"
++              % (len(new), len(fixed), len(pin)))
++        return 1
++
++    print("check_plan_tables: OK - %d pinned violation(s) match the tree "
++          "(C1 drives this pin to zero)" % len(live))
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/tools/plan_tables_baseline.txt b/tools/plan_tables_baseline.txt
+new file mode 100644
+index 0000000..2d1aa7d
+--- /dev/null
++++ b/tools/plan_tables_baseline.txt
+@@ -0,0 +1,28 @@
++# tools/plan_tables_baseline.txt - the plan-table debt ratchet (RESIDUE3 C0).
++#
++# Every line is one LIVE violation of tools/check_plan_tables.py, in the
++# order that checker prints them.  The pin behaves like
++# tools/residue_baseline.txt: a violation that is not listed fails the
++# build, and a listed violation that has been fixed ALSO fails until this
++# file moves in the same commit.  C1 (the reconciliation) drives every
++# line here to zero and deletes the file's body - the ratchet only shrinks
++# through a landed phase.
++#
++# Rule key: r1 orphan residue - r2 stale box tag - r3 closure claim -
++#           r4 table drift
++r2:TODO.md:IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (th
++r2:TODO.md:Large-page support for selected kernel mappings. (RESIDUE2 T
++r2:TODO.md:POSIX-completeness for `fork`/`execve`/`wait4` beyond what t
++r2:TODO.md:Real isochronous STREAMING (narrowed 2026-09-06): frame-accu
++r2:TODO.md:Real parent/child process table and precise `waitpid` semant
++r2:TODO.md:SMP-safety sweep: atomic OFD refcounts, per-vnode write lock
++r2:TODO.md:Wire it on for all reaped zombies once TLB shootdown + per-P
++r3:RES-38
++r3:RES-39
++r3:RES-47
++r4:RESIDUE2_PLAN.md:T7
++r4:W32APP_PLAN.md:W32A-1
++r4:W32APP_PLAN.md:W32A-12
++r4:W32APP_PLAN.md:W32A-18
++r4:W32APP_PLAN.md:W32A-2
++r4:W32APP_PLAN.md:W32A-5
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index 60bdeff..02795d2 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -21,6 +21,7 @@ REALINTERNET2_PLAN.md 8
+ REALINTERNET_PLAN.md 8
+ REALTEK_PLAN.md 5
+ RESIDUE2_PLAN.md 21
++RESIDUE3_PLAN.md 39
+ RISCV_PLAN.md 9
+ SDK_PLAN.md 0
+ SELFHOST_PLAN.md 1

@@ -12,6 +12,7 @@
 #include "kernel/proc/signal.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/aspace.h"
 #include "kernel/lib/errno.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/sync/futex.h"
@@ -120,8 +121,11 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
         return -ENOMEM;
     }
 
-    /* Threads SHARE the parent's address space. */
+    /* Threads SHARE the parent's address space.  RESIDUE3 C2: the shared
+     * PML4 is refcounted, so whichever member of the group is reaped LAST
+     * releases the page tables — not necessarily the non-pthread one. */
     child->pml4_phys = parent->pml4_phys;
+    aspace_get(child->pml4_phys);
     child->parent    = parent;
 
     /* User return frame: resume at the clone call site, on the new stack.

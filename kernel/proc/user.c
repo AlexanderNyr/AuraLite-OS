@@ -19,6 +19,7 @@
 #include "kernel/arch/x86_64/tss.h"
 #include "kernel/arch/x86_64/syscall.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/aspace.h"
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/assert.h"
@@ -96,6 +97,7 @@ static void user_test_thread(void *arg) {
 
     tcb_t *cur = sched_current();
     if (cur) cur->pml4_phys = shell_pml4;
+    aspace_get(shell_pml4);      /* RESIDUE3 C2: first owner of this space */
 
     uint64_t init_brk = 0;
     uint64_t entry = elf_load(init_bin, init_bin_size, &init_brk, NULL, NULL);

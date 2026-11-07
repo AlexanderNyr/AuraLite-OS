@@ -13,6 +13,7 @@
 
 #include <stdint.h>
 #include "drivers/usb/msc.h"
+#include "drivers/usb/msc_csw.h"   /* C5b: CSW validation, host-tested */
 #include "drivers/usb/usb_core.h"
 #include "drivers/usb/uhci.h"
 #include "drivers/usb/ohci.h"
@@ -45,24 +46,9 @@ struct msc_cbw {
 #pragma pack(pop)
 #endif
 
-/* ---- CSW (Command Status Wrapper) — 13 bytes ---- */
-#define CSW_SIGNATURE  0x53425355   /* "USBS" */
-#define CSW_STATUS_OK  0x00
-#define CSW_STATUS_FAILED 0x01
-#define CSW_STATUS_PHASE  0x02
-
-#if defined(__TINYC__)
-#pragma pack(push, 1)
-#endif
-struct msc_csw {
-    uint32_t dCSWSignature;
-    uint32_t dCSWTag;
-    uint32_t dCSWDataResidue;
-    uint8_t  bCSWStatus;
-} __attribute__((packed));
-#if defined(__TINYC__)
-#pragma pack(pop)
-#endif
+/* The CSW struct and its signature live in msc_csw.h now (C5b): the check
+ * is length-first and decodes little-endian explicitly, and it is unit tested
+ * on the host. */
 
 /* ---- SCSI commands ---- */
 #define SCSI_INQUIRY      0x12
@@ -210,29 +196,53 @@ static int msc_exec_scsi(const uint8_t *scsi_cmd, uint8_t cmd_len,
         }
     }
 
-    /* 3) Command Status Wrapper over bulk IN. */
-    struct msc_csw csw;
-    memset(&csw, 0, sizeof(csw));
-    if (msc_bulk(msc_dev->bulk_in_ep, &csw, sizeof(csw)) < 0) {
+    /* 3) Command Status Wrapper over bulk IN.
+     *
+     * C5 (RES-38 survivor): a CSW is EXACTLY 13 bytes (USB BOT 6.2.3).  This
+     * used to zero the struct, ask for sizeof(csw) bytes and check the
+     * signature -- so a device that answered with 4 bytes produced the
+     * message "bad CSW signature 0x0", which names the symptom one layer away
+     * from the cause.  The byte count is now checked first and the shortfall
+     * is what gets printed. */
+    uint8_t csw_raw[MSC_CSW_LEN + 1];   /* one spare byte: over-long is its
+                                         * own error, see msc_csw.h */
+    memset(csw_raw, 0, sizeof(csw_raw));
+    int csw_bytes = msc_bulk(msc_dev->bulk_in_ep, csw_raw, (uint32_t)MSC_CSW_LEN);
+    if (csw_bytes < 0) {
         kprintf("[msc] CSW transfer failed\n");
         return -1;
     }
 
-    if (csw.dCSWSignature != CSW_SIGNATURE) {
-        kprintf("[msc] bad CSW signature 0x%x\n", csw.dCSWSignature);
+    /* C5b: the length-first, little-endian check lives in msc_csw.c, which
+     * tests/unit/test_usb_msc_csw.c drives with byte arrays -- including the
+     * 4-byte answer that used to be reported as "bad CSW signature 0x0". */
+    msc_csw_check_t csw;
+    msc_csw_validate(csw_raw, csw_bytes, tag, &csw);
+    switch (csw.result) {
+    case MSC_CSW_OK:
+        return 0;
+    case MSC_CSW_SHORT:
+        kprintf("[msc] short CSW: %d byte(s), want %u (BOT 6.2.3) -- the "
+                "signature check cannot be trusted on a truncated wrapper\n",
+                csw_bytes, (unsigned)MSC_CSW_LEN);
         return -1;
-    }
-    if (csw.dCSWTag != tag) {
+    case MSC_CSW_LONG:
+        kprintf("[msc] over-long CSW: %d byte(s), want %u (BOT 6.2.3)\n",
+                csw_bytes, (unsigned)MSC_CSW_LEN);
+        return -1;
+    case MSC_CSW_BAD_SIGNATURE:
+        kprintf("[msc] bad CSW signature 0x%x\n", (unsigned)csw.signature);
+        return -1;
+    case MSC_CSW_BAD_TAG:
         kprintf("[msc] CSW tag mismatch got 0x%x want 0x%x\n",
-                csw.dCSWTag, tag);
+                (unsigned)csw.tag, (unsigned)tag);
         return -1;
-    }
-    if (csw.bCSWStatus != CSW_STATUS_OK) {
+    case MSC_CSW_BAD_STATUS:
         kprintf("[msc] SCSI command 0x%02x failed (CSW status=%u residue=%u)\n",
-                scsi_cmd[0], csw.bCSWStatus, csw.dCSWDataResidue);
+                scsi_cmd[0], (unsigned)csw.status, (unsigned)csw.residue);
         return -1;
     }
-    return 0;
+    return -1;
 }
 
 static int msc_probe_device(usb_device_t *dev, int hotplug) {

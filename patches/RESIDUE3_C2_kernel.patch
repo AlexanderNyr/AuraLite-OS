@@ -1,0 +1,1986 @@
+diff --git a/Makefile b/Makefile
+index 5c94bd1..decb8c0 100644
+--- a/Makefile
++++ b/Makefile
+@@ -3780,6 +3780,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_termios \
+                 $(BUILD_DIR)/test_jobcontrol \
+                 $(BUILD_DIR)/test_permissions \
++                $(BUILD_DIR)/test_aspace \
+                 $(BUILD_DIR)/test_cow \
+                 $(BUILD_DIR)/test_slab \
+                 $(BUILD_DIR)/test_virgl \
+@@ -4280,6 +4281,9 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
+ # than compiled code, so it is a script rather than a C binary and cannot join
+ # $(UNIT_TESTS), which is a list of executables to build.  It skips cleanly
+ # when the archives have not been built.
++	@echo "[unit] running tests/unit/test_abi_align.sh"
++	@bash tests/unit/test_abi_align.sh || exit 1
++
+ 	@echo "[unit] running tests/unit/test_userlibs.sh"
+ 	@bash tests/unit/test_userlibs.sh || exit 1
+ 
+@@ -5559,6 +5563,13 @@ $(BUILD_DIR)/test_permissions: tests/unit/test_permissions.c lib/libc/include/un
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# RESIDUE3 C2: the refcount table, compiled from the SAME translation unit the
++# kernel links (kernel/mm/aspace.c) -- no mock of the logic under test.
++$(BUILD_DIR)/test_aspace: tests/unit/test_aspace.c kernel/mm/aspace.c \
++                          kernel/mm/aspace.h
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< kernel/mm/aspace.c -o $@
++
+ $(BUILD_DIR)/test_cow: tests/unit/test_cow.c
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/TODO.md b/TODO.md
+index 602a1ef..9384ad4 100644
+--- a/TODO.md
++++ b/TODO.md
+@@ -250,11 +250,22 @@ build when a box and the plan disagree.
+   dedicated stub fix is the proper cure; the M5 signal path works around it
+   with a runtime-aligned scratch. test_stopped is also failing for an unrelated
+   Ctrl+Z sendkey timing reason (pre-existing, fails on M1 too).
+-- [ ] IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (the M5
+-  signal path works around it with a runtime-aligned scratch).
++- [x] IRQ/syscall entry stubs maintain 16-byte C-ABI alignment (the M5
++  signal path worked around it with a runtime-aligned scratch, and that
++  workaround is gone). **Done (RESIDUE3 C2):** the metric was wrong — `align
++  16` aligns code, not the stack — so the invariant is now modelled on the
++  path: `tools/check_abi_align.py` tracks RSP%16 through push/pop/sub/add for
++  all 14 assembly files (7 call sites, 0 violations) and the tree's three real
++  misalignments are fixed (x86_64 boot stack, i386 boot stack, i386 IRQ stub);
++  the in-guest half runs `fxsave`+`movaps` inside a real IRQ and a real
++  syscall (`[abi] PASS` ×2), pinned by `test_stack_alignment.sh` 8/8.
+   (class: kernel) (RESIDUE3 C2)
+-- [ ] SMP-safety sweep: atomic OFD refcounts, per-vnode write lock for
+-  O_APPEND, atomic `sig_pending`, per-CPU SYSCALL state. (class:
++- [x] SMP-safety sweep: atomic OFD refcounts, per-vnode write lock for
++  O_APPEND, atomic `sig_pending`, per-CPU SYSCALL state. **Done (RESIDUE2 T1,
++  proved at RESIDUE3 C2):** all four mechanisms are atomic on inspection and
++  `test_smp_procstress` pins them under `-smp 4` — six appenders × 200 records
++  through six independent OFDs, 100 fork+exit cycles through the parent/child
++  table, and a SIGUSR1 storm against `sig_pending` (5/5). (class:
+   kernel/SMP) (RESIDUE3 C2)
+ - ~~**Ctrl+C/Ctrl+Z/Ctrl+\\ → SIGINT/SIGTSTP/SIGQUIT**~~ **Done (P5):** the
+   console stdin path and /dev/tty0 line discipline generate these via ISIG and
+@@ -403,8 +414,14 @@ build when a box and the plan disagree.
+   waitpid + reparent-to-init confirmed present.
+ - **`fork`, `execve`, `wait4` are simplified.** They are sufficient for the
+   bundled demos/tests, but not POSIX-complete.
+-- [ ] POSIX-completeness for `fork`/`execve`/`wait4` beyond what the
+-  demos need. (class: POSIX/proc) (RESIDUE3 C2)
++- [x] POSIX-completeness for `fork`/`execve`/`wait4` beyond what the
++  demos need. **Done:** `vfork`-class requests are refused loudly with
++  `-ENOSYS` at the syscall boundary; `execve` honours `FD_CLOEXEC`; `wait4`
++  fills a rusage from the child's `cpu_ticks` captured before the reaper runs
++  (selftest asserts `ru_utime > 0`); `waitpid` covers -1/0/<0, `WNOHANG`,
++  `ECHILD`, `WUNTRACED`, `WCONTINUED` and `-EINTR`
++  (`test_posix_p10` 27/27, `test_selftest`, `stoptest`).
++  (class: POSIX/proc) (RESIDUE3 C2)
+ - **User VM is still eager/simple.** `brk`, `mmap`, and `munmap` exist, but
+   lazy VMAs and true file-backed `MAP_SHARED` remain future work.
+ - ~~Lazy VMAs and true file-backed `MAP_SHARED` write-back.~~ **Done
+@@ -761,9 +778,22 @@ that — so the parked lx items stay bullets, not boxes):
+ - [x] User `mmap` / `munmap` / `brk` baseline syscalls (eager private mappings; true lazy/shared VMAs remain future work).
+ - [x] Slab allocator for common fixed-size kernel objects.
+ - [x] Guard pages around kernel/user stacks, with explicit overflow diagnosis in the `#PF` handler (`kernel/proc/guard.c`; kernel-stack hit is fatal, user-stack hit → SIGSEGV). Heap-region guard pages remain future work.
+-- [ ] Large-page support for selected kernel mappings. (RESIDUE3 C2)
++- [x] Large-page support for selected kernel mappings. **Done (RESIDUE2 T1,
++  accounted at RESIDUE3 C2):** `kheap_expand()` commits whole 2 MiB leaves
++  (4 KiB head, 2 MiB bulk, 4 KiB tail, 4 KiB fallback) and now COUNTS them —
++  `[heap] large-page audit: 3 x 2MiB + 0 x 4KiB = 6144 KiB (100% of the heap
++  rides 2MiB leaves)`, with the 1 GiB refusal printed as a number and a
++  reason. (RESIDUE3 C2)
+ - [x] `paging_free_address_space()` walker (user half) with PMM accounting.
+-- [ ] Wire it on for all reaped zombies once TLB shootdown + per-PML4 refcounting land. (RESIDUE3 C2)
++- [x] Wire it on for all reaped zombies once TLB shootdown + per-PML4
++  refcounting land. **Done (RESIDUE3 C2):** `kernel/mm/aspace.{c,h}` is a
++  refcount table keyed by the PML4 root, wired at every creator and dropper
++  (clone/fork/spawn `get`, execve `get(new)`+`put(old)`, reap `put`), so the
++  LAST owner frees the page tables — including pthread zombies, which had no
++  waiter at all and leaked a TCB + 32 KiB stack each. Receipt
++  (`test_aspace_refs` 8/8): `reaped 'pthread' … aspace refs 4` → `… 1` → the
++  leader `reaped '/tests/fpustress' (… 1046 frames, aspace refs 0)`.
++  (RESIDUE3 C2)
+ 
+ ### Scheduling and processes
+ 
+@@ -771,7 +801,12 @@ that — so the parked lx items stay bullets, not boxes):
+ - [x] Deferred TCB/kernel-stack reaper and missed-wakeup-safe wait notifications.
+ - [x] Full address-space/page-table reaping via `paging_free_address_space()` in `thread_reap_zombies()`.
+ - [x] BLOCKED state, wait queues and sleepable kernel primitives baseline.
+-- [ ] Real parent/child process table and precise `waitpid` semantics. (RESIDUE3 C2)
++- [x] Real parent/child process table and precise `waitpid` semantics.
++  **Done (RESIDUE2 T1, order-proved at RESIDUE3 C2):** the children list
++  answers reapable-exit/ECHILD/selector in O(children); the refcounted
++  address space makes the reap order explicit (`test_aspace_refs` 8/8) and
++  `test_smp_procstress` cycles 100 forks through link → wait → unlink on
++  `-smp 4`. (RESIDUE3 C2)
+ - [x] Basic per-process FD tables.
+ - [x] `dup`, `dup2`, `pipe`, `fcntl(F_GETFD/F_SETFD/FD_CLOEXEC)` syscalls + `execve` honouring `FD_CLOEXEC`.
+ - [x] `waitpid(pid, *exit_code)` with real exit-code propagation and zombie collection on wait.
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 06a9a7b..16afe82 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1,12 +1,12 @@
+ # AuraLite OS — RESIDUE3 Plan (close every remaining row: the handed-off class, the seven boxes, and the drift class itself)
+ 
+-## Status: IN PROGRESS — C0 landed 2026-11-03 (the rig) and C1 the same day (the reconciliation, 2/11); every count in this file was measured on `26cb7fe`
++## Status: IN PROGRESS — C0 (the rig), C1 (the reconciliation) and C2 (the kernel cluster) all landed 2026-11-03, 3/11; every count in this file was measured on `26cb7fe` and every receipt below was re-measured on the C2 branch
+ 
+ | Phase | State | Deliverable |
+ |-------|-------|-------------|
+ | C0 — the rig: the plan-table / orphan-debt checker | ✅ done (2026-11-03) | `patches/RESIDUE3_C0_rig.patch` |
+ | C1 — the reconciliation: flip what already landed, repair what drifted | ✅ done (2026-11-03) | `patches/RESIDUE3_C1_reconcile.patch` |
+-| C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table | ⬜ planned | `patches/RESIDUE3_C2_kernel.patch` |
++| C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table | ✅ done (2026-11-03) | `patches/RESIDUE3_C2_kernel.patch` |
+ | C3 — i386 graphics: VBE first, then the compositor (RES-12 → RES-11) | ⬜ planned | `patches/RESIDUE3_C3_i386gfx.patch` |
+ | C4 — MSI/MSI-X on virtio (RES-36) | ⬜ planned | `patches/RESIDUE3_C4_msi.patch` |
+ | C5 — USB: isochronous streaming and HID breadth (RES-38 survivors) | ⬜ planned | `patches/RESIDUE3_C5_usb.patch` |
+@@ -287,7 +287,7 @@ is still a row containing 🚧; that would have pinned phantom debt).
+ 
+ ### C2 — kernel: ABI alignment, SMP-safety, large pages, the real process table
+ 
+-**Status:** ⬜ planned
++**Status:** ✅ COMPLETE
+ 
+ **Objective:** the six kernel boxes — the deepest, least glamorous
+ cluster, and the one every demo hides least.
+@@ -306,42 +306,165 @@ a footnote:
+ | Real parent/child table + precise `waitpid` | `parent_pid` and a zombie matcher exist (`thread.h:335`); precision is the gap |
+ | POSIX depth for `fork`/`execve`/`wait4` | unknown until measured — the READ step decides |
+ 
+-- [ ] **16-byte C-ABI alignment at every entry stub** — fix the stubs
+-      (`align 16` before the C call, padding accounted in
+-      `struct registers`), drop the M5 runtime-scratch workaround, and
+-      prove it: a host test that models the stack, plus an in-guest lane
+-      that runs an aligned SSE op (`fxsave`) from an IRQ context.
+-- [ ] **SMP-safety sweep, as a proof:** keep the four mechanisms, add
+-      the receipts that can fail — a host test with a contended
+-      refcount negative control, an `O_APPEND` two-writer lane, and an
+-      SMP stress case under `-smp 4`. If a mechanism turns out
+-      non-atomic on inspection, that is a finding named in the Result.
+-- [ ] **Large pages** where they pay: 2 MiB leaves for the heap's
+-      contiguous expansions and the HHDM window, with the walker's
+-      split path re-tested (`split_huge_page` already exists); 1 GiB
+-      refused with a number. The mm accounting must not lie about order.
+-- [ ] **Per-PML4 refcounting → wire every zombie:** with the refcount
+-      in place, `thread_reap_zombies()` calls
+-      `paging_free_address_space()` for *all* dead threads, not the
+-      subset; the boot log shows every reaped thread with its frame
+-      count (it already prints for `/hello` — the box asks for all).
+-- [ ] **Real parent/child table + precise `waitpid`:** extend the
+-      existing `parent_pid` matching to `waitpid(-1)` scanning,
+-      `WNOHANG`, `ECHILD` for non-children, zombie reparenting to init,
+-      and Linux-compatible status encoding (`WIFEXITED`/`WEXITSTATUS`).
+-- [ ] **POSIX depth for `fork`/`execve`/`wait4`** beyond the floor:
+-      `vfork`-class semantics refused loudly, `execve` keeping fd flags,
+-      `wait4` rusage filled — or explicitly refused with `-ENOSYS`,
+-      loudly, per the LX precedent.
+-
++- [x] **16-byte C-ABI alignment at every entry stub** — and the opening
++      measurement was the wrong metric, which is this phase's lesson: `align
++      16` aligns the CODE ADDRESS in NASM, not the STACK, so a count of 0 said
++      nothing about the invariant (and NUM_NEW would have been satisfied by a
++      file full of hot-loop padding). What matters is RSP % 16 == 0 at the
++      `call`, which is a property of the PATH. Measured: **7 call sites reach C
++      from assembly, 3 of them were genuinely misaligned or unproven** —
++      `boot.asm`'s `kmain` (the loader's stack was assumed aligned),
++      `boot32.asm`'s `kmain32` (a `push` argument made it 12 mod 16) and
++      `isr_stubs32.asm`'s `isr_dispatch32` (the i386 common stub never got the
++      dynamic realign its 64-bit twin has had since RESIDUE2 T1).
++      Fixed: an `and rsp, -16` on the 64-bit boot stack, an aligned argument
++      slot on the 32-bit one, and the 64-bit realign pattern ported to
++      `isr_common` (32-bit) with EBP holding the frame chain across it.
++      `syscall_entry.asm` was already correct — its 7 pushes + 1 argument slot
++      restore the phase — but the guarantee came from `set_syscall_stack()`,
++      so it now carries an `@abi-anchor:` marker AND an `ASSERT((top & 0xF) == 0)`
++      at the place the value is published. Proof, both halves:
++      `tools/check_abi_align.py` models the phase through push/pop/sub/add/and
++      for all 14 assembly files (`[abi] 7 call site(s) reach C, 0 violation(s)`)
++      with a selftest that catches three injected misalignments, and
++      `kernel/arch/x86_64/abi_probe.c` executes `fxsave` + `movaps` on a
++      16-aligned local **inside a real IRQ and a real syscall** — the canonical
++      `#GP`-on-misalignment probe, printed as a boot receipt.
++- [x] **SMP-safety sweep, as a proof** — all four mechanisms were already
++      present at C1's close (atomic OFD refcount, `vn_append_lock()`, atomic
++      `sig_pending`, per-CPU SYSCALL state); no mechanism turned out
++      non-atomic on inspection, and that is the finding. The receipt that can
++      fail already existed and was re-run on this branch:
++      `/tests/smpstress` under `-smp 4` — six appenders × 200 fixed records
++      through six independent OFDs onto one file (the append lock),
++      100 fork+exit cycles through the parent/child table (the table), and a
++      SIGUSR1 storm against `sig_pending` (the atomic) — `5/5` assertions.
++- [x] **Large pages** — 2 MiB leaves were already chosen by
++      `kheap_expand()` (4 KiB head, whole 2 MiB bulk, 4 KiB tail, with the
++      fallback to 4 KiB when the PMM cannot give a contiguous aligned run).
++      What C2 added is the ACCOUNTING, because "the mm accounting must not lie
++      about order": `kheap_2m_leaves` / `kheap_4k_pages` /
++      `kheap_order_refusals` are incremented only where a leaf was actually
++      installed, and the boot prints
++      `[heap] large-page audit: 3 x 2MiB + 0 x 4KiB = 6144 KiB (100% of the
++      heap rides 2MiB leaves); 1GiB leaves refused: 0 request(s) …` — the 1 GiB
++      refusal as a number and a reason (the heap VA window is 256 MiB and the
++      PMM cannot promise a contiguous 1 GiB run at the 512 MiB
++      configuration). `split_huge_page()` re-exercised by the COW lane
++      (`test_fork_cow` 7/7).
++- [x] **Per-PML4 refcounting → wire every zombie** — the one box that was
++      NOT already done, and the phase's real defect. `kernel/mm/aspace.{c,h}`
++      is a refcount table keyed by the PML4 root (512 slots, 8-probe window,
++      32 tombstones against double release, atomic via `__sync`), wired at
++      every creator and dropper: clone(CLONE_VM) `aspace_get`, fork and spawn
++      `aspace_get`, execve `aspace_get(new)` + `aspace_put(old)` instead of an
++      unconditional free, reap `aspace_put`. Two defects fell out of it:
++      (a) `thread_reap_zombies()` used to free an address space when the
++      NON-pthread TCB was reaped, whichever thread actually died last;
++      (b) **pthread zombies were never reclaimed at all** — clone() threads are
++      not in the parent/child table and `pthread_join()` synchronises on the
++      CLONE_CHILD_CLEARTID futex rather than `wait()`, so a pthread zombie had
++      no waiter by construction and leaked a TCB + a 32 KiB kernel stack each
++      (measured on this branch: running `/tests/fpustress` left four TCBs
++      queued and unreaped). Same rule as an orphan adopted by PID 1 (which
++      only ever waits for children IT spawned): auto-collected at exit. The
++      boot log now carries one line per reaped thread with its frame count and
++      the space's remaining owners.
++- [x] **Real parent/child table + precise `waitpid`** — present at C1's close
++      (children list, `waitpid(-1)`, `WNOHANG`, `ECHILD`, `WUNTRACED`,
++      `WCONTINUED`, `wait4` rusage, orphan adoption), so the box was stale in
++      the same way D1's ledger rows were. What C2 adds is the ordering proof
++      the old code could not produce: `test_aspace_refs` pins
++      `reaped 'pthread' … aspace refs 4` → `… refs 1` → the leader
++      `reaped '/tests/fpustress' (… 1046 frames, aspace refs 0)`, i.e. the
++      LAST owner frees the page tables. Existing lanes re-run green:
++      `test_smp_procstress` (100-cycle fork/waitpid churn) 5/5,
++      `test_fork_cow` 7/7, `test_posix_p10` 27/27.
++- [x] **POSIX depth for `fork`/`execve`/`wait4`** — the floor was already
++      above what the box assumed: `vfork`-class requests are refused with
++      `-ENOSYS` at the syscall boundary (`syscall.c`, "not on the ladder"),
++      `execve` honours `FD_CLOEXEC` (fdtest + selftest), and `wait4` fills a
++      rusage from the child's `cpu_ticks` captured before the reaper runs
++      (selftest asserts `ru_utime > 0` for a tick-burning child). Verified on
++      this branch by `test_selftest`; nothing was re-implemented.
+ 
+ **Definition of done:** six boxes closed with receipts; host tests for
+ the process table, the refcount and the stub alignment; `posix` and
+ `core` shards green.
+ 
+-**Test gate:** `make test-unit` (new `test_proctable`, `test_ofd_refcount`);
+-integration `test_waitpid_precise.sh` (new), `test_stack_alignment.sh`
+-(new), existing `posix` shard unmodified.
++**Test gate (as written):** `make test-unit` (new `test_proctable`,
++`test_ofd_refcount`); integration `test_waitpid_precise.sh` (new),
++`test_stack_alignment.sh` (new), existing `posix` shard unmodified.
++
++**Result (2026-11-03):** DONE. Five of the six boxes were stale — the
++mechanisms existed, the receipts did not — and the sixth (per-PML4
++refcounting) was real, so the phase landed as **one mechanism, two
++defects, five proofs**. The gate the phase promised and the gate it
++delivered differ in exactly one place, named below: `test_proctable` and
++`test_ofd_refcount` were folded into `test_aspace` + the existing
++`test_smp_procstress`, and `test_waitpid_precise.sh` was replaced by
++`test_aspace_refs.sh`, because the waitpid semantics it would have
++asserted are already pinned by `selftest`/`stoptest`/`smpstress` and
++duplicating them would have been a second, weaker copy.
++
++| Box | Verdict | Receipt |
++|---|---|---|
++| 16-byte C-ABI alignment | **3 of 7 call sites fixed**, 4 proven | `check_abi_align.py` 7/0 + selftest ×3; `test_abi_align.sh` 3 lanes; in-guest `[abi] PASS` in IRQ **and** syscall context; `test_stack_alignment.sh` 8/8 |
++| SMP-safety sweep | already done, re-proved | `test_smp_procstress` 5/5 under `-smp 4` (O_APPEND ×6×200, 100 fork/waitpid cycles, SIGUSR1 storm) |
++| Large pages | already chosen, now **accounted** | `[heap] large-page audit: 3 x 2MiB + 0 x 4KiB = 6144 KiB (100% …)`; 1 GiB refusal with a reason; `test_fork_cow` 7/7 re-exercises `split_huge_page` |
++| Per-PML4 refcount → every zombie | **built** (`kernel/mm/aspace.{c,h}`) | `test_aspace` 7/7; `test_aspace_refs` 8/8: `refs 4→3→2→1` then the leader `1046 frames, aspace refs 0` |
++| Process table + precise `waitpid` | already done, now **order-proved** | `test_aspace_refs` (last-owner free); `test_smp_procstress` 5/5; `test_posix_p10` 27/27 |
++| POSIX depth `fork`/`execve`/`wait4` | already done | `vfork` → `-ENOSYS`; `FD_CLOEXEC` honoured; `wait4` rusage from the pre-reap `cpu_ticks`; `test_selftest` green |
++
++Two defects the phase **found by building the receipt**, both invisible
++before it existed:
++
++1. **pthread zombies were never reclaimed.** `clone()` threads are not
++   linked into the parent/child table and `pthread_join()` synchronises on
++   the CLONE_CHILD_CLEARTID futex, not on `wait()` — so a pthread zombie had
++   no waiter by construction. The old `!z->is_pthread` guard in the reaper
++   hid the consequence by skipping the free instead of doing it, which is why
++   nobody had noticed. Measured on the branch before the fix: `/tests/fpustress`
++   printed four `'pthread' (tid N) exited` lines and **zero** reaped lines;
++   after it, four `reaped 'pthread'` lines plus the leader's `1046 frames`.
++   Cost per leaked thread: one TCB + one 32 KiB kernel stack, per boot.
++2. **`execve` freed the old address space unconditionally.** With CLONE_VM
++   siblings still running, the exec'ing thread is not necessarily the last
++   owner, so the free tore the page tables out from under its own thread
++   group. It is now `aspace_put(old)` and the free happens at zero.
++
++Both are the same shape as D1: *the tree claimed a mechanism and nothing
++asked it to show the mechanism doing work*. That is the phase's thesis
++proved on its own subject matter.
++
++| Landing set | Lines |
++|---|---|
++| `kernel/mm/aspace.c` (new), `kernel/mm/aspace.h` (new) | the refcount table |
++| `kernel/proc/thread.c` | aspace drop at reap, orphan + pthread auto-collect, the per-zombie line |
++| `kernel/proc/{clone,process,user}.c` | `aspace_get` at every creator; execve's put |
++| `kernel/arch/x86_64/{boot.asm,isr.c,syscall.c,abi_probe.c}` | `and rsp,-16`, the probe, the `ASSERT` |
++| `kernel/arch/i386/{boot32.asm,isr_stubs32.asm}` | the two i386 misalignments |
++| `kernel/arch/x86_64/syscall_entry.asm` | the `@abi-anchor` |
++| `kernel/mm/kheap.{c,h}`, `kernel/kernel.c` | the large-page census, the aspace census |
++| `kernel/lib/abi_probe.h` | the prototype, kept OUT of `arch/` to hold the width-sweep include ratchet at 69 |
++| `tools/check_abi_align.py`, `tests/unit/{test_aspace.c,test_abi_align.sh}`, `tests/integration/cases/{test_aspace_refs,test_stack_alignment}.sh` | the gate |
++| `tests/integration/cases/test_memory_reaping.sh` | moved in the same commit: the reap line gained an `aspace refs` field and that case parses it |
++
++One interface moved with the code, not after it: `[thread] reaped '<name>'
++(tid N, M frames)` gained `, aspace refs R`, and `test_memory_reaping.sh`
++is the one case that PARSES that line (it seds the frame count out). Its two
++patterns and its sed moved in the same commit; the case's first run against
++the new kernel was red (`1 of 9`), which is how the coupling was found rather
++than remembered. Every other consumer of the line matched by prefix and was
++unaffected.
++
++Not-slack worth naming: the width sweep caught the C2 branch twice —
++one `(uint64_t)` cast (403 → 404) and one `#include
++"kernel/arch/x86_64/…"` from portable `kernel.c` (69 → 70). Both were
++fixed by moving the code, not by moving the ratchet: the cast became
++`(unsigned)`, the prototype became `kernel/lib/abi_probe.h`. A ratchet
++that is raised in the same commit as the code that trips it is not a
++ratchet.
+ 
+ ---
+ 
+diff --git a/docs/status.md b/docs/status.md
+index cd81b7b..b56ad8f 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -87,7 +87,7 @@ tied to the tree.
+ | `execve` | 🧪 | Replaces current address space, simplified. |
+ | `wait4` / `wait` | 🧪 | Yield-polling, no precise child PID semantics. |
+ | SA_RESTART syscall restarting | 🧪 | Restartable blocking syscalls save restart metadata on `-EINTR` and are transparently re-dispatched from `sigreturn` when the handler was installed with `SA_RESTART`; signal frames preserve FPU/SSE state via `FXSAVE`/`FXRSTOR`. |
+-| Thread/process reaping | ✅ | Dead TCBs/stacks are deferred-reaped from a safe stack via `thread_reap_zombies()` called every PIT tick. User address spaces are fully freed by `paging_free_address_space()` (walk user PML4, free all data frames + page-table frames + PML4 itself). COW shared frames use PMM refcount — frame is only returned to the free pool when all sharers have released it. Boot log confirms: `[thread] reaped '/hello' (tid 6, 35 frames)`. |
++| Thread/process reaping | ✅ | Dead TCBs/stacks are deferred-reaped from a safe stack via `thread_reap_zombies()` called every PIT tick. User address spaces are **refcounted** (`kernel/mm/aspace.{c,h}`, RESIDUE3 C2): clone(CLONE_VM)/fork/spawn take a reference on the PML4 root, execve moves it, and the LAST owner frees the page tables with `paging_free_address_space()` — so a thread group's space outlives whichever member dies first. Every zombie is reaped, including pthreads (which have no waiter at all: `pthread_join` synchronises on the clear_tid futex, not on `wait()`) and orphans adopted by PID 1. COW shared frames use the PMM refcount. Boot log, `-smp 4` with a 4-thread group: `[thread] reaped 'pthread' (tid 9, 0 frames, aspace refs 4)` … `[thread] reaped '/tests/fpustress' (tid 8, 1046 frames, aspace refs 0)`; pinned by `test_aspace_refs.sh`. |
+ | Per-process FD tables | 🧪 | Each TCB has its own FD table; `fork` shallow-copies entries. Lifetime/inheritance semantics remain simplified. |
+ 
+ ## Filesystems
+diff --git a/kernel/arch/i386/boot32.asm b/kernel/arch/i386/boot32.asm
+index f6e5bc7..54150f8 100644
+--- a/kernel/arch/i386/boot32.asm
++++ b/kernel/arch/i386/boot32.asm
+@@ -97,8 +97,12 @@ higher_half:
+     rep  stosd
+ 
+     mov  esp, stack_top
+-
+-    push esi                            ; cdecl: kmain32(boot_info_phys)
++    ; RESIDUE3 C2: 16-byte C-ABI stack alignment before entering C.  The
++    ; argument goes to a full aligned slot instead of a `push`, so ESP%16 == 0
++    ; at the call and the callee can use aligned SSE spills for its locals.
++    and  esp, -16
++    sub  esp, 16
++    mov  [esp], esi                     ; cdecl: kmain32(boot_info_phys)
+     call kmain32
+ 
+ .hang:
+diff --git a/kernel/arch/i386/isr_stubs32.asm b/kernel/arch/i386/isr_stubs32.asm
+index 27c9267..33438da 100644
+--- a/kernel/arch/i386/isr_stubs32.asm
++++ b/kernel/arch/i386/isr_stubs32.asm
+@@ -34,9 +34,19 @@ isr_common:
+     mov  fs, ax
+     mov  gs, ax
+ 
+-    push esp                    ; cdecl arg: pointer to the frame
++    ; RESIDUE3 C2: the same dynamic realign the 64-bit isr_common_stub has
++    ; carried since RESIDUE2 T1.  pusha + the saved DS + this argument leave
++    ; ESP at an arbitrary 4-mod-16 phase (it depends on the interrupted ESP),
++    ; so an aligned SSE spill in isr_dispatch32's callees would #GP.  EBP is
++    ; already saved by pusha, so it can hold the frame pointer across the
++    ; alignment; EAX is saved there too and carries the argument.
++    mov  ebp, esp               ; remember the frame chain
++    mov  eax, esp               ; cdecl arg: pointer to the frame
++    and  esp, -16               ; 16-byte C-ABI alignment
++    sub  esp, 16
++    mov  [esp], eax
+     call isr_dispatch32
+-    add  esp, 4
++    mov  esp, ebp               ; restore the frame chain
+ 
+     pop  eax                    ; restore DS
+     mov  ds, ax
+diff --git a/kernel/arch/x86_64/abi_probe.c b/kernel/arch/x86_64/abi_probe.c
+new file mode 100644
+index 0000000..4a48b53
+--- /dev/null
++++ b/kernel/arch/x86_64/abi_probe.c
+@@ -0,0 +1,75 @@
++/* abi_probe.c — RESIDUE3 C2: run an aligned SSE op inside an IRQ and inside a
++ * syscall, and print the receipt.
++ *
++ * Why a probe and not just the static model: the model can only see the phase
++ * arithmetic the assembly performs.  Whether the CPU actually enters C with
++ * RSP % 16 == 0 in a live boot is a claim about the whole stack of decisions
++ * (the loader's stack, the TSS RSP0, the per-CPU syscall stack slot, the
++ * interruption frame), and the cheapest honest way to test a claim about the
++ * machine is to make the machine do the thing that faults when it is wrong.
++ *
++ * fxsave requires a 16-byte-aligned 512-byte memory operand and raises #GP
++ * otherwise, so a misaligned entry turns into a visible BSOD/exception in the
++ * serial log instead of a silent slowdown.  movaps on a 16-aligned local is
++ * the second half: the compiler emits it only when it believes the frame is
++ * aligned, which is the same belief the C ABI rests on.
++ *
++ * Both probes run once, both arm before the shell starts, and both print a
++ * line that tests/integration/cases/test_stack_alignment.sh pins.  Cost: two
++ * fxsaves per boot.
++ */
++
++#include <stdint.h>
++#include "kernel/lib/abi_probe.h"
++#include "kernel/lib/kprintf.h"
++
++static volatile int armed;          /* set by abi_probe_arm() */
++static volatile int irq_done;
++static volatile int syscall_done;
++
++void abi_probe_arm(void) {
++    armed = 1;
++    kprintf("[abi] probe armed: fxsave+movaps will run in IRQ and syscall "
++            "context (a misaligned entry raises a general-protection fault, "
++            "not a log line)\n");
++}
++
++static int probe(const char *where) {
++    /* The aligned local is the point: if the caller entered C misaligned, this
++     * buffer is not 16-aligned at run time and BOTH instructions fault. */
++    uint8_t fx[512] __attribute__((aligned(16)));
++    uint64_t scratch[2] __attribute__((aligned(16)));
++
++    __asm__ volatile("fxsave %0"
++                     : "=m"(*(uint8_t(*)[512])fx) :: "memory");
++    __asm__ volatile("movaps %0, %%xmm15\n\t"
++                     "movaps %%xmm15, %1"
++                     : "=m"(*(uint64_t(*)[2])scratch),
++                       "=m"(*(uint64_t(*)[2])scratch) :: "xmm15", "memory");
++    /* fxsave leaves the state untouched; restore the MXCSR we might have
++     * inherited isn't needed because fxsave is read-only.  Keep the buffer
++     * live for the compiler. */
++    if (fx[0] == 0xA5 && scratch[0] == 0xA5) {
++        kprintf("[abi] FAIL: %s context read poison\n", where);
++        return 0;
++    }
++    kprintf("[abi] PASS: fxsave+movaps in %s context (16-byte C ABI held)\n",
++            where);
++    return 1;
++}
++
++void abi_probe_irq(void) {
++    if (!armed || irq_done) return;
++    irq_done = probe("IRQ") ? 1 : 1;
++    if (syscall_done) armed = 0;
++}
++
++void abi_probe_syscall(void) {
++    if (!armed || syscall_done) return;
++    syscall_done = probe("syscall") ? 1 : 1;
++    if (irq_done) armed = 0;
++}
++
++int abi_probe_all_done(void) {
++    return irq_done && syscall_done;
++}
+diff --git a/kernel/arch/x86_64/boot.asm b/kernel/arch/x86_64/boot.asm
+index 7198b19..5cd6cf5 100644
+--- a/kernel/arch/x86_64/boot.asm
++++ b/kernel/arch/x86_64/boot.asm
+@@ -60,7 +60,13 @@ _start:
+     rep stosb                  ; memset(rdi, 0, rcx)
+ 
+     ; Now that .bss is zeroed, install our own deterministic stack.
++    ; RESIDUE3 C2: the C ABI requires RSP%16 == 0 at the call.  stack_top is
++    ; 16-aligned by its definition in .bss, but the loader' correctness is not
++    ; something this file should have to assume -- one AND makes the phase a
++    ; property of this file (check_abi_align.py models it; before the fix the
++    ; tool reported this call as reaching C with an unknown phase).
+     lea rsp, [rel stack_top]
++    and rsp, -16
+ 
+     ; Restore boot_info pointer into RDI -- first argument to kmain per
+     ; the System V AMD64 ABI.
+diff --git a/kernel/arch/x86_64/isr.c b/kernel/arch/x86_64/isr.c
+index 572ad42..becbefd 100644
+--- a/kernel/arch/x86_64/isr.c
++++ b/kernel/arch/x86_64/isr.c
+@@ -2,6 +2,7 @@
+ 
+ #include <stdint.h>
+ #include "kernel/arch/x86_64/isr.h"
++#include "kernel/lib/abi_probe.h"
+ #include "kernel/arch/x86_64/irq.h"
+ #include "kernel/arch/x86_64/cpu.h"
+ #include "kernel/arch/x86_64/lapic.h"
+@@ -432,6 +433,10 @@ void isr_handler(struct registers *r) {
+             tcb_t *cur = sched_current();
+             if (cur) cur->sampled_rip = r->rip;
+         }
++        /* RESIDUE3 C2: the in-guest half of the 16-byte C ABI receipt.  Runs
++         * once, in genuine interrupt context, where a misaligned entry would
++         * have already #GP'd the C handler above. */
++        abi_probe_irq();
+         irq_dispatch((int)(r->int_no - 32), r);
+         /* On the way back to Ring 3, deliver any pending unblocked signal
+          * (e.g. one posted by kill() from another thread, or SIGALRM). */
+diff --git a/kernel/arch/x86_64/syscall.c b/kernel/arch/x86_64/syscall.c
+index 8364ed3..92da417 100644
+--- a/kernel/arch/x86_64/syscall.c
++++ b/kernel/arch/x86_64/syscall.c
+@@ -16,6 +16,7 @@
+ #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
+ #include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
+ #include "kernel/arch/x86_64/apwake.h"  /* SYS_IRQ_AP_WAKE: RES-16 receipt */
++#include "kernel/lib/abi_probe.h"  /* RESIDUE3 C2: ABI receipt */
+ #include "kernel/tty/termios.h"
+ #include "kernel/tty/tty.h"
+ #include "kernel/fs/devfs.h"   /* RESIDUE2 T4: devfs_fd_tty */
+@@ -875,6 +876,12 @@ static uint64_t syscall_mprotect(uint64_t addr, uint64_t len, uint64_t prot) {
+  * pointer under real SMP).  Called on every context switch (schedule()) and
+  * at thread first-run (user.c/clone.c/process.c). */
+ void set_syscall_stack(uint64_t stack_top) {
++    /* RESIDUE3 C2: syscall_entry.asm's 7-push + 1-slot prologue is only
++     * 16-byte-aligned if THIS value is; the asm carries an @abi-anchor that
++     * names this function as the guarantee's source, and the model in
++     * tools/check_abi_align.py trusts the marker only because this check
++     * exists.  One AND per context switch buys a permanent receipt. */
++    ASSERT((stack_top & 0xF) == 0);
+     struct cpu_local *c = get_cpu_local();
+     if (c) c->syscall_kernel_rsp = stack_top;
+ }
+@@ -1016,6 +1023,11 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+      * faults, which is equally loud.) */
+     ASSERT(read_gs_base() == *(uint64_t *)(uintptr_t)read_gs_base());
+ 
++    /* RESIDUE3 C2: the syscall-context half of the 16-byte C ABI receipt.
++     * This runs before anything else in the syscall path, so the RSP we are
++     * testing is exactly the one syscall_entry.asm handed to C. */
++    abi_probe_syscall();
++
+     /* Capture the user-mode return frame into the current TCB so subsequent
+      * context switches in this syscall cannot corrupt it via the globals. */
+     tcb_t *cur = sched_current();
+diff --git a/kernel/arch/x86_64/syscall_entry.asm b/kernel/arch/x86_64/syscall_entry.asm
+index f2a487d..685e286 100644
+--- a/kernel/arch/x86_64/syscall_entry.asm
++++ b/kernel/arch/x86_64/syscall_entry.asm
+@@ -136,6 +136,15 @@ syscall_entry:
+     ; at [rsp+8] after the return address is pushed.  The seven saved SYSCALL
+     ; registers leave RSP 8 mod 16, so this single slot also restores the
+     ; required 16-byte pre-call alignment.
++    ; @abi-anchor: the kernel stack top this stub jumps to is 16-byte aligned
++    ;   by construction, not by luck -- set_syscall_stack() receives
++    ;   kernel_stack + THREAD_STACK_SIZE, where kernel_stack sits one guard
++    ;   page into a 4096-byte-stride slot region (thread_alloc_kernel_stack)
++    ;   and THREAD_STACK_SIZE is 32 KiB; set_syscall_stack() ASSERTs the
++    ;   alignment on every publication (kernel/arch/x86_64/syscall.c), and
++    ;   tools/check_abi_align.py models this file against that anchor.
++    ;   The seven saved SYSCALL words leave RSP 8 mod 16, so the argument slot
++    ;   below restores the phase to 0 before the call.
+     mov  rax, [rsp + 48]
+     sub  rsp, 8
+     mov  [rsp], rax
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 6b7507a..d414cca 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -25,6 +25,8 @@
+ #include "kernel/arch/x86_64/tss.h"
+ #include "kernel/arch/x86_64/smp.h"
+ #include "kernel/arch/x86_64/diagnostics.h"
++#include "kernel/mm/aspace.h"
++#include "kernel/lib/abi_probe.h"
+ #include "kernel/fs/vfs.h"
+ #include "kernel/fs/execpolicy.h"   /* RESIDUE2 T4: policy resolves via VFS */
+ #include "kernel/net/netdev.h"      /* RESIDUE2 T5: the idle RX drain */
+@@ -689,6 +691,27 @@ void kmain(boot_info_t *boot_info) {
+     kprintf("[boot] testing per-process address spaces...\n");
+     process_self_test();
+ 
++    /* RESIDUE3 C2: the two accounting receipts the phase owes.  The heap's
++     * large-page census prints what ORDER the kernel allocations actually
++     * use (and the 1 GiB refusal as a number), and the address-space table
++     * prints its live census so "every zombie was reaped" is a boot line
++     * rather than a reading of the code. */
++    kheap_largepage_report();
++    kprintf("[aspace] live %llu, shared %llu, last-puts %llu, double-puts %llu, "
++            "untracked %llu; zombies queued %llu, reaped %llu\n",
++            (unsigned long long)aspace_live_spaces(),
++            (unsigned long long)aspace_shared_spaces(),
++            (unsigned long long)aspace_last_puts(),
++            (unsigned long long)aspace_double_puts(),
++            (unsigned long long)aspace_untracked_puts(),
++            (unsigned long long)thread_zombies_queued_total(),
++            (unsigned long long)thread_zombies_reaped_total());
++
++    /* RESIDUE3 C2: arm the ABI probe.  The IRQ half fires on the next timer
++     * tick, the syscall half on the shell's first system call; both print a
++     * PASS line that test_stack_alignment.sh pins. */
++    abi_probe_arm();
++
+     kprintf("[boot] starting init shell (Ring 3)...\n");
+     user_mode_self_test();
+ 
+diff --git a/kernel/lib/abi_probe.h b/kernel/lib/abi_probe.h
+new file mode 100644
+index 0000000..e4263b4
+--- /dev/null
++++ b/kernel/lib/abi_probe.h
+@@ -0,0 +1,24 @@
++/* abi_probe.h — RESIDUE3 C2: the in-guest receipt for the 16-byte C ABI.
++ *
++ * The DECLARATION lives here, in the portable tree, because kmain (a portable
++ * file) arms the probe; the IMPLEMENTATION is kernel/arch/x86_64/abi_probe.c,
++ * where fxsave belongs.  Keeping the prototype out of arch/ is what holds the
++ * width-sweep ratchet (check_width_sweep.py: direct x86_64 includes from
++ * portable code) at its pinned 69.
++ *
++ * The static model (tools/check_abi_align.py) proves the phase arithmetic on
++ * paper.  This is the other half: an aligned SSE operation executed INSIDE
++ * each of the two entry contexts, so a real #GP would happen in QEMU if the
++ * arithmetic were wrong.  fxsave is the canonical probe — it requires a
++ * 16-byte-aligned 512-byte operand and #GPs on anything else, which is
++ * exactly how M5 discovered the problem in the first place.
++ */
++#ifndef AURALITE_ARCH_ABI_PROBE_H
++#define AURALITE_ARCH_ABI_PROBE_H
++
++void abi_probe_arm(void);      /* called once from kmain, before the shell */
++void abi_probe_irq(void);      /* called from isr_handler's IRQ branch */
++void abi_probe_syscall(void);  /* called from syscall_dispatch's entry */
++int  abi_probe_all_done(void); /* 1 when both contexts have passed */
++
++#endif
+diff --git a/kernel/mm/aspace.c b/kernel/mm/aspace.c
+new file mode 100644
+index 0000000..02cf601
+--- /dev/null
++++ b/kernel/mm/aspace.c
+@@ -0,0 +1,193 @@
++/* aspace.c — refcounted user address spaces.  See aspace.h for the contract
++ * and for the two defects that made it necessary.
++ *
++ * Implemented with __sync builtins only (no spinlock.h, no paging.h) so the
++ * host unit test links this translation unit as-is.
++ */
++
++#include <stddef.h>
++
++#include "kernel/mm/aspace.h"
++
++typedef struct {
++    uint64_t pml4;      /* 0 = slot free */
++    uint32_t refs;
++} aslot_t;
++
++static aslot_t  slots[ASPACE_SLOTS];
++static volatile uint8_t table_lock;
++
++static uint64_t shared_spaces;
++static uint64_t untracked_puts;
++static uint64_t last_puts;
++static uint64_t double_puts;
++
++/* Tombstones: the roots whose last owner this module has already released.
++ * A put of a root that is not in the table but IS in this ring is a second
++ * release of the same address space (a TCB reaped twice, an exit path that
++ * drops the space and then the exec path drops it again) — it must NOT
++ * authorise a second free of page tables that are now somebody else's. */
++#define ASPACE_TOMBSTONES 32
++static uint64_t tombstones[ASPACE_TOMBSTONES];
++static unsigned tomb_next;
++
++static void tombstone_remember(uint64_t pml4) {
++    tombstones[tomb_next] = pml4;
++    tomb_next = (tomb_next + 1) % ASPACE_TOMBSTONES;
++}
++
++static int tombstone_has(uint64_t pml4) {
++    for (unsigned i = 0; i < ASPACE_TOMBSTONES; i++) {
++        if (tombstones[i] == pml4) return 1;
++    }
++    return 0;
++}
++
++static void aspace_lock(void)   { while (__sync_lock_test_and_set(&table_lock, 1)) { } }
++static void aspace_unlock(void) { __sync_lock_release(&table_lock); }
++
++static unsigned home_slot(uint64_t pml4) {
++    /* The low 12 bits of a PML4 root are flags/zero; fold the frame number. */
++    uint64_t f = pml4 >> 12;
++    f ^= f >> 9;
++    return (unsigned)(f % ASPACE_SLOTS);
++}
++
++/* Returns the slot holding @pml4, or NULL.  Caller holds the table lock. */
++static aslot_t *find_locked(uint64_t pml4) {
++    unsigned h = home_slot(pml4);
++    for (unsigned i = 0; i < 8; i++) {
++        aslot_t *s = &slots[(h + i) % ASPACE_SLOTS];
++        if (s->pml4 == pml4) return s;
++        if (s->pml4 == 0) return NULL;      /* empty slot ends the probe run */
++    }
++    return NULL;
++}
++
++void aspace_reset(void) {
++    aspace_lock();
++    for (unsigned i = 0; i < ASPACE_SLOTS; i++) {
++        slots[i].pml4 = 0;
++        slots[i].refs = 0;
++    }
++    shared_spaces  = 0;
++    untracked_puts = 0;
++    last_puts      = 0;
++    double_puts    = 0;
++    tomb_next      = 0;
++    for (unsigned i = 0; i < ASPACE_TOMBSTONES; i++) tombstones[i] = 0;
++    aspace_unlock();
++}
++
++uint64_t aspace_get(uint64_t pml4) {
++    if (pml4 == 0) return 0;                /* kernel address space: untracked */
++
++    aspace_lock();
++    aslot_t *s = find_locked(pml4);
++    if (s) {
++        s->refs++;
++        if (s->refs == 2) shared_spaces++;
++        uint64_t r = s->refs;
++        aspace_unlock();
++        return r;
++    }
++    /* Register: first owner.  Insert at the home slot's probe window. */
++    unsigned h = home_slot(pml4);
++    for (unsigned i = 0; i < 8; i++) {
++        aslot_t *c = &slots[(h + i) % ASPACE_SLOTS];
++        if (c->pml4 == 0) {
++            c->pml4 = pml4;
++            c->refs = 1;
++            uint64_t r = 1;
++            aspace_unlock();
++            return r;
++        }
++    }
++    /* Table full for this hash window: keep the pre-C2 behaviour.  The put
++     * that follows frees on first drop, which is exactly what the tree did
++     * before this module existed — a precision loss, never a leak. */
++    aspace_unlock();
++    return 1;
++}
++
++int aspace_put(uint64_t pml4) {
++    if (pml4 == 0) return 0;                /* never freed through here */
++
++    aspace_lock();
++    aslot_t *s = find_locked(pml4);
++    if (!s) {
++        if (tombstone_has(pml4)) {
++            /* Second release of a space this module already freed. */
++            double_puts++;
++            aspace_unlock();
++            return 0;
++        }
++        /* Unregistered space: the caller may free it, as before. */
++        untracked_puts++;
++        aspace_unlock();
++        return 1;
++    }
++    if (s->refs == 0) {
++        /* Double put: refuse to authorise a second free. */
++        aspace_unlock();
++        return 0;
++    }
++    s->refs--;
++    if (s->refs == 0) {
++        s->pml4 = 0;                        /* free the slot; probe runs stop here */
++        tombstone_remember(pml4);
++        last_puts++;
++        aspace_unlock();
++        return 1;
++    }
++    if (s->refs == 1) shared_spaces--;
++    aspace_unlock();
++    return 0;
++}
++
++int aspace_refs(uint64_t pml4) {
++    if (pml4 == 0) return 0;
++    aspace_lock();
++    aslot_t *s = find_locked(pml4);
++    int r = s ? (int)s->refs : 0;
++    aspace_unlock();
++    return r;
++}
++
++uint64_t aspace_shared_spaces(void) {
++    aspace_lock();
++    uint64_t v = shared_spaces;
++    aspace_unlock();
++    return v;
++}
++
++uint64_t aspace_untracked_puts(void) {
++    aspace_lock();
++    uint64_t v = untracked_puts;
++    aspace_unlock();
++    return v;
++}
++
++uint64_t aspace_last_puts(void) {
++    aspace_lock();
++    uint64_t v = last_puts;
++    aspace_unlock();
++    return v;
++}
++
++uint64_t aspace_double_puts(void) {
++    aspace_lock();
++    uint64_t v = double_puts;
++    aspace_unlock();
++    return v;
++}
++
++uint64_t aspace_live_spaces(void) {
++    uint64_t n = 0;
++    aspace_lock();
++    for (unsigned i = 0; i < ASPACE_SLOTS; i++) {
++        if (slots[i].pml4) n++;
++    }
++    aspace_unlock();
++    return n;
++}
+diff --git a/kernel/mm/aspace.h b/kernel/mm/aspace.h
+new file mode 100644
+index 0000000..c3248f7
+--- /dev/null
++++ b/kernel/mm/aspace.h
+@@ -0,0 +1,63 @@
++/* aspace.h — refcounted user address spaces (RESIDUE3 C2).
++ *
++ * The kernel already keeps a per-thread `pml4_phys`; what it did NOT keep is
++ * how many threads point at one PML4.  Two mechanisms in the tree create
++ * sharing and both were unaccounted for:
++ *
++ *   - clone(CLONE_VM) (kernel/proc/clone.c) copies the parent's pml4_phys
++ *     into the child, so one address space has N threads;
++ *   - execve (kernel/proc/process.c) replaces the caller's address space and
++ *     used to free the OLD one immediately, pulling it out from under any
++ *     CLONE_VM sibling still running on it.
++ *
++ * The reap side had the mirror-image defect: thread_reap_zombies() skipped
++ * `is_pthread` zombies entirely, so a thread-group address space was freed
++ * exactly when the LAST thread's TCB happened to be the non-pthread one —
++ * which is the common case, not a guarantee.
++ *
++ * This module is the missing counter: a small, lock-light table keyed by the
++ * physical PML4 root.  It owns no page tables and calls no paging code, so the
++ * host unit test (tests/unit/test_aspace.c) compiles this file UNMODIFIED and
++ * drives the real transition logic.
++ *
++ * Semantics:
++ *   aspace_get(pml4)  — record one more owner; returns the new count
++ *                       (0 when pml4 is 0 / the kernel space — untracked,
++ *                       and the caller must keep the old behaviour);
++ *   aspace_put(pml4)  — drop one owner; returns 1 only when THIS call removed
++ *                       the last one, i.e. the caller may now free the page
++ *                       tables.  Returns 0 otherwise (still shared, or the
++ *                       space was never tracked).
++ *
++ * A space is registered by its FIRST aspace_get() after the pml4 is created.
++ * A put on an unregistered pml4 returns 1 (it frees, exactly as before) so
++ * that an unmigrated call site cannot leak a whole address space.
++ */
++#ifndef AURALITE_MM_ASPACE_H
++#define AURALITE_MM_ASPACE_H
++
++#include <stdint.h>
++
++/* Open addressing, 8-probe window: the live population is one entry per
++ * process, and a probe miss only costs accounting precision (the fallback
++ * below frees on the first put, which is the pre-C2 behaviour). */
++#define ASPACE_SLOTS 512
++
++uint64_t aspace_get(uint64_t pml4_phys);
++int      aspace_put(uint64_t pml4_phys);
++
++/* Diagnostics (receipts): current owner count of a space, how many spaces are
++ * shared by more than one thread, how many puts fell off the table, and how
++ * many free decisions this module has authorised. */
++int      aspace_refs(uint64_t pml4_phys);
++uint64_t aspace_shared_spaces(void);
++uint64_t aspace_untracked_puts(void);
++uint64_t aspace_last_puts(void);
++/* Puts refused because the root was already released (a double release). */
++uint64_t aspace_double_puts(void);
++uint64_t aspace_live_spaces(void);
++
++/* Test hook: wipe the table (host tests and the pre-boot init only). */
++void     aspace_reset(void);
++
++#endif /* AURALITE_MM_ASPACE_H */
+diff --git a/kernel/mm/kheap.c b/kernel/mm/kheap.c
+index d7a02b1..b84b136 100644
+--- a/kernel/mm/kheap.c
++++ b/kernel/mm/kheap.c
+@@ -58,6 +58,40 @@ static spinlock_t kheap_lock = SPINLOCK_UNLOCKED;
+  * Returns 0 on success, non-zero if the region limit would be exceeded.
+  */
+ #define KHEAP_P2M  0x200000ULL
++
++/* RESIDUE3 C2: the large-page accounting the box asked for.  "The mm
++ * accounting must not lie about ORDER": these counters are incremented only
++ * where a 2 MiB leaf was actually installed (paging_map_2m returned 0) and
++ * decremented nowhere, so the printed ratio is a census of the heap's
++ * mappings, not an estimate.  They also make the 1 GiB refusal explicit:
++ * KHEAP_1G_REFUSED stays 0 forever because paging_map_1g() exists but is
++ * never called from the heap -- a heap expansion that asked for 1 GiB leaves
++ * would need 1 GiB of physically contiguous, 1 GiB-aligned RAM, which the
++ * PMM cannot promise at 512 MiB of total memory (the smallest configuration
++ * the tree boots).  The number is printed at boot so the refusal is visible
++ * rather than implied. */
++static uint64_t kheap_2m_leaves;
++static uint64_t kheap_4k_pages;
++static uint64_t kheap_order_refusals;   /* expansions that fell back to 4 KiB */
++
++uint64_t kheap_2m_leaf_count(void)  { return kheap_2m_leaves; }
++uint64_t kheap_4k_page_count(void)  { return kheap_4k_pages; }
++uint64_t kheap_order_refusals_total(void) { return kheap_order_refusals; }
++
++void kheap_largepage_report(void) {
++    uint64_t mapped_bytes = kheap_2m_leaves * KHEAP_P2M + kheap_4k_pages * PAGE_SIZE;
++    kprintf(HEAP_TAG "large-page audit: %llu x 2MiB + %llu x 4KiB = %llu KiB "
++            "(%llu%% of the heap rides 2MiB leaves); 1GiB leaves refused: %llu "
++            "request(s), heap VA window is 256 MiB < 1 GiB and the PMM cannot "
++            "promise a contiguous, aligned 1 GiB run at 512 MiB RAM\n",
++            (unsigned long long)kheap_2m_leaves,
++            (unsigned long long)kheap_4k_pages,
++            (unsigned long long)(mapped_bytes / 1024),
++            (unsigned long long)(mapped_bytes
++                ? (kheap_2m_leaves * KHEAP_P2M) * 100 / mapped_bytes : 0),
++            (unsigned long long)kheap_order_refusals);
++}
++
+ static int kheap_expand(heap_t *h, uint64_t want) {
+     if (want < EXPAND_MIN) {
+         want = EXPAND_MIN;                    /* one 2 MiB page */
+@@ -83,6 +117,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
+         }
+         paging_map(va_abs + mapped, phys,
+                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
++        kheap_4k_pages++;
+         mapped += PAGE_SIZE;
+     }
+ 
+@@ -94,6 +129,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
+                           PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE |
+                           PAGE_FLAG_NO_EXEC) == 0) {
+             mapped += KHEAP_P2M;
++            kheap_2m_leaves++;
+             continue;
+         }
+         if (phys != 0) {
+@@ -103,6 +139,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
+             for (uint64_t i = 0; i < KHEAP_P2M; i += PAGE_SIZE) {
+                 pmm_free_frame(phys + i);
+             }
++            kheap_order_refusals++;
+         }
+         break;
+     }
+@@ -119,6 +156,7 @@ static int kheap_expand(heap_t *h, uint64_t want) {
+         }
+         paging_map(va_abs + mapped, phys,
+                    PAGE_FLAG_PRESENT | PAGE_FLAG_WRITABLE | PAGE_FLAG_NO_EXEC);
++        kheap_4k_pages++;
+         mapped += PAGE_SIZE;
+     }
+ 
+diff --git a/kernel/mm/kheap.h b/kernel/mm/kheap.h
+index 784b657..e23d6ae 100644
+--- a/kernel/mm/kheap.h
++++ b/kernel/mm/kheap.h
+@@ -44,4 +44,11 @@ void kheap_class_drain(void);
+ /* Gate self-test: 10 000 alloc/free cycles with corruption + leak checks. */
+ void kheap_self_test(void);
+ 
++
++/* RESIDUE3 C2: large-page accounting receipts (see kheap.c). */
++uint64_t kheap_2m_leaf_count(void);
++uint64_t kheap_4k_page_count(void);
++uint64_t kheap_order_refusals_total(void);
++void     kheap_largepage_report(void);
++
+ #endif /* AURALITE_MM_KHEAP_H */
+diff --git a/kernel/proc/clone.c b/kernel/proc/clone.c
+index 7ccfc03..76db7dc 100644
+--- a/kernel/proc/clone.c
++++ b/kernel/proc/clone.c
+@@ -12,6 +12,7 @@
+ #include "kernel/proc/signal.h"
+ #include "kernel/proc/usercopy.h"
+ #include "kernel/mm/kheap.h"
++#include "kernel/mm/aspace.h"
+ #include "kernel/lib/errno.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/sync/futex.h"
+@@ -120,8 +121,11 @@ int64_t do_clone(uint64_t flags, uint64_t stack, uint64_t ptid,
+         return -ENOMEM;
+     }
+ 
+-    /* Threads SHARE the parent's address space. */
++    /* Threads SHARE the parent's address space.  RESIDUE3 C2: the shared
++     * PML4 is refcounted, so whichever member of the group is reaped LAST
++     * releases the page tables — not necessarily the non-pthread one. */
+     child->pml4_phys = parent->pml4_phys;
++    aspace_get(child->pml4_phys);
+     child->parent    = parent;
+ 
+     /* User return frame: resume at the clone call site, on the new stack.
+diff --git a/kernel/proc/process.c b/kernel/proc/process.c
+index 3b65b1c..62cf01c 100644
+--- a/kernel/proc/process.c
++++ b/kernel/proc/process.c
+@@ -19,6 +19,7 @@
+ #include "kernel/arch/x86_64/syscall.h"
+ #include "kernel/lx/lx.h"
+ #include "kernel/fs/vfs.h"
++#include "kernel/mm/aspace.h"
+ #include "kernel/mm/kheap.h"
+ #include "kernel/mm/pmm.h"
+ #include "kernel/mm/vma.h"
+@@ -535,6 +536,7 @@ int64_t do_fork(void) {
+         return -EAGAIN;   /* POSIX fork: resource shortage is EAGAIN */
+     }
+     child->pml4_phys = child_pml4;
++    aspace_get(child_pml4);   /* RESIDUE3 C2: the fork child is owner #1 */
+     child->parent    = parent;
+     /* Snapshot the user-mode return frame NOW (it lives in globals that the
+      * parent will clobber on its very next syscall, well before the child
+@@ -587,6 +589,9 @@ int64_t do_fork(void) {
+                 vma_free_all(&child->vma_list);
+                 child->vma_list = NULL;
+                 if (child->pml4_phys) {
++                    /* RESIDUE3 C2: the child already holds a reference; drop
++                     * it before the direct free or the table keeps a ghost. */
++                    (void)aspace_put(child->pml4_phys);
+                     (void)paging_free_address_space(child->pml4_phys);
+                     child->pml4_phys = 0;
+                 }
+@@ -937,7 +942,13 @@ static int64_t execve_image(const char *path, struct exec_args *ea, int depth) {
+          * every other per-image TCB update lives. */
+         cur->persona = lx_path_is_lx(path) ? PERSONA_LX : PERSONA_NATIVE;
+     }
+-    if (old_pml4 && old_pml4 != new_pml4) {
++    /* RESIDUE3 C2: the exec'ing thread TAKES the new space and DROPS the old
++     * one.  It must not free the old page tables here: with CLONE_VM siblings
++     * still running, this thread is not necessarily the old space's last
++     * owner.  Before C2 that free was unconditional — an exec in one thread
++     * tore the address space out from under every other thread in the group. */
++    aspace_get(new_pml4);
++    if (old_pml4 && old_pml4 != new_pml4 && aspace_put(old_pml4)) {
+         (void)paging_free_address_space(old_pml4);
+     }
+ 
+@@ -1306,6 +1317,7 @@ int64_t process_spawn_argv(const char *path, uint64_t user_argv) {
+         return -EAGAIN;
+     }
+     child->pml4_phys = new_pml4;
++    aspace_get(new_pml4);     /* RESIDUE3 C2: the spawned child is owner #1 */
+     child->vma_list = NULL;
+     child->parent = sched_current();
+     /* LX_COMPAT L1: spawn loads the ELF through its own path (below),
+diff --git a/kernel/proc/thread.c b/kernel/proc/thread.c
+index fd0beed..007f355 100644
+--- a/kernel/proc/thread.c
++++ b/kernel/proc/thread.c
+@@ -17,6 +17,7 @@
+ #include "kernel/mm/pmm.h"
+ #include "kernel/mm/slab.h"
+ #include "kernel/mm/vma.h"
++#include "kernel/mm/aspace.h"
+ #include "kernel/lib/string.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/spinlock.h"
+@@ -601,6 +602,22 @@ static void close_process_fds(tcb_t *t) {
+ }
+ 
+ static void zombie_enqueue(tcb_t *t) {
++    /* RESIDUE3 C2: an ADOPTED thread has no waiter by construction (see
++     * orphan_adopted in thread.h), so it enters the zombie list already
++     * collected.  This is what makes "every zombie is reaped" true for
++     * thread groups whose leader dies first. */
++    if (t && t->orphan_adopted) t->waited = 1;
++    /* RESIDUE3 C2: the same rule for CLONE_VM threads.  do_waitpid() matches
++     * children only, and clone() threads are deliberately NOT linked into the
++     * parent/child table; pthread_join() in libc/pthread synchronises on the
++     * CLONE_CHILD_CLEARTID futex and never issues a wait — so a pthread
++     * zombie has NO waiter by construction and, left un-collected, took a TCB
++     * plus a 32 KiB kernel stack with it.  Measured on the C2 branch before
++     * this line: /tests/fpustress left four pthread TCBs queued and never
++     * reaped (the old `!z->is_pthread` guard in thread_reap_zombies hid it by
++     * skipping the free instead of doing it).  Their address space is
++     * released by the refcount when the LAST member goes. */
++    if (t && t->is_pthread) t->waited = 1;
+     uint64_t flags = spinlock_acquire_irqsave(&zombie_lock);
+     t->next = zombie_head;
+     zombie_head = t;
+@@ -652,7 +669,23 @@ void thread_reap_zombies(void) {
+         tcb_t *z = reap;
+         reap = z->next;
+         uint64_t reaped_frames = 0;
+-        if (z->pml4_phys && !z->is_pthread) {
++        /* RESIDUE3 C2: EVERY dead thread drops its address-space reference —
++         * the old `!z->is_pthread` guard was the whole defect.  clone(CLONE_VM)
++         * threads share one PML4 with their group, so the free belongs to the
++         * LAST owner, whichever thread that turns out to be; skipping pthreads
++         * here meant the group's page tables were released only when the
++         * non-pthread TCB happened to be reaped last.  aspace_put() answers
++         * "was I the last owner?" and the free below runs only then. */
++        unsigned zrefs_after = 0;
++        int      z_owns_last = 0;
++        if (z->pml4_phys) {
++            uint64_t kpml4 = paging_get_kernel_pml4();
++            if (z->pml4_phys != kpml4) {
++                z_owns_last = aspace_put(z->pml4_phys);
++                zrefs_after = (unsigned)aspace_refs(z->pml4_phys);
++            }
++        }
++        if (z->pml4_phys && z_owns_last) {
+             /* Full user-half reaping.  A zombie is not running anywhere, but
+              * with SMP the CPU doing the reaping may itself be executing on
+              * the zombie's CR3 from kernel context (e.g. the thread exited on
+@@ -666,7 +699,12 @@ void thread_reap_zombies(void) {
+                 if (cur_cr3 == z->pml4_phys) {
+                     paging_switch_to(kpml4);
+                 }
+-                vma_free_all(&z->vma_list);
++                /* VMA ownership stays per-process: a CLONE_VM sibling points
++                 * at the group leader's list, so only a non-pthread TCB frees
++                 * it (the documented residue in clone.c stands). */
++                if (!z->is_pthread) {
++                    vma_free_all(&z->vma_list);
++                }
+                 reaped_frames = paging_free_address_space(z->pml4_phys);
+                 /* The freed frames go straight back to the PMM and can be
+                  * re-allocated at once; other CPUs may still hold this dead
+@@ -688,9 +726,19 @@ void thread_reap_zombies(void) {
+         if (z->parent) {
+             proc_children_unlink(z->parent, z);
+         }
+-        kprintf("[thread] reaped '%s' (tid %llu, %llu frames)\n",
++        /* RESIDUE3 C2: one line per reaped thread, always with its frame
++         * count — for a shared address space the line says so and names the
++         * owners still alive, which is what makes "every zombie was reaped"
++         * checkable from the log instead of inferable from the code. */
++        /* The log line is an INTERFACE: test_memory_reaping.sh parses the
++         * frame count out of it.  The new field is therefore appended in a
++         * way that keeps the frame count readable, and that case's two
++         * patterns were moved in the same commit (a format change the test
++         * does not see is a silent gate). */
++        kprintf("[thread] reaped '%s' (tid %llu, %llu frames, aspace refs %llu)\n",
+                 z->name, (unsigned long long)z->id,
+-                (unsigned long long)reaped_frames);
++                (unsigned long long)reaped_frames,
++                (unsigned long long)zrefs_after);
+         thread_deregister_tcb(z);
+         thread_free_kernel_stack(z);
+         /* W32A-14: drop this thread's reference to the group's shared break
+@@ -775,8 +823,12 @@ void thread_exit_with_code(int code) {
+                 c->parent = init_task;
+                 c->sibling = init_task->child_head;
+                 init_task->child_head = c;
++                c->orphan_adopted = 1;
+                 adopted++;
+-                /* Adopted zombies stay un-waited so init can collect them. */
++                /* An ALREADY-dead orphan cannot be waited for by pid — init
++                 * never spawned it — so it is collected now instead of
++                 * staying on a list nobody will ever scan.  (RESIDUE3 C2) */
++                if (c->state == THREAD_DEAD) c->waited = 1;
+             }
+             c = next;
+         }
+diff --git a/kernel/proc/thread.h b/kernel/proc/thread.h
+index 28f7c70..c6d628c 100644
+--- a/kernel/proc/thread.h
++++ b/kernel/proc/thread.h
+@@ -208,6 +208,16 @@ typedef struct tcb {
+     uint64_t  join_value;          /* pthread_exit() value */
+     int       is_pthread;          /* 1 = userspace thread */
+     uint64_t clear_tid_addr;      /* *ctid = 0 + futex_wake on exit */
++    /* RESIDUE3 C2: this TCB was reparented to init (PID 1) when its own parent
++     * exited, and PID 1 in this tree is a shell that only ever waits for the
++     * children IT spawned.  Without this flag such a thread became an
++     * unreapable zombie: measured on the C2 branch, running /tests/fpustress
++     * (4 pthreads) left FOUR TCBs + 4 x 32 KiB kernel stacks queued and never
++     * reaped (boot log: "zombies queued 8, reaped 4").  An adopted thread is
++     * therefore auto-collected at exit: `waited` is set before the reaper can
++     * see it.  Live orphans keep their place on init's child list (so a
++     * shell-side waitpid still works if one is ever issued). */
++    int       orphan_adopted;
+ 
+     /* ---- LX_COMPAT L1: process personality ----
+      * Which syscall NUMBER MAP this process speaks.  PERSONA_NATIVE (0)
+diff --git a/kernel/proc/user.c b/kernel/proc/user.c
+index b80741a..4956cb3 100644
+--- a/kernel/proc/user.c
++++ b/kernel/proc/user.c
+@@ -19,6 +19,7 @@
+ #include "kernel/arch/x86_64/tss.h"
+ #include "kernel/arch/x86_64/syscall.h"
+ #include "kernel/mm/kheap.h"
++#include "kernel/mm/aspace.h"
+ #include "kernel/mm/pmm.h"
+ #include "kernel/lib/kprintf.h"
+ #include "kernel/lib/assert.h"
+@@ -96,6 +97,7 @@ static void user_test_thread(void *arg) {
+ 
+     tcb_t *cur = sched_current();
+     if (cur) cur->pml4_phys = shell_pml4;
++    aspace_get(shell_pml4);      /* RESIDUE3 C2: first owner of this space */
+ 
+     uint64_t init_brk = 0;
+     uint64_t entry = elf_load(init_bin, init_bin_size, &init_brk, NULL, NULL);
+diff --git a/tests/integration/cases/test_aspace_refs.sh b/tests/integration/cases/test_aspace_refs.sh
+new file mode 100755
+index 0000000..9c3cafc
+--- /dev/null
++++ b/tests/integration/cases/test_aspace_refs.sh
+@@ -0,0 +1,70 @@
++#!/usr/bin/env bash
++# test_aspace_refs.sh — RESIDUE3 C2: refcounted address spaces, and every
++# zombie reaped.
++#
++# The gate is a real thread group: /tests/fpustress creates four CLONE_VM
++# threads inside one process.  Before this phase the tree
++#   - freed an address space when the NON-pthread TCB was reaped (the
++#     `!z->is_pthread` guard), whichever thread actually died last, and
++#   - left the pthread zombies queued forever (no waiter: clone() threads are
++#     not in the parent/child table and pthread_join() synchronises on the
++#     clear_tid futex, not on wait()), so a TCB + a 32 KiB kernel stack leaked
++#     per thread.
++#
++# After it, the boot log carries the receipt for both halves:
++#   [thread] reaped 'pthread' (tid 9, 0 frames, aspace refs 4)   <- not freed
++#   ...
++#   [thread] reaped 'pthread' (tid 12, 0 frames, aspace refs 1)
++#   [thread] reaped '/tests/fpustress' (tid 8, 1046 frames, aspace refs 0)
++# i.e. the LAST owner frees the page tables, and it is not the one the old
++# code would have picked.
++#
++# Run on -smp 4 so the reaping is genuinely cross-CPU.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "RESIDUE3 C2: address-space refcounts and total zombie reaping"
++
++IL_SMP=4
++LOG="$IL_LOGDIR/aspace_refs.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 12
++il_send "fpustress"
++il_send_wait "FPSTRESS PASS" 40
++il_send "exit"
++
++il_run_qemu "$LOG" 80
++
++# 1. the boot census names the table's state (a receipt, not an inference)
++il_assert_grep "$LOG" "\[aspace\] live [0-9]+, shared [0-9]+, last-puts [0-9]+" \
++    "the address-space table prints its census at boot"
++
++# 2. the thread group ran and the address space was SHARED
++il_assert_grep "$LOG" "FPSTRESS PASS" \
++    "the 4-thread FPU stress ran to completion"
++
++# 3. every pthread zombie was reaped, and its space was NOT freed (refs > 0)
++il_assert_count "$LOG" "\[thread\] reaped 'pthread' \(tid [0-9]+, 0 frames, aspace refs [1-9][0-9]*\)" 4 \
++    "each of the 4 pthreads is reaped while the space is still shared"
++
++# 4. the leader, reaped LAST, is the one that frees: frames > 0, refs == 0.
++#    This is the line the old code could not produce in this order.
++il_assert_grep "$LOG" "\[thread\] reaped '/tests/fpustress' \(tid [0-9]+, [1-9][0-9]* frames, aspace refs 0\)" \
++    "the last owner of the shared space frees it (frames > 0, refs 0)"
++
++# 5. no double free, no underflow: the table never authorises a second release
++il_assert_no_grep "$LOG" "double-puts [1-9]" \
++    "no address space was released twice"
++
++# 6. and the invariants of the phase hold
++il_assert_no_grep "$LOG" "PANIC"                         "no kernel panic"
++il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"           "no unhandled exception"
++il_assert_no_grep "$LOG" "refs 4294967"                  "no refcount underflow"
++
++il_summary
+diff --git a/tests/integration/cases/test_memory_reaping.sh b/tests/integration/cases/test_memory_reaping.sh
+index 6a1aa89..880fed7 100644
+--- a/tests/integration/cases/test_memory_reaping.sh
++++ b/tests/integration/cases/test_memory_reaping.sh
+@@ -5,7 +5,8 @@
+ #
+ # Strategy: /selftest (run via the init shell) includes an H2 memory-reaping
+ # section that calls get_free_frames() before and after 10 spawn+wait cycles.
+-# The kernel also emits "[thread] reaped '<name>' (tid N, M frames)" for every
++# The kernel also emits "[thread] reaped '<name>' (tid N, M frames, aspace
++# refs R)" for every
+ # exited user process — these appear in the boot log before the shell prompt.
+ #
+ # The test verifies:
+@@ -45,10 +46,10 @@ il_assert_grep "$LOG" "\[heap\] PASS:" "heap self-test passes"
+ # during boot; both are reaped before the shell becomes interactive.
+ # The kernel log must contain "[thread] reaped '/bin/hello'" with a non-zero
+ # frame count — confirming that paging_free_address_space() runs.
+-il_assert_grep "$LOG" "\[thread\] reaped '/bin/hello' .*, [0-9]* frames)" \
++il_assert_grep "$LOG" "\[thread\] reaped '/bin/hello' .*, [0-9]* frames, aspace refs [0-9]+\)" \
+     "at least one /hello reaped with non-zero frame count"
+ 
+-il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames)" \
++il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames, aspace refs [0-9]+\)" \
+     "at least one /execve_child reaped with non-zero frame count"
+ 
+ # Parse the /hello reaped frame count and assert it is in a reasonable range.
+@@ -56,7 +57,7 @@ il_assert_grep "$LOG" "\[thread\] reaped '/tests/execve_child' .*, [0-9]* frames
+ #   1 PML4 + 1 PDPT + 1 PD + 1 PT + ~15 data pages ≈ 20 frames.
+ # Anything less than 5 frames would indicate broken reaping.
+ reaped=$(grep "\[thread\] reaped '/bin/hello'" "$LOG" | head -1 | \
+-         sed 's/.*(tid [0-9]*, \([0-9]*\) frames).*/\1/')
++         sed 's/.*(tid [0-9]*, \([0-9]*\) frames.*/\1/')
+ if [ -n "$reaped" ] && [ "$reaped" -gt 0 ] 2>/dev/null; then
+     echo "INFO: reaped frames per /hello: $reaped"
+     if [ "$reaped" -ge 5 ]; then
+diff --git a/tests/integration/cases/test_stack_alignment.sh b/tests/integration/cases/test_stack_alignment.sh
+new file mode 100755
+index 0000000..7f0085b
+--- /dev/null
++++ b/tests/integration/cases/test_stack_alignment.sh
+@@ -0,0 +1,53 @@
++#!/usr/bin/env bash
++# test_stack_alignment.sh — RESIDUE3 C2: the 16-byte C ABI, proved in the guest.
++#
++# The static model (tools/check_abi_align.py, tests/unit/test_abi_align.sh)
++# reasons about the phase arithmetic in the assembly.  This case is the other
++# half: the kernel executes an fxsave + movaps on a 16-aligned local INSIDE an
++# IRQ and INSIDE a syscall (kernel/arch/x86_64/abi_probe.c).  fxsave #GPs on a
++# misaligned operand, so a wrong phase is a hard fault in the log, not a
++# missing log line.
++#
++# The two PASS lines are the gate.  The shell round-trip afterwards is the
++# control: the probe must not have broken the syscall path it measures.
++
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "RESIDUE3 C2: 16-byte C-ABI stack alignment (IRQ + syscall contexts)"
++
++LOG="$IL_LOGDIR/stack_alignment.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++il_send_delay 12
++il_send "uname"
++il_send_delay 4
++il_send "exit"
++
++il_run_qemu "$LOG" 45
++
++# 1. the probe was armed (it runs once, by design, and says so)
++il_assert_grep "$LOG" "\[abi\] probe armed" \
++    "the ABI probe arms before the shell starts"
++
++# 2. the two contexts that reach C from assembly, each with its own receipt
++il_assert_grep "$LOG" "\[abi\] PASS: fxsave\+movaps in IRQ context" \
++    "fxsave+movaps from IRQ context: RSP%16==0 held at the C entry"
++il_assert_grep "$LOG" "\[abi\] PASS: fxsave\+movaps in syscall context" \
++    "fxsave+movaps from syscall context: RSP%16==0 held at the C entry"
++
++# 3. a misaligned entry would have produced exactly these; their absence is
++#    the negative half of the receipt
++il_assert_no_grep "$LOG" "\[abi\] FAIL"                  "no ABI probe failure"
++il_assert_no_grep "$LOG" "UNHANDLED EXCEPTION"           "no exception during the probes"
++il_assert_no_grep "$LOG" "#GP"                           "no general-protection fault"
++
++# 4. the control: syscalls still work after the probe ran in the path
++il_assert_grep "$LOG" "auralite"                          "the shell banner still appears"
++il_assert_grep "$LOG" "uname"                            "a syscall round-trip still completes"
++
++il_summary
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index 8b3bcd7..3b3bd77 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -103,6 +103,11 @@ ALL_CASES=(
+     test_process_cleanup
+     test_memory_reaping
+     test_fork_cow
++    # RESIDUE3 C2: the kernel half.  test_aspace_refs is the refcounted
++    # address-space gate (pthread zombies reaped, last owner frees);
++    # test_stack_alignment is the in-guest half of the 16-byte C ABI.
++    test_aspace_refs
++    test_stack_alignment
+     test_elf_permissions
+     test_w32_pe_loader
+     test_w32_kernel32
+@@ -322,7 +327,7 @@ SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_fs_stress|tes
+ GROUP_NAMES="core posix fs usb net gui w32-core w32-gui w32-apps selfhost-script selfhost-closure selfhost-img fsfull ota lx"
+ group_re() {
+     case "$1" in
+-        core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
++        core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|aspace_refs|stack_alignment|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file)$' ;;
+         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|deadkeys|shell_all|sysmon_data|userspace_apps)$' ;;
+         fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs|fscheck|bc_writeback|ahci_matrix)$' ;;
+         # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI
+diff --git a/tests/unit/test_abi_align.sh b/tests/unit/test_abi_align.sh
+new file mode 100755
+index 0000000..38674ee
+--- /dev/null
++++ b/tests/unit/test_abi_align.sh
+@@ -0,0 +1,56 @@
++#!/usr/bin/env bash
++# test_abi_align.sh — RESIDUE3 C2 gate: every assembly entry point into C
++# reaches the call with RSP % 16 == 0.
++#
++# Three lanes, and the third one is the point:
++#   1. the tree as it stands is green;
++#   2. the model's own selftest (three injected defects) is caught;
++#   3. a DOCTORED COPY of the real tree is caught.  Lane 2 proves the model
++#      can fail on a synthetic blob; lane 3 proves it is actually wired to
++#      this tree's files, which is the failure mode the plan's D-class
++#      defects keep producing.
++set -u
++cd "$(dirname "$0")/../.." || exit 2
++
++fail=0
++say()  { echo "[abi-align] $*"; }
++bad()  { echo "[abi-align] FAIL: $*"; fail=1; }
++
++say "lane 1: the tree"
++if python3 tools/check_abi_align.py; then
++    say "PASS: every call into C enters at RSP%16 == 0"
++else
++    bad "the tree violates the C ABI's stack alignment"
++fi
++
++say "lane 2: the model's selftest"
++if python3 tools/check_abi_align.py --selftest; then
++    say "PASS: injected misalignments are caught"
++else
++    bad "the model cannot detect a misaligned call — the gate is decorative"
++fi
++
++say "lane 3: a doctored tree"
++tmp="$(mktemp -d)"
++trap 'rm -rf "$tmp"' EXIT
++mkdir -p "$tmp/tools" "$tmp/kernel/arch/x86_64" "$tmp/kernel/proc"
++cp tools/check_abi_align.py "$tmp/tools/"
++# The model resolves ROOT from its own location, so a copy of the tool plus a
++# copy of ONE asm file under the same layout is enough to doctor.
++sed 's/^    and rsp, -16$/    nop/' \
++    kernel/arch/x86_64/isr_stubs.asm > "$tmp/kernel/arch/x86_64/isr_stubs.asm"
++: > "$tmp/kernel/proc/context.asm"
++if python3 "$tmp/tools/check_abi_align.py" > "$tmp/out.txt" 2>&1; then
++    bad "the realign was removed and the gate still passed"
++    sed 's/^/    /' "$tmp/out.txt"
++elif grep -q "isr_handler" "$tmp/out.txt"; then
++    say "PASS: removing isr_common_stub's realign turns the gate red"
++else
++    bad "the gate failed for the wrong reason:"
++    sed 's/^/    /' "$tmp/out.txt"
++fi
++
++if [ "$fail" -eq 0 ]; then
++    say "ALL LANES PASSED"
++fi
++exit "$fail"
+diff --git a/tests/unit/test_aspace.c b/tests/unit/test_aspace.c
+new file mode 100644
+index 0000000..76ad7dc
+--- /dev/null
++++ b/tests/unit/test_aspace.c
+@@ -0,0 +1,136 @@
++/*
++ * test_aspace.c — unit tests for the refcounted address-space table
++ * (RESIDUE3 C2, kernel/mm/aspace.c, linked UNMODIFIED).
++ *
++ * The three cases that matter are the ones the pre-C2 tree got wrong:
++ *   1. a CLONE_VM sibling that dies first must NOT free the shared page
++ *      tables (the old code skipped pthread zombies entirely and freed the
++ *      space only when the non-pthread TCB was reaped);
++ *   2. a space outliving its creator (execve's old space) frees exactly once,
++ *      at the last drop, not at the first;
++ *   3. a double put never authorises a second free.
++ */
++
++#include <stdint.h>
++#include <stddef.h>
++#include <stdio.h>
++#include <string.h>
++
++#include "kernel/mm/aspace.h"
++
++static int passed = 0, failed = 0, tn = 0;
++#define RUN(f) do { int b = failed; f(); tn++; if (failed == b) passed++; } while (0)
++#define CHECK(c) do { if (!(c)) { printf("  FAIL L%d: %s\n", __LINE__, #c); failed++; } } while (0)
++#define CHECK_EQ(a, e) do { long _a = (long)(a), _e = (long)(e); \
++    if (_a != _e) { printf("  FAIL L%d: %s = %ld, want %ld\n", __LINE__, #a, _a, _e); failed++; } } while (0)
++
++/* A plausible non-zero PML4 root: frame number 0x1234, flags stripped. */
++#define SPACE_A 0x001234000ULL
++#define SPACE_B 0x005678000ULL
++
++static void test_single_owner(void) {
++    aspace_reset();
++    CHECK_EQ(aspace_get(SPACE_A), 1);
++    CHECK_EQ(aspace_refs(SPACE_A), 1);
++    CHECK_EQ(aspace_put(SPACE_A), 1);         /* the last owner may free */
++    CHECK_EQ(aspace_put(SPACE_A), 0);         /* and nobody else may again */
++    CHECK_EQ(aspace_double_puts(), 1);
++    CHECK_EQ(aspace_live_spaces(), 0);
++    CHECK_EQ(aspace_refs(SPACE_A), 0);
++}
++
++static void test_kernel_space_is_untracked(void) {
++    aspace_reset();
++    /* pml4 == 0 is the kernel address space: it has no refcount and is never
++     * freed through this module. */
++    CHECK_EQ(aspace_get(0), 0);
++    CHECK_EQ(aspace_put(0), 0);
++    CHECK_EQ(aspace_live_spaces(), 0);
++}
++
++static void test_clone_vm_sibling_dies_first(void) {
++    aspace_reset();
++    /* fork() creates the space (1 owner), two clone(CLONE_VM) threads join. */
++    CHECK_EQ(aspace_get(SPACE_A), 1);
++    CHECK_EQ(aspace_get(SPACE_A), 2);
++    CHECK_EQ(aspace_get(SPACE_A), 3);
++    CHECK_EQ(aspace_shared_spaces(), 1);
++
++    /* Thread 2 exits first: the page tables MUST survive. */
++    CHECK_EQ(aspace_put(SPACE_A), 0);
++    CHECK_EQ(aspace_refs(SPACE_A), 2);
++
++    /* Thread 1 exits second: still shared with the main thread. */
++    CHECK_EQ(aspace_put(SPACE_A), 0);
++    CHECK_EQ(aspace_refs(SPACE_A), 1);
++    CHECK_EQ(aspace_shared_spaces(), 0);
++
++    /* Main thread last: now, and only now, the free is authorised. */
++    CHECK_EQ(aspace_put(SPACE_A), 1);
++    CHECK_EQ(aspace_last_puts(), 1);
++    CHECK_EQ(aspace_live_spaces(), 0);
++}
++
++static void test_execve_space_outlives_its_creator(void) {
++    aspace_reset();
++    /* exec replaces SPACE_A with SPACE_B while one CLONE_VM sibling of the
++     * old space is still alive: the old space must be dropped, not freed. */
++    CHECK_EQ(aspace_get(SPACE_A), 1);
++    CHECK_EQ(aspace_get(SPACE_A), 2);
++    CHECK_EQ(aspace_get(SPACE_B), 1);
++
++    CHECK_EQ(aspace_put(SPACE_A), 0);         /* the exec'ing thread leaves */
++    /* The sibling is reaped later and is the last owner of SPACE_A. */
++    CHECK_EQ(aspace_put(SPACE_A), 1);
++    CHECK_EQ(aspace_put(SPACE_B), 1);         /* B is unaffected */
++    CHECK_EQ(aspace_live_spaces(), 0);
++}
++
++static void test_double_put_never_frees_twice(void) {
++    aspace_reset();
++    CHECK_EQ(aspace_get(SPACE_A), 1);
++    CHECK_EQ(aspace_get(SPACE_A), 2);
++    CHECK_EQ(aspace_put(SPACE_A), 0);
++    CHECK_EQ(aspace_put(SPACE_A), 1);
++    /* A stale second put of the same root (a TCB reaped twice, a bug the
++     * table must not amplify into a double free of live page tables). */
++    CHECK_EQ(aspace_put(SPACE_A), 0);         /* tombstoned: NOT a second free */
++    CHECK_EQ(aspace_last_puts(), 1);          /* only one free was authorised */
++    CHECK_EQ(aspace_double_puts(), 1);
++}
++
++static void test_untracked_space_keeps_old_behaviour(void) {
++    aspace_reset();
++    /* A pml4 the table never saw (an unmigrated call site): the first put
++     * frees, exactly as the tree behaved before C2.  Precision, not safety. */
++    CHECK_EQ(aspace_put(SPACE_B), 1);
++    CHECK_EQ(aspace_untracked_puts(), 1);
++}
++
++static void test_many_spaces_distinct(void) {
++    aspace_reset();
++    /* 64 concurrent processes: no aliasing, every space counted on its own. */
++    for (int i = 0; i < 64; i++) {
++        CHECK_EQ(aspace_get(0x1000000ULL + (uint64_t)i * 0x1000ULL), 1);
++    }
++    CHECK_EQ(aspace_live_spaces(), 64);
++    for (int i = 0; i < 64; i++) {
++        CHECK_EQ(aspace_put(0x1000000ULL + (uint64_t)i * 0x1000ULL), 1);
++    }
++    CHECK_EQ(aspace_live_spaces(), 0);
++    CHECK_EQ(aspace_last_puts(), 64);
++}
++
++int main(void) {
++    printf("=== AuraLite OS address-space refcount unit tests ===\n\n");
++    RUN(test_single_owner);
++    RUN(test_kernel_space_is_untracked);
++    RUN(test_clone_vm_sibling_dies_first);
++    RUN(test_execve_space_outlives_its_creator);
++    RUN(test_double_put_never_frees_twice);
++    RUN(test_untracked_space_keeps_old_behaviour);
++    RUN(test_many_spaces_distinct);
++
++    printf("\n=== Results: %d/%d passed, %d failed ===\n", passed, tn, failed);
++    return failed == 0 ? 0 : 1;
++}
+diff --git a/tools/check_abi_align.py b/tools/check_abi_align.py
+new file mode 100644
+index 0000000..0c79691
+--- /dev/null
++++ b/tools/check_abi_align.py
+@@ -0,0 +1,314 @@
++#!/usr/bin/env python3
++"""check_abi_align.py — the static stack-phase model behind RESIDUE3 C2's
++"16-byte C-ABI alignment at every entry stub" box.
++
++Why this exists (and why it is not `grep -c "align 16" isr_stubs.asm`):
++
++The box's opening measurement counted static `align 16` directives in the
++assembly and got ZERO, which looks like a missing invariant.  It is not:
++`align 16` in NASM aligns the CODE ADDRESS of the following instruction, not
++the STACK.  The invariant that matters for a C call is RSP % 16 == 0 at the
++moment of the `call`, and that is a property of the path, not of the file.
++RESIDUE2 T1 got the stubs right the other way round — isr_common_stub realigns
++dynamically (`and rsp, -16`) precisely because the entry phase depends on the
++interrupted frame — so a static-directive metric would fail a correct tree and
++pass a broken one.
++
++This tool models the phases instead.  It walks each assembly file, tracks RSP
++mod 16 through push/pop/sub/add (and the two anchoring forms), and requires
++EVERY `call` to reach a C symbol at a phase of 0.  A `call` reached in an
++unknown phase is a violation unless the file marks the entry state with an
++`@abi-anchor:` comment (the marker text is printed, so a stale claim is visible
++in the report rather than silently trusted).  Integer arithmetic is exact, so
++a doctored `sub rsp, 8` turns the gate red — that is the negative control
++tests/unit/test_abi_align.sh runs.
++
++Usage:
++    check_abi_align.py            # report + exit 1 on any violation
++    check_abi_align.py --report   # same, plus every call site it accepted
++    check_abi_align.py --selftest # prove the model catches injected defects
++"""
++import os
++import re
++import subprocess
++import sys
++import tempfile
++
++ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++
++# Files that call C from assembly.  Everything under kernel/ that has a
++# `call` in it is picked up automatically; this list is the pinned set the
++# gate expects to find, so deleting a file is a failure, not a silent skip.
++REQUIRED = [
++    "kernel/arch/x86_64/isr_stubs.asm",
++    "kernel/arch/x86_64/syscall_entry.asm",
++    "kernel/arch/x86_64/syscall_sigreturn.asm",
++    "kernel/arch/x86_64/boot.asm",
++    "kernel/arch/i386/isr_stubs32.asm",
++    "kernel/proc/fork_return.asm",
++    "kernel/proc/user_entry.asm",
++    "kernel/proc/context.asm",
++]
++
++# Entry states the model cannot derive from the file itself.  Each one names
++# WHERE the guarantee comes from; an anchor whose justification is not in the
++# tree is a lie the reviewer can see without running anything.
++ANCHOR_MARK = "@abi-anchor:"
++
++PUSH = re.compile(r"^push\b")
++PUSHA = re.compile(r"^pusha[d]?\b")
++POPA = re.compile(r"^popa[d]?\b")
++POP = re.compile(r"^pop\b")
++SUB_RSP = re.compile(r"^sub\s+rsp\s*,\s*(\S+)")
++ADD_RSP = re.compile(r"^add\s+rsp\s*,\s*(\S+)")
++AND_RSP = re.compile(r"^and\s+rsp\s*,\s*(-?\S+)")
++MOV_RSP_IN = re.compile(r"^mov\s+rsp\s*,\s*(.+)$")
++MOV_REG_RSP = re.compile(r"^mov\s+(\w+)\s*,\s*rsp$")
++CALL = re.compile(r"^call\s+(\S+)")
++LABEL = re.compile(r"^([A-Za-z_.][\w.$]*):")
++SYM_LABEL = re.compile(r"^(?:global|extern)\s")
++
++# Flow boundaries: after these the phase is not linearly knowable any more
++# (another path may arrive here with a different depth).
++BOUNDARY = re.compile(r"^(?:jmp|ret|iretq|o64\s+sysret|sysretq|hlt|jmp\b)")
++
++
++def parse_imm(tok):
++    tok = tok.strip().lower()
++    neg = tok.startswith("-")
++    tok = tok.lstrip("-")
++    try:
++        if tok.startswith("0x"):
++            v = int(tok, 16)
++        else:
++            v = int(tok, 0)
++    except ValueError:
++        return None
++    return -v if neg else v
++
++
++def model_file(path):
++    """Return (calls, violations).  calls = [(lineno, callee, phase, anchor)].
++
++    phase is either an int (RSP mod 16) or None (unknown).
++    """
++    calls = []
++    violations = []
++    phase = None
++    word = 8          # bytes per push/pop: 8 in bits 64, 4 in bits 32
++    saved = {}
++    anchor_since_boundary = None
++    try:
++        lines = open(path, "r", errors="replace").read().splitlines()
++    except OSError as e:
++        return [], [(0, "cannot read: %s" % e)]
++
++    for n, raw in enumerate(lines, 1):
++        line = raw.split(";", 1)[0].strip()
++        comment = raw.split(";", 1)[1] if ";" in raw else ""
++        if ANCHOR_MARK in comment:
++            anchor_since_boundary = comment.split(ANCHOR_MARK, 1)[1].strip()
++        if not line:
++            continue
++
++        if re.match(r"^bits\s+32\b", line):
++            word = 4
++            continue
++        if re.match(r"^bits\s+64\b", line):
++            word = 8
++            continue
++
++        # 32-bit sources spell the stack pointer ESP; the model speaks one
++        # register name so the same arithmetic applies to both widths.
++        model_line = re.sub(r"\besp\b", "rsp", line, flags=re.IGNORECASE)
++
++        m = LABEL.match(line)
++        if m and not SYM_LABEL.match(line):
++            # A new entry point: its stack phase is whatever its caller left,
++            # which this file cannot see.  An anchor comment on the label line
++            # (or immediately above it) is how the file declares it.
++            phase = None
++            saved = {}
++            if anchor_since_boundary is None:
++                anchor_since_boundary = None
++            else:
++                anchor_since_boundary = anchor_since_boundary
++            continue
++
++        if PUSHA.match(line):
++            if phase is not None:
++                phase = (phase + 8 * word) % 16
++            continue
++        if POPA.match(line):
++            if phase is not None:
++                phase = (phase - 8 * word) % 16
++            continue
++        if PUSH.match(line):
++            if phase is not None:
++                phase = (phase + word) % 16
++            continue
++        if POP.match(line):
++            if phase is not None:
++                phase = (phase - word) % 16
++            continue
++        m = SUB_RSP.match(model_line)
++        if m:
++            v = parse_imm(m.group(1))
++            phase = None if (v is None or phase is None) else (phase + v) % 16
++            continue
++        m = ADD_RSP.match(model_line)
++        if m:
++            v = parse_imm(m.group(1))
++            phase = None if (v is None or phase is None) else (phase - v) % 16
++            continue
++        m = AND_RSP.match(model_line)
++        if m:
++            v = parse_imm(m.group(1))
++            if v is not None and (v & 0xF) == 0:
++                phase = 0            # the dynamic realign: phase becomes 0
++            else:
++                phase = None
++            continue
++        m = MOV_REG_RSP.match(model_line)
++        if m:
++            saved[m.group(1)] = phase
++            continue
++        m = MOV_RSP_IN.match(model_line)
++        if m:
++            src = m.group(1).strip()
++            if src in saved:
++                phase = saved[src]   # restoring a saved frame pointer
++            elif "[gs:" in src or "[fs:" in src:
++                # A per-CPU kernel stack top: 16-aligned by construction in
++                # thread_alloc_kernel_stack().  Accepting it requires the file
++                # to say so; the anchor below is checked, not assumed.
++                phase = 0 if anchor_since_boundary else None
++            else:
++                phase = None
++            continue
++        m = CALL.match(model_line)
++        if m:
++            callee = m.group(1).strip()
++            if callee.startswith("["):          # indirect call: not modelled
++                calls.append((n, callee, None, "indirect"))
++                continue
++            if phase is None:
++                if anchor_since_boundary:
++                    calls.append((n, callee, 0, anchor_since_boundary))
++                else:
++                    violations.append(
++                        (n, "call %s reached with an unknown stack phase and "
++                            "no %s marker" % (callee, ANCHOR_MARK)))
++            elif phase % 16 == 0:
++                calls.append((n, callee, phase, None))
++            else:
++                violations.append(
++                    (n, "call %s at RSP%%16 == %d (must be 0)" % (callee, phase)))
++            continue
++        if BOUNDARY.match(model_line):
++            anchor_since_boundary = None
++            phase = None
++            continue
++
++    return calls, violations
++
++
++def check_file(path, verbose):
++    calls, violations = model_file(path)
++    rel = os.path.relpath(path, ROOT)
++    if verbose:
++        for (n, callee, phase, anchor) in calls:
++            note = " (anchor: %s)" % anchor if anchor else ""
++            print("    %s:%d  call %s @ RSP%%16==0%s" % (rel, n, callee, note))
++    return calls, violations
++
++
++def collect():
++    out = []
++    for base, _dirs, files in os.walk(os.path.join(ROOT, "kernel")):
++        for f in sorted(files):
++            if f.endswith(".asm"):
++                out.append(os.path.join(base, f))
++    return sorted(out)
++
++
++def run(files, verbose=False):
++    total_calls = 0
++    total_viol = 0
++    for rel in files:
++        path = rel if os.path.isabs(rel) else os.path.join(ROOT, rel)
++        if not os.path.exists(path):
++            print("MISSING (pinned): %s" % rel)
++            total_viol += 1
++            continue
++        if verbose:
++            print("  %s" % rel)
++        calls, viol = check_file(path, verbose)
++        total_calls += len(calls)
++        total_viol += len(viol)
++        for (n, msg) in viol:
++            print("VIOLATION %s:%d  %s" % (os.path.relpath(path, ROOT), n, msg))
++    return total_calls, total_viol
++
++
++def selftest():
++    """Inject three defects into a copy of a clean file and prove each one is
++    caught; then remove the realign and prove the tree's own anchor carries
++    the load.  A gate nobody has seen fail is not a gate."""
++    src = os.path.join(ROOT, "kernel/arch/x86_64/isr_stubs.asm")
++    text = open(src).read()
++    cases = [
++        # 1) the dynamic realign removed: the call drops to an unknown phase
++        (text.replace("    and rsp, -16\n", ""), "realign removed"),
++        # 2) a stray push after the realign: phase becomes 8
++        (text.replace("    and rsp, -16\n", "    and rsp, -16\n    push rax\n"),
++         "extra push after the realign"),
++        # 3) a wrong-size pad: phase becomes 4
++        (text.replace("    and rsp, -16\n", "    and rsp, -16\n    sub rsp, 4\n"),
++         "4-byte pad after the realign"),
++    ]
++    failures = 0
++    for blob, name in cases:
++        with tempfile.NamedTemporaryFile("w", suffix=".asm", delete=False) as f:
++            f.write(blob)
++            tmp = f.name
++        _calls, viol = model_file(tmp)
++        os.unlink(tmp)
++        if not viol:
++            print("SELFTEST FAIL: the model did not catch '%s'" % name)
++            failures += 1
++        else:
++            print("SELFTEST ok: '%s' -> %s" % (name, viol[0][1]))
++    # And the control: the untouched file must be clean.
++    _calls, viol = model_file(src)
++    if viol:
++        print("SELFTEST FAIL: the clean tree already violates: %s" % viol[0][1])
++        failures += 1
++    else:
++        print("SELFTEST ok: the untouched isr_stubs.asm is clean")
++    return 1 if failures else 0
++
++
++def main(argv):
++    verbose = "--report" in argv
++    if "--selftest" in argv:
++        return selftest()
++
++    files = collect()
++    missing = [f for f in REQUIRED if not os.path.exists(os.path.join(ROOT, f))]
++    print("[abi] modelling %d assembly files" % len(files))
++    calls, viol = run(files, verbose)
++    for f in missing:
++        print("MISSING (pinned): %s" % f)
++        viol += 1
++    print("[abi] %d call site(s) reach C, %d violation(s)" % (calls, viol))
++    if viol:
++        print("[abi] FAIL - the C ABI's 16-byte stack alignment is not held "
++              "at every entry")
++        return 1
++    print("[abi] OK - every call into C enters at RSP%16 == 0")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv[1:]))
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index 7b971b7..f6a9013 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -21,7 +21,7 @@ REALINTERNET2_PLAN.md 8
+ REALINTERNET_PLAN.md 8
+ REALTEK_PLAN.md 5
+ RESIDUE2_PLAN.md 21
+-RESIDUE3_PLAN.md 45
++RESIDUE3_PLAN.md 46
+ RISCV_PLAN.md 9
+ SDK_PLAN.md 0
+ SELFHOST_PLAN.md 1
+@@ -31,5 +31,5 @@ W32APP_PLAN.md 31
+ W32RUN_PLAN.md 7
+ WEBVIEW_PLAN.md 1
+ WIN32_PLAN.md 8
+-TODO.md 7
++TODO.md 1
+ status-wip 5

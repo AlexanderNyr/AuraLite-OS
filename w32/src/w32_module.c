@@ -37,6 +37,7 @@
 #include "w32/kernel32.h"    /* W32A-3: TLS run/unregister */
 #include "w32/w32_crt.h"
 #include "w32/w32_gen.h"
+#include "w32/w32_reloc.h"
 
 #ifndef PROT_READ
 #define PROT_READ  0x1
@@ -60,7 +61,7 @@ typedef struct {
     uint8_t *file;                        /* the raw file, kept for parsing */
     size_t   file_size;
     unsigned seq;                         /* load order, for teardown       */
-    int      holds[W32_MODULE_MAX];       /* held dependency slots          */
+    int      holds[W32_MODULE_HOLDS_MAX]; /* held dependency slots          */
     int      nholds;
 } w32_module_t;
 
@@ -253,6 +254,18 @@ void w32_module_init(void) {
     add_builtin("sensapi");
     add_builtin("wintrust");
     add_builtin("crypt32");
+    /* RESIDUE3 C8 (box 2): imm32, ole32 and uxtheme were exported by the
+     * static tables (IMM32's ten FAIL-CLEAN functions, OLE32's twelve
+     * symbols, UXTHEME's fifteen) and yet `LoadLibraryA("imm32.dll")`
+     * answered NULL with MOD_NOT_FOUND -- the A-8 lesson happening a second
+     * time: IAT binding kept working because w32_resolve() never consults
+     * this table, so nothing noticed.  Found by the static-only fixture,
+     * which loads every DLL its markers name instead of trusting the binder.
+     * Any app using the classic delay-load shape
+     * (LoadLibrary + GetProcAddress) would have taken the NULL path. */
+    add_builtin("imm32");
+    add_builtin("ole32");
+    add_builtin("uxtheme");
     /* W32A-12: WS2_32's exports are linked into the loader (ws2_32.c), so it
      * belongs with the other engine modules -- PuTTY's classic shape is
      * LoadLibrary("ws2_32.dll") + GetProcAddress, which needs the module to
@@ -501,42 +514,23 @@ static int map_dll(const uint8_t *file, size_t file_size,
 
     /* Relocate.  A DLL is almost never loaded at its preferred base, so an
      * image with no relocation table cannot be moved and is refused rather
-     * than run at the wrong address. */
-    static pe_reloc_t relocs[16384];
-    size_t nrel = 0;
-    if (pe_relocations(&img, relocs, sizeof relocs / sizeof relocs[0],
-                       &nrel) != PE_OK) {
-        munmap(base, span); *why = "bad relocation table"; return -1;
-    }
-    if (nrel > sizeof relocs / sizeof relocs[0]) {
-        munmap(base, span); *why = "too many relocations"; return -1;
-    }
-
-    uint64_t delta = (uint64_t)(uintptr_t)base - img.image_base;
-    /* An empty relocation table is NOT the same as an unrelocatable image.
-     * A fully position-independent DLL -- everything RIP-relative, no
-     * absolute addresses in its data -- legitimately needs no fixups, and
-     * the fixture in w32/tests/testdll.asm is exactly that. What actually
-     * says "this image cannot be moved" is IMAGE_FILE_RELOCS_STRIPPED, so
-     * that is what is tested. Refusing on nrel == 0 would have rejected a
-     * perfectly good DLL. */
-    if (delta != 0 && (img.characteristics & 0x0001u)) {
-        munmap(base, span);
-        *why = "relocations stripped and not at its preferred base";
-        return -1;
-    }
-    for (size_t i = 0; i < nrel; i++) {
-        if (relocs[i].type != PE_REL_DIR64) {
-            munmap(base, span); *why = "unsupported relocation type"; return -1;
+     * than run at the wrong address.
+     *
+     * RESIDUE3 C8: the fixups are applied as the directory is walked
+     * (w32/src/w32_reloc.c), so the loader no longer holds a `static
+     * pe_reloc_t relocs[16384]` copy.  An empty relocation table is still NOT
+     * the same as an unrelocatable image: a fully position-independent DLL --
+     * everything RIP-relative, no absolute addresses in its data --
+     * legitimately needs no fixups, and the fixture in w32/tests/testdll.asm
+     * is exactly that.  What actually says "this image cannot be moved" is
+     * IMAGE_FILE_RELOCS_STRIPPED, which w32_relocate_image() tests. */
+    {
+        w32_reloc_report_t rr;
+        if (w32_relocate_image(&img, base, span, &rr) != 0) {
+            munmap(base, span);
+            *why = rr.why ? rr.why : "relocation failed";
+            return -1;
         }
-        if ((size_t)relocs[i].rva + 8 > span) {
-            munmap(base, span); *why = "relocation outside image"; return -1;
-        }
-        uint8_t *p = base + relocs[i].rva;
-        uint64_t v = 0;
-        for (int k = 7; k >= 0; k--) v = (v << 8) | p[k];
-        v += delta;
-        for (int k = 0; k < 8; k++) p[k] = (uint8_t)((v >> (k * 8)) & 0xFF);
     }
 
     /* The DLL's own imports resolve against the built-in table, exactly as
@@ -619,7 +613,14 @@ static void take_holds(int slot) {
         for (k = 0; k < m->nholds; k++)
             if (m->holds[k] == di) break;
         if (k < m->nholds) continue;
-        if (m->nholds >= W32_MODULE_MAX) continue;
+        if (m->nholds >= W32_MODULE_HOLDS_MAX) {
+            /* Named, not silent: dropping a hold means the dependency can be
+             * freed under the importer's feet, which is a use-after-free and
+             * not a capacity limit.  RESIDUE3 C8 found the silent version. */
+            printf("w32: %s holds more than %d dependencies; %s not held\n",
+                   m->name, W32_MODULE_HOLDS_MAX, imports[i].dll);
+            continue;
+        }
         dep->refs++;
         m->holds[m->nholds++] = di;
     }

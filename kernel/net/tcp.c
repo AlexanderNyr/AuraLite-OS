@@ -23,6 +23,7 @@
 #include "kernel/net/tcp_cc.h"
 #include "kernel/net/tcp_m6.h"
 #include "kernel/net/tcp_m6c.h"
+#include "kernel/net/tcp_wscale.h"
 #include "kernel/net/tcp_m6d.h"
 #include "kernel/net/tcp_m6e.h"
 #include "kernel/net/netl3.h"
@@ -42,6 +43,30 @@
 #define TCP_ACK  0x10
 
 #define TCP_WINDOW  64240   /* a generous window */
+
+/*
+ * C7: the receive buffer we are willing to PROMISE, in bytes.
+ *
+ * This is not a tuning knob -- it is the input to our window-scale choice.
+ * The stack streams received data straight to the caller (tcp_recv_h) and
+ * keeps only the single out-of-order stash, so the honest promise is one
+ * unscaled window: TCP_WINDOW.  A shift derived from a buffer we do not have
+ * would invite the peer to put megabytes in flight that we would drop.
+ */
+#define TCP_RCV_BUF_BYTES TCP_WINDOW
+
+/*
+ * C7: "arbitrarily high" ssthresh, spelled as what it means.
+ *
+ * RFC 5681 s3.1 starts the connection in slow start and expects ssthresh to
+ * be set by the first loss; before that it is unbounded.  This stack wrote
+ * `ssthresh = TCP_WINDOW` with that comment -- which was fine while the
+ * window itself was capped at 64240, and became a real ceiling the moment
+ * C7 let a peer grant 16 MiB: slow start would stop at 64240 bytes in flight
+ * and the scaled window could never be spent (measured: peak in-flight
+ * exactly 64240 on a 1 MiB transfer with a 16 MiB window available).
+ */
+#define TCP_SSTHRESH_INITIAL 0x7FFFFFFFu
 #define TCP_MSS     NETL3_V4_MSS  /* default; the live value is ops->mss() */
 #define TCP_RECV_TIMEOUT_TICKS 100
 #define TCP_RTO_TICKS 20
@@ -128,6 +153,15 @@ typedef struct {
     tcpm6e_ka_t      ka;       /* M6e: keepalive */
     uint8_t          reuseaddr;
     uint16_t     peer_mss;     /* M6c: peer's advertised MSS (0 = none) */
+
+    /* C7: window scaling (RFC 7323).  snd_shift is the shift the peer granted
+     * for ITS window; rcv_shift is the shift WE offered for ours.  Both are
+     * decided in the handshake and never renegotiated. */
+    uint8_t      ws_peer_offered;
+    uint8_t      snd_shift;
+    uint8_t      rcv_shift;
+    uint16_t     snd_wnd_raw;    /* the 16-bit field last seen, unscaled */
+    uint32_t     inflight_peak;  /* C7 receipt: peak unacknowledged bytes */
     uint32_t     time_wait_tick;
 
     uint8_t      retx_valid;
@@ -157,6 +191,21 @@ static int active_h = -1;
 /* Defined next to tcp_recv() below; resets the per-connection RX stash. */
 static void tcp_rx_stash_reset(void);
 
+/*
+ * C7: read a peer window field the way the handshake said to read it.
+ *
+ * `field` is the raw 16-bit value from the segment; with a negotiated shift
+ * it means field<<shift.  The old code substituted TCP_WINDOW for a zero
+ * field (a genuinely closed window) to avoid stalling pre-handshake; that
+ * fallback is kept for shift 0 only, and scaling never invents a window the
+ * peer did not grant.
+ */
+static void tcp_set_peer_window(tcp_conn_t *c, uint16_t field) {
+    c->snd_wnd_raw = field;
+    uint32_t raw = field ? (uint32_t)field : (uint32_t)TCP_WINDOW;
+    c->snd_wnd = tcp_ws_apply(raw, c->snd_shift);
+}
+
 /* ---- Send a TCP segment ---- */
 static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_len,
                                 uint32_t seq, uint32_t ack) {
@@ -167,16 +216,25 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
      * hardcoded to 5<<4, so the stack had never emitted a single TCP
      * option -- it could not advertise its MSS, and could not ask for
      * SACK.  Options ride the SYN only; data segments stay 20 bytes. */
-    uint8_t optbuf[8];
+    uint8_t optbuf[16];
     uint32_t optlen = 0;
     if (flags & TCP_SYN) {
         optlen = tcpm6c_build_syn_opts(optbuf, mss, 1);
+        /* C7: offer a window scale in the handshake.  The shift is derived
+         * from the receive buffer we actually have (see TCP_RCV_BUF_BYTES);
+         * if there is no room left in the option block we drop the option
+         * rather than truncate it, and record that we offered nothing. */
+        uint8_t shift = conns[active_h].rcv_shift;
+        uint32_t ws = tcp_ws_emit(optbuf + optlen, 16u - optlen, shift);
+        if (ws > 0) optlen += ws;
+        else shift = 0;
         /* Report what actually went on the wire, derived from the header
          * length we are about to write -- not from a constant.  The gate
          * greps this, so a SYN that silently loses its options (the state
          * this phase started from) turns the case red. */
-        kprintf("[tcp] SYN options: %u bytes, hdr=%u, mss=%u sack-perm\n",
-                optlen, 20u + optlen, (unsigned)mss);
+        kprintf("[tcp] SYN options: %u bytes, hdr=%u, mss=%u sack-perm "
+                "wscale=%u\n",
+                optlen, 20u + optlen, (unsigned)mss, (unsigned)shift);
     }
 
     uint32_t tcp_hdr_len = 20 + optlen;
@@ -192,7 +250,10 @@ static void tcp_send_segment_at(uint8_t flags, const void *data, uint32_t data_l
     tcp->ack        = htonl_(ack);
     tcp->data_offset = tcpm6c_data_offset(optlen);   /* M6c */
     tcp->flags      = flags;
-    tcp->window     = htons_(TCP_WINDOW);
+    /* C7: what we advertise is rcv_wnd encoded with OUR shift -- the same
+     * number read with the peer's shift is the space we promise. */
+    tcp->window     = htons_(tcp_ws_encode(conns[active_h].rcv_wnd,
+                                           conns[active_h].rcv_shift));
     tcp->checksum   = 0;
     tcp->urgent_ptr = 0;
 
@@ -339,10 +400,10 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
         /* Found a segment for our connection. */
         memcpy(out_tcp, tcp, 20);
 
-        /* N3: keep the advertised window fresh. */
+        /* N3: keep the advertised window fresh.  C7: through the peer's
+         * shift, so a scaled window is not silently read as 16-bit. */
         if (active_h >= 0 && active_h < TCP_MAX_CONNS) {
-            conns[active_h].snd_wnd = ntohs_(tcp->window) ?
-                                      ntohs_(tcp->window) : TCP_WINDOW;
+            tcp_set_peer_window(&conns[active_h], ntohs_(tcp->window));
         }
 
         /* Extract payload (if any).
@@ -363,15 +424,54 @@ static int tcp_recv_segment_timeout(struct tcp_hdr *out_tcp, uint8_t *out_data,
             active_h >= 0 && active_h < TCP_MAX_CONNS) {
             tcpm6c_opts_t peer_opts;
             const uint8_t *optp = (const uint8_t *)tcp + 20;
+            tcp_ws_opt_t ws;
+            int ws_rc = tcp_ws_parse(optp, tcp_hdr_bytes - 20, &ws);
             if (tcpm6c_parse_opts(optp, tcp_hdr_bytes - 20, &peer_opts) == 0) {
                 conns[active_h].sack_ok = peer_opts.sack_permitted;
                 conns[active_h].peer_mss = peer_opts.mss;
                 if (peer_opts.mss && peer_opts.mss < conns[active_h].eff_mss)
                     conns[active_h].eff_mss = peer_opts.mss;
-                kprintf("[tcp] peer options: mss=%u sack=%s\n",
+                kprintf("[tcp] peer options: mss=%u sack=%s wscale=%s%u\n",
                         peer_opts.mss,
-                        peer_opts.sack_permitted ? "yes" : "no");
+                        peer_opts.sack_permitted ? "yes" : "no",
+                        ws.offered ? "" : "none/",
+                        (unsigned)ws.shift);
             }
+            /* C7: the handshake is the ONLY place a shift is agreed.  A
+             * peer that offered nothing keeps the 16-bit window, and says
+             * so in the log rather than silently reading a scaled number
+             * as unscaled (or the reverse). */
+            conns[active_h].ws_peer_offered = ws.offered;
+            conns[active_h].snd_shift =
+                tcp_ws_engaged(1, &ws) ? ws.shift : 0;
+            tcp_set_peer_window(&conns[active_h], ntohs_(tcp->window));
+            if (ws_rc != 0)
+                kprintf("[tcp] wscale: peer option block malformed; its "
+                        "window is read unscaled\n");
+            if (conns[active_h].snd_shift)
+                kprintf("[tcp] wscale: peer shift=%u -> snd_wnd=%u "
+                        "(field %u); our shift %u (%u-byte receive buffer)\n",
+                        (unsigned)conns[active_h].snd_shift,
+                        conns[active_h].snd_wnd,
+                        (unsigned)conns[active_h].snd_wnd_raw,
+                        (unsigned)conns[active_h].rcv_shift,
+                        (unsigned)TCP_RCV_BUF_BYTES);
+            else
+                kprintf("[tcp] wscale: peer did not offer a window scale; "
+                        "snd_wnd=%u stays 16-bit\n",
+                        conns[active_h].snd_wnd);
+        }
+
+        /* C7: a SYN with a bare 20-byte header offered no options at all.
+         * Say it in the log, because "no wscale line" and "wscale refused"
+         * would otherwise look the same to a reader of the receipt. */
+        if ((tcp->flags & TCP_SYN) && tcp_hdr_bytes == 20 &&
+            active_h >= 0 && active_h < TCP_MAX_CONNS) {
+            conns[active_h].ws_peer_offered = 0;
+            conns[active_h].snd_shift = 0;
+            tcp_set_peer_window(&conns[active_h], ntohs_(tcp->window));
+            kprintf("[tcp] wscale: peer SYN carries no options; window "
+                    "stays 16-bit\n");
         }
 
         /* M6d: a non-SYN segment may carry SACK blocks.  Decode them here,
@@ -428,11 +528,19 @@ static int tcp_recv_segment(struct tcp_hdr *out_tcp, uint8_t *out_data,
 /* M6e: `listen_h` is the listening handle, so a SYN from a DIFFERENT peer
  * that arrives while we are mid-handshake can be queued on its backlog
  * instead of being dropped on the floor. */
+/* C7: what the peer's SYN offered, carried from the place the SYN is read to
+ * the place the connection is created.  Passive open has no other channel:
+ * tcp_accept() sees the backlog entry, not the option bytes. */
+static uint8_t pending_ws_offered = 0;
+static uint8_t pending_ws_shift = 0;
+
 static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
                            uint32_t *out_src_ip, uint16_t *out_src_port,
                            int listen_h) {
     uint8_t buf[2048];
     int got_one = 0;
+    pending_ws_offered = 0;
+    pending_ws_shift = 0;
     uint64_t deadline = timer_get_ticks() + TCP_RECV_TIMEOUT_TICKS;
     while (timer_get_ticks() < deadline) {
         uint64_t now = timer_get_ticks();
@@ -449,6 +557,22 @@ static int tcp_recv_syn_bl(uint16_t src_port, struct tcp_hdr *out_tcp,
         struct tcp_hdr *tcp = (struct tcp_hdr *)(pkt.frame + pkt.l4_off);
         if (ntohs_(tcp->dst_port) != src_port) continue;
         if (!(tcp->flags & TCP_SYN)) continue;
+
+        /* C7: read the peer's window-scale offer now, while the option
+         * bytes are in hand. */
+        if (!got_one) {
+            uint8_t words = tcp->data_offset >> 4;
+            if (words > 5 && words <= 15) {
+                tcp_ws_opt_t ws;
+                tcp_ws_parse((const uint8_t *)tcp + 20,
+                             (uint32_t)(words - 5) * 4u, &ws);
+                pending_ws_offered = ws.offered;
+                pending_ws_shift = ws.shift;
+                kprintf("[tcp] wscale: peer SYN %s shift=%u (passive open)\n",
+                        ws.offered ? "offers" : "omits",
+                        (unsigned)ws.shift);
+            }
+        }
 
         /* Found a SYN segment for our listening port! */
         uint32_t sip = netl3_v4_host(&pkt.src);
@@ -676,12 +800,16 @@ tcp_handle_t tcp_accept(tcp_handle_t h, uint32_t *peer_ip, uint16_t *peer_port) 
     conns[new_h].time_wait_tick = 0;
     tcpm6e_ka_init(&conns[new_h].ka, (uint32_t)timer_get_ticks());
     conns[new_h].snd_nxt = conn_seq;
-    conns[new_h].snd_wnd = (!pend && ntohs_(rx.window)) ?
-                           ntohs_(rx.window) : TCP_WINDOW;
+    conns[new_h].ws_peer_offered = pending_ws_offered;   /* C7 */
+    conns[new_h].snd_shift = pending_ws_offered ? pending_ws_shift : 0;
+    conns[new_h].rcv_shift = tcp_ws_shift_for_buffer(TCP_RCV_BUF_BYTES);
+    tcp_set_peer_window(&conns[new_h],
+                        (!pend && ntohs_(rx.window)) ? ntohs_(rx.window)
+                                                     : TCP_WINDOW);
     conns[new_h].rcv_wnd = TCP_WINDOW;
     conns[new_h].cwnd    = tcpcc_iw(TCP_MSS);  /* Y1: RFC 6928 IW */
-    conns[new_h].ssthresh= TCP_WINDOW;         /* "arbitrarily high",
-                                                * RFC 5681 §3.1 */
+    conns[new_h].ssthresh= TCP_SSTHRESH_INITIAL; /* C7: unbounded until the
+                                                  * first loss (RFC 5681 §3.1) */
 
     /* Quick poll for the ACK */
     struct tcp_hdr ack_rx;
@@ -750,6 +878,12 @@ tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port) {
     conn_seq = 0x1000 + (uint32_t)h * 0x100;
     conn_ack = 0;
     conn_state = TCP_SYN_SENT;
+    /* C7: our shift must exist before the SYN carries it. */
+    conns[h].rcv_shift = tcp_ws_shift_for_buffer(TCP_RCV_BUF_BYTES);
+    conns[h].snd_shift = 0;
+    conns[h].ws_peer_offered = 0;
+    conns[h].snd_wnd_raw = 0;
+    conns[h].inflight_peak = 0;
     tcp_rx_stash_reset();   /* no leftovers may leak across connections */
 
     if (conn_peer.family == NETL3_AF_INET) {
@@ -812,12 +946,16 @@ tcp_handle_t tcp_open_addr(const netl3_addr_t *dst, uint16_t dst_port) {
     conns[h].nodelay = 0;
     conns[h].time_wait_tick = 0;
     conns[h].snd_nxt = conn_seq;
-    conns[h].snd_wnd = ntohs_(rx.window) ? ntohs_(rx.window) : TCP_WINDOW;
+    /* C7: conns[h].snd_shift was decided by the SYN-ACK parser above; it
+     * must NOT be reset here or the connection silently falls back to a
+     * 16-bit window after the handshake completes. */
+    conns[h].rcv_shift = tcp_ws_shift_for_buffer(TCP_RCV_BUF_BYTES);
+    tcp_set_peer_window(&conns[h], ntohs_(rx.window));
     conns[h].rcv_wnd = TCP_WINDOW;
     conns[h].cwnd    = tcpcc_iw(TCP_MSS);      /* Y1: RFC 6928 IW —
                                                 * slow start actually
                                                 * RUNS from here */
-    conns[h].ssthresh= TCP_WINDOW;             /* "arbitrarily high" */
+    conns[h].ssthresh= TCP_SSTHRESH_INITIAL;   /* C7: unbounded until loss */
 
     kprintf("[tcp] [h=%d] ESTABLISHED (seq=%u, ack=%u, peer_wnd=%u)\n",
             h, conn_seq, conn_ack, conns[h].snd_wnd);
@@ -895,6 +1033,24 @@ int tcp_close_h(tcp_handle_t h) {
 tcp_state_t tcp_state_h(tcp_handle_t h) {
     if (!handle_valid(h)) return TCP_CLOSED;
     return conns[h].state;
+}
+
+/* C7 receipts: the peak unacknowledged byte count and the peer window that
+ * was in force.  These exist so the lane's receipt measures the connection
+ * instead of restating a number the lane already knew. */
+uint32_t tcp_inflight_peak_h(tcp_handle_t h) {
+    if (!handle_valid(h)) return 0;
+    return conns[h].inflight_peak;
+}
+
+uint32_t tcp_snd_wnd_h(tcp_handle_t h) {
+    if (!handle_valid(h)) return 0;
+    return conns[h].snd_wnd;
+}
+
+uint8_t tcp_snd_shift_h(tcp_handle_t h) {
+    if (!handle_valid(h)) return 0;
+    return conns[h].snd_shift;
 }
 
 /* Legacy global handle, allocated lazily by tcp_connect(). */
@@ -1007,6 +1163,10 @@ int tcp_send(const void *data, uint32_t len) {
             (c->snd_nxt - c->snd_una) + chunk >= c->cwnd) {
             perfstat_add(PERF_TCP_CWND_LIMITED_SENDS, 1);
         }
+        if (chunk > 0) {
+            uint32_t inflight = (c->snd_nxt - c->snd_una) + chunk;
+            if (inflight > c->inflight_peak) c->inflight_peak = inflight;
+        }
         if (chunk == 0) {
             /* Window full: wait one *effective* (adaptive) RTO.  Visible
              * (throttled): the piecemeal-ACK gate greps this marker. */
@@ -1036,7 +1196,7 @@ int tcp_send(const void *data, uint32_t len) {
                 tcpm6_ack_kind_t kind =
                     tcpm6_on_ack(&c->dupack, c->snd_una, acked, c->snd_nxt,
                                  data_len > 0,
-                                 ntohs_(rx.window) != (uint16_t)c->snd_wnd);
+                                 ntohs_(rx.window) != c->snd_wnd_raw);
 
                 /* M6d: apply any SACK blocks before deciding what to do.
                  * The peer has told us exactly which segments it holds, so
@@ -1125,9 +1285,13 @@ int tcp_send(const void *data, uint32_t len) {
                          * forever the moment ssthresh went live. */
                         c->cwnd = c->ssthresh;
                     }
+                    /* C7: cwnd is bounded by what we may actually SEND —
+                     * the peer's (possibly scaled) window — not by a
+                     * 64240-byte constant that predates window scaling. */
                     c->cwnd = tcpcc_ack_grow(c->cwnd, c->ssthresh,
                                              c->eff_mss, acked_delta,
-                                             TCP_WINDOW);   /* Y1: SS/CA */
+                                             c->snd_wnd ? c->snd_wnd
+                                                        : TCP_WINDOW);
                 }
             } else {
                 /* Timeout: congestion (or a swallowed segment).  Back the

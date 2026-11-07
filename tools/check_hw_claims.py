@@ -137,12 +137,15 @@ def claims():
          "fb: WC via PAT4" in read("kernel", "arch", "x86_64",
                                    "paging.c") and
          "paging_fb_set_wc" in read("kernel", "kernel.c")),
-        ("H3: both lanes pinned -- the UEFI WC decode and the BIOS "
-         "honest skip",
+        ("H3: both lanes pinned -- the UEFI WC decode (1000 pages at "
+         "1280x1024) and, since RESIDUE3 C3 / RES-12 gave the BIOS path a "
+         "VBE framebuffer, the BIOS decode (768 pages at 1024x768)",
          "fb: WC via PAT4 (1000 pages" in
          read("tests", "integration", "cases",
               "test_gui_dirty_uefi.sh") and
-         "fb: none present; WC remap skipped" in
+         "fb: WC via PAT4 \\(768 pages" in
+         read("tests", "integration", "cases", "test_perf_smoke.sh") and
+         "[vbe] framebuffer live; boot_info.fb filled" in
          read("tests", "integration", "cases", "test_perf_smoke.sh")),
 
         # --- H4: PCID -- the written design + the deferral protocol ---
