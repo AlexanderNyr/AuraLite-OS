@@ -2098,7 +2098,7 @@ iso-dual: deps-check kernel kernel32 $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(S
 iso: iso-dual
 	@# Keep the historical build/auralite.iso path as the canonical local
 	@# artefact.  The integration tests and run/debug targets consume it.
-	@cp $(DUAL_ISO_IMAGE) $(ISO_IMAGE)
+	@cp "$(DUAL_ISO_IMAGE)" "$(ISO_IMAGE)"
 	@mkdir -p release
 	@cp $(ISO_IMAGE) release/auralite.iso
 	@cp $(BUILD_DIR)/kernel.elf release/kernel.elf
@@ -2111,7 +2111,7 @@ iso: iso-dual
 	@echo "[release] Wrote ISO, kernel.elf$$([ -f release/initrd.tar ] && echo ', initrd.tar'), and SHA256SUMS to 'release/' folder"
 
 usb: iso
-	@cp $(ISO_IMAGE) $(USB_IMAGE)
+	@cp "$(ISO_IMAGE)" "$(USB_IMAGE)"
 	@echo "[usb] wrote $(USB_IMAGE) ($(shell du -h $(USB_IMAGE) | cut -f1))"
 	@echo "[usb] Boot: qemu-system-x86_64 -drive file=$(USB_IMAGE),format=raw -m 512M -serial stdio"
 	@echo "[usb] Or write to USB: sudo dd if=$(USB_IMAGE) of=/dev/sdX bs=4M"
@@ -3114,7 +3114,32 @@ W32A16_EXE := $(BUILD_DIR)/user/w32a16_npp.exe
 # RESIDUE3 C8 (box 3): the live FAIL-CLEAN receipts.  One mingw-w64 TU that
 # imports all 35 functions docs/win32.md generates and calls each one, so the
 # claim stops being about source code and becomes a receipt from the machine.
+#
+# CI FIX (b80abca run, 2026-11-07): both fixture PATHS are now declared before
+# the mingw conditional, and both rules live inside it.  Declaring
+# W32C8_SO_EXE inside the `ifneq` left the variable literally absent on a
+# mingw-less runner, so the initrd staging guard `if [ -s $(W32C8_SO_EXE) ]`
+# degenerated to `[ -s ]` -- which is TRUE -- and `cp` ran with one operand:
+# "missing destination file operand", killing `make iso` on 16 of the 20 CI
+# shards.  A guard naming an optional binary must be able to see the name.
 W32C8_FC_EXE := $(BUILD_DIR)/user/w32c8_failclean.exe
+W32C8_SO_EXE := $(BUILD_DIR)/user/w32c8_static_slice.exe
+W32C8_SO_H   := $(BUILD_DIR)/w32_static_slice.h
+
+# RESIDUE3 C8 (box 2, RES-57): the static-only receipts.  The name table is
+# generated from the five app ledgers and the two export tables, so the guest
+# and the host cannot disagree about what the list is.
+#
+# Run it with an explicit interpreter: the committed mode of the tool is 0644,
+# so `tools/w32_static_slice.py > out` is "Permission denied" (CI Error 126 on
+# the three w32 shards) rather than a build.  Local builds hid that for as
+# long as a previously generated build/w32_static_slice.h stayed newer than
+# its prerequisites.
+$(W32C8_SO_H): tools/w32_static_slice.py $(wildcard w32/app_ledger/*.imports) \
+               w32/src/w32_bind.c w32/src/w32_stubs_gen.c
+	@mkdir -p $(BUILD_DIR)
+	python3 $< > /dev/null
+
 ifneq ($(MINGW_CC),)
 $(W32C8_FC_EXE): w32/tests/w32c8_failclean.c $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
@@ -3124,29 +3149,15 @@ $(W32C8_FC_EXE): w32/tests/w32c8_failclean.c $(W32_MINGW_STAMP)
 	    -lsensapi -lwintrust -ldwmapi -lgcc
 	@echo "  [pe] $@ (RESIDUE3 C8 FAIL-CLEAN live fixture)"
 
-# RESIDUE3 C8 (box 2, RES-57): the static-only receipts.  The name table is
-# generated from the five app ledgers and the two export tables, so the guest
-# and the host cannot disagree about what the list is.
-W32C8_SO_EXE := $(BUILD_DIR)/user/w32c8_static_slice.exe
-W32C8_SO_H   := $(BUILD_DIR)/w32_static_slice.h
-$(W32C8_SO_H): tools/w32_static_slice.py $(wildcard w32/app_ledger/*.imports) \
-               w32/src/w32_bind.c w32/src/w32_stubs_gen.c
-	@mkdir -p $(BUILD_DIR)
-	$(PYTHON) $< > /dev/null
-
-ifneq ($(MINGW_CC),)
 $(W32C8_SO_EXE): w32/tests/w32c8_static_slice.c $(W32C8_SO_H) $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
 	$(MINGW_CC) -O2 -Wall -Wextra -m64 -fno-builtin -I$(BUILD_DIR) $< -o $@ \
 	    -nostdlib -Wl,--entry=winstart -lkernel32 -luser32 -lgcc
 	@echo "  [pe] $@ (RESIDUE3 C8 static-only receipts)"
 else
-$(W32C8_SO_EXE): $(W32C8_SO_H) $(W32_MINGW_STAMP)
-	@echo "  [pe] skipping $@ (no x86_64-w64-mingw32-gcc)"; : > $@
-endif
-
-else
 $(W32C8_FC_EXE): $(W32_MINGW_STAMP)
+	@echo "  [pe] skipping $@ (no x86_64-w64-mingw32-gcc)"; : > $@
+$(W32C8_SO_EXE): $(W32C8_SO_H) $(W32_MINGW_STAMP)
 	@echo "  [pe] skipping $@ (no x86_64-w64-mingw32-gcc)"; : > $@
 endif
 
@@ -3291,17 +3302,26 @@ LX_LUA_STAMP := $(BUILD_DIR)/user/.lx_lua-ok
 
 $(LX_LUA_STAMP): Makefile
 	@mkdir -p $(dir $@) $(LX_LUA_DIR)
-	@if [ -s $(LX_LUA_BIN) ] || { [ -s $(LX_LUA_TGZ) ] && \
+# CI FIX (b80abca run, 2026-11-07): the fetch below is best-effort BY DESIGN --
+# the comment above promises that "a failed fetch leaves a zero-byte file and a
+# loud skip".  It did not: `curl` exiting 28 (www.lua.org unreachable from the
+# runner, four attempts x 20 s) returned out of the recipe line, so make
+# reported `[Makefile:3294: build/user/.lx_lua-ok] Error 28` and killed the
+# build before the tolerant second block could write the placeholder.  Two
+# shards died on a network hiccup for a payload the tree already treats as
+# optional.  The download attempts now end in `|| true`, so the decision is
+# made by the SHA-256 check and the placeholder, not by curl's exit status.
+	@if [ -s "$(LX_LUA_BIN)" ] || { [ -s "$(LX_LUA_TGZ)" ] && \
 	    echo "$(LX_LUA_SHA)  $(LX_LUA_TGZ)" | sha256sum -c --status >/dev/null 2>&1; }; then \
 	    :; \
 	elif command -v curl >/dev/null 2>&1; then \
-	    curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 5 "$(LX_LUA_URL)" -o $(LX_LUA_TGZ); \
+	    curl -fsSL --connect-timeout 20 --max-time 180 --retry 3 --retry-delay 5 "$(LX_LUA_URL)" -o $(LX_LUA_TGZ) || true; \
 	elif command -v wget >/dev/null 2>&1; then \
-	    wget -q -T 20 -t 3 -O $(LX_LUA_TGZ) "$(LX_LUA_URL)"; \
+	    wget -q -T 20 -t 3 -O $(LX_LUA_TGZ) "$(LX_LUA_URL)" || true; \
 	fi
-	@if [ -s $(LX_LUA_BIN) ]; then \
+	@if [ -s "$(LX_LUA_BIN)" ]; then \
 	    :; \
-	elif [ -s $(LX_LUA_TGZ) ] && \
+	elif [ -s "$(LX_LUA_TGZ)" ] && \
 	    echo "$(LX_LUA_SHA)  $(LX_LUA_TGZ)" | sha256sum -c --status >/dev/null 2>&1; then \
 	    tar -xzf $(LX_LUA_TGZ) -C $(LX_LUA_DIR) && \
 	    $(MAKE) -C $(LX_LUA_SRC) linux >/dev/null 2>&1 && \
@@ -3341,7 +3361,7 @@ LX_BUSYBOX_STAMP := $(BUILD_DIR)/user/.lx_busybox-ok
 
 $(LX_BUSYBOX_STAMP): Makefile
 	@mkdir -p $(dir $@)
-	@if [ -s $(LX_BUSYBOX_BIN) ] && \
+	@if [ -s "$(LX_BUSYBOX_BIN)" ] && \
 	    echo "$(LX_BUSYBOX_SHA)  $(LX_BUSYBOX_BIN)" | sha256sum -c --status >/dev/null 2>&1; then \
 	    :; \
 	elif command -v curl >/dev/null 2>&1; then \
@@ -3475,11 +3495,11 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # and a writable /tmp/sh5d/build overlay.  The complete stage is intentional:
 # the guest, not a host compiler, turns every x86_64 kernel source into the
 # final /fat/KERNEL.ELF.
-	@set -e; if [ -f $(SELFHOST_TCC) ]; then \
+	@set -e; if [ -f "$(SELFHOST_TCC)" ]; then \
 	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
 	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \
 	    cp -r $(SELFHOST_SRC)/include/. $(INITRD_DIR)/apps/tcc/include/; \
-	    cp $(SELFHOST_LIBTCC1) $(INITRD_DIR)/apps/tcc/libtcc1.a; \
+	    cp "$(SELFHOST_LIBTCC1)" "$(INITRD_DIR)"/apps/tcc/libtcc1.a; \
 	    cp tools/selfhost/hello.c $(INITRD_DIR)/tests/selfhost_hello.c; \
 	    cp tools/selfhost/stdint.h $(INITRD_DIR)/apps/tcc/include/stdint.h; \
 	    mkdir -p $(INITRD_DIR)/src/libc/include $(INITRD_DIR)/src/libc/src \
@@ -3554,7 +3574,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # SELFHOST SH7d: stage the boot blobs the in-guest mkiso splices (the dual
 # MBR and Stage 2 flat binary), so the SH7d probe can assemble a real hybrid
 # image entirely in-guest and hand the resulting bytes to be booted.
-	@cp $(MBR_DUAL_BIN) $(INITRD_DIR)/tests/mbr_dual.bin
+	@cp "$(MBR_DUAL_BIN)" "$(INITRD_DIR)"/tests/mbr_dual.bin
 	@cp $(STAGE2_BIN)   $(INITRD_DIR)/tests/stage2.bin
 # Package archives apm installs from (SDK_PLAN phase S4).
 #
@@ -3577,7 +3597,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	              status=none
 # The PE32+ loader fixture (W32-3).  Not stripped: `strip` does not handle PE,
 # and at 3 KiB it costs nothing in the 32 MiB initrd slot.
-	@cp $(PETEST_EXE) $(INITRD_DIR)/tests/petest.exe
+	@cp "$(PETEST_EXE)" "$(INITRD_DIR)"/tests/petest.exe
 # The same image with its subsystem field forced to EFI_APPLICATION (10), so
 # the integration test can prove a firmware binary is REFUSED rather than run.
 # Patched here rather than assembled separately: one byte apart from the good
@@ -3589,73 +3609,73 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # (0x800000000000), so the preferred base is always rejected and the image is
 # moved to PE_FALLBACK_BASE.  It must still print the identical marker, which
 # is only possible if the .data pointer was fixed up correctly.
-	@cp $(PETEST_RELOC_EXE) $(INITRD_DIR)/tests/petest_reloc.exe
-	@cp $(K32TEST_EXE) $(INITRD_DIR)/tests/k32test.exe
-	@cp $(U32TEST_EXE) $(INITRD_DIR)/tests/u32test.exe
-	@cp $(CRTTEST_EXE) $(INITRD_DIR)/tests/crttest.exe
-	@cp $(W32A3T_EXE) $(INITRD_DIR)/tests/w32a3_threads.exe
-	@cp $(W32A3L_EXE) $(INITRD_DIR)/tests/w32a3_tls.exe
-	@cp $(W32A5_EXE) $(INITRD_DIR)/tests/w32a5_win.exe
-	@cp $(W32A6_EXE) $(INITRD_DIR)/tests/w32a6_dlg.exe
-	@cp $(W32A7_EXE) $(INITRD_DIR)/tests/w32a7_gdi.exe
-	@cp $(W32A8_EXE) $(INITRD_DIR)/tests/w32a8_comctl32.exe
-	@cp $(W32A9_EXE) $(INITRD_DIR)/tests/w32a9_registry.exe
-	@cp $(W32A10_EXE) $(INITRD_DIR)/tests/w32a10_furniture.exe
-	@cp $(W32A11_EXE) $(INITRD_DIR)/tests/w32a11_core.exe
-	@cp $(W32A11_PROBE_EXE) $(INITRD_DIR)/tests/w32a11_probe.exe
-	@cp $(W32A11_DRAG_EXE) $(INITRD_DIR)/tests/w32a11_drag.exe
-	@cp $(W32A11_THEME_V5) $(INITRD_DIR)/tests/w32a11_theme_v5.exe
-	@cp $(W32A11_THEME_V6) $(INITRD_DIR)/tests/w32a11_theme_v6.exe
-	@cp $(W32A11_FILE_EXE) $(INITRD_DIR)/tests/w32a11_file_receiver.exe
+	@cp "$(PETEST_RELOC_EXE)" "$(INITRD_DIR)"/tests/petest_reloc.exe
+	@cp "$(K32TEST_EXE)" "$(INITRD_DIR)"/tests/k32test.exe
+	@cp "$(U32TEST_EXE)" "$(INITRD_DIR)"/tests/u32test.exe
+	@cp "$(CRTTEST_EXE)" "$(INITRD_DIR)"/tests/crttest.exe
+	@cp "$(W32A3T_EXE)" "$(INITRD_DIR)"/tests/w32a3_threads.exe
+	@cp "$(W32A3L_EXE)" "$(INITRD_DIR)"/tests/w32a3_tls.exe
+	@cp "$(W32A5_EXE)" "$(INITRD_DIR)"/tests/w32a5_win.exe
+	@cp "$(W32A6_EXE)" "$(INITRD_DIR)"/tests/w32a6_dlg.exe
+	@cp "$(W32A7_EXE)" "$(INITRD_DIR)"/tests/w32a7_gdi.exe
+	@cp "$(W32A8_EXE)" "$(INITRD_DIR)"/tests/w32a8_comctl32.exe
+	@cp "$(W32A9_EXE)" "$(INITRD_DIR)"/tests/w32a9_registry.exe
+	@cp "$(W32A10_EXE)" "$(INITRD_DIR)"/tests/w32a10_furniture.exe
+	@cp "$(W32A11_EXE)" "$(INITRD_DIR)"/tests/w32a11_core.exe
+	@cp "$(W32A11_PROBE_EXE)" "$(INITRD_DIR)"/tests/w32a11_probe.exe
+	@cp "$(W32A11_DRAG_EXE)" "$(INITRD_DIR)"/tests/w32a11_drag.exe
+	@cp "$(W32A11_THEME_V5)" "$(INITRD_DIR)"/tests/w32a11_theme_v5.exe
+	@cp "$(W32A11_THEME_V6)" "$(INITRD_DIR)"/tests/w32a11_theme_v6.exe
+	@cp "$(W32A11_FILE_EXE)" "$(INITRD_DIR)"/tests/w32a11_file_receiver.exe
 	@strip -s $(W32A11_FILE_SOURCE) -o $(INITRD_DIR)/tests/w32a11_native_drop
 	@strip -s $(W32A11_TOKEN_SENDER) -o $(INITRD_DIR)/tests/w32a11_token_sender
 	@strip -s $(W32A11_TOKEN_RECEIVER) -o $(INITRD_DIR)/tests/w32a11_token_receiver
 	@cp w32/tests/w32a11_payload.txt $(INITRD_DIR)/tests/w32a11_payload.txt
 	@cp w32/tests/w32a11-é.txt $(INITRD_DIR)/tests/w32a11-é.txt
 	@for f in $(W32A4_NAMES); do cp $(BUILD_DIR)/user/w32a4_$$f.exe $(INITRD_DIR)/tests/w32a4_$$f.exe; done
-	@if [ -s $(W32A4_CXX_EXE) ]; then cp $(W32A4_CXX_EXE) $(INITRD_DIR)/tests/w32a4_cxx.exe; fi
-	@cp $(TESTDLL) $(INITRD_DIR)/tests/testdll.dll
+	@if [ -s "$(W32A4_CXX_EXE)" ]; then cp "$(W32A4_CXX_EXE)" "$(INITRD_DIR)"/tests/w32a4_cxx.exe; fi
+	@cp "$(TESTDLL)" "$(INITRD_DIR)"/tests/testdll.dll
 # W32A-1: 7 DLLs + 15 exes.  Basenames are preserved because the
 # loader resolves dependency names against the exe's directory.
 	@for f in $(W32A1_FIXTURES); do \
 	    cp $$f $(INITRD_DIR)/tests/; \
 	done
-	@if [ -s $(W32_EXAMPLE_EXE) ]; then \
-	    cp $(W32_EXAMPLE_EXE) $(INITRD_DIR)/tests/w32hello.exe; fi
-	@if [ -s $(W32_UNSUP_EXE) ]; then \
-	    cp $(W32_UNSUP_EXE) $(INITRD_DIR)/tests/w32unsup.exe; fi
+	@if [ -s "$(W32_EXAMPLE_EXE)" ]; then \
+	    cp "$(W32_EXAMPLE_EXE)" "$(INITRD_DIR)"/tests/w32hello.exe; fi
+	@if [ -s "$(W32_UNSUP_EXE)" ]; then \
+	    cp "$(W32_UNSUP_EXE)" "$(INITRD_DIR)"/tests/w32unsup.exe; fi
 # W32A-2: the seven guest fixtures, basename-preserved like W32A-1.
 	@for f in $(W32A2_EXES); do \
 	    if [ -s $$f ]; then cp $$f $(INITRD_DIR)/tests/; fi; \
 	done
 # W32A-12: the WinSock guest fixture, basename-preserved.
-	@if [ -s $(W32A12_EXE) ]; then cp $(W32A12_EXE) $(INITRD_DIR)/tests/w32a12_winsock.exe; fi
+	@if [ -s "$(W32A12_EXE)" ]; then cp "$(W32A12_EXE)" "$(INITRD_DIR)"/tests/w32a12_winsock.exe; fi
 # W32A-13: the msvcrt guest fixture, basename-preserved.
-	@if [ -s $(W32A13_EXE) ]; then cp $(W32A13_EXE) $(INITRD_DIR)/tests/w32a13_msvcrt.exe; fi
+	@if [ -s "$(W32A13_EXE)" ]; then cp "$(W32A13_EXE)" "$(INITRD_DIR)"/tests/w32a13_msvcrt.exe; fi
 # W32A-14: the PuTTY app-gate guest fixture, basename-preserved.
-	@if [ -s $(W32A14_EXE) ]; then cp $(W32A14_EXE) $(INITRD_DIR)/tests/w32a14_putty.exe; fi
+	@if [ -s "$(W32A14_EXE)" ]; then cp "$(W32A14_EXE)" "$(INITRD_DIR)"/tests/w32a14_putty.exe; fi
 # W32A-15: the 7-Zip FM app-gate guest fixture, basename-preserved.
-	@if [ -s $(W32A15_EXE) ]; then cp $(W32A15_EXE) $(INITRD_DIR)/tests/w32a15_7zip.exe; fi
+	@if [ -s "$(W32A15_EXE)" ]; then cp "$(W32A15_EXE)" "$(INITRD_DIR)"/tests/w32a15_7zip.exe; fi
 # W32A-16: the Notepad++ app-gate guest fixture, basename-preserved.
-	@if [ -s $(W32A16_EXE) ]; then cp $(W32A16_EXE) $(INITRD_DIR)/tests/w32a16_npp.exe; fi
+	@if [ -s "$(W32A16_EXE)" ]; then cp "$(W32A16_EXE)" "$(INITRD_DIR)"/tests/w32a16_npp.exe; fi
 # RESIDUE3 C8: the scale fixtures (generated, always present).
 	@for f in $(W32SCALE_EXES); do cp $$f $(INITRD_DIR)/tests/; done
 # DOOM_PLAN.md D7: the Win32 DOOM build, when someone has made it.  NOT a
 # prerequisite: `make doom-win` fetches GPL sources, and the default image
 # must not do that on its own.
-	@if [ -s $(DOOM_W32_EXE) ]; then cp $(DOOM_W32_EXE) $(INITRD_DIR)/tests/doom_w32.exe; fi
+	@if [ -s "$(DOOM_W32_EXE)" ]; then cp "$(DOOM_W32_EXE)" "$(INITRD_DIR)"/tests/doom_w32.exe; fi
 # RESIDUE3 C8: the live FAIL-CLEAN fixture (35 functions) and the static-only
 # receipts (820 pairs).
-	@if [ -s $(W32C8_FC_EXE) ]; then cp $(W32C8_FC_EXE) $(INITRD_DIR)/tests/w32c8_failclean.exe; fi
-	@if [ -s $(W32C8_SO_EXE) ]; then cp $(W32C8_SO_EXE) $(INITRD_DIR)/tests/w32c8_static_slice.exe; fi
+	@if [ -s "$(W32C8_FC_EXE)" ]; then cp "$(W32C8_FC_EXE)" "$(INITRD_DIR)"/tests/w32c8_failclean.exe; fi
+	@if [ -s "$(W32C8_SO_EXE)" ]; then cp "$(W32C8_SO_EXE)" "$(INITRD_DIR)"/tests/w32c8_static_slice.exe; fi
 # WR-1: the SHELL32 namespace guest fixture, basename-preserved.
-	@if [ -s $(W32WR1_EXE) ]; then cp $(W32WR1_EXE) $(INITRD_DIR)/tests/wr1_shellns.exe; fi
+	@if [ -s "$(W32WR1_EXE)" ]; then cp "$(W32WR1_EXE)" "$(INITRD_DIR)"/tests/wr1_shellns.exe; fi
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.
-	@if [ -s $(LX_HELLO_BIN) ]; then \
+	@if [ -s "$(LX_HELLO_BIN)" ]; then \
 	    mkdir -p $(INITRD_DIR)/linux/tests; \
-	    cp $(LX_HELLO_BIN) $(INITRD_DIR)/linux/tests/hello; fi
+	    cp "$(LX_HELLO_BIN)" "$(INITRD_DIR)"/linux/tests/hello; fi
 # LX_COMPAT L2: the /linux userland — upstream's static busybox under
 # /linux/bin (applet dispatch is argv[1], so one binary is ls, cat and
 # echo at once), and a small /linux/etc the gate can cat and list.  The
@@ -3664,9 +3684,9 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@mkdir -p $(INITRD_DIR)/linux/etc
 	@cp lx/etc/motd $(INITRD_DIR)/linux/etc/motd
 	@cp lx/etc/zz-ls-probe $(INITRD_DIR)/linux/etc/zz-ls-probe
-	@if [ -s $(LX_BUSYBOX_BIN) ]; then \
+	@if [ -s "$(LX_BUSYBOX_BIN)" ]; then \
 	    mkdir -p $(INITRD_DIR)/linux/bin; \
-	    cp $(LX_BUSYBOX_BIN) $(INITRD_DIR)/linux/bin/busybox; \
+	    cp "$(LX_BUSYBOX_BIN)" "$(INITRD_DIR)"/linux/bin/busybox; \
 	    ln -f $(INITRD_DIR)/linux/bin/busybox $(INITRD_DIR)/linux/bin/cat; \
 	    ln -f $(INITRD_DIR)/linux/bin/busybox $(INITRD_DIR)/linux/bin/ls; \
 	    ln -f $(INITRD_DIR)/linux/bin/busybox $(INITRD_DIR)/linux/bin/sleep; fi
@@ -3692,8 +3712,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # nothing and the gate skips like it does for busybox.
 	@mkdir -p $(INITRD_DIR)/linux/tests/dyn
 	@cp lx/tests/dyn/sh_cmd.sh $(INITRD_DIR)/linux/tests/dyn/sh_cmd.sh
-	@if [ -s $(LX_DYN_HELLO_BIN) ]; then \
-	    cp $(LX_DYN_HELLO_BIN) $(INITRD_DIR)/linux/tests/dyn/hello; fi
+	@if [ -s "$(LX_DYN_HELLO_BIN)" ]; then \
+	    cp "$(LX_DYN_HELLO_BIN)" "$(INITRD_DIR)"/linux/tests/dyn/hello; fi
 	@if [ -r /usr/bin/dash ]; then \
 	    mkdir -p $(INITRD_DIR)/linux/bin; \
 	    cp -L /usr/bin/dash $(INITRD_DIR)/linux/bin/dash; \
@@ -3711,8 +3731,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # placeholder-or-payload rule again: a host that could not build lua
 # stages nothing and the gate skips.
 	@cp lx/tests/lua_script.lua $(INITRD_DIR)/linux/tests/lua_script.lua
-	@if [ -s $(LX_LUA_BIN) ]; then \
-	    cp $(LX_LUA_BIN) $(INITRD_DIR)/linux/tests/lua; fi
+	@if [ -s "$(LX_LUA_BIN)" ]; then \
+	    cp "$(LX_LUA_BIN)" "$(INITRD_DIR)"/linux/tests/lua; fi
 	@if [ -r /lib/x86_64-linux-gnu/libm.so.6 ]; then \
 	    cp -L /lib/x86_64-linux-gnu/libm.so.6 \
 	          $(INITRD_DIR)/lib/x86_64-linux-gnu/libm.so.6; fi
@@ -4453,6 +4473,16 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@echo "[unit] running tools/check_provenance.sh"
 	@bash tools/check_provenance.sh || exit 1
 	@bash tools/check_provenance.sh --selftest || exit 1
+
+# CI FIX (b80abca run, 2026-11-07): the build-graph traps that were green on a
+# developer machine and red on a clean runner -- an unquoted `[ -s $(VAR) ]`
+# guard whose variable does not exist without mingw (16/20 shards died on it),
+# a recipe whose command word is an undefined variable ($(PYTHON), Error 126 on
+# the three w32 shards), and the SELFHOST SH8 source-set pin (149 C / 9 asm).
+# The negative control injects each defect and requires a complaint.
+	@echo "[unit] running tools/check_build_hygiene.py --check"
+	@python3 tools/check_build_hygiene.py --check || exit 1
+	@python3 tools/check_build_hygiene.py --selftest || exit 1
 # W32-8: docs/win32.md's function table is generated from the export table,
 # so it cannot drift.  Same idea as sdk-check: a hand-maintained API list is
 # wrong the moment somebody adds an export, and nobody notices.
@@ -5958,7 +5988,7 @@ sdk: libs $(USER_BUILD)/crt0.o
 	@cp lib/libgl/include/GL/*.h $(SDK_DIR)/include/GL/
 	@mkdir -p $(SDK_DIR)/include/atls
 	@cp lib/libatls/include/atls/*.h $(SDK_DIR)/include/atls/
-	@cp $(LIBAURAC) $(LIBAURAGUI) $(LIBAGL) $(LIBATLS) $(SDK_DIR)/lib/
+	@cp "$(LIBAURAC)" "$(LIBAURAGUI)" $(LIBAGL) $(LIBATLS) $(SDK_DIR)/lib/
 	@cp $(USER_BUILD)/crt0.o $(SDK_DIR)/lib/
 	@cp lib/libc/user.ld $(SDK_DIR)/
 	@bash tools/mksdk.sh $(SDK_DIR)
@@ -5980,7 +6010,7 @@ W32_SDK_DIR := $(BUILD_DIR)/w32-sdk
 w32-sdk: $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB) $(A32_IMPLIB)
 	@rm -rf $(W32_SDK_DIR)
 	@mkdir -p $(W32_SDK_DIR)/lib $(W32_SDK_DIR)/examples
-	@cp $(K32_IMPLIB) $(U32_IMPLIB) $(G32_IMPLIB) $(C32_IMPLIB) $(A32_IMPLIB) $(W32_SDK_DIR)/lib/
+	@cp "$(K32_IMPLIB)" "$(U32_IMPLIB)" $(G32_IMPLIB) $(C32_IMPLIB) $(A32_IMPLIB) $(W32_SDK_DIR)/lib/
 	@cp -r w32/examples/. $(W32_SDK_DIR)/examples/
 	@cp docs/win32.md $(W32_SDK_DIR)/
 	@cp w32/PROVENANCE.md w32/LICENSING.md $(W32_SDK_DIR)/ 2>/dev/null || true

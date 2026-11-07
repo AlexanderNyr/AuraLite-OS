@@ -45,8 +45,18 @@ ASM_COUNT=${#ASM_SRCS[@]}
 # guest gate must agree on the CURRENT source closure.  The previous limit of
 # 135 fell behind two more C sources and yielded a successful ISO containing
 # an empty generated script; Makefile now propagates this error.
-if [ "$C_COUNT" -ne 137 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 137 / 9)" >&2
+#
+# 137 -> 149 (2026-11-07): RESIDUE3 C2/C4/C7b added twelve x86_64 kernel and
+# driver C files (msi.c, msi_caps.c, tcp_ws_lane.c, nvme.c, usb_isoc.c,
+# ehci_qh.c, hid_report.c, bt.c, bt_transport.c, bt_selftest.c, wifi.c,
+# wifi_virt.c) and nothing bumped this pin, because the check only fires when
+# the self-host closure is staged -- which no local run did.  The CI
+# selfhost-closure shard staged tcc from its cached build/ and found it:
+# "[selfhost] SH8 kernel source set drifted: 149 C, 9 asm (expected 137 / 9)",
+# make Error 2.  Third of the three defects the first post-merge CI run
+# reported; all three were green locally for a reason.
+if [ "$C_COUNT" -ne 149 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 149 / 9)" >&2
     exit 2
 fi
 

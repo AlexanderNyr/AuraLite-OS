@@ -46,7 +46,7 @@ il_section "self-host kernel (SH5d): build in AuraLite, extract FAT ELF, boot it
 
 # The build itself uses /tmp: the stock FAT formatter intentionally creates a
 # small 4 MiB volume, enough for the final ~1 MiB ELF but not a full object
-# directory.  /tmp has 256 slots, and this job has 137 C + 9 asm objects plus
+# directory.  /tmp has 256 slots, and this job has 149 C + 9 asm objects plus
 # fewer than 20 tools/generated files.  Only the completed kernel crosses the
 # durability boundary, exactly what this phase gates.
 DISK="$IL_BUILD/selfhost-sh5d-fat.img"
@@ -81,8 +81,8 @@ C_COUNT=${#C_SRCS[@]}
 ASM_COUNT=${#ASM_SRCS[@]}
 # Mirror the generator and the SH5c host gate's exact source-set count.  A
 # mismatch must stop the expensive QEMU build rather than drop source files.
-if [ "$C_COUNT" -ne 137 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 137 / 9)${C_RESET}"
+if [ "$C_COUNT" -ne 149 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 149 / 9)${C_RESET}"
     exit 2
 fi
 
@@ -153,7 +153,7 @@ for src in "${ASM_SRCS[@]}"; do
 done
 
 # Directory arguments are lexical object sets.  This is the crucial SH5d
-# aulink mode: one short command replaces an impossible 137-argument line.
+# aulink mode: one short command replaces an impossible 149-argument line.
 il_send_prompt "run /tmp/sh5d/aulink -T /src/kernel.ld -o /fat/KERNEL.ELF /tmp/sh5d/cobj /apps/tcc/libtcc1.a /tmp/sh5d/aobj"
 il_send_prompt "stat /fat/KERNEL.ELF"
 # RESIDUE2 CI fix (run 92442558788): the aulink write lands in the kernel
