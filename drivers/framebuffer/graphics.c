@@ -170,17 +170,74 @@ void gfx_draw_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, color_t color
     }
 }
 
-void gfx_draw_line(uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, color_t color) {
-    int dx = (x1 > x0) ? (int)(x1 - x0) : (int)(x0 - x1);
-    int dy = (y1 > y0) ? (int)(y1 - y0) : (int)(y0 - y1);
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx - dy;
+/* Cohen-Sutherland outcodes, used by gfx_draw_line's clip stage. */
+#define GFX_OC_LEFT   1
+#define GFX_OC_RIGHT  2
+#define GFX_OC_BOTTOM 4
+#define GFX_OC_TOP    8
+
+static int gfx_line_outcode(int32_t x, int32_t y, int32_t xmax, int32_t ymax) {
+    int code = 0;
+    if (x < 0)         code |= GFX_OC_LEFT;
+    else if (x > xmax) code |= GFX_OC_RIGHT;
+    if (y < 0)         code |= GFX_OC_BOTTOM;
+    else if (y > ymax) code |= GFX_OC_TOP;
+    return code;
+}
+
+void gfx_draw_line(uint32_t x0u, uint32_t y0u, uint32_t x1u, uint32_t y1u, color_t color) {
+    /* Callers legitimately pass negative coordinates near the screen edges:
+     * the cursor shapes draw mx-8 / my-8, and gui_draw_text/clip helpers can
+     * hand over a slightly off-screen start.  Arriving as uint32 they have
+     * already wrapped, so recover the signed value first, then clip the
+     * segment to the screen.
+     *
+     * Without this the Bresenham walk below is fed endpoints whose span
+     * wrapped with them: for a segment from x=-3 to x=13 the step test sees
+     * dx as negative, the x step never fires, the y coordinate walks off the
+     * bottom of the address space forever and every plot is clipped away --
+     * an infinite loop inside the compositor that wedges the whole GUI
+     * (reproduced live: dragging a window to the left edge to snap it puts
+     * the MOVE cursor at x=5, and the desktop freezes hard). */
+    int32_t x0 = (int32_t)x0u, y0 = (int32_t)y0u;
+    int32_t x1 = (int32_t)x1u, y1 = (int32_t)y1u;
+    const int32_t xmax = (int32_t)fb_width  - 1;
+    const int32_t ymax = (int32_t)fb_height - 1;
+    if (xmax < 0 || ymax < 0) return;
 
     for (;;) {
-        gfx_putpixel(x0, y0, color);
+        int c0 = gfx_line_outcode(x0, y0, xmax, ymax);
+        int c1 = gfx_line_outcode(x1, y1, xmax, ymax);
+        if (!(c0 | c1)) break;          /* both endpoints inside */
+        if (c0 & c1) return;            /* trivially outside */
+        int c = c0 ? c0 : c1;
+        int32_t nx, ny;
+        if (c & GFX_OC_LEFT) {
+            nx = 0;
+            ny = (int32_t)(y0 + (int64_t)(y1 - y0) * (0 - x0) / (x1 - x0));
+        } else if (c & GFX_OC_RIGHT) {
+            nx = xmax;
+            ny = (int32_t)(y0 + (int64_t)(y1 - y0) * (xmax - x0) / (x1 - x0));
+        } else if (c & GFX_OC_BOTTOM) {
+            ny = 0;
+            nx = (int32_t)(x0 + (int64_t)(x1 - x0) * (0 - y0) / (y1 - y0));
+        } else {
+            ny = ymax;
+            nx = (int32_t)(x0 + (int64_t)(x1 - x0) * (ymax - y0) / (y1 - y0));
+        }
+        if (c == c0) { x0 = nx; y0 = ny; } else { x1 = nx; y1 = ny; }
+    }
+
+    int32_t dx = (x1 > x0) ? (x1 - x0) : (x0 - x1);
+    int32_t dy = (y1 > y0) ? (y1 - y0) : (y0 - y1);
+    int32_t sx = (x0 < x1) ? 1 : -1;
+    int32_t sy = (y0 < y1) ? 1 : -1;
+    int32_t err = dx - dy;
+
+    for (;;) {
+        gfx_putpixel((uint32_t)x0, (uint32_t)y0, color);
         if (x0 == x1 && y0 == y1) break;
-        int e2 = 2 * err;
+        int32_t e2 = 2 * err;
         if (e2 > -dy) { err -= dy; x0 += sx; }
         if (e2 <  dx) { err += dx; y0 += sy; }
     }

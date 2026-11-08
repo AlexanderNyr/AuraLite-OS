@@ -1133,6 +1133,14 @@ int gui_invalidate_window(int wid) {
     if (!win_alive(wid)) return -1;
     windows[wid].content_dirty = 1;
     mark_window_dirty(&windows[wid]);
+    /* The compositor sleeps until something pokes it (O4).  A syscall that
+     * dirties a window is exactly such a something: without this the frame
+     * the client just drew stays invisible until an unrelated IRQ (a mouse
+     * move, a key press) or the 1 Hz clock line happens to wake the
+     * compositor.  Reproduced live: the glrunner demo renders in a tight
+     * loop but the desktop only refreshed one frame per input event, so the
+     * game looked frozen and its score never advanced. */
+    gui_poke();
     return 0;
 }
 
@@ -1144,6 +1152,7 @@ int gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h) {
     int32_t sx = content_x(win) + x;
     int32_t sy = content_y(win) + y;
     gui_mark_dirty(sx, sy, w, h);
+    gui_poke();   /* same wake-up contract as gui_invalidate_window() */
     return 0;
 }
 
