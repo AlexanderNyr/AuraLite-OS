@@ -206,6 +206,21 @@ void kmain(boot_info_t *boot_info) {
 
     fb_init();
     kprintf("[boot] framebuffer console initialised\n");
+    /* CI FIX (2026-11-07): a pixel console costs ~3.5x the boot under TCG
+     * (9.5 s -> 33.9 s wall to the shell) because every scroll copies the
+     * 3 MiB shadow.  The harness reads the UART and asks for the text
+     * mirror to be skipped, which restores the boot budget the whole
+     * integration suite was written against.  The framebuffer itself is
+     * untouched: the GUI, the splashes and every rendering gate still
+     * draw.  Default (no knob) is the graphical console. */
+    {
+        extern int fwcfg_fbconsole_off(void);
+        if (fwcfg_fbconsole_off()) {
+            fb_set_console_enabled(0);
+            kprintf("[fb] console mirror off (fw_cfg opt/auralite.fbconsole="
+                    "off): serial only, framebuffer still initialised\n");
+        }
+    }
 
     gdt_init();
     kprintf("[boot] GDT loaded (kernel + user segments; TSS slot pending)\n");

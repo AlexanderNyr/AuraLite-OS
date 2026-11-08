@@ -36,6 +36,20 @@ LOG="$IL_LOGDIR/lx_lua.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
+# CI FIX (2026-11-07): the header above promises that a host which could not
+# fetch lua "stages a zero-byte file and this case skips exactly like
+# test_lx_busybox" -- but nothing implemented that, so on a runner whose egress
+# cannot reach www.lua.org the case reported five red assertions about a binary
+# that was never built (the boot log's `/bin/lxrun exited (code=127)`).  The
+# placeholder-or-payload rule belongs here, where the payload is inspected
+# host-side, not in a claim about a fetch.
+LUA_PAYLOAD="${IL_BUILD:-build}/user/lx_lua"
+if [ ! -s "$LUA_PAYLOAD" ]; then
+    il_skip "stock lua was not staged ($LUA_PAYLOAD is empty: the fetch failed on this host)"
+    il_summary
+    exit 0
+fi
+
 il_send_delay 8
 il_send "lxrun /linux/tests/lua /linux/tests/lua_script.lua"
 il_send_delay 8

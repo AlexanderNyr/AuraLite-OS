@@ -8,6 +8,12 @@
 #include <stddef.h>
 
 #include "kernel/mm/aspace.h"
+/* SELFHOST SH5c: the table lock below is spelled with the legacy
+ * __sync_lock_* builtins, which tcc does not implement; this header
+ * re-spells them onto __atomic_* for that compiler only.  It was
+ * missing here, so the tcc kernel build linked with an undefined
+ * reference to __sync_lock_test_and_set (CI fix 2026-11-07). */
+#include "kernel/lib/atomic_compat.h"
 
 typedef struct {
     uint64_t pml4;      /* 0 = slot free */

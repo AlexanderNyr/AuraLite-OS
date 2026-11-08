@@ -53,6 +53,15 @@
 
 #define __sync_lock_release(p)         __atomic_store_n((p), 0, __ATOMIC_RELEASE)
 
+/* CI fix (2026-11-07): the full barrier.  nvme.c spells a seq_cst fence the
+ * legacy way (__sync_synchronize); tcc has no __sync_* builtins at all, so
+ * without this line it became an undefined external and SH5c/SH5d could not
+ * LINK the guest kernel ("aulink: undefined reference to
+ * '__sync_synchronize'") -- the next failure behind the abi_probe clobber.
+ * __atomic_thread_fence is a tcc builtin, and on x86-64 both spellings
+ * compile to the same `lock orq $0, (%rsp)`-class fence. */
+#define __sync_synchronize()           __atomic_thread_fence(__ATOMIC_SEQ_CST)
+
 #endif /* __TINYC__ */
 
 #endif /* KERNEL_LIB_ATOMIC_COMPAT_H */

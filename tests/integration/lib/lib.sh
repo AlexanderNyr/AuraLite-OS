@@ -287,7 +287,18 @@ il_run_qemu() {
     # output, so the lib passes `full` through fw_cfg unless a case asks
     # otherwise via IL_SELFTEST (test_selftest_modes.sh and the perf
     # smoke exercise `fast`/`off` deliberately).
+    # Boot-time budget (CI fix 2026-11-07): RESIDUE3 C3 taught the BIOS boot
+    # path to set a VBE 1024x768x32 linear framebuffer, so a BIOS boot mirrors
+    # the kernel log into a pixel console whose scroll copies a 3 MiB shadow.
+    # Under TCG that costs ~3x the whole boot (measured on this tree: 9.5 s at
+    # 26cb7fe -> 33.9 s, same host and QEMU line), which blew every case budget
+    # that waits for the shell prompt.  This harness reads the UART and never
+    # the screen, so it asks the kernel to skip the text mirror (booting is
+    # then 11.0 s); the framebuffer is still initialised and every GUI and
+    # rendering gate still draws.  A case that gates the mirror itself sets
+    # IL_FBCONSOLE=on.
     local selftest="${IL_SELFTEST:-full}"
+    local fbconsole="${IL_FBCONSOLE:-off}"
 
     # RESIDUE2 T5: IL_NETDEV (set by the L2-lab cases) replaces the whole
     # netdev line; unset keeps the historical user/SLIRP NAT (+opts).
@@ -311,6 +322,7 @@ il_run_qemu() {
         -boot order=c
         "${netdev_args[@]}"
         -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
+        -fw_cfg "name=opt/auralite.fbconsole,string=${fbconsole}"
     )
 
     # Stream queued input → QEMU stdin, capture serial output → log.
@@ -347,6 +359,7 @@ il_run_qemu_prompt() {
     local extra=( "$@" )
     local smp="${IL_SMP:-2}"
     local selftest="${IL_SELFTEST:-full}"
+    local fbconsole="${IL_FBCONSOLE:-off}"
     # RESIDUE2 T5: IL_NETDEV (set by the L2-lab cases) replaces the whole
     # netdev line; unset keeps the historical user/SLIRP NAT (+opts).
     local netdev_args=(
@@ -369,6 +382,7 @@ il_run_qemu_prompt() {
         -boot order=c
         "${netdev_args[@]}"
         -fw_cfg "name=opt/auralite.selftest,string=${selftest}"
+        -fw_cfg "name=opt/auralite.fbconsole,string=${fbconsole}"
     )
     local queue rc had_errexit=0
     [[ $- == *e* ]] && had_errexit=1

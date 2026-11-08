@@ -46,6 +46,28 @@
  * because QEMU has no property that removes a device's MSI-X capability. */
 #define MSI_FILE          "opt/auralite.msi"
 
+/* CI FIX (2026-11-07): the graphical console's cost.
+ *
+ * RESIDUE3 C3 / RES-12 taught the BIOS boot path to set a VBE linear
+ * framebuffer, so every BIOS boot now renders kernel output into a
+ * 1024x768x32 pixel console instead of VGA text 80x25.  That is what the
+ * i386 kernel needed (RES-11: no way to reach a framebuffer otherwise),
+ * but it is expensive to EMULATE: a scrolling pixel console copies the
+ * 3 MiB shadow once per line, and under TCG that turned boot-to-shell
+ * from 9.5 s to 33.9 s wall -- measured on this tree, same host, same
+ * QEMU command.  Every integration case that budgets 12-35 s for the
+ * shell then failed on the runner for a reason that has nothing to do
+ * with what it gates (CI run 447: ~25 cases).
+ *
+ * So the pixel console is a knob.  The harness reads the UART, never the
+ * screen, and asks for it off with
+ *     -fw_cfg name=opt/auralite.fbconsole,string=off
+ * while `make run` and real hardware keep the default (graphical).  The
+ * framebuffer itself stays initialised either way: the GUI and every
+ * rendering gate are untouched -- only the text mirror of the kernel log
+ * is skipped. */
+#define FBCONSOLE_FILE    "opt/auralite.fbconsole"
+
 static uint32_t read_be32(void) {
     uint32_t v = 0;
     for (int i = 0; i < 4; i++) {
@@ -180,4 +202,15 @@ void fwcfg_msi_probe(void) {
     }
     /* Anything else leaves the default: a typo must not silently switch a
      * device off the interrupt path it is supposed to use. */
+}
+
+/* Returns 1 when the knob asked for the console to be silenced, 0 otherwise
+ * (absent knob, absent fw_cfg, or any other value).  The caller decides what
+ * "silenced" means; this file only reports what the harness asked for. */
+int fwcfg_fbconsole_off(void) {
+    char val[16];
+    if (!fwcfg_read_opt(FBCONSOLE_FILE, val, (int)sizeof(val) - 1)) {
+        return 0;
+    }
+    return strcmp(val, "off") == 0;
 }

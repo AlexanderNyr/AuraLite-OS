@@ -52,18 +52,25 @@ il_send "exit"
 export IL_NETDEV="-netdev socket,id=net0,mcast=230.10.10.10:4711"
 export IL_SELFTEST=off
 
-il_run_qemu "$LOG" 75
+# 150 s, not 75: the lab now gives each ARP probe a boot-sized budget, so
+# the lab's own runtime is DHCP + 25 + junk blast + 25 ≈ 60 s on top of the
+# guest's boot.  The case ends as soon as the lab has its receipts.
+il_run_qemu "$LOG" 150
 kill "$LAB_PID" 2>/dev/null || true    # the lab usually finishes first
 wait "$LAB_PID" 2>/dev/null || true
 
 # ---- the lab finished its script -------------------------------------------
 il_assert_grep_fixed "$RECEIPT" "DHCP_ACK_SENT" \
     "the L2 lab served DHCP (no SLIRP involved)"
-il_assert_grep_fixed "$RECEIPT" "ARP_REPLY_OK" \
+# Positive form, not the bare tag: "ARP_REPLY_OK" is also a prefix of the
+# "ARP_REPLY_OK TIMEOUT" failure line, which made this assertion pass on a
+# lab that never got an answer (it did exactly that in CI run 447 while the
+# three assertions behind it failed).
+il_assert_grep "$RECEIPT" "^ARP_REPLY_OK [0-9a-f]+$" \
     "idle ARP probe #1 answered from inside the guest (the drain's passive input)"
 il_assert_grep_fixed "$RECEIPT" "JUNK_SENT 300" \
     "the unsolicited blast was delivered (300 frames)"
-il_assert_grep_fixed "$RECEIPT" "ARP_REPLY2_OK" \
+il_assert_grep "$RECEIPT" "^ARP_REPLY2_OK [0-9a-f]+$" \
     "idle ARP probe #2 answered through the tail of the load"
 il_assert_grep_fixed "$RECEIPT" "LAB_DONE ok" "the lab ran to completion"
 

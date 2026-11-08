@@ -30,6 +30,7 @@
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/paddr.h"
 #include "kernel/lib/spinlock.h"
+#include "kernel/lib/atomic_compat.h"   /* SELFHOST: __sync_synchronize */
 #include "kernel/lib/string.h"
 #include "kernel/mm/pmm.h"
 

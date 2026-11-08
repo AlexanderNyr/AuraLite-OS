@@ -2,6 +2,63 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI fix — boot-time budget, the pixel console, and the self-host compiler] 2026-11-07
+
+CI run 447 (`1d02762`) went red on 33 integration cases across eight shards while
+`make iso` and `make test-unit` were green, so the failures were in the gates, not
+the build. They came down to three root causes and one stale assertion, and every
+case named there now passes locally on the same tree.
+
+- **The 1024x768 pixel console was the boot bill** (the cause of ~28 of the 33).
+  RESIDUE3 C3/RES-12 taught the BIOS boot path to set a VBE linear framebuffer, so
+  a BIOS boot mirrors the kernel log into a 1024x768x32 console whose scroll copies
+  the 3 MiB shadow once per line. Measured on one host with one QEMU line:
+  boot-to-shell **9.5 s at `26cb7fe` -> 33.9 s here** (the guest's own clock agrees:
+  387 -> 1822 ticks), and the biggest single term is `tcp_x5_self_test`, where 16
+  connects print ~7 lines each and went from 0.2 s to 11.6 s. Every case that
+  budgets 12-35 s for the prompt then failed on a machine that was healthy. The
+  console is now a knob: `-fw_cfg name=opt/auralite.fbconsole,string=off` makes
+  `kernel.c` call `fb_set_console_enabled(0)` right after `fb_init()`, printing one
+  serial receipt; `tests/integration/lib/lib.sh` passes it by default (override with
+  `IL_FBCONSOLE=on`), `make run` and real hardware keep the graphical console, and
+  the framebuffer itself is untouched — the GUI, the bootsplash and every rendering
+  gate still draw. Boot-to-shell: **11.0 s**, i.e. back inside the budget the suite
+  was written against. Re-verified green: the whole core shard (17), the five posix
+  shell cases, `graphics`, `gui_usb`, `trust_store`, `procfs`, `tmpfs`,
+  `bc_writeback`, `fscheck`, `ahci_matrix`, `ext2`, `fat32_persistence`,
+  `fat32_full`, `fs_stress`, `f2fs`, `btrfs`, `exfat`.
+- **`test_e1000_idle_drain` was measuring the lab's patience, not the drain.**
+  `l2lab.py` gave each ARP probe a 5-second window starting 3 s after the DHCP ACK,
+  which is only enough if the kernel is already idle — the drain runs from the
+  kernel's post-shell idle loop, so the answer arrives when boot reaches the shell.
+  With the guest at 15.7 s to the shell the lab had already written `ARP_REPLY_OK
+  TIMEOUT` 0.4 s before all 16 queued probes were answered in one burst. The probe
+  is now 1 Hz over a boot-sized budget (25 s), which is also gentler on the driver's
+  64-slot software queue. The receipt assertions were tightened at the same time:
+  `ARP_REPLY_OK` is a prefix of `ARP_REPLY_OK TIMEOUT`, so the old fixed-string
+  checks passed on a lab that never got an answer.
+- **The self-host lane could not compile or link the kernel** (three cases:
+  `selfhost_kernel_tcc`, `selfhost_kernel_guest`, `selfhost_closure`).
+  `kernel/arch/x86_64/abi_probe.c` spelled its SSE probe `movaps %0, %%xmm15` with
+  `xmm15` in the clobber list; tcc has no SSE register operands in either place
+  ("unknown register %xmm15" / "invalid clobber register"), which stopped SH5c,
+  SH5d and SH8 at that one line. Behind it sat a second failure: `nvme.c` fences
+  with `__sync_synchronize` and `aspace.c` locks with `__sync_lock_*`, and neither
+  included `kernel/lib/atomic_compat.h`, so the tcc link reported undefined
+  references. Fixes: the compat header now maps `__sync_synchronize`, both files
+  include it, and the probe asks its question per compiler — clang keeps
+  `fxsave+movaps` (which `test_stack_alignment.sh` gates, unchanged), while the tcc
+  build *measures* the entry alignment and prints it, because tcc also ignores
+  `aligned(16)` on a local, so even an unguarded `fxsave` #GP'd on the first boot of
+  the tcc-built kernel. `test_sh5c_kernel_tcc.sh` 13/13, `test_selfhost_kernel_tcc`
+  19/19, `test_selfhost_kernel_guest` 26/26, `test_selfhost_closure` 15/15 (both SH8
+  loops, `FULL LOOP PASS (2/2 clean loops)`).
+- **Two cases were gating on build state they never created.** `test_bt_hci_transport`
+  needs `build/test_bt_transport`, which only `make test-unit` builds; it now builds
+  it on demand and skips loudly if it cannot. `test_lx_lua` now honours the
+  placeholder rule its own header promised: an empty staged payload in
+  `$IL_BUILD/user/lx_lua` is a skip, not an `lxrun` exit 127.
+
 ## [Documentation refresh — CHANGELOG caught up to `da89be4`, stale-comment sweep] 2026-10-23
 
 The file is caught up with the twelve commits since the last record, via git

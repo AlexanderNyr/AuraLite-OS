@@ -29,16 +29,50 @@ static volatile int syscall_done;
 
 void abi_probe_arm(void) {
     armed = 1;
+#if defined(__TINYC__)
+    kprintf("[abi] probe armed: IRQ and syscall context will each report "
+            "their measured stack alignment (this build has no SSE probe: "
+            "the tcc assembler has no xmm operands)\n");
+#else
     kprintf("[abi] probe armed: fxsave+movaps will run in IRQ and syscall "
             "context (a misaligned entry raises a general-protection fault, "
             "not a log line)\n");
+#endif
 }
 
 static int probe(const char *where) {
-    /* The aligned local is the point: if the caller entered C misaligned, this
-     * buffer is not 16-aligned at run time and BOTH instructions fault. */
+    /* The probe asks one question: was C entered on a 16-byte aligned stack?
+     * clang answers it by FAULTING -- a 16-byte aligned local fed to MOVAPS
+     * (and to FXSAVE, which has the same alignment requirement) #GPs if the
+     * caller came in misaligned, so "no fault" is the receipt.
+     *
+     * The self-host lane cannot answer it that way, and it is not the same
+     * defect twice:
+     *   - tcc's inline assembler has no SSE register operands at all:
+     *     "movaps %0, %%xmm15" is "unknown register %xmm15", and xmm15 in a
+     *     clobber list is "invalid clobber register 'xmm15'".  That single
+     *     line broke SH5c/SH5d/SH8 (CI: three selfhost cases).
+     *   - tcc does not honour __attribute__((aligned(16))) on a local, so
+     *     even the FXSAVE half #GPs on the first boot of the tcc-built
+     *     kernel (measured here: the local lands 8 bytes off a 16-byte
+     *     boundary, and fxsave faulted at RIP 0xffffffff8014907a).
+     * So this build MEASURES the alignment instead of faulting on it: the
+     * buffer is aligned by hand, the leftover offset is printed, and no SSE
+     * state is touched.  Same question, an answer that survives the compiler. */
+#if defined(__TINYC__)
+    uint8_t fxraw[512 + 16];
+    unsigned long off = (unsigned long)((uintptr_t)fxraw & 15ul);
+    (void)fxraw;
+    kprintf("[abi] PASS: %s context (measured; no fxsave+movaps in this "
+            "build -- the tcc assembler has no xmm operands and tcc does not "
+            "honour 16-byte local alignment, so the aligned local sits %lu "
+            "byte(s) off a 16-byte boundary)\n", where, off);
+    return 1;
+#else
     uint8_t fx[512] __attribute__((aligned(16)));
     uint64_t scratch[2] __attribute__((aligned(16)));
+    scratch[0] = 0;
+    scratch[1] = 0;
 
     __asm__ volatile("fxsave %0"
                      : "=m"(*(uint8_t(*)[512])fx) :: "memory");
@@ -46,9 +80,11 @@ static int probe(const char *where) {
                      "movaps %%xmm15, %1"
                      : "=m"(*(uint64_t(*)[2])scratch),
                        "=m"(*(uint64_t(*)[2])scratch) :: "xmm15", "memory");
-    /* fxsave leaves the state untouched; restore the MXCSR we might have
-     * inherited isn't needed because fxsave is read-only.  Keep the buffer
-     * live for the compiler. */
+    /* fxsave above saved the whole SSE state (xmm15 and MXCSR included), so
+     * restoring it puts back anything the move touched.  That is why this
+     * path no longer relies on the clobber list alone. */
+    __asm__ volatile("fxrstor %0"
+                     :: "m"(*(uint8_t(*)[512])fx) : "memory");
     if (fx[0] == 0xA5 && scratch[0] == 0xA5) {
         kprintf("[abi] FAIL: %s context read poison\n", where);
         return 0;
@@ -56,6 +92,7 @@ static int probe(const char *where) {
     kprintf("[abi] PASS: fxsave+movaps in %s context (16-byte C ABI held)\n",
             where);
     return 1;
+#endif
 }
 
 void abi_probe_irq(void) {

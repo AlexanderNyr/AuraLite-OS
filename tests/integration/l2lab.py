@@ -289,15 +289,32 @@ def run_udpblock(sock, send, log, guest_mac):
 
 def run_idledrain(sock, send, log, guest_mac):
     # ---- ARP probe while the guest is idle (no syscall owns the NIC) --
-    def arp_probe(tag):
-        send(arp_request(PROBE_MAC, PROBE_IP, GUEST_IP))
-        end = time.time() + 5
+    def arp_probe(tag, budget_s=25.0):
+        # The guest answers an idle ARP from the kernel's idle loop
+        # (netdev_passive_drain), which starts when boot reaches the
+        # shell -- NOT right after DHCP.  The old 5-second window assumed
+        # the two were the same moment and only held because the boot was
+        # fast: at 26cb7fe the shell came up 9.5 s in, so a probe sent
+        # DHCP+3 s landed on a draining kernel.  Anything that lengthens
+        # the boot past that window made the gate report TIMEOUT with the
+        # guest healthy and its reply already on the wire (CI run 447,
+        # and reproduced here at 15.7 s to the shell: all 16 queued probes
+        # were answered in one burst 0.4 s after the lab gave up).
+        # So: probe at 1 Hz for a boot-sized budget instead of 5 probes a
+        # second for 5 seconds.  Fewer probes also fit the driver's
+        # 64-slot software queue, so the drain is measured, not flooded.
+        end = time.time() + budget_s
+        next_send = 0.0
         while time.time() < end:
+            if time.time() >= next_send:
+                send(arp_request(PROBE_MAC, PROBE_IP, GUEST_IP))
+                next_send = time.time() + 1.0
             try:
                 frame, _ = sock.recvfrom(2048)
             except socket.timeout:
-                send(arp_request(PROBE_MAC, PROBE_IP, GUEST_IP))
                 continue
+            # Frames this script multicast loop back to us; the filter is
+            # on the SOURCE address, which is what "we sent it" means.
             if frame[6:12] in (SERVER_MAC, PROBE_MAC):
                 continue
             reply = parse_arp_reply(frame)
