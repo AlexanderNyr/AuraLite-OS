@@ -55,8 +55,13 @@ ASM_COUNT=${#ASM_SRCS[@]}
 # "[selfhost] SH8 kernel source set drifted: 149 C, 9 asm (expected 137 / 9)",
 # make Error 2.  Third of the three defects the first post-merge CI run
 # reported; all three were green locally for a reason.
-if [ "$C_COUNT" -ne 149 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 149 / 9)" >&2
+#
+# 149 -> 150 (OFFICE_PLAN OF0): kernel/fs/documents.c joins the closure -- the
+# /documents mount point's life cycle.  Same ratchet, same reason: this pin
+# exists so the in-guest build cannot silently compile fewer files than the
+# tree has.
+if [ "$C_COUNT" -ne 150 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 150 / 9)" >&2
     exit 2
 fi
 

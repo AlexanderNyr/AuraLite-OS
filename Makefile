@@ -938,6 +938,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gusb.elf \
              $(USER_BUILD)/gclip.elf \
              $(USER_BUILD)/gbrowser.elf \
+             $(USER_BUILD)/aoffice.elf \
              $(USER_BUILD)/lxrun.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
@@ -1870,6 +1871,53 @@ $(USER_BUILD)/gusb.o: userspace/apps/gui-usb/gusb.c lib/libauragui/include/aurag
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gclip.o: userspace/apps/gui-clip/gclip.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+# OFFICE_PLAN OF0: the office suite's start centre.  libaodoc is a separate
+# object because it is the shared core the Writer/Sheet/Slide binaries will
+# link in OF2..OF6, and because tests/unit/test_aodoc_canvas.c grades that
+# same object on the host.
+$(USER_BUILD)/aodoc.o: userspace/office/libaodoc/aodoc.c \
+                       userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+# OFFICE_PLAN OF1: libaoglyph is the text layer -- BDF/PSF2 loaders, coverage,
+# style synthesis, greedy wrap.  Pure C over libaodoc's arena, so
+# tests/unit/test_ao_glyph.c compiles this same object on the host.
+$(USER_BUILD)/aoglyph.o: userspace/office/libaoglyph/aoglyph.c \
+                         userspace/office/libaoglyph/aoglyph.h \
+                         userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+# OF2: the Writer's document core.  Same objects the host unit tests compile,
+# so a bug in the model is caught on the build machine before a guest sees it.
+$(USER_BUILD)/aomodel.o: userspace/office/libaodoc/aomodel.c \
+                         userspace/office/libaodoc/aomodel.h \
+                         userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aoundo.o: userspace/office/libaodoc/aoundo.c \
+                        userspace/office/libaodoc/aoundo.h \
+                        userspace/office/libaodoc/aomodel.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aoio.o: userspace/office/libaodoc/aoio.c \
+                      userspace/office/libaodoc/aoio.h \
+                      userspace/office/libaodoc/aomodel.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aoffice.o: userspace/office/office/aoffice.c \
+                         userspace/office/libaodoc/aodoc.h \
+                         userspace/office/libaodoc/aomodel.h \
+                         userspace/office/libaodoc/aoundo.h \
+                         userspace/office/libaodoc/aoio.h \
+                         userspace/office/libaoglyph/aoglyph.h \
+                         lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -I userspace/office/libaoglyph -c $< -o $@
+$(USER_BUILD)/aoffice.elf: $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
+                           $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aomodel.o \
+                           $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
+                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
+	      $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aomodel.o \
+	      $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	@echo "[link] $@"
+
 $(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
                          userspace/apps/gbrowser/wv_html.h userspace/apps/gbrowser/wv_dom.h \
                          userspace/apps/gbrowser/wv_image.h userspace/apps/gbrowser/wv_paint.h \
@@ -2333,6 +2381,12 @@ $(SH6E_STAMP_ELF): $(USER_BUILD)/sh6e_stamp.o $(USER_COMMON) lib/libc/user.ld
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/sh6e_stamp.o $(USER_COMMON_LNK) -o $@
 	@echo "[link] $(SH6E_STAMP_ELF)"
 
+# OFFICE_PLAN OF1: the bitmap faces are data the initrd ships, so the
+# initrd rule depends on them by name.  Without this, editing a .bdf
+# rebuilt nothing and the image kept the previous staging of it.
+OFFICE_FONTS := userspace/office/fonts/ao_sans_11.bdf \
+                userspace/office/fonts/ao_mono_16.bdf
+
 INITRD_DIR := $(USER_BUILD)/initrd_root
 # ---- The runtime filesystem layout (FSLAYOUT_PLAN phase F3) ----
 #
@@ -2356,7 +2410,8 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http weather trustinfo clock browser w32run dlltest filesize gcalc gedit gfiles gterm \
-                gsysmon gabout gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser ota
+                gsysmon gabout gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser ota \
+                aoffice
 INITRD_DEMOS := guess snake glcube glshade glgears glrunner
 INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
@@ -3428,11 +3483,12 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SELFHOST_KERNEL_STAGE) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
-                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32SCALE_EXES) $(W32C8_FC_EXE) $(W32C8_SO_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
+                         $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32SCALE_EXES) $(W32C8_FC_EXE) $(W32C8_SO_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(OFFICE_FONTS) $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
 	@rm -rf $(INITRD_DIR)
 	@rm -f $@
 	@mkdir -p $(INITRD_DIR)/bin $(INITRD_DIR)/apps $(INITRD_DIR)/demos \
-	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc
+	          $(INITRD_DIR)/tests $(INITRD_DIR)/pkg $(INITRD_DIR)/etc \
+	          $(INITRD_DIR)/lib/fonts
 # Binaries are stripped into the image: the BIOS boot path reserves a 32 MiB
 # slot for initrd.tar (see mkisoimage_dual.sh) and the full userland with
 # symbol tables -- plus the self-host closure when staged -- does not fit it.
@@ -3553,6 +3609,12 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	else \
 	    echo "[selfhost] guest tcc absent -- run 'make selfhost-deps selfhost-tcc' to include it"; \
 	fi
+# OFFICE_PLAN OF1: the two bitmap faces the suite sets text in.  They are DATA,
+# not binaries: the office applications load them at runtime through libaoglyph,
+# which is the point -- a user can drop a third BDF into /lib/fonts and see it
+# without rebuilding anything.
+	@cp userspace/office/fonts/ao_sans_11.bdf userspace/office/fonts/ao_mono_16.bdf \
+	      $(INITRD_DIR)/lib/fonts/
 # SELFHOST SH6a: the shell's own test scripts, staged under /tests.
 # Unconditional, unlike the guest tcc above: they need no fetched dependency,
 # so the SH6a gate runs on a plain `make iso` and is not skipped on a tree
@@ -3830,6 +3892,10 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_readline \
                 $(BUILD_DIR)/test_mathulp \
                 $(BUILD_DIR)/test_progpath \
+                $(BUILD_DIR)/test_taskbar_layout \
+                $(BUILD_DIR)/test_aodoc_canvas \
+                $(BUILD_DIR)/test_ao_utf8 $(BUILD_DIR)/test_ao_glyph \
+                $(BUILD_DIR)/test_ao_doc $(BUILD_DIR)/test_ao_undo \
                 $(BUILD_DIR)/test_apkg \
                 $(BUILD_DIR)/test_printf_fmt \
                 $(BUILD_DIR)/test_lx_translate \
@@ -4483,6 +4549,14 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@echo "[unit] running tools/check_build_hygiene.py --check"
 	@python3 tools/check_build_hygiene.py --check || exit 1
 	@python3 tools/check_build_hygiene.py --selftest || exit 1
+# OFFICE_PLAN OF0: the shell around the suite.  Every menu entry must name a
+# binary the image ships (a stale /apps path is a row that silently does
+# nothing), every entry must have a group, and the taskbar renderer and hit
+# test must both go through kernel/gui/taskbar_layout.h.  The self-test injects
+# each of those defects -- including the exact shape of the 2026-11-08 bug.
+	@echo "[unit] running tools/check_start_menu.py --check"
+	@python3 tools/check_start_menu.py --check || exit 1
+	@python3 tools/check_start_menu.py --selftest || exit 1
 # W32-8: docs/win32.md's function table is generated from the export table,
 # so it cannot drift.  Same idea as sdk-check: a hand-maintained API list is
 # wrong the moment somebody adds an export, and nobody notices.
@@ -5504,6 +5578,72 @@ $(BUILD_DIR)/test_execpolicy: tests/unit/test_execpolicy.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_execpolicy.c kernel/fs/execpolicy.c -o $@
+
+# OFFICE_PLAN OF0: the taskbar strip geometry.  The header is pure arithmetic
+# with no kernel dependencies, which is the point -- the renderer, the hit test
+# and this test all run the same function, so a button cannot be drawn in one
+# place and clickable in another (the 2026-11-08 "10 windows, 6 buttons" bug).
+$(BUILD_DIR)/test_taskbar_layout: tests/unit/test_taskbar_layout.c \
+                                  kernel/gui/taskbar_layout.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# OF0: libaodoc's arena and dirty-rect canvas -- decision D5 in code.  The
+# shipping source is compiled into the test, so the rules that keep a keystroke
+# from repainting a window are graded, not assumed.
+$(BUILD_DIR)/test_aodoc_canvas: tests/unit/test_aodoc_canvas.c \
+                                userspace/office/libaodoc/aodoc.c \
+                                userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_aodoc_canvas.c userspace/office/libaodoc/aodoc.c -o $@
+
+# OF2: the document model and its undo history.  Both compile the shipping
+# source, and the model's gate is a 10 000-operation fuzz that re-checks every
+# structural invariant after every operation -- the only way to catch a model
+# bug that only shows up three edits later.
+$(BUILD_DIR)/test_ao_doc: tests/unit/test_ao_doc.c \
+                          userspace/office/libaodoc/aomodel.c \
+                          userspace/office/libaodoc/aomodel.h \
+                          userspace/office/libaodoc/aoio.c \
+                          userspace/office/libaodoc/aoio.h \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_doc.c userspace/office/libaodoc/aomodel.c \
+	          userspace/office/libaodoc/aoio.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
+
+$(BUILD_DIR)/test_ao_undo: tests/unit/test_ao_undo.c \
+                           userspace/office/libaodoc/aomodel.c \
+                           userspace/office/libaodoc/aoundo.c \
+                           userspace/office/libaodoc/aoundo.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_undo.c userspace/office/libaodoc/aomodel.c \
+	          userspace/office/libaodoc/aoundo.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
+
+# OF1: the UTF-8 layer and the text layer.  Both compile the shipping source,
+# so the decoder's rejection classes and the font loader's error paths are
+# graded on the host before a guest ever boots them.
+$(BUILD_DIR)/test_ao_utf8: tests/unit/test_ao_utf8.c \
+                          userspace/office/libaodoc/aodoc.c \
+                          userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I userspace/office/libaodoc \
+	          $< userspace/office/libaodoc/aodoc.c -o $@
+
+$(BUILD_DIR)/test_ao_glyph: tests/unit/test_ao_glyph.c \
+                           userspace/office/libaoglyph/aoglyph.c \
+                           userspace/office/libaoglyph/aoglyph.h \
+                           userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 \
+	          -I userspace/office/libaoglyph -I userspace/office/libaodoc \
+	          $< userspace/office/libaoglyph/aoglyph.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
 
 # RESIDUE2 T4: the lexical canonicaliser under the VFS resolver rework and
 # the installation policy — same rule, the shipping source is the test.

@@ -18,6 +18,7 @@ void tmpfs_self_test(void);
 void *tmpfs_volume_tmp(void);
 void *tmpfs_volume_opt(void);
 void *tmpfs_volume_shm(void);
+void *tmpfs_volume_doc(void);   /* OF0: /documents */
 
 extern const struct vfs_ops tmpfs_ops;
 extern const struct vfs_ops optfs_ops;

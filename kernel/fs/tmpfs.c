@@ -62,6 +62,7 @@ struct tmpfs_volume {
 static struct tmpfs_volume tmp_vol;
 static struct tmpfs_volume opt_vol;
 static struct tmpfs_volume shm_vol;   /* Q12: /dev/shm (POSIX shared memory) */
+static struct tmpfs_volume doc_vol;   /* OF0: /documents (user documents) */
 
 /* The VFS passes fs_data straight through from vfs_mount(); a NULL means an
  * older caller that predates volumes, which can only mean /tmp. */
@@ -142,6 +143,15 @@ void tmpfs_init(void) {
     vol_init(&tmp_vol, "/tmp", &tmpfs_ops);
     vol_init(&opt_vol, "/opt", &optfs_ops);
     vol_init(&shm_vol, "/dev/shm", &shmfs_ops);
+    /* OF0 (OFFICE_PLAN.md): /documents.  It is its own volume rather than a
+     * directory inside /tmp so that scratch traffic cannot delete the user's
+     * documents, and it is a MOUNT POINT rather than a symlink into /tmp
+     * because this VFS follows a symlink when resolving a path but not when
+     * CREATING one: open("/documents/x", O_CREAT) fell through to the
+     * read-only initrd at "/" and returned EROFS.  A mount point is resolved
+     * by the mount table for both, so create works.  Mode 0755: documents are
+     * the user's, not world-writable scratch. */
+    vol_init(&doc_vol, "/documents", &tmpfs_ops);
     /* RESIDUE2 T1: /tmp is the world-writable scratch directory POSIX (and
      * every Unix) requires: mode 01777, so ANY process can create files
      * there, and the sticky bit documents that only the owner unlinks its
@@ -156,12 +166,13 @@ void tmpfs_init(void) {
      * /opt (apm's install target) and /dev/shm stay root-owned 0755. */
     tmp_vol.root.mode = 01777;
     kprintf("[tmpfs] writable in-memory filesystem ready "
-            "(3 volumes, %d files max each)\n", TMPFS_MAX_FILES);
+            "(4 volumes, %d files max each)\n", TMPFS_MAX_FILES);
 }
 
 void *tmpfs_volume_tmp(void) { return &tmp_vol; }
 void *tmpfs_volume_opt(void) { return &opt_vol; }
 void *tmpfs_volume_shm(void) { return &shm_vol; }
+void *tmpfs_volume_doc(void) { return &doc_vol; }   /* OF0: /documents */
 
 static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {

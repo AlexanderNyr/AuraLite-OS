@@ -149,6 +149,15 @@ typedef struct {
     uint16_t scancode;  /* raw scan code (set 1; E0/E1/USB encoded in high bits) */
     uint8_t  mods;      /* KB_MOD_* bitmask at time of event */
     uint8_t  pressed;   /* 1 = key down, 0 = key release */
+    /* OFFICE_PLAN OF1: the Unicode codepoint this key produced, or 0.
+     *
+     * `key` above stays exactly what it always was — ASCII for the layouts
+     * that fit in a byte, so no existing GUI application changes behaviour.
+     * But «П» is U+041F and cannot be a `key`, so the codepoint travels beside
+     * it and reaches the focused window in ag_event_t.data.  Appended at the
+     * end of the struct on purpose: the fields before it keep their offsets. */
+    uint16_t cp;
+    uint16_t _pad;
 } kb_event_t;
 
 void keyboard_init(void);

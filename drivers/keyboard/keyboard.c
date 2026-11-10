@@ -86,7 +86,13 @@ static void kb_enqueue(char c) {
     tty_input(tty_console(), (unsigned char)c);
 }
 
-static void evt_enqueue(uint32_t key, uint16_t sc, uint8_t pressed) {
+/* OFF1: the codepoint for a set-1 scan code under the active layout.  Extended
+ * (E0/E1) keys carry none: an arrow has no character. */
+static uint16_t cp_for_sc(uint16_t sc) {
+    return (sc < 0x80) ? (uint16_t)keymap_unicode(active_keymap, (uint8_t)sc, mods) : 0;
+}
+
+static void evt_enqueue_cp(uint32_t key, uint16_t sc, uint8_t pressed, uint16_t cp) {
     uint32_t next = (evt_head + 1) % KB_EVT_RING;
     if (next == evt_tail) {
         kb_event_drops++;
@@ -96,9 +102,18 @@ static void evt_enqueue(uint32_t key, uint16_t sc, uint8_t pressed) {
     kb_events[evt_head].scancode = sc;
     kb_events[evt_head].mods     = mods;
     kb_events[evt_head].pressed  = pressed;
+    /* OF1: a plain (non-E0/E1) scan code has a Unicode meaning under the active
+     * layout; extended keys carry none, and control keys answer 0 from
+     * keymap_unicode() themselves. */
+    kb_events[evt_head].cp       = cp;
+    kb_events[evt_head]._pad     = 0;
     evt_head = next;
     /* OPT_PLAN.md O4: every queued key event wakes the compositor. */
     gui_poke();
+}
+
+static void evt_enqueue(uint32_t key, uint16_t sc, uint8_t pressed) {
+    evt_enqueue_cp(key, sc, pressed, cp_for_sc(sc));
 }
 
 static uint8_t mod_bit_for_key(uint32_t key) {
@@ -591,6 +606,47 @@ static char usb_usage_ascii(uint8_t u) {
     }
 }
 
+/* OF1: a USB HID boot report carries USAGE ids, not set-1 scan codes, and the
+ * event used to be queued with the usage packed into the scan-code field.  The
+ * layout layer could therefore never see a USB key: every GUI application
+ * received cp = 0 and a Latin byte whatever the layout said, which is why the
+ * Russian layout typed «ghbdtn» instead of «привет».  This is the standard
+ * usage -> set-1 table for the keys that produce a character; the rest answer 0
+ * and carry no codepoint.  (Keypad usages are deliberately absent: they are
+ * handled by usb_usage_ascii's NumLock path and have no layout role.) */
+static uint8_t usb_usage_sc1(uint8_t u) {
+    static const uint8_t letters[26] = {
+        0x1E, 0x30, 0x2E, 0x20, 0x12, 0x21, 0x22, 0x23, 0x17, 0x24, 0x25, 0x26,
+        0x32, 0x31, 0x18, 0x19, 0x10, 0x13, 0x1F, 0x14, 0x16, 0x2F, 0x11, 0x2D,
+        0x15, 0x2C
+    };
+    static const uint8_t digits[10] = {
+        0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B
+    };
+    if (u >= 0x04 && u <= 0x1D) return letters[u - 0x04];
+    if (u >= 0x1E && u <= 0x26) return digits[u - 0x1E];
+    if (u == 0x27)              return 0x0B;   /* 0 */
+    switch (u) {
+        case 0x28: return 0x1C;   /* Enter */
+        case 0x29: return 0x01;   /* Esc */
+        case 0x2A: return 0x0E;   /* Backspace */
+        case 0x2B: return 0x0F;   /* Tab */
+        case 0x2C: return 0x39;   /* Space */
+        case 0x2D: return 0x0C;   /* - */
+        case 0x2E: return 0x0D;   /* = */
+        case 0x2F: return 0x1A;   /* [ */
+        case 0x30: return 0x1B;   /* ] */
+        case 0x31: return 0x2B;   /* backslash */
+        case 0x33: return 0x27;   /* ; */
+        case 0x34: return 0x28;   /* ' */
+        case 0x35: return 0x29;   /* ` */
+        case 0x36: return 0x33;   /* , */
+        case 0x37: return 0x34;   /* . */
+        case 0x38: return 0x35;   /* / */
+        default:   return 0;
+    }
+}
+
 void keyboard_inject_usb_modifier(uint8_t usb_mod_bit, uint8_t pressed,
                                   uint8_t usb_mods) {
     apply_usb_mods(usb_mods);
@@ -611,7 +667,11 @@ void keyboard_inject_usb_key(uint8_t usage, uint8_t pressed, uint8_t usb_mods) {
     char c = usb_usage_ascii(usage);
     if (c) {
         if (pressed) kb_enqueue(c);
-        evt_enqueue((uint32_t)(uint8_t)c, SC_USB_KEY(usage), pressed ? 1 : 0);
+        /* The codepoint comes from the LAYOUT, addressed by the set-1 scan code
+         * of the same physical key; 'c' is only the console fallback. */
+        uint8_t sc1 = usb_usage_sc1(usage);
+        evt_enqueue_cp((uint32_t)(uint8_t)c, SC_USB_KEY(usage), pressed ? 1 : 0,
+                       cp_for_sc(sc1));
         return;
     }
 

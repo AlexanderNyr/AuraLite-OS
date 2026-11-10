@@ -161,7 +161,100 @@ static void test_registry(void) {
             CK(!same);
         }
     }
-    CK(n == 2);   /* exactly us + de ship */
+    CK(n == 3);   /* exactly us + de + ru ship (ru is OFFICE_PLAN OF1) */
+}
+
+/* ---- OFFICE_PLAN OF1: the Russian layout and the Unicode layer ----------
+ *
+ * The gate sentence: "ru produces йцукен, ЙЦУКЕН, punctuation, and leaves
+ * control bytes untouched".  Every one of those is a case below, checked
+ * through keymap_unicode(), which is the function a GUI application reads.
+ */
+static void test_ru_letters(void) {
+    /* ЙЦУКЕН: the six keys of the top letter row, left to right. */
+    static const uint32_t want[] = { 0x0439, 0x0446, 0x0443, 0x043A, 0x0435, 0x043D };
+    int ok = 1;
+    for (int i = 0; i < 6; i++)
+        if (keymap_unicode(&keymap_ru, (uint8_t)(0x10 + i), 0) != want[i]) ok = 0;
+    CK(ok);   /* unshifted йцукен */
+
+    ok = 1;
+    for (int i = 0; i < 6; i++)
+        if (keymap_unicode(&keymap_ru, (uint8_t)(0x10 + i), KB_MOD_SHIFT) !=
+            want[i] - 0x20) ok = 0;
+    CK(ok);   /* Shift gives ЙЦУКЕН */
+
+    /* ФЫВА on the home row, ЯЧС on the bottom row: what a Russian user's hands
+     * expect, not a transliteration of QWERTY. */
+    CK(keymap_unicode(&keymap_ru, 0x1E, 0) == 0x0444);   /* ф */
+    CK(keymap_unicode(&keymap_ru, 0x1F, 0) == 0x044B);   /* ы */
+    CK(keymap_unicode(&keymap_ru, 0x20, 0) == 0x0432);   /* в */
+    CK(keymap_unicode(&keymap_ru, 0x21, 0) == 0x0430);   /* а */
+    CK(keymap_unicode(&keymap_ru, 0x2C, 0) == 0x044F);   /* я */
+    CK(keymap_unicode(&keymap_ru, 0x2D, 0) == 0x0447);   /* ч */
+    CK(keymap_unicode(&keymap_ru, 0x2E, 0) == 0x0441);   /* с */
+
+    /* ё lives where it lives on a real keyboard: left of 1. */
+    CK(keymap_unicode(&keymap_ru, 0x29, 0) == 0x0451);
+    CK(keymap_unicode(&keymap_ru, 0x29, KB_MOD_SHIFT) == 0x0401);
+
+    /* CapsLock is a letter lock and it XORs with Shift, exactly as the ASCII
+     * rule has always done -- including for Ё, the one letter outside the
+     * straight -0x20 case mapping. */
+    CK(keymap_unicode(&keymap_ru, 0x10, KB_MOD_CAPS) == 0x0419);
+    CK(keymap_unicode(&keymap_ru, 0x10, KB_MOD_CAPS | KB_MOD_SHIFT) == 0x0439);
+    CK(keymap_unicode(&keymap_ru, 0x29, KB_MOD_CAPS) == 0x0401);
+    /* ... and it must not touch punctuation. */
+    CK(keymap_unicode(&keymap_ru, 0x35, KB_MOD_CAPS) == '.');
+}
+
+static void test_ru_punctuation(void) {
+    CK(keymap_unicode(&keymap_ru, 0x35, 0) == '.');          /* bottom right */
+    CK(keymap_unicode(&keymap_ru, 0x35, KB_MOD_SHIFT) == ',');
+    CK(keymap_unicode(&keymap_ru, 0x04, KB_MOD_SHIFT) == 0x2116);  /* No. */
+    CK(keymap_unicode(&keymap_ru, 0x05, KB_MOD_SHIFT) == ';');
+    CK(keymap_unicode(&keymap_ru, 0x08, KB_MOD_SHIFT) == '?');
+    CK(keymap_unicode(&keymap_ru, 0x0C, 0) == '-');
+    CK(keymap_unicode(&keymap_ru, 0x0D, KB_MOD_SHIFT) == '+');
+    CK(keymap_unicode(&keymap_ru, 0x39, 0) == ' ');          /* space */
+}
+
+static void test_ru_control_bytes(void) {
+    /* Control keys keep the bytes every layout has always produced.  An
+     * application that reads keymap_lookup() (the console, the shell) must see
+     * no change at all when the layout is ru. */
+    CK(keymap_lookup(&keymap_ru, 0x0E, 0) == '\b');
+    CK(keymap_lookup(&keymap_ru, 0x0F, 0) == '\t');
+    CK(keymap_lookup(&keymap_ru, 0x1C, 0) == '\n');
+    CK(keymap_lookup(&keymap_ru, 0x01, 0) == 0x1B);
+    CK(keymap_unicode(&keymap_ru, 0x1C, 0) == 0x0A);
+    /* A Cyrillic letter has NO console byte: the VGA font cannot draw it, and
+     * emitting a wrong glyph would be worse than emitting nothing. */
+    CK(keymap_lookup(&keymap_ru, 0x10, 0) == 0);
+    CK(keymap_lookup(&keymap_ru, 0x2C, 0) == 0);
+    /* ASCII keys still work in the console under ru. */
+    CK(keymap_lookup(&keymap_ru, 0x02, 0) == '1');
+    CK(keymap_lookup(&keymap_ru, 0x35, 0) == '.');
+}
+
+static void test_unicode_layer(void) {
+    /* us/de carry no tables of their own: keymap_unicode derives them from the
+     * console bytes through CP437, so there is one authority per layout. */
+    CK(keymap_us.ulo == 0 && keymap_de.ulo == 0);
+    CK(keymap_unicode(&keymap_us, 0x10, 0) == 'q');
+    CK(keymap_unicode(&keymap_us, 0x10, KB_MOD_SHIFT) == 'Q');
+    CK(keymap_unicode(&keymap_us, 0x04, KB_MOD_SHIFT) == '#');   /* Shift+3 */
+    /* The German umlauts arrive as codepoints, not as CP437 bytes. */
+    CK(keymap_unicode(&keymap_de, 0x27, 0) == 0x00F6);           /* ö */
+    CK(keymap_unicode(&keymap_de, 0x10, KB_MOD_ALTGR) == '@');   /* AltGr+Q */
+
+    /* CP437 <-> Unicode, spot-checked where it matters: ASCII identity, an
+     * umlaut, a box-drawing character, the no-break space. */
+    CK(cp437_to_unicode('A') == 'A');
+    CK(cp437_to_unicode(0x84) == 0x00E4);    /* ä */
+    CK(cp437_to_unicode(0xC4) == 0x2500);    /* box drawing */
+    CK(cp437_to_unicode(0xFF) == 0x00A0);    /* no-break space */
+    CK(cp437_to_unicode(0xE1) == 0x00DF);    /* ß */
 }
 
 /* The modifier bits the keyboard driver feeds keymap_lookup() must keep
@@ -179,6 +272,10 @@ int main(void) {
     test_lookup_semantics();
     test_registry();
     test_mod_bits();
+    test_ru_letters();
+    test_ru_punctuation();
+    test_ru_control_bytes();
+    test_unicode_layer();
     if (failures) {
         printf("test_keymap: %d FAILURE(S)\n", failures);
         return 1;

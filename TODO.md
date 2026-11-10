@@ -779,6 +779,97 @@ build when a box and the plan disagree.
 
 ## Future Enhancements
 
+### Office suite (OFFICE_PLAN.md — OF0 done, OF1–OF9 planned)
+
+The plan is written against measured facts, and its first phase is not document
+code: two of the four missing pieces are text and packaging, not editing.
+
+- [x] **Text foundation before any document code** (OF1, `patches/OFFICE_OF1_text.patch`):
+      two BDF faces (`ao_sans_11` 173 glyphs proportional, `ao_mono_16` 173
+      glyphs monospace, both with 64/64 Cyrillic and the typographic set)
+      rasterised by `userspace/office/libaoglyph/` with regular/bold/italic
+      synthesis; `ao_utf8_*` in `libaodoc`; a third layout, Russian ЙЦУКЕН, with
+      `keymap_unicode()` as the one authority, and the codepoint carried to
+      every window in `gui_event_t.data`. Gates: `test_ao_glyph` (62 checks),
+      `test_ao_utf8` (53), `test_keymap` (133), `aoffice --font-test`
+      (`AOFFICE FONT: PASS (2 face(s), 0 failure(s))`, per-glyph receipts) and
+      `tests/integration/cases/test_office_font.sh` in the `gui` shard. Live:
+      the specimen strip draws «Привет, мир — 2026» in four styles and two
+      faces, and `kbd ru` + typing on a QWERTY keyboard produced «привет» on
+      screen. Two real defects surfaced here and are fixed: BDF rows were
+      left-aligned instead of MSB-aligned (blank comma, period and dash for
+      every glyph narrower than 8 px), and the USB HID path queued usage ids
+      where the layout expected set-1 scan codes, so every window received
+      `cp = 0` whatever the layout said.
+- [x] **Dirty-rect-only rendering with a measured budget** (OF0): a full 800×600
+      blit costs 46–48 ms in-guest under TCG (live receipt
+      `[gbrowser] blit 800x600: 48030 us/frame`; `docs/webview.md` §3 records
+      7.6 ms), so a typed character repaints a caret, not a window — gated as a
+      RATIO (`aoffice --bench`: caret < 5 %, one line < 20 % of a full
+      repaint), because the absolute figure moves 4× between boots.
+- **ZIP + XML before OOXML** (OF7, planned): inflate exists (`wv_inflate.c`, RFC
+      1951/1950, no heap), but there is **no ZIP container anywhere** and no
+      XML writer; OOXML export is legal with store-only (method 0) entries, so
+      no compressor is needed.
+- [x] **The shell around the apps, fixed first** (OF0a, `patches/OFFICE_OF0_shell.patch`):
+      the taskbar no longer drops windows — shrink-to-fit 130→44 px then a
+      paging `»` list, one implementation of the geometry
+      (`kernel/gui/taskbar_layout.h`) shared by the renderer and the hit test,
+      gated by `tests/unit/test_taskbar_layout.c` and reproduced live at 18
+      windows; the Start menu is grouped (Applications / Office / System) with
+      a height derived from its row list, which the hit test walks, gated by
+      `tools/check_start_menu.py` (+ `--selftest`).
+- **`/documents` that actually survives a reboot** (known limitation, `docs/office.md` §6): it exists and is
+      writable (own tmpfs volume, `kernel/fs/documents.c`, boot receipt and
+      write/read/unlink probe), but durability is not achieved. diskfs at
+      `/disk` is flat and has no `mkdir`; the writable directory filesystems
+      (`/fat`, `/ext4`, …) only mount when their device is present. A symlink
+      `/documents → /disk/documents` resolves but cannot be written *through*:
+      this VFS follows symlinks when resolving a path and not when creating
+      one, so `open("/documents/x", O_CREAT)` fell through to the read-only
+      initrd and returned `EROFS`. Unblock either by teaching the create path
+      to follow symlinks (VFS change, needs its own gate) or by giving the
+      office file dialog a per-boot path from `documents_backing()`.
+- [x] **The office tree and its first program** (OF0): `userspace/office/`
+      now holds `libaodoc/` (arena, document handle, dirty-rect canvas) and
+      `office/aoffice.c` — the start centre at OF0's floor: ruler, margin box,
+      caret, typing, and a status strip. Gate: `tests/unit/test_aodoc_canvas.c`
+      (host, 59 checks), `aoffice --selftest` (18 checks in-guest) and
+      `aoffice --bench` (the budget), all driven by the new
+      `tests/integration/cases/test_office_shell.sh` in the `gui` shard.
+      Live: Start ▸ Office ▸ Office opens it; a keystroke changed 0.62 % of the
+      window in two bands (one 16-px line and the status strip), caret repaint
+      dirties 56 px of 281 600.
+- [x] **The font layer** (OF1): `userspace/office/libaoglyph/` loads BDF and
+      PSF2 faces into a caller-owned arena, decodes one glyph at a time, and
+      synthesises bold (1 px right smear) and italic (`dy/4` shear) — 62 host
+      checks, `-Werror` clean.
+- [x] **The Writer's document core** (OF2, partial): `libaodoc/aomodel.c`
+      (paragraphs of runs over one byte pool, 107 host checks with a
+      10 000-operation fuzz), `libaodoc/aoundo.c` (snapshot history with
+      coalescing and a byte budget, 74 checks), `libaodoc/aoio.c` (the
+      `<aodoc version="1">` XML format, save→load→save byte identical) and the
+      Writer on top of them: Ctrl+A/B/I/U/Z/Y/S/O/F/H, Shift+arrows, Home/End,
+      PageUp/PageDown, run-by-run rendering with a selection bar, and
+      `run aoffice --writer-test` as the in-guest gate. The shared open/save
+      dialog, cut/copy/paste, click-to-place and the live 20 cps VNC pass are
+      still open, and the plan says so.
+- **Sheet, Slide and the start centre** (OF3–OF6, OF9, planned): the three
+      applications, the ZIP/XML layer they export through (OF7) and the
+      OOXML subset (OF8). The Office group in the Start menu and the Office
+      desktop icon already exist and point at the Writer.
+- [x] Explicit non-goals, stated up front like `WEBVIEW_PLAN.md`'s "no
+      JavaScript" (`docs/office.md` §1): no macros/scripting, no SQL/`Base` app, no print spooler
+      ("Print" = PDF export via an embedded Type3 bitmap font), no
+      `.doc/.xls/.ppt`, no OOXML fidelity beyond the documented subset.
+- [x] The two display-path defects this plan would have collided with were
+      found and fixed live on 2026-11-08: a drag into the snap zone wedged the
+      GUI (`gfx_draw_line` infinite loop on wrapped coordinates), and the
+      compositor never woke for an app's own invalidation (so any animated or
+      typing-driven repaint waited for an unrelated IRQ). See
+      `patches/VNC_LIVE_FIXES_2026-11-08.patch` and
+      `VNC_LIVE_TEST_2026-11-08.md`.
+
 ### OTA self-update (OTA_PLAN.md — O0–O5 complete)
 
 - [x] Partition-aware boot volume: GPT/MBR-aware FAT32 mount, no formatter may touch a partitioned disk (fat32/diskfs/AHCI self-test all gated; `test_ota_bootvol.sh`).

@@ -156,6 +156,14 @@ count that drifts from the baseline fails CI until the ledger and
 baseline move in the same commit: new debt REGISTERS or the build
 is red.
 
+OFFICE_PLAN (OF0a/OF0/OF1, 2026-11-09): the plan is a new file in the
+harvest and enters at 0 markers -- `docs/plans/OFFICE_PLAN.md` states facts and
+non-goals, so none of its lines is debt.  Baseline gains `OFFICE_PLAN.md 0`
+(moved in the same commit, as the ratchet requires).  TODO.md stays at 0
+unchecked boxes: the finished office phases are `[x]` with their receipts and
+the unstarted ones are plain bullets, which is the coverage contract
+`tools/check_residue2_claims.py` enforces.  No debt rows opened or closed.
+
 RESIDUE2 T1: +2 marker lines in RESIDUE2_PLAN.md (the T0 Result cites
 `check_residue2_claims.py` / `test_residue2_claims.sh` — the rig's own
 receipts); baseline moved 18 → 20 in the same commit. No new debt rows:

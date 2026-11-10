@@ -28,6 +28,25 @@ struct keymap {
     const char altgr[128];  /* AltGr (right Alt) held; 0 = no AltGr mapping */
     const char dead[128];   /* unshifted DEAD keys (accents); 0 = not dead */
     const char *name;       /* short id ("us", "de") for keyboard_set_layout */
+
+    /* OFFICE_PLAN OF1: the Unicode layer.
+     *
+     * A layout whose characters do not fit in a byte carries its three layers
+     * here as codepoints; keymap_unicode() is what the GUI reads, and the byte
+     * tables above stay the CONSOLE's view.  Two views, one authority: a
+     * modern face with 66 Cyrillic letters cannot be expressed in CP437 at
+     * all (the VGA font has no Cyrillic — that is the whole reason OF1 exists),
+     * while /dev/tty0 and the shell's line reader must keep receiving exactly
+     * the bytes they receive today, because every existing integration test
+     * pins them.
+     *
+     * NULL means "derive from the byte tables": for us and de the codepoint of
+     * a key is cp437_to_unicode(byte), which is a table lookup, so those
+     * layouts need no second copy of their data to drift from the first.
+     */
+    const uint32_t *ulo;
+    const uint32_t *uhi;
+    const uint32_t *ualtgr;
 };
 
 /*
@@ -50,6 +69,7 @@ struct keymap {
 /* The layouts the kernel ships. */
 extern const struct keymap keymap_us;
 extern const struct keymap keymap_de;
+extern const struct keymap keymap_ru;   /* OFFICE_PLAN OF1: ЙЦУКЕН */
 
 /* Every layout keyboard_set_layout() accepts; NULL-terminated. */
 extern const struct keymap *const keymap_registry[];
@@ -69,6 +89,21 @@ const struct keymap *keymap_find(const char *name);
  * keymap.c directly and asserts the table contents through this.
  */
 char keymap_lookup(const struct keymap *km, uint8_t sc, uint8_t mods);
+
+/*
+ * OFFICE_PLAN OF1: the same decode, in Unicode.
+ *
+ * Returns the codepoint the key produces under @mods, or 0 when it produces
+ * none (control keys included: a caller that wants Enter gets the byte from
+ * keymap_lookup(), and the GUI keeps the key constant it always had).  This
+ * is the function a modern application reads, because «П» is not a byte.
+ */
+uint32_t keymap_unicode(const struct keymap *km, uint8_t sc, uint8_t mods);
+
+/* CP437 byte -> Unicode codepoint (0x00..0xFF, the VGA font's own repertoire).
+ * The identity for ASCII; the table for the rest.  Bytes with no Unicode
+ * meaning in CP437 (none, by definition) map to themselves. */
+uint32_t cp437_to_unicode(uint8_t b);
 
 /*
  * RESIDUE2 T4 dead keys — pure helpers, host-tested by

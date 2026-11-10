@@ -2,6 +2,83 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Office suite OF2 — the Writer's document core] 2026-11-10
+
+`docs/plans/OFFICE_PLAN.md` phase OF2, delivered as part of the cumulative patch
+against the upstream base (`5c1e13e`). The suite had a window that could type
+into a line array; it now has a document.
+
+- **`libaodoc/aomodel.{h,c}` — the document model.** Byte offsets into one text
+  pool; paragraphs of runs (bold/italic/underline, size, font, alignment); one
+  flat structure with index links. `ao_model_valid()` checks every structural
+  rule and the fuzz calls it after every operation. Positions never land inside
+  a codepoint: inserts snap forward, deletes outward, style ranges to codepoint
+  edges.
+- **`libaodoc/aoundo.{h,c}` — undo/redo** (decision D6) storing serialised
+  snapshots with a byte budget, oldest-first eviction, and coalescing per
+  keystroke run. Separate buffers for the two stacks, because a shared one has
+  no room for the redo entry at the moment it is needed.
+- **`libaodoc/aoio.{h,c}` — the native format** `<aodoc version="1">`: literal
+  UTF-8, five escapes, numeric entities, a depth cap of 16 and an attribute cap
+  of 256, unknown versions refused, unknown attributes ignored for forward
+  compatibility, and a failed load leaves the document EMPTY, never half-loaded.
+  Save → load → save is byte identical, which is the property the fuzz checks
+  every 97th operation.
+- **`aoffice` is now a Writer.** The line array became a display cache over the
+  model; text is drawn run by run, so bold/italic/underline on the page is the
+  document's own styling; the selection is an accent bar under the glyphs.
+  Ctrl+A/B/I/U/Z/Y/S/O/F/H, Shift+arrows, Home/End/PageUp/PageDown, F5; the
+  status strip reports block style, selection length and undo depth; nothing in
+  the typing path repaints the window.
+- **Gates:** `tests/unit/test_ao_doc.c` **PASS (107 checks)**, `test_ao_undo.c`
+  **PASS (74 checks)**, both also clean under `-fsanitize=address,undefined`;
+  new `tests/integration/cases/test_office_writer.sh` (registered in
+  `run_all.sh`) asserts the gate receipts, then `cat`s the saved file and checks
+  the XML, the bold run, the Cyrillic and the em dash, then runs the gate a
+  second time so a second instance must reopen the file.
+- **Three bugs the fuzz found, none of which a screenshot would have shown:** a
+  style range ending inside a Cyrillic letter (the writer emitted half a
+  codepoint and the reader refused the file); a plain run following a bold one
+  inheriting bold because attributes were inherited rather than stamped; and a
+  `n--` on a zero-length run that read four gigabytes past the text.
+
+## [Office suite OF1 — fonts, Cyrillic, and a Russian keyboard] 2026-11-09
+
+`docs/plans/OFFICE_PLAN.md` phase OF1, deliverable
+`patches/OFFICE_OF1_text.patch` (50 files, applies to `5c1e13e` and reproduces
+the tree byte for byte; it is cumulative over OF0, so it is applied to the base
+commit, not on top of the OF0 patch). The suite could not set a document: the
+tree shipped one monospace font with no Cyrillic and two 8-bit keymaps.
+
+- **Two bitmap faces, generated and gated.** `userspace/office/fonts/
+  ao_sans_11.bdf` (173 glyphs, proportional) and `ao_mono_16.bdf` (173, 8x16),
+  both with 64/64 Cyrillic and the typographic set. `tools/gen_office_fonts.py`
+  regenerates them and `--check` fails on drift.
+- **`libaoglyph`**: BDF and PSF2 loaders into a caller-owned arena (no
+  allocation), a 512-glyph cap that refuses rather than truncates, one-glyph and
+  whole-string blits, bold as a 1 px smear and italic as a `dy/4` shear --
+  synthesis, documented as such.
+- **`keymap_unicode()`** is now the single authority for what a key means;
+  `ru` (ЙЦУКЕН, both registers) joins `us`/`de`, and `kb_event_t.cp` ->
+  `gui_event_t.data` carries the codepoint to the window. An application that
+  ignores the field sees exactly the events it saw before.
+- **Three defects fixed, all invisible to a screenshot.** BDF rows were
+  left-aligned instead of MSB-aligned within `ceil(w/8)` bytes, so every glyph
+  narrower than 8 px was blank -- the comma, the period and the em dash were
+  missing from both faces while every letter looked perfect. The USB HID path
+  queued usage ids where the layout expected set-1 scan codes, so `cp` was 0 for
+  every key in every window and the Russian layout typed «ghbdtn» instead of
+  «привет». And hand-written `\xDD` escapes in the sample text silently
+  dropped characters.
+- **Gates**: `test_ao_glyph` 62, `test_ao_utf8` 53, `test_aodoc_canvas` 59 (the
+  file the OF0 patch named but never shipped, so `make test-unit` was red on a
+  missing target), `test_keymap` 133 (was 105), `aoffice --font-test` ->
+  `AOFFICE FONT: PASS (2 face(s), 0 failure(s))` with a pixel receipt per glyph,
+  and `test_office_font.sh` 16/16 in the `gui` shard. `make test-unit` green.
+- **Live**: the specimen strip draws «Привет, мир — 2026» in four styles and two
+  faces; `kbd ru` then `g h b d t n` on a QWERTY keyboard put «привет» into the
+  document (framebuffer screenshot, not a claim).
+
 ## [CI fix — boot-time budget, the pixel console, and the self-host compiler] 2026-11-07
 
 CI run 447 (`1d02762`) went red on 33 integration cases across eight shards while

@@ -36,6 +36,7 @@
 #include "kernel/fs/procfs.h"
 #include "kernel/fs/tmpfs.h"
 #include "kernel/fs/diskfs.h"
+#include "kernel/fs/documents.h"
 #include "kernel/fs/fat32.h"
 #include "kernel/fs/ext2.h"
 #include "kernel/fs/usbfs.h"
@@ -444,6 +445,11 @@ void kmain(boot_info_t *boot_info) {
     vfs_mount("/tmp", &tmpfs_ops, tmpfs_volume_tmp());
     vfs_mount("/opt", &optfs_ops, tmpfs_volume_opt());
     vfs_mount("/dev/shm", &shmfs_ops, tmpfs_volume_shm());   /* Q12 */
+    /* OF0 (OFFICE_PLAN.md): the office suite's one writable document
+     * location.  Its own volume, so scratch traffic in /tmp cannot delete a
+     * document, and a mount point rather than a symlink because this VFS
+     * does not follow symlinks when creating a file. */
+    vfs_mount("/documents", &tmpfs_ops, tmpfs_volume_doc());
     tmpfs_self_test();
 
     /* Mount usbfs at "/usb". It shows the active hotplug USB mass-storage device. */
@@ -499,6 +505,14 @@ void kmain(boot_info_t *boot_info) {
         vfs_mount("/fat", &fat32_ops, NULL);
         fat32_self_test();
     }
+
+    /* OF0 (OFFICE_PLAN.md): the office suite's one writable document
+     * location.  It has to exist before the GUI shell starts, and its
+     * durability is a property of the machine, so it is decided and
+     * announced here rather than guessed by an application.  Called after
+     * every disk filesystem has had its chance to mount -- /documents
+     * prefers a real directory filesystem and falls back to tmpfs. */
+    documents_init();
 
     /* VirtIO Block driver. */
     if (virtio_blk_init() == 0) {
