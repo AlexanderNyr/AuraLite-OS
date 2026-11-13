@@ -412,6 +412,12 @@ static struct tmpfs_volume *vol_of_vnode(struct vnode *vn) {
     if (vn == &tmp_vol.root) return &tmp_vol;
     if (vn == &opt_vol.root) return &opt_vol;
     if (vn == &shm_vol.root) return &shm_vol;
+    /* OF2 closure: /documents is a volume too (doc_vol, OF0).  It was missing
+     * here, so readdir on the /documents root fell through to the self branch
+     * with a NULL fs_data and returned -1: `ls`-through-the-kernel worked
+     * (vfs_list has fallbacks) but aura_readdir() from userspace -- the OF2
+     * file dialog's listing -- could never list a single document. */
+    if (vn == &doc_vol.root) return &doc_vol;
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
     if (f && f->vol) return f->vol;
     return &tmp_vol;

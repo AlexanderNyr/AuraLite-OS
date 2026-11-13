@@ -229,6 +229,95 @@ int64_t ao_model_find(const ao_model_t *m, uint32_t from, const char *needle,
     return -1;
 }
 
+/* ------------------------------------------- OF2 closure: word navigation */
+
+enum { AO_CLS_SPACE = 0, AO_CLS_WORD = 1, AO_CLS_PUNCT = 2 };
+
+/* Class of the codepoint STARTING at byte `pos`.  A multi-byte codepoint is a
+ * word character: letters of every script the OF1 faces carry are >= 0x80 in
+ * UTF-8 lead position.  Decoding (not the lead byte alone) decides, so a
+ * combining mark or a damaged byte cannot masquerade as a letter. */
+static int ao_cp_class(const ao_model_t *m, uint32_t pos) {
+    if (pos >= m->text_len) return AO_CLS_SPACE;
+    unsigned char b = (unsigned char)m->text[pos];
+    if (b == ' ' || b == '\t' || b == '\n' || b == '\r') return AO_CLS_SPACE;
+    if (b >= 0x80) return AO_CLS_WORD;
+    if ((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') ||
+        (b >= '0' && b <= '9') || b == '_') return AO_CLS_WORD;
+    return AO_CLS_PUNCT;
+}
+
+uint32_t ao_model_word_left(const ao_model_t *m, uint32_t pos) {
+    if (!m) return 0;
+    if (pos > m->text_len) pos = m->text_len;
+    if (pos == 0) return 0;
+    /* Skip whitespace/punctuation-class run immediately left, then the word. */
+    uint32_t p = ao_model_prev_cp(m, pos);
+    int cls = ao_cp_class(m, p);
+    if (cls != AO_CLS_WORD) {
+        while (p > 0 && ao_cp_class(m, ao_model_prev_cp(m, p)) == cls)
+            p = ao_model_prev_cp(m, p);
+        if (p == 0) return 0;
+        /* Now at the start of the separator run: if a word ends here, the
+         * target is that word's start, not the separator's. */
+        uint32_t q = ao_model_prev_cp(m, p);
+        if (ao_cp_class(m, q) != AO_CLS_WORD) return p;
+        p = q; cls = AO_CLS_WORD;
+    }
+    while (p > 0 && ao_cp_class(m, ao_model_prev_cp(m, p)) == AO_CLS_WORD)
+        p = ao_model_prev_cp(m, p);
+    return p;
+}
+
+uint32_t ao_model_word_right(const ao_model_t *m, uint32_t pos) {
+    if (!m) return 0;
+    if (pos >= m->text_len) return m ? m->text_len : 0;
+    int cls = ao_cp_class(m, pos);
+    uint32_t p = pos;
+    if (cls != AO_CLS_WORD) {
+        while (p < m->text_len && ao_cp_class(m, p) == cls)
+            p = ao_model_next_cp(m, p);
+        if (p >= m->text_len) return p;
+    }
+    while (p < m->text_len && ao_cp_class(m, p) == AO_CLS_WORD)
+        p = ao_model_next_cp(m, p);
+    return p;
+}
+
+uint32_t ao_model_count(const ao_model_t *m, const char *needle, int fold_ascii) {
+    if (!m || !needle || !*needle) return 0;
+    size_t nl = strlen(needle);
+    uint32_t n = 0, from = 0;
+    for (;;) {
+        int64_t at = ao_model_find(m, from, needle, fold_ascii);
+        if (at < 0) break;
+        n++;
+        from = (uint32_t)at + (uint32_t)nl;
+    }
+    return n;
+}
+
+int ao_model_replace_all(ao_model_t *m, const char *needle, const char *with) {
+    if (!m || !needle || !with) return AO_E_ARG;
+    size_t nl = strlen(needle), wl = strlen(with);
+    if (nl == 0) return AO_E_ARG;
+    if (!ao_utf8_valid(with, wl)) return AO_E_UTF8;
+    uint32_t from = 0, done = 0;
+    for (;;) {
+        int64_t at = ao_model_find(m, from, needle, 1);
+        if (at < 0) break;
+        int rc = ao_model_delete(m, (uint32_t)at, (uint32_t)nl);
+        if (rc != AO_OK) return rc;
+        if (wl) {
+            rc = ao_model_insert(m, (uint32_t)at, with, (uint32_t)wl);
+            if (rc != AO_OK) return rc;
+        }
+        done++;
+        from = (uint32_t)at + (uint32_t)wl;   /* past the replacement: no rescan */
+    }
+    return (int)done;
+}
+
 /* --------------------------------------------------------------- rebuild */
 
 /* Map a byte offset through an edit.  `pos`/`dn` describe the deletion (dn may
@@ -283,6 +372,7 @@ static int rebuild_paragraphs(ao_model_t *m, const ao_para_t *old_paras, uint32_
             if (src >= o_end) from = &old_paras[k];
         }
         uint8_t align = from ? from->align : AO_ALIGN_LEFT;
+        uint8_t pstyle = from ? from->style : AO_PARA_NORMAL;
         int16_t indent = from ? from->indent : 0;
         int16_t sb = from ? from->space_before : 0;
         int16_t sa = from ? from->space_after : 0;
@@ -291,6 +381,7 @@ static int rebuild_paragraphs(ao_model_t *m, const ao_para_t *old_paras, uint32_
         p->off = start;
         p->len = len;
         p->align = align;
+        p->style = pstyle;
         p->indent = indent;
         p->space_before = sb;
         p->space_after = sa;
@@ -623,6 +714,28 @@ int ao_model_set_align(ao_model_t *m, uint32_t pos, uint8_t align) {
     return AO_OK;
 }
 
+int ao_model_set_para_style(ao_model_t *m, uint32_t pos, uint8_t style) {
+    if (!m) return AO_E_ARG;
+    if ((style & AO_PARA_KIND_MASK) > AO_PARA_IMAGE) return AO_E_ARG;
+    if (pos > m->text_len) return AO_E_RANGE;
+    m->paras[ao_model_para_of(m, pos)].style = style;
+    m->rev++;
+    return AO_OK;
+}
+
+uint8_t ao_model_para_style_at(const ao_model_t *m, uint32_t pos) {
+    if (!m || pos > m->text_len) return AO_PARA_NORMAL;
+    return m->paras[ao_model_para_of(m, pos)].style;
+}
+
+int ao_model_set_indent(ao_model_t *m, uint32_t pos, int16_t indent_px) {
+    if (!m) return AO_E_ARG;
+    if (pos > m->text_len) return AO_E_RANGE;
+    m->paras[ao_model_para_of(m, pos)].indent = indent_px;
+    m->rev++;
+    return AO_OK;
+}
+
 /* --------------------------------------------------------- serialisation */
 
 #define AO_MAGIC0 'A'
@@ -685,7 +798,7 @@ int ao_model_serialize(const ao_model_t *m, void *out, size_t cap, size_t *len_o
         p[3] = (uint8_t)((m->paras[i].run_count >> 8) & 0xFF);
         p += 4;
         *p++ = m->paras[i].align;
-        *p++ = 0;
+        *p++ = m->paras[i].style;   /* OF3: was a zero pad byte before OF3 */
         p[0] = (uint8_t)((uint16_t)m->paras[i].indent & 0xFF);
         p[1] = (uint8_t)(((uint16_t)m->paras[i].indent >> 8) & 0xFF);
         p += 2;
@@ -734,8 +847,8 @@ int ao_model_deserialize(ao_model_t *m, const void *in, size_t len) {
         m->paras[i].run_count = (uint32_t)p[2] | ((uint32_t)p[3] << 8);
         p += 4;
         m->paras[i].align = *p++;
-        m->paras[i]._pad = 0;
-        p++;
+        m->paras[i].style = *p++;   /* pre-OF3 files wrote 0 = NORMAL here */
+
         m->paras[i].indent = (int16_t)(uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
         p += 2;
         m->paras[i].space_before = (int16_t)(uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));

@@ -938,7 +938,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gusb.elf \
              $(USER_BUILD)/gclip.elf \
              $(USER_BUILD)/gbrowser.elf \
-             $(USER_BUILD)/aoffice.elf \
+             $(USER_BUILD)/aoffice.elf $(USER_BUILD)/aosheet.elf $(USER_BUILD)/aoslide.elf \
              $(USER_BUILD)/lxrun.elf \
              $(USER_BUILD)/tcpserver.elf $(USER_BUILD)/elfperm.elf \
              $(USER_BUILD)/udptest.elf $(USER_BUILD)/timestest.elf \
@@ -1891,10 +1891,21 @@ $(USER_BUILD)/aomodel.o: userspace/office/libaodoc/aomodel.c \
                          userspace/office/libaodoc/aomodel.h \
                          userspace/office/libaodoc/aodoc.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+# OF6: the presentation model and its strict XML codec.
+$(USER_BUILD)/aodeck.o: userspace/office/libaodoc/aodeck.c \
+                        userspace/office/libaodoc/aodeck.h \
+                        userspace/office/libaodoc/aomodel.h \
+                        userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
 $(USER_BUILD)/aoundo.o: userspace/office/libaodoc/aoundo.c \
                         userspace/office/libaodoc/aoundo.h \
                         userspace/office/libaodoc/aomodel.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aolayout.o: userspace/office/libaodoc/aolayout.c \
+                         userspace/office/libaodoc/aolayout.h \
+                         userspace/office/libaodoc/aomodel.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+
 $(USER_BUILD)/aoio.o: userspace/office/libaodoc/aoio.c \
                       userspace/office/libaodoc/aoio.h \
                       userspace/office/libaodoc/aomodel.h
@@ -1904,17 +1915,71 @@ $(USER_BUILD)/aoffice.o: userspace/office/office/aoffice.c \
                          userspace/office/libaodoc/aomodel.h \
                          userspace/office/libaodoc/aoundo.h \
                          userspace/office/libaodoc/aoio.h \
+                         userspace/office/libaodoc/aolayout.h \
                          userspace/office/libaoglyph/aoglyph.h \
                          lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
-	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -I userspace/office/libaoglyph -c $< -o $@
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -I userspace/office/libaoglyph -I userspace/apps/gbrowser -c $< -o $@
+# OFFICE_PLAN OF4: the Sheet engine, headless.  libaodoc/aocalc is the
+# engine; this program is its receipt printer (--eval/--csv/--demo).
+$(USER_BUILD)/aocalc.o: userspace/office/libaodoc/aocalc.c \
+                      userspace/office/libaodoc/aocalc.h \
+                      userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+
+$(USER_BUILD)/aogrid.o: userspace/office/libaodoc/aogrid.c \
+                      userspace/office/libaodoc/aogrid.h \
+                      userspace/office/libaodoc/aocalc.h \
+                      userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+
+$(USER_BUILD)/aosheet.o: userspace/office/office/aosheet.c \
+                      userspace/office/libaodoc/aocalc.h \
+                      userspace/office/libaodoc/aogrid.h \
+                      userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+
+$(USER_BUILD)/aoslide.o: userspace/office/office/aoslide.c \
+                        userspace/office/libaodoc/aodeck.h \
+                        userspace/office/libaodoc/aolayout.h \
+                        userspace/office/libaoglyph/aoglyph.h \
+                        userspace/apps/gbrowser/wv_image.h \
+                        lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) \
+	      -I userspace/office/libaodoc -I userspace/office/libaoglyph \
+	      -I userspace/apps/gbrowser -I lib/libauragui/include -c $< -o $@
+
+$(USER_BUILD)/aosheet.elf: $(USER_BUILD)/aosheet.o $(USER_BUILD)/aocalc.o \
+                           $(USER_BUILD)/aogrid.o $(USER_BUILD)/aodoc.o \
+                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aosheet.o $(USER_BUILD)/aocalc.o \
+	      $(USER_BUILD)/aogrid.o $(USER_BUILD)/aodoc.o \
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	@echo "[link] $@"
+
+$(USER_BUILD)/aoslide.elf: $(USER_BUILD)/aoslide.o $(USER_BUILD)/aodeck.o \
+                           $(USER_BUILD)/aomodel.o $(USER_BUILD)/aolayout.o \
+                           $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aodoc.o \
+                           $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
+                           $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aoslide.o $(USER_BUILD)/aodeck.o \
+	      $(USER_BUILD)/aomodel.o $(USER_BUILD)/aolayout.o \
+	      $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aodoc.o \
+	      $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
+	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	@echo "[link] $@"
+
 $(USER_BUILD)/aoffice.elf: $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
                            $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aomodel.o \
-                           $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
+                           $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o $(USER_BUILD)/aolayout.o \
+                           $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
 	      $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aomodel.o \
-	      $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
+	      $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o $(USER_BUILD)/aolayout.o \
+	      $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
 
@@ -2410,6 +2475,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 # name=source-basename pairs, grouped by destination directory.
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http weather trustinfo clock browser w32run dlltest filesize gcalc gedit gfiles gterm \
+                aosheet aoslide \
                 gsysmon gabout gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser ota \
                 aoffice
 INITRD_DEMOS := guess snake glcube glshade glgears glrunner
@@ -3615,6 +3681,10 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # without rebuilding anything.
 	@cp userspace/office/fonts/ao_sans_11.bdf userspace/office/fonts/ao_mono_16.bdf \
 	      $(INITRD_DIR)/lib/fonts/
+# OFFICE_PLAN OF3 closure: the Writer's test chart, decoded in the guest by
+# the same wv_image the browser uses and blitted into the page view.
+	@cp userspace/office/assets/chart.png $(INITRD_DIR)/lib/chart.png
+	@cp userspace/office/assets/demo.aosheet $(INITRD_DIR)/lib/demo.aosheet
 # SELFHOST SH6a: the shell's own test scripts, staged under /tests.
 # Unconditional, unlike the guest tcc above: they need no fetched dependency,
 # so the SH6a gate runs on a plain `make iso` and is not skipped on a tree
@@ -3896,6 +3966,9 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_aodoc_canvas \
                 $(BUILD_DIR)/test_ao_utf8 $(BUILD_DIR)/test_ao_glyph \
                 $(BUILD_DIR)/test_ao_doc $(BUILD_DIR)/test_ao_undo \
+                $(BUILD_DIR)/test_ao_layout \
+                $(BUILD_DIR)/test_ao_formula $(BUILD_DIR)/test_ao_sheet \
+                $(BUILD_DIR)/test_ao_grid $(BUILD_DIR)/test_ao_slide \
                 $(BUILD_DIR)/test_apkg \
                 $(BUILD_DIR)/test_printf_fmt \
                 $(BUILD_DIR)/test_lx_translate \
@@ -5612,6 +5685,66 @@ $(BUILD_DIR)/test_ao_doc: tests/unit/test_ao_doc.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_ao_doc.c userspace/office/libaodoc/aomodel.c \
 	          userspace/office/libaodoc/aoio.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
+
+# OF3: the page layout -- wrap, pagination, styles, lists, tables, images.
+# The shipping source graded with a fixed-width measuring fixture.
+# OF4: the calc engine -- formulas (every operator and function) and the
+# sheet (edit/recalc, cap, copy/rename, CSV against hostile input).
+$(BUILD_DIR)/test_ao_formula: tests/unit/test_ao_formula.c \
+                          userspace/office/libaodoc/aocalc.c \
+                          userspace/office/libaodoc/aocalc.h \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I userspace/office/libaodoc \
+	          tests/unit/test_ao_formula.c userspace/office/libaodoc/aocalc.c \
+	          userspace/office/libaodoc/aodoc.c -o $@ -lm
+
+$(BUILD_DIR)/test_ao_sheet: tests/unit/test_ao_sheet.c \
+                          userspace/office/libaodoc/aocalc.c \
+                          userspace/office/libaodoc/aocalc.h \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I userspace/office/libaodoc \
+	          tests/unit/test_ao_sheet.c userspace/office/libaodoc/aocalc.c \
+	          userspace/office/libaodoc/aodoc.c -o $@ -lm
+
+# OF6: slide model invariants, z-order, snapping and undo across reorders.
+$(BUILD_DIR)/test_ao_slide: tests/unit/test_ao_slide.c \
+                           userspace/office/libaodoc/aodeck.c \
+                           userspace/office/libaodoc/aodeck.h \
+                           userspace/office/libaodoc/aomodel.c \
+                           userspace/office/libaodoc/aomodel.h \
+                           userspace/office/libaodoc/aodoc.c \
+                           userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I userspace/office/libaodoc \
+	          tests/unit/test_ao_slide.c userspace/office/libaodoc/aodeck.c \
+	          userspace/office/libaodoc/aomodel.c userspace/office/libaodoc/aodoc.c \
+	          -o $@ -lm
+
+# OF5: the grid -- viewport maths, selection, fill/paste, sort, filter.
+$(BUILD_DIR)/test_ao_grid: tests/unit/test_ao_grid.c \
+                          userspace/office/libaodoc/aogrid.c \
+                          userspace/office/libaodoc/aogrid.h \
+                          userspace/office/libaodoc/aocalc.c \
+                          userspace/office/libaodoc/aocalc.h \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I userspace/office/libaodoc \
+	          tests/unit/test_ao_grid.c userspace/office/libaodoc/aogrid.c \
+	          userspace/office/libaodoc/aocalc.c userspace/office/libaodoc/aodoc.c \
+	          -o $@ -lm
+
+$(BUILD_DIR)/test_ao_layout: tests/unit/test_ao_layout.c \
+                          userspace/office/libaodoc/aolayout.c \
+                          userspace/office/libaodoc/aolayout.h \
+                          userspace/office/libaodoc/aomodel.c \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_layout.c userspace/office/libaodoc/aolayout.c \
+	          userspace/office/libaodoc/aomodel.c \
 	          userspace/office/libaodoc/aodoc.c -o $@
 
 $(BUILD_DIR)/test_ao_undo: tests/unit/test_ao_undo.c \

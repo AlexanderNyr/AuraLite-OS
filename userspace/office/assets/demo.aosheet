@@ -1,0 +1,13 @@
+# The Sheet engine demo: the gate's workbook (also `aosheet --demo` data).
+[Data]
+A1 = 10
+A2 = 20
+A3 = =SUM(A1:A2)
+A4 = =A3*1.05
+B1 = "wid"
+B2 = =B1&"gets: "&A3
+C1 = =IF(A3>25,"big","small")
+D1 = =TEXT(45000,"yyyy-mm-dd")
+[Cycle]
+A1 = =A1+1
+A2 = =A1*2

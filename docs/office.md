@@ -327,10 +327,42 @@ entity, nesting deeper than 16, an attribute longer than 256 bytes -- is
 **refused, and the document is left empty**.  A half-loaded page would be worse
 than a message.
 
-What the Writer still does not do (and the plan keeps it 🟨 for): the shared
-open/save dialog, cut/copy/paste, click-to-place and drag-to-select, and the
-live 20 cps VNC pass.  Ctrl+S and Ctrl+O use one fixed path,
-`/documents/Untitled.aod`.
+The OF2 closure adds the remaining editing verbs on the same model:
+**Ctrl+Left/Right** word navigation and **Ctrl+Home/End** (word classes live
+in `ao_model_word_left/right`, so a Cyrillic word is one word), **click-to-place
+and drag-to-select** (plus double-click word select; the pixel→byte mapping
+walks codepoints through `ao_text_width`, never `column * 8`), **Ctrl+C/X/V**
+through the kernel text clipboard — a selection over its 512-byte cap is
+*refused with a receipt*, not silently truncated — **find with a match count**,
+**Ctrl+Shift+H replace-all** (`ao_model_replace_all`, one undo step, a
+replacement containing the needle still terminates), and a **shared open/save
+dialog** (Ctrl+O / Ctrl+Shift+S: path box, `/documents` list, and an overwrite
+confirmation before an existing file is truncated).  Ctrl+S remains the quick
+save to the current path.  The headless gate exercises word navigation, the
+mouse mapping, replace-all and the dialog state; the clipboard verbs and the
+dialog's pixels are window-path code.
+
+What the Writer still does not do (and the plan keeps it 🟨 for): only the
+live 20 cps VNC acceptance pass remains open.
+
+### OF3: the page (layout)
+
+`lib/libaodoc/aolayout.c` lays the model out on a page (A4 points, margins,
+header = title, footer "Page N of M"): greedy word wrap measured through the
+consumer's face, paragraph styles as *block* properties (Heading 1–3, Quote,
+Bullet, Number — Ctrl+1..7, Ctrl+8 toggles a page break) with run formatting
+layered over them, numbered-list markers with a documented continuation
+rule, tables as TABLE paragraphs (one TSV row each; the grid algorithm owns
+rects, merges by colspan, header shading, borders) and image paragraphs
+sized from their PNG IHDR, scaled to fit and height-capped.  F6/F9/F10
+insert a 4×4 table / a row / delete a row; F8 switches between the draft
+rows and the page view, which is also the print preview — the PDF writer of
+OF9 consumes the same layout tables.  `aoffice --layout-test` is the guest
+gate (build → layout → save → reopen → identical layout), and
+`tests/unit/test_ao_layout.c` grades wrap, pagination, a 20-column grid and
+image fitting on the host.  Honest remainder: an image paragraph is a
+correctly *sized and placed box* — the PNG pixel decode (`wv_image.c`) is
+not yet wired into the Writer, and the page view's scroll is VNC-open.
 
 ## 7. Where the constraints come from
 

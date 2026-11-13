@@ -60,6 +60,8 @@ il_assert_grep "$LOG" "\[writer\] undo/redo: bold removed and restored" \
     "writer: undo cleared the bold and redo restored the document byte for byte"
 il_assert_grep "$LOG" "WRITER GATE: PASS" \
     "writer: every gate step agreed"
+il_assert_grep "$LOG" "\\[writer\\] of2 closure: word-nav ok, mouse-map ok, replace-all 2, dialog [0-9]+ file" \
+    "writer: OF2 closure (word navigation, mouse caret mapping, replace-all, file dialog)"
 il_assert_no_grep "$LOG" "WRITER GATE: FAIL" "writer: nothing failed"
 il_assert_no_grep "$LOG" "\[writer\] no match" "writer: the search found its text"
 
@@ -74,7 +76,7 @@ il_assert_grep "$LOG" "<r style=\"b\"" \
     "save: the bold run is in the file, not only in memory"
 il_assert_grep_fixed "$LOG" "Первый абзац" \
     "save: the Cyrillic text is in the file as literal UTF-8"
-il_assert_grep_fixed "$LOG" "— 2026" \
+il_assert_grep_fixed "$LOG" "2026 — проверка" \
     "save: the em dash and the year survived the round trip"
 il_assert_grep_fixed "$LOG" "</aodoc>" \
     "save: the document element is closed"

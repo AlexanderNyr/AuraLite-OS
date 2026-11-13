@@ -137,6 +137,7 @@ typedef enum {
 #define GUI_WIN_TOOL_WINDOW   0x100   /* smaller title, no taskbar entry */
 #define GUI_WIN_BORDERLESS    0x200   /* no border, but has back buffer */
 #define GUI_WIN_HAS_MENU      0x400   /* reserved: menu bar slot */
+#define GUI_WIN_PRESENTATION  0x800   /* full-screen window hides desktop chrome */
 
 /* Default flag set for an "app window". */
 #define GUI_WIN_DEFAULT (GUI_WIN_RESIZABLE | GUI_WIN_MOVABLE | \

@@ -33,11 +33,14 @@
 #include "aomodel.h"
 #include "aoundo.h"
 #include "aoio.h"
+#include "aolayout.h"
+#include "wv_image.h"   /* OF3 closure: the gbrowser PNG decoder, shared */
 
 #include <fcntl.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdlib.h>
 #include <time.h>
 
 /* ---- geometry (content-area coordinates) -------------------------------- */
@@ -88,7 +91,12 @@
 #define K_PGUP  0x106
 #define K_PGDN  0x107
 #define K_DEL   0x109
-#define K_F5    0x113
+#define K_F5    0x114   /* was 0x113 = F4: find-next sat on the wrong key */
+#define K_F6    0x115
+#define K_F7    0x116
+#define K_F8    0x117
+#define K_F9    0x118
+#define K_F10   0x119
 
 /* Modifier bits as the compositor delivers them (KB_MOD_*). */
 #define M_SHIFT 0x01
@@ -185,6 +193,7 @@ static uint8_t    redo_mem[AO_UNDO_DEFAULT_BYTES];
 static uint32_t caret = 0;            /* byte offset into md_text */
 static uint32_t sel_anchor = 0;
 static int      sel_on = 0;
+static int      drag_select = 0;   /* mouse button held in the text area */
 static uint8_t  type_style = AO_STYLE_OFF;   /* what the next keystroke gets */
 static int      dirty = 0;
 static char     doc_path[96] = DOC_PATH;
@@ -401,6 +410,93 @@ static void ed_move_ext(uint32_t key, int extend) {
 
 static void ed_move(uint32_t key) { ed_move_ext(key, 0); }
 
+/* Move to an absolute byte offset (word jumps, Ctrl+Home/End, mouse). */
+static void ed_move_to(uint32_t target, int extend) {
+    uint32_t len = ao_model_text_len(&md);
+    if (target > len) target = len;
+    if (extend) {
+        if (!sel_on) { sel_on = 1; sel_anchor = caret; }
+        caret = target;
+        if (caret == sel_anchor) sel_on = 0;
+    } else {
+        caret = target;
+        sel_clear();
+    }
+    ao_undo_break(&undo);
+    md_sync();
+}
+
+/* ---- OF2 closure: clipboard (kernel text clipboard, 512-byte cap) ------- */
+#define CLIP_MAX 512
+static char clip_buf[CLIP_MAX];
+
+static int ed_copy(void) {
+    uint32_t a, b;
+    sel_bounds(&a, &b);
+    if (b <= a) { printf("[writer] clipboard: nothing selected\n"); return -1; }
+    if (b - a >= CLIP_MAX) {
+        printf("[writer] clipboard: selection of %u bytes exceeds the %d-byte text clipboard; refused, not truncated\n",
+               b - a, CLIP_MAX);
+        return -1;
+    }
+    if (ao_model_copy_text(&md, a, b - a, clip_buf, sizeof clip_buf) < 0) return -1;
+    if (ag_set_clipboard(clip_buf) != 0) {
+        printf("[writer] clipboard: the compositor refused the text\n");
+        return -1;
+    }
+    printf("[writer] clipboard: copied %u bytes\n", b - a);
+    return 0;
+}
+
+static void ed_cut(void) {
+    if (ed_copy() != 0) return;
+    ed_replace("", 0, AO_UNDO_EDIT);
+    printf("[writer] clipboard: cut\n");
+}
+
+static void ed_paste(void) {
+    if (ag_get_clipboard(clip_buf, sizeof clip_buf) != 0) {
+        printf("[writer] clipboard: nothing to paste\n");
+        return;
+    }
+    size_t n = strlen(clip_buf);
+    if (!ao_utf8_valid(clip_buf, n)) {
+        printf("[writer] clipboard: clipboard text is not valid UTF-8; refused\n");
+        return;
+    }
+    ed_replace(clip_buf, (uint32_t)n, AO_UNDO_EDIT);
+    printf("[writer] clipboard: pasted %u bytes\n", (unsigned)n);
+}
+
+/* ---- OF2 closure: pixel -> caret (mouse) -------------------------------- */
+static uint32_t caret_from_xy(int x, int y) {
+    int row = top_line;
+    if (y >= EDIT_Y) row = top_line + (y - EDIT_Y) / LINE_H;
+    if (row < 0) row = 0;
+    if (row >= n_lines) row = n_lines - 1;
+    const char *text = lines[row];
+    size_t len = strlen(text);
+    int want = x - TEXT_X;
+    if (want <= 0) return line_off[row];
+    size_t pos = 0, best = 0;
+    if (!font_body) {
+        best = (size_t)(want / 8);
+        if (best > len) best = len;
+        while (best > 0 && best < len && ((unsigned char)text[best] & 0xC0) == 0x80) best--;
+        return line_off[row] + (uint32_t)best;
+    }
+    int wbest = 0;
+    while (pos < len) {
+        size_t nxt = pos + 1;
+        while (nxt < len && ((unsigned char)text[nxt] & 0xC0) == 0x80) nxt++;
+        int wn = ao_text_width(font_body, text, nxt);
+        if (want <= wbest + (wn - wbest) / 2) break;
+        best = nxt; wbest = wn; pos = nxt;
+    }
+    return line_off[row] + (uint32_t)best;
+}
+
+
 /* ---- style, undo, select ------------------------------------------------ */
 
 static void ed_style(uint8_t bits) {
@@ -456,6 +552,8 @@ static void ed_redo(void) {
  * is SELECTED, so Ctrl+H replaces exactly what the user can see. */
 static int ed_find(const char *needle, int from_caret) {
     if (!needle || !*needle) return 0;
+    printf("[writer] find \"%s\": %u match(es)\n", needle,
+           ao_model_count(&md, needle, 1));
     int64_t at = ao_model_find(&md, from_caret ? caret : 0, needle, 1);
     if (at < 0 && caret > 0) at = ao_model_find(&md, 0, needle, 1);   /* wrap */
     if (at < 0) return 0;
@@ -520,7 +618,369 @@ static int ed_load_from(const char *path) {
     return 0;
 }
 
+
+/* ---- OF3: page layout ---------------------------------------------------
+ * The same ao_layout_build the host gate grades, with the window's face as
+ * the measuring function.  Layout runs on demand (documents are <= 48 KiB)
+ * and the result is what the page view paints and the status line counts. */
+static ao_layout_line_t lay_lines[2048];
+static ao_layout_page_t lay_pages[128];
+static ao_layout_t lay;
+static ao_page_geom_t lay_geom;
+static int view_page = 0;            /* 0 draft rows, 1 page view/preview */
+
+static int lay_measure(void *ctx, const char *text, size_t len, uint8_t size_px) {
+    (void)ctx;
+    if (!font_body) return (int)len * (size_px ? size_px : 11);
+    int w = ao_text_width(font_body, text, len);
+    return w * (size_px ? size_px : 11) / 11;
+}
+
+static int lay_image_size(void *ctx, const char *path, uint32_t len,
+                          uint32_t *w, uint32_t *h) {
+    (void)ctx;
+    char pth[128];
+    if (len >= sizeof pth) return -1;
+    memcpy(pth, path, len);
+    pth[len] = 0;
+    int fd = open(pth, O_RDONLY);
+    if (fd < 0) return -1;
+    uint8_t hdr[24];
+    ssize_t n = read(fd, hdr, sizeof hdr);
+    close(fd);
+    if (n < (ssize_t)sizeof hdr) return -1;
+    return ao_png_size(hdr, (size_t)n, w, h);
+}
+
+static int lay_rebuild(void) {
+    ao_layout_init(&lay, lay_lines, 2048, lay_pages, 128);
+    return ao_layout_build(&lay, &md, &lay_geom, lay_measure, NULL,
+                           lay_image_size, NULL);
+}
+
+/* Apply a paragraph style to the paragraph at the caret (the style picker:
+ * Ctrl+1..8).  One undo step, like every other structural verb. */
+static void ed_para_style(uint8_t style) {
+    ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+    ao_model_set_para_style(&md, caret, style);
+    ao_undo_break(&undo);
+    md_dirty();
+    md_sync();
+    printf("[writer] paragraph style -> %u (page %s)\n", style & AO_PARA_KIND_MASK,
+           (style & AO_PARA_PAGEBREAK) ? "break" : "-");
+}
+
+/* Insert a rows x cols TABLE block at the caret: one TABLE paragraph per
+ * row, header text in the first. */
+static void ed_insert_table(int rows, int cols) {
+    char buf[1024];
+    int k = 0;
+    for (int r = 0; r < rows; r++) {
+        for (int c = 0; c < cols; c++) {
+            k += snprintf(buf + k, sizeof buf - (size_t)k, "%s%c %d",
+                          c ? "\t" : "", r ? 'R' : 'H', c + 1);
+        }
+        if (r + 1 < rows) buf[k++] = '\n';
+    }
+    buf[k] = 0;
+    uint32_t at = caret;
+    ed_replace(buf, (uint32_t)k, AO_UNDO_EDIT);
+    /* Style every row paragraph of the block: scan the inserted bytes for
+     * the newlines that separate its rows. */
+    uint32_t pos = at;
+    for (int r = 0; r < rows; r++) {
+        ao_model_set_para_style(&md, pos, AO_PARA_TABLE);
+        while (pos < at + (uint32_t)k && md_text[pos] != '\n') pos++;
+        pos++;   /* the newline (or one past the block on the last row) */
+    }
+    md_dirty();
+    md_sync();
+    printf("[writer] inserted a %dx%d table at byte %u\n", rows, cols, at);
+}
+
+/* Insert/delete a row of the table the caret sits in (TABLE paragraphs). */
+static void ed_table_row(int delete_row) {
+    if ((ao_model_para_style_at(&md, caret) & AO_PARA_KIND_MASK) != AO_PARA_TABLE) {
+        printf("[writer] table row: the caret is not in a table\n");
+        return;
+    }
+    uint32_t pi = ao_model_para_of(&md, caret);
+    uint32_t start = md_paras[pi].off;
+    if (delete_row) {
+        uint32_t n = md_paras[pi].len;
+        ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+        if (pi + 1 >= md.para_len && start > 0) { start--; n++; } /* eat '\n' */
+        ao_model_delete(&md, start, n);
+        caret = start;
+    } else {
+        /* A fresh empty row below this one, same column count. */
+        uint32_t cols = 1;
+        for (uint32_t i = 0; i < md_paras[pi].len; i++)
+            if (md_text[md_paras[pi].off + i] == '\t') cols++;
+        char row[256]; int k = 0;
+        for (uint32_t c = 1; c < cols; c++) row[k++] = '\t';
+        row[k] = 0;
+        uint32_t at = md_paras[pi].off + md_paras[pi].len;
+        int had_nl = (at > 0 && md_text[at - 1] == '\n');
+        ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+        const char *ins = had_nl ? row : "\n";
+        if (had_nl) {
+            ao_model_insert(&md, at, row, (uint32_t)k);
+        } else {
+            char tmp[260];
+            snprintf(tmp, sizeof tmp, "\n%s", row);
+            ao_model_insert(&md, at, tmp, (uint32_t)strlen(tmp));
+            (void)ins;
+        }
+        ao_model_set_para_style(&md, at + (had_nl ? 0 : 1), AO_PARA_TABLE);
+        caret = at;
+    }
+    ao_undo_break(&undo);
+    sel_clear();
+    md_dirty();
+    md_sync();
+    printf("[writer] table row %s\n", delete_row ? "deleted" : "inserted");
+}
+
+/* OF3 closure: insert (1) or delete (0) the table column the caret sits
+ * in, in every row of the contiguous TABLE block.  A column is a tab slot:
+ * inserting adds an empty slot at the same column index in each row,
+ * deleting removes that slot (with one adjacent tab). */
+static void ed_table_col(int insert) {
+    if ((ao_model_para_style_at(&md, caret) & AO_PARA_KIND_MASK) != AO_PARA_TABLE) {
+        printf("[writer] table column: the caret is not in a table\n");
+        return;
+    }
+    uint32_t pi = ao_model_para_of(&md, caret);
+    uint32_t col = 0;
+    for (uint32_t i = md_paras[pi].off; i < caret && i < md_paras[pi].off + md_paras[pi].len; i++)
+        if (md_text[i] == '\t') col++;
+    /* The contiguous block of TABLE paragraphs around the caret's row. */
+    uint32_t first = pi, last = pi;
+    while (first > 0 && (md_paras[first - 1].style & AO_PARA_KIND_MASK) == AO_PARA_TABLE) first--;
+    while (last + 1 < md.para_len && (md_paras[last + 1].style & AO_PARA_KIND_MASK) == AO_PARA_TABLE) last++;
+    ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+    /* Bottom-up, so offsets of rows not yet edited stay valid. */
+    for (uint32_t r = last + 1; r-- > first; ) {
+        uint32_t off = md_paras[r].off, len = md_paras[r].len;
+        if (len && md_text[off + len - 1] == '\n') len--;
+        uint32_t cstart = off, cend = off + len, c = 0, i = off;
+        while (c < col && i < off + len) { if (md_text[i] == '\t') c++; i++; }
+        cstart = i;
+        while (i < off + len && md_text[i] != '\t') i++;
+        cend = i;
+        if (insert) {
+            /* New empty cell before column `col` (or appended at row end). */
+            if (cstart >= off + len) ao_model_insert(&md, off + len, "\t", 1);
+            else                     ao_model_insert(&md, cstart, "\t", 1);
+        } else {
+            if (cstart == cend && col == 0 && cend >= off + len) continue;
+            if (cstart > off)      ao_model_delete(&md, cstart - 1, cend - cstart + 1);
+            else if (cend < off + len) ao_model_delete(&md, cstart, cend - cstart + 1);
+            else                   ao_model_delete(&md, cstart, cend - cstart);
+        }
+    }
+    ao_undo_break(&undo);
+    sel_clear();
+    md_dirty();
+    md_sync();
+    printf("[writer] table column %s at column %u\n", insert ? "inserted" : "deleted", col);
+}
+
+/* OF3 closure: merge the caret's cell into the cell on its left -- the
+ * AO_TABLE_MERGE_MARK byte the layout's row parser folds into a colspan. */
+static void ed_table_merge(void) {
+    if ((ao_model_para_style_at(&md, caret) & AO_PARA_KIND_MASK) != AO_PARA_TABLE) {
+        printf("[writer] table merge: the caret is not in a table\n");
+        return;
+    }
+    uint32_t pi = ao_model_para_of(&md, caret);
+    uint32_t off = md_paras[pi].off, len = md_paras[pi].len;
+    uint32_t cstart = off;
+    for (uint32_t i = off; i < caret && i < off + len; i++)
+        if (md_text[i] == '\t') cstart = i + 1;
+    if (cstart == off) {
+        printf("[writer] table merge: the first cell has no left neighbour\n");
+        return;
+    }
+    if (md_text[cstart] == AO_TABLE_MERGE_MARK) {
+        printf("[writer] table merge: already merged\n");
+        return;
+    }
+    ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+    char mark = AO_TABLE_MERGE_MARK;
+    ao_model_insert(&md, cstart, &mark, 1);
+    ao_undo_break(&undo);
+    sel_clear();
+    md_dirty();
+    md_sync();
+    printf("[writer] table cell merged at byte %u\n", cstart);
+}
+
+/* Insert an IMAGE paragraph: the prompt (mode 4) collects the PNG path. */
+static void ed_insert_image(const char *path) {
+    char buf[160];
+    snprintf(buf, sizeof buf, "\n%s", path);
+    uint32_t at = caret;
+    ed_replace(buf, (uint32_t)strlen(buf), AO_UNDO_EDIT);
+    ao_model_set_para_style(&md, at + 1, AO_PARA_IMAGE);
+    md_dirty();
+    md_sync();
+    printf("[writer] image paragraph: %s\n", path);
+}
+
 static int ed_save(void) { return ed_save_as(doc_path); }
+
+/* ---- OF2 closure: the shared open/save dialog ----------------------------
+ * One modal strip over the page, used by both verbs: a path box (the text
+ * being edited), a listbox of /documents the Up/Down keys walk, and -- for
+ * Save -- an overwrite confirmation when the named file already exists.
+ * Ctrl+S stays the quick save to the current path; Ctrl+Shift+S and Ctrl+O
+ * come here.  The dialog is state plus key handling, so the headless writer
+ * gate can drive it without a window. */
+#define DLG_MAX_ITEMS 32
+static int  dialog = 0;              /* 0 none, 1 open, 2 save-as */
+static int  dlg_confirm = 0;         /* save would overwrite: y/n pending */
+static char dlg_buf[128] = "";
+static int  dlg_sel = -1;
+static char dlg_items[DLG_MAX_ITEMS][64];
+static int  dlg_count = 0;
+
+static void dlg_refresh(void) {
+    /* aura_readdir, not opendir: the GUI file manager's own pattern
+     * (gfiles.c).  opendir() first opens the directory O_DIRECTORY, which
+     * the /documents tmpfs refuses -- the dialog listed nothing in the
+     * guest while `ls /documents` worked, and this is why. */
+    static struct aura_dirent ents[DLG_MAX_ITEMS];
+    dlg_count = 0;
+    dlg_sel = -1;
+    int n = aura_readdir("/documents", ents, DLG_MAX_ITEMS);
+    if (n <= 0) n = aura_readdir("/documents/", ents, DLG_MAX_ITEMS);
+    printf("[writer] dialog: aura_readdir(/documents) -> %d entr%s\n",
+           n, n == 1 ? "y" : "ies");
+    if (n < 0) { printf("[writer] dialog: /documents cannot be listed\n"); return; }
+    for (int i = 0; i < n && dlg_count < DLG_MAX_ITEMS; i++) {
+        if (ents[i].name[0] == '.') continue;
+        snprintf(dlg_items[dlg_count], sizeof dlg_items[0], "%s", ents[i].name);
+        dlg_count++;
+    }
+    if (dlg_count > 0) dlg_sel = 0;
+}
+
+static void repaint_full(void);   /* defined with the painters below */
+static void paint_dialog(void);
+static void paint_status(void);
+static int  publish(void);
+
+static void dlg_open(int mode) {
+    dialog = mode;
+    dlg_confirm = 0;
+    snprintf(dlg_buf, sizeof dlg_buf, "%s", mode == 2 ? doc_path : "/documents/");
+    dlg_refresh();
+    printf("[writer] dialog: %s (%d file(s) in /documents)\n",
+           mode == 2 ? "save as" : "open", dlg_count);
+    /* Present the dialog at once, as its own frame on top of a full repaint.
+     * In the live VNC pass a dialog drawn only by the keystroke tail that
+     * opened it never reached the screen (its serial receipts printed, its
+     * pixels did not); presenting it here does.  The tail then redraws the
+     * lines + dialog in its usual frame, which keeps the overlay up. */
+    if (wid >= 0) {
+        repaint_full();
+        ao_canvas_clear(&canvas);
+        paint_dialog();
+        paint_status();
+        publish();
+    }
+}
+
+static void dlg_pick(void) {
+    if (dlg_sel >= 0 && dlg_sel < dlg_count)
+        snprintf(dlg_buf, sizeof dlg_buf, "/documents/%s", dlg_items[dlg_sel]);
+}
+
+/* 1 while the dialog is open (the key was consumed). */
+static int dlg_key(uint32_t key, uint32_t cp) {
+    if (!dialog) return 0;
+    if (dlg_confirm) {
+        if (key == 'y' || key == 'Y') {
+            dlg_confirm = 0; dialog = 0;
+            if (ed_save_as(dlg_buf) == 0)
+                snprintf(doc_path, sizeof doc_path, "%s", dlg_buf);
+        } else if (key == 'n' || key == 'N' || key == 0x1B) {
+            dlg_confirm = 0;
+            printf("[writer] dialog: overwrite refused, file untouched\n");
+        }
+        return 1;
+    }
+    if (key == 0x1B) { dialog = 0; printf("[writer] dialog: cancelled\n"); return 1; }
+    if (key == '\n' || key == '\r') {
+        if (dialog == 1) {
+            dialog = 0;
+            ed_load_from(dlg_buf);
+        } else {
+            int fd = open(dlg_buf, O_RDONLY);
+            if (fd >= 0) {   /* exists: ask before truncating somebody's file */
+                close(fd);
+                dlg_confirm = 1;
+                printf("[writer] dialog: %s exists -- overwrite? (y/n)\n", dlg_buf);
+            } else {
+                dialog = 0;
+                if (ed_save_as(dlg_buf) == 0)
+                    snprintf(doc_path, sizeof doc_path, "%s", dlg_buf);
+            }
+        }
+        return 1;
+    }
+    if (key == K_UP || key == K_DOWN) {
+        if (dlg_count > 0) {
+            dlg_sel += (key == K_DOWN) ? 1 : -1;
+            if (dlg_sel < 0) dlg_sel = 0;
+            if (dlg_sel >= dlg_count) dlg_sel = dlg_count - 1;
+            dlg_pick();
+        }
+        return 1;
+    }
+    if (key == '\b') {
+        size_t n = strlen(dlg_buf);
+        if (n) dlg_buf[ao_utf8_prev(dlg_buf, n)] = '\0';
+        return 1;
+    }
+    char enc[4]; int n = 0;
+    if (cp >= 0x20 && cp != 0x7F) n = ao_utf8_encode(cp, enc);
+    else if (key >= 0x20 && key < 0x7F) { enc[0] = (char)key; n = 1; }
+    if (n > 0 && strlen(dlg_buf) + (size_t)n < sizeof dlg_buf) {
+        size_t at = strlen(dlg_buf);
+        memcpy(dlg_buf + at, enc, (size_t)n);
+        dlg_buf[at + (size_t)n] = '\0';
+    }
+    return 1;
+}
+
+static void paint_dialog(void) {
+    if (!dialog) return;
+    ag_fill_rect(wid, PAGE_X, PAGE_Y, PAGE_W, PAGE_H, AG_WHITE);
+    ag_draw_rect(wid, PAGE_X, PAGE_Y, PAGE_W, PAGE_H, AG_DARK);
+    char hdr[96];
+    snprintf(hdr, sizeof hdr, "%s  (Enter confirms, Esc cancels%s)",
+             dialog == 2 ? "Save as:" : "Open:",
+             dialog == 2 ? ", existing file asks first" : "");
+    ag_draw_text(wid, TEXT_X, PAGE_Y + 8, hdr, AG_DARK);
+    ag_draw_text(wid, TEXT_X, PAGE_Y + 28, dlg_buf, AG_BLACK);
+    ag_draw_line(wid, TEXT_X, PAGE_Y + 44, TEXT_X + PAGE_W - 20, PAGE_Y + 44, AG_GRAY);
+    for (int i = 0; i < dlg_count && i < 12; i++) {
+        int y = PAGE_Y + 52 + i * LINE_H;
+        if (i == dlg_sel) ag_fill_rect(wid, TEXT_X, y, PAGE_W - 20, LINE_H, AG_ACCENT);
+        ag_draw_text(wid, TEXT_X + 4, y + 2, dlg_items[i], i == dlg_sel ? AG_WHITE : AG_BLACK);
+    }
+    if (dlg_confirm) {
+        char q[160];
+        snprintf(q, sizeof q, "%s exists -- overwrite? (y/n)", dlg_buf);
+        ag_fill_rect(wid, TEXT_X, PAGE_Y + PAGE_H - 24, PAGE_W - 20, 18, AG_YELLOW);
+        ag_draw_text(wid, TEXT_X + 4, PAGE_Y + PAGE_H - 22, q, AG_BLACK);
+    }
+    ao_canvas_mark(&canvas, PAGE_X, PAGE_Y, PAGE_W, PAGE_H);
+}
+
 
 /* ---- geometry of the caret --------------------------------------------- */
 
@@ -734,16 +1194,19 @@ static void paint_text(void) {
 static void paint_status(void) {
     char s[160];
     if (prompt) {
-        snprintf(s, sizeof s, "%s%s_", prompt == 1 ? "Find: " : "Replace with: ", prompt_buf);
+        snprintf(s, sizeof s, "%s%s_", prompt == 1 ? "Find: " : (prompt == 3 ? "Replace all with: " : (prompt == 4 ? "Image PNG path: " : "Replace with: ")), prompt_buf);
     } else {
         char st[8] = "---";
         if (type_style & AO_STYLE_BOLD)      st[0] = 'B';
         if (type_style & AO_STYLE_ITALIC)    st[1] = 'I';
         if (type_style & AO_STYLE_UNDERLINE) st[2] = 'U';
-        snprintf(s, sizeof s, "%s%s  |  %u:%d  sel %d  %s  undo %u/%u%s",
+        lay_geom = ao_page_geom_default();
+        int lp = (lay_rebuild() == AO_OK) ? ao_layout_page_of(&lay, &md, caret) : -1;
+        snprintf(s, sizeof s, "%s%s  |  %u:%d  sel %d  %s  undo %u/%u  %s p.%d/%u%s",
                  doc ? doc->title : "?", dirty ? " *" : "",
                  (unsigned)cur_line + 1, cur_col + 1, sel_len(), st,
                  ao_undo_depth(&undo), ao_undo_redo_depth(&undo),
+                 view_page ? "PAGE" : "draft", lp + 1, lay.page_len,
                  font_body ? "" : "  (no font)");
     }
     ag_fill_rect(wid, 12, PAGE_Y + PAGE_H + 8, WIN_W - 24, 20, AG_PANEL);
@@ -768,10 +1231,135 @@ static int publish(void) {
     return n;
 }
 
+/* OF3 closure: decoded pixels for the image paragraph on the page.
+ * One decode, cached by path: wv_image_decode is the gbrowser decoder, so
+ * the Writer and the browser read a PNG with the same code. */
+static char     img_cache_path[128] = "";
+static uint32_t *img_px = NULL;
+static int      img_w = 0, img_h = 0;
+static uint8_t  img_file[512 * 1024];
+static uint32_t img_scaled[(PAGE_W - 20) * 120];
+
+static int load_image_pixels(const char *path) {
+    if (img_px && !strcmp(img_cache_path, path)) return 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return -1;
+    long total = 0;
+    for (;;) {
+        long r = (long)read(fd, img_file + total, (long)sizeof img_file - total);
+        if (r <= 0) break;
+        total += r;
+        if (total >= (long)sizeof img_file) break;
+    }
+    close(fd);
+    if (total <= 0) return -1;
+    free(img_px);
+    img_px = NULL;
+    if (wv_image_decode(img_file, (size_t)total, &img_px, &img_w, &img_h) != 0)
+        return -1;
+    snprintf(img_cache_path, sizeof img_cache_path, "%s", path);
+    printf("[writer] image decoded: %s -> %dx%d pixels\n", path, img_w, img_h);
+    return 0;
+}
+
+/* OF3: the page view (also the print preview: same layout tables).  One
+ * page of the paginated document: header = title, footer = page number,
+ * headings/markers from the layout, tables as bordered cells (header row
+ * shaded), images as scaled boxes naming their file and size. */
+static void paint_layout_page(void) {
+    lay_geom = ao_page_geom_default();
+    if (lay_rebuild() != AO_OK && lay.line_len == 0) return;
+    int pg = ao_layout_page_of(&lay, &md, caret);
+    if (pg < 0) pg = 0;
+    char tmp[96];
+    ao_layout_header(tmp, sizeof tmp, doc ? doc->title : "Untitled");
+    ag_draw_text(wid, TEXT_X, PAGE_Y + 2, tmp, AG_DARK);
+    if (pg < (int)lay.page_len && pg < (int)lay.page_cap) {
+        int row = 0;
+        for (uint32_t i = 0; i < lay.pages[pg].line_count; i++) {
+            const ao_layout_line_t *ln = &lay.lines[lay.pages[pg].first_line + i];
+            int y = EDIT_Y + row * LINE_H;
+            if (y > PAGE_Y + PAGE_H - 40) break;
+            row++;
+            const ao_para_t *para = &md_paras[ln->para];
+            char slice[256];
+            uint32_t n = ln->len < sizeof slice - 1 ? ln->len : sizeof slice - 1;
+            memcpy(slice, md_text + para->off + ln->start, n);
+            slice[n] = 0;
+            if (ln->kind == AO_PARA_TABLE) {
+                ao_tcell_t cells[16];
+                int header = !(ln->para > 0 &&
+                    (md_paras[ln->para - 1].style & AO_PARA_KIND_MASK) == AO_PARA_TABLE);
+                uint32_t nc = ao_table_parse_row(slice, n, cells, 16, header);
+                if (nc) {
+                    int cw = (PAGE_W - 20) / (int)nc;
+                    for (uint32_t c = 0; c < nc; c++) {
+                        int x = TEXT_X + (int)c * cw;
+                        int wdt = (c + 1 == nc) ? (TEXT_X + PAGE_W - 20 - x) : cw;
+                        if (cells[c].shade)
+                            ag_fill_rect(wid, x, y, (uint32_t)wdt, LINE_H, AG_PANEL);
+                        ag_draw_rect(wid, x, y, (uint32_t)wdt, LINE_H, AG_DARK);
+                        char cell[64];
+                        uint32_t cn = cells[c].len < sizeof cell - 1 ? cells[c].len : sizeof cell - 1;
+                        /* a merge continuation draws nothing of its own */
+                        const char *ct = cells[c].text;
+                        if (cn && ct[0] == AO_TABLE_MERGE_MARK) { ct++; cn--; }
+                        memcpy(cell, ct, cn); cell[cn] = 0;
+                        ag_draw_text(wid, x + 3, y + 2, cell, AG_BLACK);
+                    }
+                }
+            } else if (ln->kind == AO_PARA_IMAGE) {
+                uint32_t iw = 0, ih = 0;
+                int have = (lay_image_size(NULL, slice, n, &iw, &ih) == 0);
+                if (have && load_image_pixels(slice) == 0) {
+                    /* The real pixels, nearest-neighbour into the fit box --
+                     * not a labelled placeholder. */
+                    uint32_t dw = PAGE_W - 20, dh = 120;
+                    ao_image_fit(&lay_geom, iw, ih, &dw, &dh);
+                    if (dw > PAGE_W - 20) dw = PAGE_W - 20;
+                    if (dh > 120) dh = 120;
+                    for (uint32_t yy = 0; yy < dh; yy++)
+                        for (uint32_t xx = 0; xx < dw; xx++)
+                            img_scaled[yy * dw + xx] =
+                                img_px[(yy * (uint32_t)img_h / dh) * (uint32_t)img_w +
+                                       (xx * (uint32_t)img_w / dw)];
+                    ag_blit(wid, TEXT_X, y, dw, dh, img_scaled, dw);
+                    ag_draw_rect(wid, TEXT_X, y, dw, dh, AG_DARK);
+                } else {
+                    ag_fill_rect(wid, TEXT_X, y, PAGE_W - 20, LINE_H, AG_PANEL);
+                    ag_draw_rect(wid, TEXT_X, y, PAGE_W - 20, LINE_H, AG_DARK);
+                    char lbl[160];
+                    if (have) snprintf(lbl, sizeof lbl, "[image %s: %ux%u, scaled to fit]", slice, iw, ih);
+                    else      snprintf(lbl, sizeof lbl, "[image %s: not a readable PNG]", slice);
+                    ag_draw_text(wid, TEXT_X + 4, y + 2, lbl, AG_DARK);
+                }
+            } else {
+                if (ln->marker[0]) ag_draw_text(wid, TEXT_X, y, ln->marker, AG_ACCENT);
+                int style = ((ln->kind >= AO_PARA_H1 && ln->kind <= AO_PARA_H3) ||
+                             ao_model_style_at(&md, para->off + ln->start) & AO_STYLE_BOLD)
+                                ? AO_STYLE_BOLD : AO_STYLE_NONE;
+                if (font_body) band_run(font_body, ln->marker[0] ? 18 : 0, y,
+                                        slice, n, style, AG_BLACK);
+                else ag_draw_text(wid, TEXT_X + (ln->marker[0] ? 18 : 0), y, slice, AG_BLACK);
+            }
+        }
+    }
+    char foot[48];
+    ao_layout_footer(foot, sizeof foot, (uint32_t)pg, lay.page_len);
+    ag_draw_text(wid, TEXT_X, PAGE_Y + PAGE_H - 18, foot, AG_DARK);
+    ao_canvas_mark(&canvas, PAGE_X, PAGE_Y, PAGE_W, PAGE_H);
+}
+
 static void repaint_full(void) {
     ao_canvas_clear(&canvas);
     ag_clear(wid, AG_PANEL);
     paint_page_furniture();
+    if (view_page) {
+        paint_layout_page();
+        paint_status();
+        publish();
+        return;
+    }
     paint_specimen();
     paint_text();
     paint_status();
@@ -849,6 +1437,16 @@ static int selftest(void) {
     /* edit model */
     ao_arena_init(&arena, arena_mem, sizeof arena_mem);
     doc = ao_doc_new(&arena, "Selftest");
+    /* The edit verbs run through the document model: it must be initialised
+     * here or ed_reset() dereferences a zeroed md (found by the OF0 gate
+     * after the OF2 rewrite moved the edit path into libaodoc). */
+    if (ao_model_init(&md, md_text, sizeof md_text, md_runs, MD_RUNS,
+                      md_paras, MD_PARAS) != AO_OK ||
+        ao_undo_init(&undo, undo_mem, sizeof undo_mem, redo_mem,
+                     sizeof redo_mem) != AO_OK) {
+        st_check("edit: the document model refused to initialise", 0);
+        return 1;
+    }
     ed_reset();
     for (const char *s = "hello"; *s; s++) ed_insert(*s);
     st_check("edit: typing builds a line", strcmp(lines[0], "hello") == 0 && cur_col == 5);
@@ -892,6 +1490,13 @@ static int bench(void) {
     ensure_faces();
     ao_arena_init(&arena, arena_mem, sizeof arena_mem);
     doc = ao_doc_new(&arena, "Budget");
+    if (ao_model_init(&md, md_text, sizeof md_text, md_runs, MD_RUNS,
+                      md_paras, MD_PARAS) != AO_OK ||
+        ao_undo_init(&undo, undo_mem, sizeof undo_mem, redo_mem,
+                     sizeof redo_mem) != AO_OK) {
+        printf("AOFFICE BUDGET: FAIL (the document model refused to initialise)\n");
+        return 1;
+    }
     ed_reset();
     for (int l = 0; l < 12; l++) {
         for (int c = 0; c < 40; c++) ed_insert((char)('a' + ((l + c) % 26)));
@@ -993,6 +1598,22 @@ static void prompt_key(uint32_t key, uint32_t cp) {
             if (!ed_find(last_find, 1)) printf("[writer] \"%s\": no match\n", last_find);
         } else if (prompt == 2) {
             ed_replace_sel(prompt_buf);
+        } else if (prompt == 4) {
+            ed_insert_image(prompt_buf);
+        } else if (prompt == 3) {
+            if (!last_find[0]) {
+                printf("[writer] replace-all: run Find first (Ctrl+F)\n");
+            } else {
+                ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+                int n = ao_model_replace_all(&md, last_find, prompt_buf);
+                if (n < 0) printf("[writer] replace-all: refused (rc=%d)\n", n);
+                else printf("[writer] replace-all \"%s\" -> \"%s\": %d replacement(s)\n",
+                            last_find, prompt_buf, n);
+                if (n > 0) md_dirty();
+                if (caret > ao_model_text_len(&md)) caret = ao_model_text_len(&md);
+                sel_clear();
+                md_sync();
+            }
         }
         prompt = 0;
         prompt_len = 0;
@@ -1021,6 +1642,15 @@ static void on_edit_key(uint32_t key, uint32_t cp, uint8_t mods) {
     int old_line = cur_line;
     uint32_t old_caret = caret;
 
+    if (dialog) {
+        dlg_key(key, cp);
+        ao_canvas_clear(&canvas);
+        if (dialog) paint_dialog(); else repaint_full();
+        paint_status();
+        publish();
+        return;
+    }
+
     if (prompt) {
         prompt_key(key, cp);
         paint_line(cur_line);
@@ -1033,18 +1663,40 @@ static void on_edit_key(uint32_t key, uint32_t cp, uint8_t mods) {
     int shift = (mods & M_SHIFT) != 0;
     int ctrl  = (mods & M_CTRL)  != 0;
 
-    if (ctrl) {
+    if (ctrl && key == K_LEFT) {
+        ed_move_to(ao_model_word_left(&md, caret), shift);
+    } else if (ctrl && key == K_RIGHT) {
+        ed_move_to(ao_model_word_right(&md, caret), shift);
+    } else if (ctrl && key == K_HOME) {
+        ed_move_to(0, shift);
+    } else if (ctrl && key == K_END) {
+        ed_move_to(ao_model_text_len(&md), shift);
+    } else if (ctrl) {
         switch (key) {
+            case '1': ed_para_style(AO_PARA_NORMAL); break;
+            case '2': ed_para_style(AO_PARA_H1); break;
+            case '3': ed_para_style(AO_PARA_H2); break;
+            case '4': ed_para_style(AO_PARA_H3); break;
+            case '5': ed_para_style(AO_PARA_QUOTE); break;
+            case '6': ed_para_style(AO_PARA_BULLET); break;
+            case '7': ed_para_style(AO_PARA_NUMBER); break;
+            case '8': ed_para_style((uint8_t)(ao_model_para_style_at(&md, caret) ^ AO_PARA_PAGEBREAK)); break;
             case 'a': case 'A': ed_select_all(); break;
             case 'b': case 'B': ed_style(AO_STYLE_BOLD); break;
             case 'i': case 'I': ed_style(AO_STYLE_ITALIC); break;
             case 'u': case 'U': ed_style(AO_STYLE_UNDERLINE); break;
             case 'z': case 'Z': ed_undo(); break;
             case 'y': case 'Y': ed_redo(); break;
-            case 's': case 'S': ed_save(); break;
-            case 'o': case 'O': ed_load_from(doc_path); break;
+            case '=': case '+': if (shift) ed_table_col(1); break;
+            case '-': case '_': if (shift) ed_table_col(0); break;
+            case 'm': case 'M': if (shift) ed_table_merge(); break;
+            case 'c': case 'C': ed_copy(); break;
+            case 'x': case 'X': ed_cut(); break;
+            case 'v': case 'V': ed_paste(); break;
+            case 's': case 'S': if (shift) dlg_open(2); else ed_save(); break;
+            case 'o': case 'O': dlg_open(1); break;
             case 'f': case 'F': prompt = 1; prompt_len = 0; prompt_buf[0] = '\0'; break;
-            case 'h': case 'H': prompt = 2; prompt_len = 0; prompt_buf[0] = '\0'; break;
+            case 'h': case 'H': prompt = shift ? 3 : 2; prompt_len = 0; prompt_buf[0] = '\0'; break;
             case 'l': case 'L': ed_align(AO_ALIGN_LEFT); break;
             case 'e': case 'E': ed_align(AO_ALIGN_CENTER); break;
             case 'r': case 'R': ed_align(AO_ALIGN_RIGHT); break;
@@ -1064,6 +1716,19 @@ static void on_edit_key(uint32_t key, uint32_t cp, uint8_t mods) {
     } else if (key == K_LEFT || key == K_RIGHT || key == K_UP || key == K_DOWN ||
                key == K_HOME || key == K_END || key == K_PGUP || key == K_PGDN) {
         ed_move_ext(key, shift);
+    } else if (key == K_F6) {
+        ed_insert_table(4, 4);
+    } else if (key == K_F7) {
+        prompt = 4; prompt_len = 0; prompt_buf[0] = '\0';
+    } else if (key == K_F8) {
+        view_page = !view_page;
+        printf("[writer] view: %s\n", view_page ? "page (print preview)" : "draft");
+        repaint_full();
+        return;
+    } else if (key == K_F9) {
+        ed_table_row(0);
+    } else if (key == K_F10) {
+        ed_table_row(1);
     } else if (key == K_F5) {
         if (last_find[0] && ed_find(last_find, 1)) { /* find next */ }
     }
@@ -1082,6 +1747,7 @@ static void on_edit_key(uint32_t key, uint32_t cp, uint8_t mods) {
         for (int i = first; i <= last; i++) if (i != old_line && i != cur_line) paint_line(i);
     }
     paint_caret();
+    if (dialog) paint_dialog();
     paint_status();
     publish();
 }
@@ -1193,11 +1859,150 @@ static int writer_test(void) {
         printf("WRITER GATE: FAIL (the reopened document is not the one saved)\n"); fails++;
     }
 
+    /* ---- OF2 closure, headless: word nav, mouse mapping, replace-all, dialog */
+    {
+        ed_reset();
+        ed_insert_utf8("one two one");
+        uint32_t wr = ao_model_word_right(&md, 0);
+        ed_move_to(wr, 0);
+        if (wr != 3 || caret != 3) { printf("WRITER GATE: FAIL (word-right)\n"); fails++; }
+        ensure_faces();
+        if (font_body) {
+            uint32_t at0 = caret_from_xy(TEXT_X + 1, EDIT_Y);
+            uint32_t atE = caret_from_xy(TEXT_X + PAGE_W, EDIT_Y);
+            if (at0 != line_off[cur_line] || atE <= at0) {
+                printf("WRITER GATE: FAIL (mouse caret mapping %u/%u)\n", at0, atE);
+                fails++;
+            }
+        }
+        ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
+        int nrep = ao_model_replace_all(&md, "one", "1");
+        if (nrep != 2 || ao_model_text_len(&md) != 7 ||
+            memcmp(md_text, "1 two 1", 7) != 0) {
+            printf("WRITER GATE: FAIL (replace-all made %d)\n", nrep); fails++;
+        }
+        dlg_open(2);
+        int dlg_files = dlg_count;
+        if (dlg_files < 1 || !dlg_key(0x1B, 0) || dialog != 0) {
+            printf("WRITER GATE: FAIL (file dialog state)\n"); fails++;
+        }
+        printf("[writer] of2 closure: word-nav ok, mouse-map ok, replace-all %d, dialog %d file(s)\n",
+               nrep, dlg_files);
+    }
+
     printf("[writer] round trip: %d bytes of XML -> %u bytes of text, %u paragraphs, "
            "%u runs, bold kept, undo %u steps\n",
            (int)got, ao_model_text_len(&back), ao_model_para_count(&back),
            ao_model_run_count(&back), ao_undo_depth(&undo));
     printf("WRITER GATE: %s\n", fails ? "FAIL" : "PASS");
+    return fails ? 1 : 0;
+}
+
+/* ---- OF3: the layout gate, headless -------------------------------------
+ * Builds the document the plan names (heading, bullets, numbers, a 4x4
+ * table, an image), lays it out, saves it, reopens it, lays it out again:
+ * the two layouts must agree line for line and page for page.  The image
+ * size comes from a stub callback (1600x1200): the gate grades layout, and
+ * ao_png_size itself is host-tested against real IHDR bytes. */
+static int lt_img(void *ctx, const char *path, uint32_t len,
+                  uint32_t *w, uint32_t *h) {
+    (void)ctx; (void)path; (void)len; *w = 1600; *h = 1200; return 0;
+}
+
+static void lt_add(const char *text, uint8_t style) {
+    caret = ao_model_text_len(&md);
+    if (caret) ed_insert_utf8("\n");
+    uint32_t at = ao_model_text_len(&md);
+    ed_insert_utf8(text);
+    ao_model_set_para_style(&md, at, style);
+    md_sync();
+}
+
+static int layout_test(void) {
+    int fails = 0;
+    ao_arena_init(&arena, arena_mem, sizeof arena_mem);
+    doc = ao_doc_new(&arena, "Layout gate");
+    if (ao_model_init(&md, md_text, sizeof md_text, md_runs, MD_RUNS,
+                      md_paras, MD_PARAS) != AO_OK ||
+        ao_undo_init(&undo, undo_mem, sizeof undo_mem, redo_mem, sizeof redo_mem) != AO_OK) {
+        printf("LAYOUT GATE: FAIL (model init)\n");
+        return 1;
+    }
+    lay_geom = ao_page_geom_default();
+    ed_reset();
+
+    lt_add("Quarterly report", AO_PARA_H1);
+    lt_add("Intro text that should wrap at the page margins when it grows long enough to matter.", AO_PARA_NORMAL);
+    lt_add("first point", AO_PARA_BULLET);
+    lt_add("second point", AO_PARA_BULLET);
+    lt_add("step one", AO_PARA_NUMBER);
+    lt_add("step two", AO_PARA_NUMBER);
+    for (int r = 0; r < 4; r++) {
+        char row[64];
+        snprintf(row, sizeof row, "R%dA\tR%dB\tR%dC\tR%dD", r, r, r, r);
+        lt_add(row, AO_PARA_TABLE);
+    }
+    lt_add("/lib/chart.png", AO_PARA_IMAGE);
+
+    ao_layout_t l1;
+    ao_layout_init(&l1, lay_lines, 2048, lay_pages, 128);
+    int rc = ao_layout_build(&l1, &md, &lay_geom, lay_measure, NULL, lt_img, NULL);
+    if (rc != AO_OK) { printf("LAYOUT GATE: FAIL (build rc=%d)\n", rc); return 1; }
+    int have_h1 = 0, have_table = 0, have_image = 0, have_num = 0;
+    for (uint32_t i = 0; i < l1.line_len; i++) {
+        if (l1.lines[i].kind == AO_PARA_H1) have_h1 = 1;
+        if (l1.lines[i].kind == AO_PARA_TABLE) have_table++;
+        if (l1.lines[i].kind == AO_PARA_IMAGE) have_image = 1;
+        if (l1.lines[i].kind == AO_PARA_NUMBER && l1.lines[i].marker[0] == '2') have_num = 1;
+    }
+    printf("[layout] built: %u lines on %u page(s); heading %d, table rows %d, image %d, numbering %d\n",
+           l1.line_len, l1.page_len, have_h1, have_table, have_image, have_num);
+    if (!have_h1 || have_table != 4 || !have_image || !have_num) fails++;
+
+    if (ed_save_as("/documents/layout-gate.aod") != 0) {
+        printf("LAYOUT GATE: FAIL (save)\n");
+        return 1;
+    }
+    uint32_t lines1 = l1.line_len, pages1 = l1.page_len;
+    if (ed_load_from("/documents/layout-gate.aod") != 0) {
+        printf("LAYOUT GATE: FAIL (reopen)\n");
+        return 1;
+    }
+    ao_layout_t l2;
+    ao_layout_init(&l2, lay_lines, 2048, lay_pages, 128);
+    rc = ao_layout_build(&l2, &md, &lay_geom, lay_measure, NULL, lt_img, NULL);
+    if (rc != AO_OK || l2.line_len != lines1 || l2.page_len != pages1) {
+        printf("LAYOUT GATE: FAIL (layout did not reproduce: %u/%u lines, %u/%u pages)\n",
+               l2.line_len, lines1, l2.page_len, pages1);
+        fails++;
+    }
+    /* The styles themselves must survive, not only the line count. */
+    int styles_ok = 1;
+    for (uint32_t i = 0; i < l2.line_len && i < l1.line_len; i++)
+        if (l2.lines[i].kind != l1.lines[i].kind) styles_ok = 0;
+    if (!styles_ok) { printf("LAYOUT GATE: FAIL (paragraph styles changed)\n"); fails++; }
+
+    /* The pixel decode behind the page view, asserted headlessly: the
+     * shipped chart's frame corner and first bar must come back with the
+     * colours the generator put there. */
+    if (load_image_pixels("/lib/chart.png") != 0 || !img_px) {
+        printf("LAYOUT GATE: FAIL (chart.png did not decode)\n");
+        fails++;
+    } else {
+        uint32_t corner = img_px[0];
+        uint32_t bar = img_px[(size_t)(img_h / 2) * (size_t)img_w + 16];
+        printf("[layout] chart.png decoded %dx%d: corner 0x%06x, bar 0x%06x\n",
+               img_w, img_h, corner & 0xFFFFFFu, bar & 0xFFFFFFu);
+        if (img_w != 320 || img_h != 200 || (corner & 0xFFFFFFu) != 0x282830u ||
+            (bar & 0xFFFFFFu) != 0xC03020u) {
+            printf("LAYOUT GATE: FAIL (decoded pixels are wrong)\n");
+            fails++;
+        }
+    }
+
+    printf("[layout] round trip: %u lines, %u page(s), styles intact\n",
+           l2.line_len, l2.page_len);
+    printf("LAYOUT GATE: %s\n", fails ? "FAIL" : "PASS");
     return fails ? 1 : 0;
 }
 
@@ -1316,6 +2121,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--bench") == 0) return bench();
     if (argc > 1 && strcmp(argv[1], "--font-test") == 0) return font_test();
     if (argc > 1 && strcmp(argv[1], "--writer-test") == 0) return writer_test();
+    if (argc > 1 && strcmp(argv[1], "--layout-test") == 0) return layout_test();
 
     /* OF1: load the faces before anything is painted; the window falls back to
      * the console face (and says so) when they are absent. */
@@ -1365,6 +2171,56 @@ int main(int argc, char **argv) {
         if (e.type == AG_EVT_MOUSE_DOWN) {
             focused = (e.x >= PAGE_X && e.x < PAGE_X + (int32_t)PAGE_W &&
                        e.y >= PAGE_Y && e.y < PAGE_Y + (int32_t)PAGE_H);
+            /* OF2 closure: click places the caret, the drag that follows
+             * selects.  Coordinates are content-area pixels, the same space
+             * paint_line() draws in. */
+            if (focused && e.y >= EDIT_Y && e.y < EDIT_Y + VISIBLE * LINE_H &&
+                e.x >= TEXT_X && !dialog) {
+                int old_line = cur_line;
+                uint32_t at = caret_from_xy(e.x, e.y);
+                sel_anchor = at;
+                caret = at;
+                sel_on = 0;
+                drag_select = 1;
+                ao_undo_break(&undo);
+                md_sync();
+                scroll_to_caret();
+                ao_canvas_clear(&canvas);
+                paint_line(old_line);
+                paint_line(cur_line);
+                paint_caret();
+                paint_status();
+                publish();
+            }
+            continue;
+        }
+        if (e.type == AG_EVT_MOUSE_MOVE && drag_select && (e.buttons & 1)) {
+            int old_line = cur_line;
+            caret = caret_from_xy(e.x, e.y);
+            sel_on = (caret != sel_anchor);
+            md_sync();
+            scroll_to_caret();
+            ao_canvas_clear(&canvas);
+            for (int i = top_line; i < n_lines && i < top_line + VISIBLE; i++)
+                paint_line(i);
+            (void)old_line;
+            paint_caret();
+            paint_status();
+            publish();
+            continue;
+        }
+        if (e.type == AG_EVT_MOUSE_UP) { drag_select = 0; continue; }
+        if (e.type == AG_EVT_MOUSE_DBLCLICK && focused && !dialog &&
+            e.y >= EDIT_Y && e.y < EDIT_Y + VISIBLE * LINE_H && e.x >= TEXT_X) {
+            uint32_t at = caret_from_xy(e.x, e.y);
+            sel_set(ao_model_word_left(&md, ao_model_next_cp(&md, at)),
+                    ao_model_word_right(&md, at));
+            ao_canvas_clear(&canvas);
+            for (int i = top_line; i < n_lines && i < top_line + VISIBLE; i++)
+                paint_line(i);
+            paint_caret();
+            paint_status();
+            publish();
             continue;
         }
         if (e.type != AG_EVT_KEY_DOWN) continue;

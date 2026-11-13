@@ -71,11 +71,27 @@ typedef struct {
     uint8_t  _pad;
 } ao_run_t;
 
+/* Paragraph styles (OF3).  The style is a paragraph property, not a run
+ * property: "Heading 1" is a fact about the block, direct formatting (the
+ * run bits) layers over it.  AO_PARA_PAGEBREAK is a flag bit in the same
+ * byte: this paragraph starts a new page. */
+#define AO_PARA_NORMAL   0u
+#define AO_PARA_H1       1u
+#define AO_PARA_H2       2u
+#define AO_PARA_H3       3u
+#define AO_PARA_QUOTE    4u
+#define AO_PARA_BULLET   5u
+#define AO_PARA_NUMBER   6u
+#define AO_PARA_TABLE    7u   /* text is one table ROW, cells split by '\t' */
+#define AO_PARA_IMAGE    8u   /* text is the image path, nothing else */
+#define AO_PARA_KIND_MASK 0x0Fu
+#define AO_PARA_PAGEBREAK 0x80u
+
 typedef struct {
     uint32_t off, len;             /* slice of the text pool */
     uint32_t first_run, run_count; /* slice of the run array */
     uint8_t  align;                /* AO_ALIGN_* */
-    uint8_t  _pad;
+    uint8_t  style;                /* AO_PARA_* kind | AO_PARA_PAGEBREAK */
     int16_t  indent;               /* px, left indent */
     int16_t  space_before;         /* px, ish: OF3 turns these into layout */
     int16_t  space_after;
@@ -163,6 +179,12 @@ int ao_model_set_size_font(ao_model_t *m, uint32_t pos, uint32_t n,
 /* Paragraph alignment for the paragraph containing `pos`. */
 int ao_model_set_align(ao_model_t *m, uint32_t pos, uint8_t align);
 
+/* Paragraph style (AO_PARA_* kind, PAGEBREAK flag preserved unless the
+ * caller includes it) and left indent, for the paragraph containing `pos`. */
+int     ao_model_set_para_style(ao_model_t *m, uint32_t pos, uint8_t style);
+uint8_t ao_model_para_style_at(const ao_model_t *m, uint32_t pos);
+int     ao_model_set_indent(ao_model_t *m, uint32_t pos, int16_t indent_px);
+
 /* ------------------------------------------------------------------ text */
 
 /* Copy [pos, pos+n) into out (NUL-terminated).  Returns the byte count copied
@@ -175,6 +197,29 @@ int ao_model_copy_text(const ao_model_t *m, uint32_t pos, uint32_t n,
  * the OF1 fonts do not have yet. */
 int64_t ao_model_find(const ao_model_t *m, uint32_t from, const char *needle,
                       int fold_ascii);
+
+/* ------------------------------------------------- OF2 closure: navigation */
+
+/* Word navigation.  A word is a maximal run of word codepoints (letters and
+ * digits of any script, '_'); whitespace and punctuation are their own class
+ * and are skipped as a group.  word_left returns the start of the word (or
+ * class run) ending at or before `pos`; word_right returns the end of the
+ * word (or class run) starting at or after `pos`.  Both step by codepoint,
+ * so a Cyrillic word is one word, never a row of half-letters. */
+uint32_t ao_model_word_left(const ao_model_t *m, uint32_t pos);
+uint32_t ao_model_word_right(const ao_model_t *m, uint32_t pos);
+
+/* Number of non-overlapping occurrences of `needle` (same folding rule as
+ * ao_model_find).  0 for an empty needle. */
+uint32_t ao_model_count(const ao_model_t *m, const char *needle, int fold_ascii);
+
+/* Replace every non-overlapping occurrence of `needle` with `with`, scanning
+ * left to right and continuing AFTER each replacement (so a replacement that
+ * itself contains the needle terminates).  Returns the number replaced, or a
+ * negative AO_E_*; on AO_E_FULL the replacements already made stay made and
+ * the caller is told by the negative return.  An empty needle is AO_E_ARG,
+ * never an infinite loop. */
+int ao_model_replace_all(ao_model_t *m, const char *needle, const char *with);
 
 /* --------------------------------------------------------- serialisation */
 

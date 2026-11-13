@@ -105,6 +105,11 @@ ALL_CASES=(
     # OF2: the Writer's document core -- model, undo and the native file
     # format, graded from the guest through /documents.
     test_office_writer
+    test_office_writer_layout
+    test_office_sheet_core
+    test_office_sheet_gui
+    test_office_sheet_perf
+    test_office_slide
     test_opengl
     test_process_cleanup
     test_memory_reaping
@@ -365,7 +370,7 @@ group_re() {
         lx)    echo '^test_lx_[a-z0-9_]+$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+|bt_hci_transport)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net|tcp_wscale)$' ;;
-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui|office_shell|office_font)$' ;;
+        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui|office_shell|office_font|office_writer|office_writer_layout|office_sheet_core|office_sheet_gui|office_sheet_perf|office_slide)$' ;;
         # ---- the Win32 personality: THREE shards (2026-09-30) ----
         #
         # It used to be one `w32` group and it had become the critical path

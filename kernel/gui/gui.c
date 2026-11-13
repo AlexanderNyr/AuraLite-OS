@@ -292,6 +292,20 @@ static int win_alive(int wid) {
     return windows && wid >= 0 && wid < GUI_MAX_WINDOWS && windows[wid].in_use;
 }
 
+/* A visible presentation window owns the whole display.  Unlike NO_DECOR,
+ * which only removes a titlebar, this mode also suppresses the taskbar and
+ * notification/snap overlays so the app can show exactly one slide per
+ * screen.  The window itself remains an ordinary owner-checked GUI surface. */
+static int gui_presentation_active(void) {
+    if (!windows) return 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        const gui_win_t *w = &windows[i];
+        if (w->in_use && w->visible && !w->minimized &&
+            (w->flags & GUI_WIN_PRESENTATION)) return 1;
+    }
+    return 0;
+}
+
 static int32_t abs_diff(int32_t a, int32_t b) { return a > b ? a - b : b - a; }
 
 static int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
@@ -663,6 +677,11 @@ static void request_window_close(int wid) {
 int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                       const char *title, uint32_t flags) {
     if (w == 0 || h == 0) return -1;
+    if (flags & GUI_WIN_PRESENTATION) {
+        flags |= GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS | GUI_WIN_ALWAYS_TOP;
+        start_menu_open = 0;
+        taskbar_more_open = 0;
+    }
 
     /* Pre-compute content size to reject before allocating a slot. */
     uint32_t bw, bh;
@@ -2136,6 +2155,7 @@ static int taskbar_overflow_hit(int32_t mx, int32_t my) {
 /* ---- Taskbar rendering ---- */
 
 static void draw_taskbar(void) {
+    if (gui_presentation_active()) return;
     const gui_theme_t *t = &active_theme;
     uint32_t fw = gfx_get_width();
     uint32_t fh = gfx_get_height();
@@ -2460,9 +2480,11 @@ static void compositor_render_dirty(void) {
     /* Restore the union clip for the taskbar / notifications that follow. */
     gfx_clip_set(ux, uy, uw, uh);
 
-    draw_snap_preview();
-    draw_taskbar();
-    draw_notifications();
+    if (!gui_presentation_active()) {
+        draw_snap_preview();
+        draw_taskbar();
+        draw_notifications();
+    }
 
     /* Flip the union we clipped the composite to (BUG-32: dirty_count is
      * cleared only now, after the union has been consumed).  Cursor is
@@ -2522,14 +2544,12 @@ static void compositor_render(void) {
         gfx_clip_clear();
     }
 
-    /* Snap preview overlay. */
-    draw_snap_preview();
-
-    /* Taskbar. */
-    draw_taskbar();
-
-    /* Notifications. */
-    draw_notifications();
+    /* Desktop chrome yields completely to a presentation surface. */
+    if (!gui_presentation_active()) {
+        draw_snap_preview();
+        draw_taskbar();
+        draw_notifications();
+    }
 
     /* Cursor stamped for the flip only, then peeled off the back buffer. */
     cursor_stamp_and_flip_full();
@@ -2733,6 +2753,7 @@ static int hit_icon(int32_t mx, int32_t my) {
 
 /* ---- Taskbar hit-test ---- */
 static int taskbar_hit(int32_t mx, int32_t my) {
+    if (gui_presentation_active()) return -1;
     uint32_t fh = gfx_get_height();
     uint32_t tb_h = active_theme.taskbar_h;
     if ((uint32_t)my < fh - tb_h) return -1;

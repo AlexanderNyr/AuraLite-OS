@@ -63,6 +63,7 @@ static void put_escaped(sink_t *k, const char *s, uint32_t n) {
             case '<': puts_(k, "&lt;"); break;
             case '>': puts_(k, "&gt;"); break;
             case '"': puts_(k, "&quot;"); break;
+            case '\x01': puts_(k, "&#1;"); break;   /* AO_TABLE_MERGE_MARK */
             default:  put(k, &s[i], 1); break;
         }
     }
@@ -84,7 +85,21 @@ int ao_io_export(const ao_model_t *m, char *out, size_t cap, size_t *len_out) {
         }
         puts_(&k, "\" indent=\"");
         put_u32(&k, (uint32_t)(p->indent < 0 ? 0 : p->indent));
-        puts_(&k, "\">\n");
+        puts_(&k, "\" pstyle=\"");
+        switch (p->style & AO_PARA_KIND_MASK) {
+            case AO_PARA_H1:     puts_(&k, "h1"); break;
+            case AO_PARA_H2:     puts_(&k, "h2"); break;
+            case AO_PARA_H3:     puts_(&k, "h3"); break;
+            case AO_PARA_QUOTE:  puts_(&k, "quote"); break;
+            case AO_PARA_BULLET: puts_(&k, "bullet"); break;
+            case AO_PARA_NUMBER: puts_(&k, "number"); break;
+            case AO_PARA_TABLE:  puts_(&k, "table"); break;
+            case AO_PARA_IMAGE:  puts_(&k, "image"); break;
+            default:             puts_(&k, "normal"); break;
+        }
+        puts_(&k, "\"");
+        if (p->style & AO_PARA_PAGEBREAK) puts_(&k, " pb=\"1\"");
+        puts_(&k, ">\n");
 
         int wrote_run = 0;
         for (uint32_t r = 0; r < p->run_count; r++) {
@@ -252,6 +267,8 @@ static int apply_run_attrs(ao_model_t *m, uint32_t pos, uint32_t n,
  * though the model creates paragraphs lazily. */
 #define AO_IO_MAX_PARAS 4096
 static uint8_t p_aligns[AO_IO_MAX_PARAS];
+static uint8_t p_styles[AO_IO_MAX_PARAS];   /* OF3 */
+static int16_t p_indents[AO_IO_MAX_PARAS];  /* OF3: was parsed, then dropped */
 
 /* The reader builds into the caller's model as it walks the file, so a failure
  * half way through cannot be rolled back -- which is why ao_io_import() clears
@@ -263,6 +280,7 @@ static int import_into(ao_model_t *m, const char *xml, size_t len) {
     cur_t c = { xml, len, 0 };
     int depth = 0, in_aodoc = 0, in_p = 0, seen_version = 0;
     uint8_t p_align = AO_ALIGN_LEFT;
+    uint8_t p_style = AO_PARA_NORMAL;
     int16_t p_indent = 0;
 
     char text[64 * 1024];          /* scratch for the current run's text */
@@ -327,7 +345,7 @@ static int import_into(ao_model_t *m, const char *xml, size_t len) {
             if (depth > AO_IO_MAX_DEPTH) return AO_E_FORMAT;
 
             /* attributes */
-            if (!strcmp(name, "p")) { p_align = AO_ALIGN_LEFT; p_indent = 0; }
+            if (!strcmp(name, "p")) { p_align = AO_ALIGN_LEFT; p_style = AO_PARA_NORMAL; p_indent = 0; }
             int self_close = 0;
             for (;;) {
                 skip_ws(&c);
@@ -374,6 +392,18 @@ static int import_into(ao_model_t *m, const char *xml, size_t len) {
                             : !strcmp(aval, "right")   ? AO_ALIGN_RIGHT
                             : !strcmp(aval, "justify") ? AO_ALIGN_JUSTIFY
                                                        : AO_ALIGN_LEFT;
+                } else if (!strcmp(name, "p") && !strcmp(aname, "pstyle")) {
+                    p_style = !strcmp(aval, "h1")     ? AO_PARA_H1
+                            : !strcmp(aval, "h2")     ? AO_PARA_H2
+                            : !strcmp(aval, "h3")     ? AO_PARA_H3
+                            : !strcmp(aval, "quote")  ? AO_PARA_QUOTE
+                            : !strcmp(aval, "bullet") ? AO_PARA_BULLET
+                            : !strcmp(aval, "number") ? AO_PARA_NUMBER
+                            : !strcmp(aval, "table")  ? AO_PARA_TABLE
+                            : !strcmp(aval, "image")  ? AO_PARA_IMAGE
+                                                      : AO_PARA_NORMAL;
+                } else if (!strcmp(name, "p") && !strcmp(aname, "pb")) {
+                    if (!strcmp(aval, "1")) p_style |= AO_PARA_PAGEBREAK;
                 } else if (!strcmp(name, "p") && !strcmp(aname, "indent")) {
                     int v = 0;
                     for (const char *q = aval; *q >= '0' && *q <= '9'; q++) {
@@ -423,8 +453,10 @@ static int import_into(ao_model_t *m, const char *xml, size_t len) {
                 /* Alignment is applied after the whole document is read: the
                  * model creates a paragraph only once something is written into
                  * it, so the index of an empty paragraph is not known yet. */
-                p_aligns[p_seen++] = p_align;
-                (void)p_indent;
+                p_aligns[p_seen] = p_align;
+                p_styles[p_seen] = p_style;
+                p_indents[p_seen] = p_indent;
+                p_seen++;
                 in_p = 1;
             } else if (!strcmp(name, "r")) {
                 if (!in_p) return AO_E_FORMAT;
@@ -467,7 +499,9 @@ static int import_into(ao_model_t *m, const char *xml, size_t len) {
      * count matches by construction; verify rather than assume. */
     if (ao_model_para_count(m) != p_seen) { ao_model_clear(m); return AO_E_FORMAT; }
     for (uint32_t i = 0; i < p_seen; i++) {
-        if (ao_model_set_align(m, m->paras[i].off, p_aligns[i]) != AO_OK) {
+        if (ao_model_set_align(m, m->paras[i].off, p_aligns[i]) != AO_OK ||
+            ao_model_set_para_style(m, m->paras[i].off, p_styles[i]) != AO_OK ||
+            ao_model_set_indent(m, m->paras[i].off, p_indents[i]) != AO_OK) {
             ao_model_clear(m);
             return AO_E_FORMAT;
         }

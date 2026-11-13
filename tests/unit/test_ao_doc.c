@@ -459,6 +459,41 @@ static void test_fuzz(void) {
            ao_model_text_len(&m), ao_model_para_count(&m), ao_model_run_count(&m));
 }
 
+
+/* ---- OF2 closure: word navigation, match count, replace-all ------------ */
+static void test_of2_closure(void) {
+    ao_model_t m;
+    /* bytes: "foo bar  привет, мир! end" — Cyrillic is one word per word. */
+    fresh(&m);
+    ins(&m, 0, "foo bar  \xd0\xbf\xd1\x80\xd0\xb8\xd0\xb2\xd0\xb5\xd1\x82, end");
+    uint32_t end = ao_model_text_len(&m);
+    ck("word: right from 0 lands at end of 'foo'", ao_model_word_right(&m, 0) == 3);
+    ck("word: right skips the space to end of 'bar'", ao_model_word_right(&m, 3) == 7);
+    ck("word: left from end lands at start of 'end'",
+       ao_model_word_left(&m, end) == end - 3);
+    uint32_t mid = ao_model_word_right(&m, 7);   /* past two spaces + Cyrillic word */
+    ck("word: right crosses spaces as one Cyrillic word", mid == 7 + 2 + 12);
+    ck("word: left returns to the Cyrillic word start", ao_model_word_left(&m, mid) == 9);
+    ck("word: left at 0 and right at end are fixed points",
+       ao_model_word_left(&m, 0) == 0 && ao_model_word_right(&m, end) == end);
+
+    fresh(&m);
+    ins(&m, 0, "One two one TWO one");
+    ck("count: case-folded matches", ao_model_count(&m, "one", 1) == 3);
+    ck("count: case-sensitive matches", ao_model_count(&m, "one", 0) == 2);
+    ck("count: empty needle counts nothing", ao_model_count(&m, "", 1) == 0);
+
+    ck("replace-all: replaces every folded match",
+       ao_model_replace_all(&m, "one", "1") == 3);
+    ck("replace-all: resulting text", text_is(&m, "1 two 1 TWO 1"));
+    ck("replace-all: a replacement containing the needle terminates (and folds case)",
+       ao_model_replace_all(&m, "two", "two two") == 2 &&
+       text_is(&m, "1 two two 1 two two 1"));
+    ck("replace-all: empty needle is refused, not a hang",
+       ao_model_replace_all(&m, "", "x") == AO_E_ARG);
+    ck("replace-all: model still valid", ao_model_valid(&m, NULL));
+}
+
 int main(void) {
     test_empty();
     test_editing();
@@ -467,6 +502,7 @@ int main(void) {
     test_binary();
     test_xml();
     test_fuzz();
+    test_of2_closure();
     printf("AO DOC: %s (%d checks)\n", failures ? "FAIL" : "PASS", checks);
     return failures ? 1 : 0;
 }
