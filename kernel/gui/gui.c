@@ -1296,6 +1296,31 @@ int gui_font_metrics(uint32_t *width, uint32_t *height,
     return 0;
 }
 
+/* Blend a single pixel with per-pixel alpha (0=transparent, 255=opaque).
+ * This is the primitive every soft-edge renderer builds on: SDF text,
+ * rounded corners, shadows.  Same formula as gui_blit_alpha, but a single
+ * pixel and no source pointer, so renderers can call it directly.
+ * Returns 0 on success (including out-of-bounds clip), -1 if wid is dead. */
+int gui_blend_pixel(int wid, int32_t x, int32_t y, uint32_t color, uint8_t a) {
+    if (!win_alive(wid)) return -1;
+    gui_win_t *w = &windows[wid];
+    if (x < 0 || y < 0 || (uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h)
+        return 0;
+    if (a == 0) return 0;                       /* fully transparent */
+    uint32_t *p = &w->back[y * (int32_t)w->back_w + x];
+    if (a == 255) { *p = color; return 0; }     /* fast path: opaque */
+    uint32_t d  = *p;
+    uint8_t sr = (color >> 16) & 0xFF, sg = (color >> 8) & 0xFF, sb = color & 0xFF;
+    uint8_t dr = (d >> 16) & 0xFF,     dg = (d >> 8) & 0xFF,     db = d & 0xFF;
+    uint8_t ia = 255 - a;
+    uint32_t r = ((uint32_t)sr * a + (uint32_t)dr * ia) / 255;
+    uint32_t g = ((uint32_t)sg * a + (uint32_t)dg * ia) / 255;
+    uint32_t b = ((uint32_t)sb * a + (uint32_t)db * ia) / 255;
+    *p = (r << 16) | (g << 8) | b;
+    w->content_dirty = 1;
+    return 0;
+}
+
 
 int gui_fill_rect(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H, uint32_t color) {
     if (!win_alive(wid)) return -1;
@@ -1343,31 +1368,15 @@ int gui_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint3
     return 0;
 }
 
+/* Client text goes through the kernel-space Rust SDF renderer.  The
+ * compositor's own chrome (taskbar, titlebar, notifications, start menu,
+ * clock) still uses gfx_draw_text -- PSF 8x16 -- because it draws into the
+ * front framebuffer, not a window back-buffer, and the SDF module only
+ * knows how to composite into a window.  The 16 px default is twice the
+ * PSF cell height and matches the Inter atlas's design size. */
 int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) {
     if (!win_alive(wid)) return -1;
-    const struct psf_font *f = psf_get_font();
-    if (!f) return -1;
-
-    int32_t cx = x;
-    for (; *s; s++) {
-        if (*s == '\n') { cx = x; y += (int32_t)f->height; continue; }
-        uint32_t idx = (unsigned char)*s;
-        if (idx >= f->num_glyphs) idx = 0;
-        const uint8_t *glyph = f->data + (uint64_t)idx * f->bytes_per_glyph;
-        for (uint32_t gy = 0; gy < f->height; gy++) {
-            const uint8_t *row_bytes = glyph + gy * f->bytes_per_row;
-            for (uint32_t gx = 0; gx < f->width; gx++) {
-                uint8_t byte = row_bytes[gx / 8];
-                uint8_t bit_pos = 7 - (gx % 8);
-                if ((byte >> bit_pos) & 1) {
-                    gui_draw_pixel(wid, cx + (int32_t)gx, y + (int32_t)gy, color);
-                }
-            }
-        }
-        cx += (int32_t)f->width;
-    }
-    windows[wid].content_dirty = 1;
-    return 0;
+    return sdf_draw_text(wid, x, y, s, color, 16);
 }
 
 int gui_clear(int wid, uint32_t color) {

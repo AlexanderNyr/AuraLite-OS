@@ -121,8 +121,33 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch
 # because both compile to the same object path build/.../foo.o, which would
 # collide and double-link. Keep assembly stubs named distinctly (e.g.
 # foo_stubs.asm). ISR stubs live in isr_stubs.asm for this reason.
+
+### RUST: x86-64 core libraries
+RUST_TARGET_LIBDIR := $(shell $(RUSTC) --print target-libdir --target=x86_64-unknown-none)
+
+RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
+RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
+
+# =============================================================================
+# SDF font renderer (kernel-space Rust, x86_64-unknown-none).
+#
+# Same shape as RSBR in the userspace section: one .rs -> one object via
+# rustc, no Cargo.toml.  The atlas.bin is include_bytes!'d at compile time,
+# so it must sit next to lib.rs.  RUSTFLAGS is already x86_64-unknown-none +
+# relocation-model=static, exactly what a higher-half kernel module needs;
+# -C panic=abort is added because a Rust panic in kernel space must halt,
+# not unwind (there is no unwind runtime here).
+# =============================================================================
+SDF_DIR       := kernel/gui/sdf
+SDF_LIB       := $(SDF_DIR)/lib.rs
+SDF_OBJ       := $(BUILD_DIR)/sdf_font.o
+SDF_RUSTFLAGS = $(RUSTFLAGS) -C panic=abort
+
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
-               $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
+               $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS)) \
+               $(SDF_OBJ) \
+               $(RUST_CORE_RLIB) \
+               $(RUST_COMPILER_BUILTINS_RLIB)
 
 .PHONY: all kernel user iso usb vbox vmware vm-configs run run-usb-msc clean \
         deps-check test-unit test-integration test-integration-fast test \
@@ -810,6 +835,20 @@ $(STAGE2_BIN): $(STAGE2_SRC) $(STAGE2_INCS) $(BOOT_OFFSETS_INC)
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# Rust -> object.  --emit obj gives one relocatable directly; no rlib, no
+# ar extraction, no linker gymnastics.  --crate-type lib matches what cargo
+# would do for a `lib` crate.
+$(SDF_OBJ): $(SDF_LIB) $(SDF_DIR)/atlas.bin
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(SDF_RUSTFLAGS) \
+		--edition=2021 \
+		--crate-name sdf \
+		--crate-type lib \
+		--emit obj \
+		-o $@ \
+		$(SDF_LIB)
+	@echo "[rustc] $@ ($$(du -h $@ | cut -f1))"
 
 # USB_PLAN U2: -Wunreachable-code, as an error, for the USB drivers.
 #
@@ -1508,12 +1547,6 @@ $(USER_BUILD)/insttest.o: userspace/tests/insttest/insttest.c $(USER_CFLAGS_INC)
 RSBR_DIR  := lib/rsbr
 RSBR_LIB  := $(RSBR_DIR)/lib.rs
 RSBR_RLIB := $(BUILD_DIR)/librsbr.rlib
-
-### RUST: x86-64 core libraries
-RUST_TARGET_LIBDIR := $(shell $(RUSTC) --print target-libdir --target=x86_64-unknown-none)
-
-RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
-RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
 
 $(RSBR_RLIB): $(shell find $(RSBR_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
