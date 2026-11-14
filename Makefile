@@ -23,6 +23,8 @@ REQUIRED_TOOLS := $(CC) $(LD) $(AS) $(HOST_CC) python3 tar \
 KERNEL_ELF  := $(BUILD_DIR)/kernel.elf
 ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
+RUSTC := rustc
+
 # -mcmodel=kernel: code lives in the top 2 GiB (negative addresses); required so
 #   clang emits relocations valid for the higher-half link address.
 # -mno-red-zone: the 128-byte red zone is unsafe under interrupts.
@@ -473,28 +475,63 @@ $(FSIORV_ELF): $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/fsiorv.o $(USERRV_BUILD
 	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/user_rv.ld \
 	    $(USERRV_BUILD)/crt0_rv.o $(USERRV_BUILD)/fsiorv.o $(USERRV_BUILD)/syscall_rv.o -o $@
 
-### RUST (RESIDUE R8): the rv64 edition of the rustes/rsbr row --
-### the SAME two sources (cfg'd trap instruction, cfg'd counter),
-### the tenant's own user layout script.  _start lives in the rlib.
-RUST_TARGET_RV := riscv64gc-unknown-none-elf
-RUSTFLAGSRV    := --target=$(RUST_TARGET_RV) -C relocation-model=static -C opt-level=2 -C debug-assertions=no
-RSBRRV_RLIB    := $(BUILD_DIR)/librsbr_rv.rlib
-RUSTESRV_ELF   := $(USERRV_BUILD)/rustes
 
-$(RSBRRV_RLIB): lib/rsbr/common.rs
+### RSBR (Rust System Bridge Runtime) — RV64 edition.
+### Rust runtime and system API for AuraLite-OS.
+
+RUST_TARGET_RV := riscv64gc-unknown-none-elf
+
+RUSTFLAGSRV := --target=$(RUST_TARGET_RV) \
+	-C relocation-model=static \
+	-C opt-level=2 \
+	-C debug-assertions=no
+
+RSBRRV_DIR  := lib/rsbr
+RSBRRV_LIB  := $(RSBRRV_DIR)/lib.rs
+RSBRRV_RLIB := $(BUILD_DIR)/librsbr_rv.rlib
+
+### RUST: RV64 core libraries
+RUST_LIBDIR_RV := $(shell $(RUSTC) --print target-libdir --target=$(RUST_TARGET_RV))
+
+RUST_CORE_RLIB_RV := $(firstword $(wildcard $(RUST_LIBDIR_RV)/libcore-*.rlib))
+RUST_BUILTINS_RLIB_RV := $(firstword $(wildcard $(RUST_LIBDIR_RV)/libcompiler_builtins-*.rlib))
+
+RUSTESRV_ELF := $(USERRV_BUILD)/rustes
+
+$(RSBRRV_RLIB): $(shell find $(RSBRRV_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGSRV) --crate-type rlib -o $@ $<
+	$(RUSTC) $(RUSTFLAGSRV) \
+		--crate-name rsbr \
+		--crate-type rlib \
+		-o $@ \
+		$(RSBRRV_LIB)
 	@echo "[rustc] $@"
 
+
+### RSBR: compile rustes.rs for RV64
 $(USERRV_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBRRV_RLIB)
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGSRV) --emit obj --extern rsbr=$(RSBRRV_RLIB) -o $@ $<
+	$(RUSTC) $(RUSTFLAGSRV) \
+		--edition=2021 \
+		--crate-type lib \
+		--emit obj \
+		--extern rsbr=$(RSBRRV_RLIB) \
+		-o $@ $<
 	@echo "[rustc] $@"
 
+
+
 $(RUSTESRV_ELF): $(USERRV_BUILD)/rustes.o $(RSBRRV_RLIB) lib/libcrv/user_rv.ld
-	$(LD) -m elf64lriscv -nostdlib -static -T lib/libcrv/user_rv.ld \
-	    $(USERRV_BUILD)/rustes.o $(RSBRRV_RLIB) -o $@
+	@mkdir -p $(dir $@)
+	$(LD) -m elf64lriscv -nostdlib -static \
+		-T lib/libcrv/user_rv.ld \
+		$(USERRV_BUILD)/rustes.o \
+		$(RSBRRV_RLIB) \
+		$(RUST_CORE_RLIB_RV) \
+		$(RUST_BUILTINS_RLIB_RV) \
+		-o $@
 	@echo "  [userrv] $@"
+
 
 userrv: $(INITRV_ELF) $(SHELLRV_ELF) $(FSIORV_ELF) $(RUSTESRV_ELF)
 
@@ -553,26 +590,59 @@ $(FSIOA64_ELF): $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/fsioa64.o $(USERA64
 	$(LD) -m aarch64linux -nostdlib -static -T lib/libca64/user_a64.ld \
 	    $(USERA64_BUILD)/crt0_a64.o $(USERA64_BUILD)/fsioa64.o $(USERA64_BUILD)/syscall_a64.o -o $@
 
-### RUST (RESIDUE R8): the aarch64 edition -- same two sources,
-### same receipt, the fourth tenant's layout script.
+### RUST (RESIDUE R8): AArch64 edition
 RUST_TARGET_A64 := aarch64-unknown-none
-RUSTFLAGSA64    := --target=$(RUST_TARGET_A64) -C relocation-model=static -C opt-level=2 -C debug-assertions=no
-RSBRA64_RLIB    := $(BUILD_DIR)/librsbr_a64.rlib
-RUSTESA64_ELF   := $(USERA64_BUILD)/rustes
 
-$(RSBRA64_RLIB): lib/rsbr/common.rs
+RUSTFLAGSA64 := --target=$(RUST_TARGET_A64) \
+	-C relocation-model=static \
+	-C opt-level=2 \
+	-C debug-assertions=no
+
+RSBRA64_DIR  := lib/rsbr
+RSBRA64_LIB  := $(RSBRA64_DIR)/lib.rs
+RSBRA64_RLIB := $(BUILD_DIR)/librsbr_a64.rlib
+
+RUST_LIBDIR_A64 := $(shell $(RUSTC) --print target-libdir --target=$(RUST_TARGET_A64))
+RUST_CORE_RLIB_A64 := $(firstword $(wildcard $(RUST_LIBDIR_A64)/libcore-*.rlib))
+RUST_BUILTINS_RLIB_A64 := $(firstword $(wildcard $(RUST_LIBDIR_A64)/libcompiler_builtins-*.rlib))
+
+RUSTESA64_ELF := $(USERA64_BUILD)/rustes
+
+
+### RSBR: build library for AArch64
+$(RSBRA64_RLIB): $(shell find $(RSBRA64_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGSA64) --crate-type rlib -o $@ $<
+	$(RUSTC) $(RUSTFLAGSA64) \
+		--edition=2021 \
+		--crate-name rsbr \
+		--crate-type rlib \
+		-o $@ \
+		$(RSBRA64_LIB)
 	@echo "[rustc] $@"
 
+
+### RSBR: compile rustes.rs for AArch64
 $(USERA64_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBRA64_RLIB)
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGSA64) --emit obj --extern rsbr=$(RSBRA64_RLIB) -o $@ $<
+	$(RUSTC) $(RUSTFLAGSA64) \
+		--edition=2021 \
+		--crate-type lib \
+		--emit obj \
+		--extern rsbr=$(RSBRA64_RLIB) \
+		-o $@ $<
 	@echo "[rustc] $@"
 
+
+### RSBR: link rustes for AArch64
 $(RUSTESA64_ELF): $(USERA64_BUILD)/rustes.o $(RSBRA64_RLIB) lib/libca64/user_a64.ld
-	$(LD) -m aarch64linux -nostdlib -static -T lib/libca64/user_a64.ld \
-	    $(USERA64_BUILD)/rustes.o $(RSBRA64_RLIB) -o $@
+	@mkdir -p $(dir $@)
+	$(LD) -m aarch64linux -nostdlib -static \
+		-T lib/libca64/user_a64.ld \
+		$(USERA64_BUILD)/rustes.o \
+		$(RSBRA64_RLIB) \
+		$(RUST_CORE_RLIB_A64) \
+		$(RUST_BUILTINS_RLIB_A64) \
+		-o $@
 	@echo "  [usera64] $@"
 
 usera64: $(INITA64_ELF) $(SHELLA64_ELF) $(FSIOA64_ELF) $(RUSTESA64_ELF)
@@ -835,7 +905,6 @@ USER_CFLAGS  += $(VERSION_DEFINE)
 USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections
 
 ### RUST: compiler and flags for Rust
-RUSTC       := rustc
 RUST_TARGET := x86_64-unknown-none
 RUSTFLAGS   := --target=$(RUST_TARGET) -C relocation-model=static -C opt-level=2 -C debug-assertions=no
 
@@ -1432,25 +1501,53 @@ $(USER_BUILD)/insttest.o: userspace/tests/insttest/insttest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
-### RUST: rsbr - Rust Bridge library
-RSBR_DIR := lib/rsbr
+
+### RSBR (Rust System Bridge Runtime) — x86-64 edition.
+### Rust runtime and system API for AuraLite-OS.
+
+RSBR_DIR  := lib/rsbr
+RSBR_LIB  := $(RSBR_DIR)/lib.rs
 RSBR_RLIB := $(BUILD_DIR)/librsbr.rlib
 
-$(RSBR_RLIB): $(RSBR_DIR)/common.rs
+### RUST: x86-64 core libraries
+RUST_TARGET_LIBDIR := $(shell $(RUSTC) --print target-libdir --target=x86_64-unknown-none)
+
+RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
+RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
+
+$(RSBR_RLIB): $(shell find $(RSBR_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGS) --crate-type rlib -o $@ $<
+	$(RUSTC) $(RUSTFLAGS) \
+		--edition=2021 \
+		--crate-name rsbr \
+		--crate-type rlib \
+		-o $@ \
+		$(RSBR_LIB)
 	@echo "[rustc] $@"
 
-### RUST: compile rustes.rs with rsbr
+### RUST: compile rustes.rs with RSBR
 $(USER_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBR_RLIB)
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(RUSTFLAGS) --emit obj --extern rsbr=$(RSBR_RLIB) -o $@ $<
+	$(RUSTC) $(RUSTFLAGS) \
+		--edition=2021 \
+		--crate-type lib \
+		--emit obj \
+		--extern rsbr=$(RSBR_RLIB) \
+		-o $@ $<
 	@echo "[rustc] $@"
+
+
 
 $(USER_BUILD)/rustes.elf: $(USER_BUILD)/rustes.o $(RSBR_RLIB) lib/libc/user.ld
 	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) $< $(RSBR_RLIB) -o $@
+	$(LD) $(USER_LDFLAGS) \
+		$(USER_BUILD)/rustes.o \
+		$(RSBR_RLIB) \
+		$(RUST_CORE_RLIB) \
+		$(RUST_COMPILER_BUILTINS_RLIB) \
+		-o $@
 	@echo "[link] $@"
+
 
 # ---- cryptotest (INTERNET_PLAN.md N1): in-guest libatls smoke test ----
 $(USER_BUILD)/cryptotest.o: userspace/tests/cryptotest/cryptotest.c \
