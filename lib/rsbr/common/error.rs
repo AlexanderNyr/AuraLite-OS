@@ -3,15 +3,20 @@ use core::fmt;
 /// Errors returned by the RSBR safe API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
-    /// AuraLite returned a negative errno value. The stored errno is positive.
     Syscall(i32),
-    /// A write operation reported success but wrote zero bytes.
     WriteZero,
-    /// A syscall returned a value that cannot be represented by the API.
     InvalidSyscallResult,
-    /// A `core::fmt::Write` implementation failed independently of a syscall.
     Formatting,
 }
+
+/// Common errno values that cross the syscall boundary.
+/// Kept as bare constants (not enum variants) so existing `match` arms
+/// in `io`/`process` keep compiling unchanged.
+pub const EINTR:  i32 = 4;
+pub const EINVAL: i32 = 22;
+pub const EFAULT: i32 = 14;
+pub const ESRCH:  i32 = 3;
+pub const EBADF:  i32 = 9;
 
 impl Error {
     /// Returns the positive errno for syscall errors.
@@ -20,6 +25,17 @@ impl Error {
             Self::Syscall(code) => Some(code),
             _ => None,
         }
+    }
+
+    /// True when a syscall was interrupted by an actionable signal
+    /// (`-EINTR`). Used by `time::sleep_ms` to decide whether to retry.
+    pub const fn is_eintr(self) -> bool {
+        matches!(self, Self::Syscall(EINTR))
+    }
+
+    /// True when a syscall rejected an argument (`-EINVAL`).
+    pub const fn is_einval(self) -> bool {
+        matches!(self, Self::Syscall(EINVAL))
     }
 }
 
