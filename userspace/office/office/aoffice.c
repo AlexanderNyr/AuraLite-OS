@@ -33,6 +33,8 @@
 #include "aomodel.h"
 #include "aoundo.h"
 #include "aoio.h"
+#include "aopackage.h"
+#include "aozip.h"
 #include "aolayout.h"
 #include "wv_image.h"   /* OF3 closure: the gbrowser PNG decoder, shared */
 
@@ -180,7 +182,10 @@ static long last_pixels;
 #define MD_TEXT_BYTES (48u * 1024u)
 #define MD_RUNS       2048u
 #define MD_PARAS      1024u
-#define IO_MAX        (96u * 1024u)
+/* `ao_io_export_bound()` is just under 448 KiB at this model's caps; the
+ * package writer streams XML directly, while these two 512-KiB buffers bound
+ * an input package and any deflated part scratch during load/extraction. */
+#define IO_MAX        (512u * 1024u)
 
 static char       md_text[MD_TEXT_BYTES];
 static ao_run_t   md_runs[MD_RUNS];
@@ -567,25 +572,56 @@ static void ed_replace_sel(const char *with) {
 }
 
 /* ---- files -------------------------------------------------------------
- * The whole point of the XML format: a document this program saves is a file
- * `cat` can print and a second instance can open, with no private state.
+ * `.aod` is a deterministic store-only ZIP package. The XML remains a part
+ * inside the package, while the loader keeps accepting legacy OF2–OF6 XML.
  */
 static char io_buf[IO_MAX];
 static char io_buf2[IO_MAX];
 
+typedef struct {
+    int fd;
+    size_t written;
+} zip_fd_sink_t;
+
+static int zip_fd_write(void *context, const void *bytes, size_t length) {
+    zip_fd_sink_t *sink = (zip_fd_sink_t *)context;
+    const uint8_t *p = (const uint8_t *)bytes;
+    while (length) {
+        ssize_t n = write(sink->fd, p, length);
+        if (n <= 0) return -1;
+        p += (size_t)n; length -= (size_t)n;
+        sink->written += (size_t)n;
+    }
+    return 0;
+}
+
+static int discard_xml(void *context, const void *bytes, size_t length) {
+    (void)context; (void)bytes; (void)length;
+    return 0;
+}
+
 static int ed_save_as(const char *path) {
-    size_t n = 0;
-    if (ao_io_export(&md, io_buf, sizeof io_buf, &n) != AO_OK) {
+    size_t xml_len = 0;
+    if (ao_io_export_stream(&md, discard_xml, NULL, &xml_len) != AO_OK) {
         printf("[writer] export refused (document too large?)\n");
         return -1;
     }
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) { printf("[writer] cannot open %s for writing\n", path); return -1; }
-    ssize_t w = write(fd, io_buf, n);
+    zip_fd_sink_t sink = { fd, 0 };
+    size_t archive_len = 0, written_xml = 0;
+    int rc = ao_package_export(&md, zip_fd_write, &sink,
+                               &archive_len, &written_xml);
     close(fd);
-    if (w != (ssize_t)n) { printf("[writer] short write on %s\n", path); return -1; }
-    printf("[writer] saved %s: %u bytes of XML, %u paragraphs, %u runs, %u undo steps\n",
-           path, (unsigned)n, ao_model_para_count(&md), ao_model_run_count(&md),
+    if (rc != AO_OK || sink.written != archive_len || written_xml != xml_len) {
+        printf("[writer] ZIP save failed for %s (rc=%d, wrote=%u/%u bytes)\n",
+               path, rc, (unsigned)sink.written, (unsigned)archive_len);
+        return -1;
+    }
+    printf("[writer] saved %s: %u-byte ZIP (%u bytes content.xml), "
+           "%u paragraphs, %u runs, %u undo steps\n",
+           path, (unsigned)archive_len, (unsigned)written_xml,
+           ao_model_para_count(&md), ao_model_run_count(&md),
            ao_undo_depth(&undo));
     dirty = 0;
     return 0;
@@ -594,14 +630,12 @@ static int ed_save_as(const char *path) {
 static int ed_load_from(const char *path) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) { printf("[writer] cannot open %s\n", path); return -1; }
-    ssize_t n = read(fd, io_buf, sizeof io_buf - 1);
+    ssize_t n = read(fd, io_buf, sizeof(io_buf));
     close(fd);
     if (n <= 0) { printf("[writer] %s is empty or unreadable\n", path); return -1; }
-    io_buf[n] = '\0';
-    int rc = ao_io_import(&md, io_buf, (size_t)n);
+    int rc = ao_package_import(&md, io_buf, (size_t)n, io_buf2, sizeof(io_buf2));
     if (rc != AO_OK) {
-        /* ao_io_import leaves the document EMPTY on failure by contract, so the
-         * old one is gone; say so rather than show a half-loaded page. */
+        /* The importer leaves the model empty on every refusal path. */
         printf("[writer] %s is not a document this version reads (rc=%d)\n", path, rc);
         md_sync();
         return -1;
@@ -612,9 +646,66 @@ static int ed_load_from(const char *path) {
     sel_clear();
     dirty = 0;
     snprintf(doc_path, sizeof doc_path, "%s", path);
-    printf("[writer] opened %s: %u bytes, %u paragraphs, %u runs\n", path,
+    printf("[writer] opened %s: %u text bytes, %u paragraphs, %u runs\n", path,
            ao_model_text_len(&md), ao_model_para_count(&md), ao_model_run_count(&md));
     md_sync();
+    return 0;
+}
+
+static int extract_content_part(const char *archive_path, const char *out_path) {
+    int fd = open(archive_path, O_RDONLY);
+    if (fd < 0) { printf("[writer] cannot open package %s\n", archive_path); return -1; }
+    ssize_t n = read(fd, io_buf, sizeof(io_buf));
+    close(fd);
+    if (n <= 0) { printf("[writer] package is empty or unreadable\n"); return -1; }
+
+    ao_zip_reader_t reader;
+    int rc = ao_zip_reader_init(&reader, io_buf, (size_t)n);
+    if (rc != AO_ZIP_OK) {
+        printf("[writer] ZIP reader refused %s: %s\n", archive_path,
+               ao_zip_error_string(rc));
+        return -1;
+    }
+    printf("[writer] package listing: %u part(s)\n", (unsigned)ao_zip_reader_count(&reader));
+    for (size_t i = 0; i < ao_zip_reader_count(&reader); i++) {
+        ao_zip_entry_t e;
+        rc = ao_zip_reader_entry_at(&reader, i, &e);
+        if (rc != AO_ZIP_OK) return -1;
+        printf("[writer] package part: %.*s method=%s compressed=%u size=%u\n",
+               (int)e.name_len, e.name,
+               e.method == AO_ZIP_STORE ? "store" : "deflate",
+               e.compressed_size, e.uncompressed_size);
+    }
+    ao_zip_entry_t content;
+    rc = ao_zip_reader_find(&reader, AO_PACKAGE_CONTENT_PART,
+                            sizeof(AO_PACKAGE_CONTENT_PART) - 1u, &content);
+    if (rc != AO_ZIP_OK) {
+        printf("[writer] package has no unique content.xml (%s)\n",
+               ao_zip_error_string(rc));
+        return -1;
+    }
+    const uint8_t *xml = NULL; size_t xml_len = 0;
+    if (content.method == AO_ZIP_STORE) {
+        rc = ao_zip_entry_view(&reader, &content, &xml, &xml_len);
+    } else {
+        rc = ao_zip_extract(&reader, &content, io_buf2, sizeof(io_buf2), &xml_len);
+        xml = (const uint8_t *)io_buf2;
+    }
+    if (rc != AO_ZIP_OK) {
+        printf("[writer] cannot extract content.xml: %s\n", ao_zip_error_string(rc));
+        return -1;
+    }
+    fd = open(out_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) { printf("[writer] cannot write %s\n", out_path); return -1; }
+    size_t left = xml_len; const uint8_t *p = xml;
+    while (left) {
+        ssize_t wrote = write(fd, p, left);
+        if (wrote <= 0) { close(fd); return -1; }
+        p += (size_t)wrote; left -= (size_t)wrote;
+    }
+    close(fd);
+    printf("[writer] extracted content.xml: %u bytes -> %s\n",
+           (unsigned)xml_len, out_path);
     return 0;
 }
 
@@ -1818,14 +1909,15 @@ static int writer_test(void) {
            "%u undo / %u redo steps\n", (unsigned)na,
            ao_undo_depth(&undo), ao_undo_redo_depth(&undo));
 
-    /* Save, read back through a second model, compare the FILE bytes. */
+    /* Save a ZIP package, read it into a second model, and compare the native
+     * XML part byte-for-byte after model import/export. */
     if (ed_save_as(WRITER_TEST_PATH) != 0) {
         printf("WRITER GATE: FAIL (save)\n");
         return 1;
     }
     int fd = open(WRITER_TEST_PATH, O_RDONLY);
     if (fd < 0) { printf("WRITER GATE: FAIL (the shell cannot see the saved file)\n"); return 1; }
-    ssize_t got = read(fd, io_buf, sizeof io_buf - 1);
+    ssize_t got = read(fd, io_buf, sizeof io_buf);
     close(fd);
     if (got <= 0) { printf("WRITER GATE: FAIL (saved file is empty)\n"); return 1; }
 
@@ -1834,8 +1926,9 @@ static int writer_test(void) {
     static ao_para_t p2[MD_PARAS];
     ao_model_t back;
     ao_model_init(&back, t2, sizeof t2, r2, MD_RUNS, p2, MD_PARAS);
-    int rc = ao_io_import(&back, io_buf, (size_t)got);
-    if (rc != AO_OK) { printf("WRITER GATE: FAIL (the reader refused our own file, rc=%d)\n", rc); fails++; }
+    int rc = ao_package_import(&back, io_buf, (size_t)got,
+                               io_buf2, sizeof io_buf2);
+    if (rc != AO_OK) { printf("WRITER GATE: FAIL (the reader refused our package, rc=%d)\n", rc); fails++; }
     if (ao_model_text_len(&back) != ao_model_text_len(&md) ||
         memcmp(t2, md_text, ao_model_text_len(&md)) != 0) {
         printf("WRITER GATE: FAIL (text did not survive the round trip)\n"); fails++;
@@ -1843,10 +1936,20 @@ static int writer_test(void) {
     if (ao_model_style_at(&back, 0) != AO_STYLE_BOLD) {
         printf("WRITER GATE: FAIL (bold did not survive the round trip)\n"); fails++;
     }
-    size_t n2 = 0;
-    if (ao_io_export(&back, io_buf2, sizeof io_buf2, &n2) != AO_OK || n2 != (size_t)got ||
-        memcmp(io_buf, io_buf2, (size_t)got) != 0) {
-        printf("WRITER GATE: FAIL (save -> load -> save is not byte identical)\n"); fails++;
+    size_t n2 = 0, part_len = 0;
+    ao_zip_reader_t package;
+    ao_zip_entry_t content;
+    const uint8_t *content_xml = NULL;
+    int zrc = ao_zip_reader_init(&package, io_buf, (size_t)got);
+    if (zrc == AO_ZIP_OK)
+        zrc = ao_zip_reader_find(&package, AO_PACKAGE_CONTENT_PART,
+                                 sizeof(AO_PACKAGE_CONTENT_PART) - 1u, &content);
+    if (zrc == AO_ZIP_OK)
+        zrc = ao_zip_entry_view(&package, &content, &content_xml, &part_len);
+    int xrc = ao_io_export(&back, io_buf2, sizeof io_buf2, &n2);
+    if (zrc != AO_ZIP_OK || xrc != AO_OK || n2 != part_len ||
+        memcmp(io_buf2, content_xml, part_len) != 0) {
+        printf("WRITER GATE: FAIL (save -> load -> save XML part is not byte identical)\n"); fails++;
     }
 
     /* Reopen it through the file system and the reader -- the same call Ctrl+O
@@ -1890,7 +1993,7 @@ static int writer_test(void) {
                nrep, dlg_files);
     }
 
-    printf("[writer] round trip: %d bytes of XML -> %u bytes of text, %u paragraphs, "
+    printf("[writer] round trip: %d bytes of ZIP -> %u bytes of text, %u paragraphs, "
            "%u runs, bold kept, undo %u steps\n",
            (int)got, ao_model_text_len(&back), ao_model_para_count(&back),
            ao_model_run_count(&back), ao_undo_depth(&undo));
@@ -2121,6 +2224,8 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--bench") == 0) return bench();
     if (argc > 1 && strcmp(argv[1], "--font-test") == 0) return font_test();
     if (argc > 1 && strcmp(argv[1], "--writer-test") == 0) return writer_test();
+    if (argc > 3 && strcmp(argv[1], "--extract-content") == 0)
+        return extract_content_part(argv[2], argv[3]);
     if (argc > 1 && strcmp(argv[1], "--layout-test") == 0) return layout_test();
 
     /* OF1: load the faces before anything is painted; the window falls back to

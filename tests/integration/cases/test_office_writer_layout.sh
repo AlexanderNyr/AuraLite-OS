@@ -31,7 +31,9 @@ trap il_dump_on_error EXIT
 il_send_delay 7
 il_send "run aoffice --layout-test"
 il_send_delay 5
-il_send "cat /documents/layout-gate.aod"
+il_send "run aoffice --extract-content /documents/layout-gate.aod /documents/layout-gate-content.xml"
+il_send_delay 3
+il_send "cat /documents/layout-gate-content.xml"
 il_send_delay 3
 il_send "exit"
 
