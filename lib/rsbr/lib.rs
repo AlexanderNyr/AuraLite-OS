@@ -1,4 +1,3 @@
-
 #![no_std]
 
 mod arch;
@@ -7,6 +6,7 @@ pub mod common;
 mod syscall;
 pub mod io;
 pub mod process;
+pub mod time;
 mod runtime;
 
 pub use common::error::{Error, Result};
@@ -20,8 +20,17 @@ pub mod prelude {
         read, write, write_all,
     };
     pub use crate::process::{exit, getpid};
+    pub use crate::time::{
+        clock_getres, clock_gettime, gettimeofday, time,
+        nanosleep, sleep_ms, usleep,
+        realtime,
+        TimeSpec, TimeVal, TimeT,
+        CLOCK_REALTIME, CLOCK_MONOTONIC,
+        CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID,
+    };
     pub use crate::{eprint, eprintln, print, println};
 }
+
 /// Writes formatted text to stdout.
 #[macro_export]
 macro_rules! print {
