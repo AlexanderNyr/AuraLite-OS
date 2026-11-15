@@ -1,12 +1,16 @@
+// kernel/gui/lib.rs
+
 #![no_std]
 
 use core::panic::PanicInfo;
 
-mod gui_drawing;
-mod gui_dirty;
+mod drawing;
+mod dirty;
+mod render;
+mod desktop;
 
-#[path = "sdf/gui_sdf.rs"]
-mod gui_sdf;
+#[path = "sdf/sdf.rs"]
+mod sdf;
 
 #[panic_handler]
 fn panic(_: &PanicInfo) -> ! {

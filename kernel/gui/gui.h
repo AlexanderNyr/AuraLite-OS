@@ -343,6 +343,10 @@ int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
 int gui_blend_pixel(int wid, int32_t x, int32_t y, uint32_t color, uint8_t a);
 int sdf_draw_text(int wid, int32_t x, int32_t y, const char *s,
                   uint32_t color, uint32_t px_size);
+int gui_draw_screen_text(int32_t x, int32_t y, const char *text,
+                         uint32_t color, uint32_t px_size);
+int gui_screen_text_width(const char *text, uint32_t px_size,
+                          uint32_t *out_width);
 
 
 int gui_blend_pixels4(

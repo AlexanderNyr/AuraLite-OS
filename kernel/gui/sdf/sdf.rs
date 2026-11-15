@@ -158,6 +158,23 @@ struct Glyph {
     atlas_b: f32,
     atlas_r: f32,
     atlas_t: f32,
+    drawable: bool,
+}
+
+#[inline]
+fn blank_glyph(advance: f32) -> Glyph {
+    Glyph {
+        advance,
+        plane_l: 0.0,
+        plane_b: 0.0,
+        plane_r: 0.0,
+        plane_t: 0.0,
+        atlas_l: 0.0,
+        atlas_b: 0.0,
+        atlas_r: 0.0,
+        atlas_t: 0.0,
+        drawable: false,
+    }
 }
 
 // msdf-atlas-gen does not guarantee sorted codepoints.
@@ -176,6 +193,7 @@ fn glyph_for(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
                 atlas_b: read_f32(record, 28),
                 atlas_r: read_f32(record, 32),
                 atlas_t: read_f32(record, 36),
+                drawable: true,
             };
 
             if !glyph.advance.is_finite()
@@ -188,14 +206,34 @@ fn glyph_for(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
                 || !glyph.atlas_r.is_finite()
                 || !glyph.atlas_t.is_finite()
                 || glyph.advance < 0.0
-                || glyph.plane_r <= glyph.plane_l
-                || glyph.plane_t <= glyph.plane_b
-                || glyph.atlas_r <= glyph.atlas_l
-                || glyph.atlas_t <= glyph.atlas_b
                 || glyph.atlas_l < 0.0
                 || glyph.atlas_b < 0.0
                 || glyph.atlas_r > atlas.width as f32
                 || glyph.atlas_t > atlas.height as f32
+            {
+                return None;
+            }
+
+            // U+0020 is layout only: keep its advance, but never rasterize
+            // atlas data or replace it with the visible '?' glyph.
+            if codepoint == 0x20 {
+                return Some(blank_glyph(glyph.advance));
+            }
+
+            // Other empty glyph records are also valid when both their plane
+            // and atlas rectangles are degenerate.
+            let no_plane = glyph.plane_r == glyph.plane_l
+                && glyph.plane_t == glyph.plane_b;
+            let no_atlas = glyph.atlas_r == glyph.atlas_l
+                && glyph.atlas_t == glyph.atlas_b;
+            if no_plane && no_atlas {
+                return Some(blank_glyph(glyph.advance));
+            }
+
+            if glyph.plane_r <= glyph.plane_l
+                || glyph.plane_t <= glyph.plane_b
+                || glyph.atlas_r <= glyph.atlas_l
+                || glyph.atlas_t <= glyph.atlas_b
             {
                 return None;
             }
@@ -207,10 +245,30 @@ fn glyph_for(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
 }
 
 #[inline]
+fn space_advance(atlas: &Atlas) -> f32 {
+    glyph_for(atlas, 0x20)
+        .map(|glyph| glyph.advance)
+        .filter(|advance| advance.is_finite() && *advance > 0.0)
+        .unwrap_or(0.278)
+}
+
+#[inline]
 fn glyph_for_char(atlas: &Atlas, ch: char) -> Option<Glyph> {
-    glyph_for(atlas, ch as u32)
-        .or_else(|| glyph_for(atlas, 0xFFFD))
-        .or_else(|| glyph_for(atlas, b'?' as u32))
+    match ch {
+        // A missing space record must still advance the pen and must never
+        // fall through to the replacement-glyph path.
+        ' ' => Some(glyph_for(atlas, 0x20).unwrap_or_else(|| blank_glyph(0.278))),
+        // Tabs are four normal spaces. They are layout, not visible glyphs.
+        '\t' => Some(blank_glyph(space_advance(atlas) * 4.0)),
+        '\r' => Some(blank_glyph(0.0)),
+        ch if ch.is_whitespace() => Some(
+            glyph_for(atlas, ch as u32)
+                .unwrap_or_else(|| blank_glyph(space_advance(atlas))),
+        ),
+        _ => glyph_for(atlas, ch as u32)
+            .or_else(|| glyph_for(atlas, 0xFFFD))
+            .or_else(|| glyph_for(atlas, b'?' as u32)),
+    }
 }
 
 #[inline]
@@ -287,7 +345,7 @@ unsafe fn blend_four(
 ) {
     match target {
         TextTarget::Buffer { pixels, width, height, stride } => {
-            let _ = crate::gui_drawing::gui_rust_blend_pixels4(
+            let _ = crate::drawing::gui_rust_blend_pixels4(
                 pixels,
                 width,
                 height,
@@ -314,7 +372,7 @@ unsafe fn blend_one(
 ) {
     match target {
         TextTarget::Buffer { pixels, width, height, stride } => {
-            let _ = crate::gui_drawing::gui_rust_blend_pixel(
+            let _ = crate::drawing::gui_rust_blend_pixel(
                 pixels, width, height, stride, x, y, color, alpha,
             );
         }
@@ -333,6 +391,10 @@ fn draw_glyph(
     color: u32,
     px_size: f32,
 ) {
+    if !glyph.drawable {
+        return;
+    }
+
     let scale = px_size;
 
     let x0 = pen_x + glyph.plane_l * scale;
