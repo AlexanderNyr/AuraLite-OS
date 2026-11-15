@@ -1,20 +1,27 @@
-/* gui.c — kernel-side GUI core v2.0: compositor, window manager, event router.
+/* gui.c — kernel-side GUI controller and compositor.
  *
- * Major changes from v1:
- *   - Theme engine: all colors/sizes configurable via gui_theme_t.
- *   - Dirty-rect tracking: only recompose changed regions.
- *   - Window snapping: drag to screen edges (left/right/top half, maximize).
- *   - Right-click / middle-click support with CONTEXT_MENU event.
- *   - Desktop icons with click-to-launch.
- *   - Notification popups above the taskbar.
- *   - ALWAYS_TOP and TOOL_WINDOW window flags.
- *   - Optimised row-based blitting with memcpy instead of per-pixel loops.
- *   - Double-click on titlebar toggles maximize.
- *   - Keyboard shortcuts: Alt+F4 = close, Alt+Space = context menu.
- *   - Start menu in taskbar (toggled by clicking "AuraLite" button).
- *   - Refined cursor rendering with outline.
- *   - Window edge/corner resize (not just bottom-right grip).
- *   - Minimize-to-taskbar with restore on click.
+ * The AuraLite GUI is undergoing a gradual migration from C to Rust.
+ * This file remains the C-facing compatibility layer and continues to own
+ * window-manager state, window lifecycle, focus and z-order, input routing,
+ * event delivery, and compositor orchestration.
+ *
+ * Rust-side responsibilities:
+ *   - gui_drawing.rs: window-buffer drawing, pixel blending, rectangles,
+ *     lines, blitting, bulk pixel operations, and x86_64 SSE2 paths.
+ *   - gui_dirty.rs: bounded dirty-rectangle tracking and snapshots.
+ *   - gui_render.rs: staged window surface, content, and chrome rendering.
+ *   - sdf/gui_sdf.rs: Inter MSDF rendering to window buffers and screen.
+ *   - desktop/*.rs: desktop icons, taskbar, start menu, notifications,
+ *     application catalogue, interaction handlers, and taskbar layout.
+ *
+ * C-side responsibilities:
+ *   - Window state, parenting, hit-testing, focus, and event queues.
+ *   - Keyboard/mouse routing and dispatch to the Rust desktop handlers.
+ *   - Desktop composition, clipping, dirty scheduling, and presentation.
+ *
+ * The migration is intentionally incremental. Existing public interfaces in
+ * gui.h remain C APIs; selected implementation details cross a narrow C ABI
+ * so current kernel and userspace call sites do not need to change at once.
  */
 
 #include <stdint.h>
@@ -24,7 +31,6 @@
 #include <stdatomic.h>
 #include "kernel/gui/gui.h"
 #include "kernel/gui/gui_shell.h"
-#include "kernel/gui/taskbar_layout.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/perfstat.h"
@@ -43,21 +49,7 @@
 
 #define GUI_CONTENT_PAD 4u
 
-#if defined(__x86_64__) && \
-    (defined(__clang__) || defined(__GNUC__)) && \
-    !defined(__TINYC__)
-
-#include <emmintrin.h>
-
-#define GUI_HAVE_SSE2 1
-#define GUI_SSE2_TARGET __attribute__((target("sse2")))
-
-#else
-
-#define GUI_HAVE_SSE2 0
-#define GUI_SSE2_TARGET
-
-#endif
+/* Pixel SIMD implementations are provided by gui_drawing.rs. */
 
 /* ===================================================================
  * Theme
@@ -100,7 +92,7 @@ static const gui_theme_t default_theme = {
     .shadow_offset   = 4,
 
     /* Dimensions */
-    .taskbar_h       = 32,
+    .taskbar_h       = 40,
     .titlebar_h      = 28,
     .border_w        = 0,
     .resize_grip     = 12,
@@ -241,7 +233,7 @@ static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 static int last_drawn_mx = -1, last_drawn_my = -1;
 static int last_drawn_valid = 0;
 
-/* Rust dirty-rect tracker (kernel/gui/sdf/lib.rs).  Rects are kept disjoint
+/* Rust dirty-rect tracker (kernel/gui/gui_dirty.rs).  Rects are kept disjoint
  * and rendered individually, so a diagonal cursor move no longer damages
  * the whole bounding box. */
 typedef struct {
@@ -253,6 +245,17 @@ extern void   gui_dirty_reset(void);
 extern int    gui_dirty_add(int32_t x, int32_t y, uint32_t w, uint32_t h);
 extern size_t gui_dirty_snapshot(gui_dirty_rect_t *out, size_t max);
 extern int gui_dirty_is_empty(void);
+extern int gui_sdf_draw_buffer(uint32_t *pixels,
+                               uint32_t width, uint32_t height,
+                               uint32_t stride,
+                               int32_t x, int32_t y,
+                               const char *text, uint32_t color,
+                               uint32_t px_size);
+extern int gui_sdf_draw_screen(int32_t x, int32_t y,
+                               const char *text, uint32_t color,
+                               uint32_t px_size);
+extern int gui_sdf_measure_text(const char *text, uint32_t px_size,
+                                uint32_t *out_width, uint32_t *out_height);
 
 /* Dirty-rect tracking. */
 static volatile int full_dirty = 1;  /* start with a full redraw */
@@ -321,345 +324,163 @@ static uint8_t  last_click_button = 0;
  * Pixel format: 0x00RRGGBB in memory as B,G,R,0.
  * =================================================================== */
 
-#if GUI_HAVE_SSE2
+/* Rust GUI drawing core ABI. Buffer validation and window ownership remain
+ * in C; Rust receives only the selected window's pixel buffer and geometry. */
+extern void gui_rust_fill32(uint32_t *dst, uint32_t value, size_t count);
+extern void gui_rust_copy32(uint32_t *dst, const uint32_t *src, size_t count);
 
-static GUI_SSE2_TARGET void gui_fill32_sse2(
-    uint32_t *dst,
-    uint32_t value,
-    size_t count)
-{
-    __m128i v = _mm_set1_epi32((int)value);
+extern int gui_rust_draw_pixel(uint32_t *buffer, uint32_t width, uint32_t height,
+                               uint32_t stride, int32_t x, int32_t y,
+                               uint32_t color);
+extern int gui_rust_get_pixel(const uint32_t *buffer, uint32_t width, uint32_t height,
+                              uint32_t stride, int32_t x, int32_t y,
+                              uint32_t *out);
+extern int gui_rust_blend_pixel(uint32_t *buffer, uint32_t width, uint32_t height,
+                                uint32_t stride, int32_t x, int32_t y,
+                                uint32_t color, uint8_t alpha);
+extern int gui_rust_blend_pixels4(uint32_t *buffer, uint32_t width, uint32_t height,
+                                  uint32_t stride, int32_t x, int32_t y,
+                                  uint32_t color, const uint8_t *alpha);
+extern int gui_rust_fill_rect(uint32_t *buffer, uint32_t width, uint32_t height,
+                              uint32_t stride, int32_t x, int32_t y,
+                              uint32_t w, uint32_t h, uint32_t color);
+extern int gui_rust_draw_rect(uint32_t *buffer, uint32_t width, uint32_t height,
+                              uint32_t stride, int32_t x, int32_t y,
+                              uint32_t w, uint32_t h, uint32_t color);
+extern int gui_rust_draw_line(uint32_t *buffer, uint32_t width, uint32_t height,
+                              uint32_t stride, int32_t x0, int32_t y0,
+                              int32_t x1, int32_t y1, uint32_t color);
+extern int gui_rust_clear(uint32_t *buffer, uint32_t width, uint32_t height,
+                          uint32_t stride, uint32_t color);
+extern int gui_rust_blit(uint32_t *buffer, uint32_t width, uint32_t height,
+                         uint32_t stride, int32_t x, int32_t y,
+                         uint32_t w, uint32_t h, const uint32_t *src,
+                         uint32_t src_stride);
+extern int gui_rust_blit_alpha(uint32_t *buffer, uint32_t width, uint32_t height,
+                               uint32_t stride, int32_t x, int32_t y,
+                               uint32_t w, uint32_t h, const uint32_t *src,
+                               uint32_t src_stride);
 
-    while (count >= 4) {
-        _mm_storeu_si128((__m128i *)dst, v);
-        dst += 4;
-        count -= 4;
-    }
-
-    while (count--) {
-        *dst++ = value;
-    }
+/* Keep the existing C call sites stable for allocation, resize, and frames. */
+static void gui_fill32(uint32_t *dst, uint32_t value, size_t count) {
+    gui_rust_fill32(dst, value, count);
 }
 
-static GUI_SSE2_TARGET void gui_copy32_sse2(
-    uint32_t *dst,
-    const uint32_t *src,
-    size_t count)
-{
-    while (count >= 4) {
-        __m128i v = _mm_loadu_si128(
-            (const __m128i *)src
-        );
-
-        _mm_storeu_si128(
-            (__m128i *)dst,
-            v
-        );
-
-        dst += 4;
-        src += 4;
-        count -= 4;
-    }
-
-    while (count--) {
-        *dst++ = *src++;
-    }
+static void gui_copy32(uint32_t *dst, const uint32_t *src, size_t count) {
+    gui_rust_copy32(dst, src, count);
 }
 
-/*
- * Blend four pixels simultaneously.
- *
- * src[i] contains the source pixel.
- * alpha[i] contains its alpha.
- *
- * Alpha == 0:
- *     destination is preserved, including its upper byte.
- *
- * Alpha == 255:
- *     source is copied exactly.
- *
- * Intermediate alpha:
- *     RGB channels are blended and the upper byte is zeroed.
- *
- * The division formula:
- *
- *     floor(x / 255) = (x + 1 + (x >> 8)) >> 8
- *
- * is exact for x in [0, 65025].
- */
+typedef struct {
+    int32_t x, y;
+    uint32_t width, height;
+    int32_t content_x, content_y;
+    uint32_t content_width, content_height;
+    const uint32_t *pixels;
+    uint32_t buffer_width, buffer_height, stride;
+    int32_t hole_l, hole_t, hole_r, hole_b;
+    const char *title;
+    uint32_t decorated, has_title, has_close, has_minmax;
+    uint32_t resizable, focused, maximized, hover_button;
+} gui_render_window_t;
 
-static GUI_SSE2_TARGET void gui_blend4_sse2(
-    uint32_t *dst,
-    const uint32_t *src,
-    const uint8_t alpha[4])
-{
-    __m128i sv = _mm_loadu_si128(
-        (const __m128i *)src
-    );
+typedef struct {
+    uint32_t window_bg, window_content;
+    uint32_t title_active, title_inactive, title_text;
+    uint32_t border, border_active;
+    uint32_t close_hover, max_hover, min_hover;
+    uint32_t titlebar_height, border_width, resize_grip, text_size;
+} gui_render_theme_t;
 
-    __m128i dv = _mm_loadu_si128(
-        (const __m128i *)dst
-    );
+static int win_alive(int wid);
 
-    __m128i zero = _mm_setzero_si128();
+static int32_t win_abs_x(const gui_win_t *w);
+static int32_t win_abs_y(const gui_win_t *w);
 
-    __m128i sl = _mm_unpacklo_epi8(sv, zero);
-    __m128i sh = _mm_unpackhi_epi8(sv, zero);
+static int32_t content_x(const gui_win_t *w);
+static int32_t content_y(const gui_win_t *w);
 
-    __m128i dl = _mm_unpacklo_epi8(dv, zero);
-    __m128i dh = _mm_unpackhi_epi8(dv, zero);
+static uint32_t content_w(const gui_win_t *w);
+static uint32_t content_h(const gui_win_t *w);
 
-    /* Four alpha values expanded to the B,G,R,A lanes. */
-    __m128i al = _mm_set_epi16(
-        alpha[1], alpha[1], alpha[1], alpha[1],
-        alpha[0], alpha[0], alpha[0], alpha[0]
-    );
+extern int gui_render_window(const gui_render_window_t *window,
+                             const gui_render_theme_t *theme);
 
-    __m128i ah = _mm_set_epi16(
-        alpha[3], alpha[3], alpha[3], alpha[3],
-        alpha[2], alpha[2], alpha[2], alpha[2]
-    );
+static void gui_render_window_rust(int wid) {
+    if (wid < 0 || wid >= GUI_MAX_WINDOWS) return;
 
-    __m128i inv255 = _mm_set1_epi16(255);
-
-    __m128i il = _mm_sub_epi16(inv255, al);
-    __m128i ih = _mm_sub_epi16(inv255, ah);
-
-    /* source * alpha + destination * (255 - alpha) */
-    __m128i ql = _mm_add_epi16(
-        _mm_mullo_epi16(sl, al),
-        _mm_mullo_epi16(dl, il)
-    );
-
-    __m128i qh = _mm_add_epi16(
-        _mm_mullo_epi16(sh, ah),
-        _mm_mullo_epi16(dh, ih)
-    );
-
-    /* Exact unsigned division by 255. */
-    __m128i one = _mm_set1_epi16(1);
-
-    ql = _mm_srli_epi16(
-        _mm_add_epi16(
-            ql,
-            _mm_add_epi16(
-                _mm_srli_epi16(ql, 8),
-                one
-            )
-        ),
-        8
-    );
-
-    qh = _mm_srli_epi16(
-        _mm_add_epi16(
-            qh,
-            _mm_add_epi16(
-                _mm_srli_epi16(qh, 8),
-                one
-            )
-        ),
-        8
-    );
-
-    /* Pack four RGBA pixels into bytes. */
-    __m128i result = _mm_packus_epi16(ql, qh);
-
-    /* Intermediate-alpha pixels use RGB only. */
-    result = _mm_and_si128(
-        result,
-        _mm_set1_epi32(0x00FFFFFF)
-    );
-
-    /* Preserve exact original values for alpha 0 and 255. */
-    __m128i av = _mm_set_epi32(
-        alpha[3],
-        alpha[2],
-        alpha[1],
-        alpha[0]
-    );
-
-    __m128i zero_mask = _mm_cmpeq_epi32(
-        av,
-        zero
-    );
-
-    __m128i full_mask = _mm_cmpeq_epi32(
-        av,
-        _mm_set1_epi32(255)
-    );
-
-    result = _mm_or_si128(
-        result,
-        _mm_and_si128(dv, zero_mask)
-    );
-
-    result = _mm_or_si128(
-        result,
-        _mm_and_si128(sv, full_mask)
-    );
-
-    _mm_storeu_si128(
-        (__m128i *)dst,
-        result
-    );
-}
-
-#endif
-
-/* Portable entry points. */
-
-static void gui_fill32(
-    uint32_t *dst,
-    uint32_t value,
-    size_t count)
-{
-#if GUI_HAVE_SSE2
-    if (count >= 4) {
-        gui_fill32_sse2(dst, value, count);
+    /* Keep buffers, title, and geometry stable during this render call. */
+    spinlock_acquire(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release(&gui_lock);
         return;
     }
-#endif
 
-    while (count--) {
-        *dst++ = value;
-    }
+    gui_win_t *w = &windows[wid];
+    const uint32_t *pixels = w->front ? w->front : w->back;
+
+    gui_render_window_t rw = {
+        .x = win_abs_x(w),
+        .y = win_abs_y(w),
+        .width = w->w,
+        .height = w->h,
+        .content_x = content_x(w),
+        .content_y = content_y(w),
+        .content_width = content_w(w),
+        .content_height = content_h(w),
+        .pixels = pixels,
+        .buffer_width = w->back_w,
+        .buffer_height = w->back_h,
+        .stride = w->back_w,
+        .hole_l = w->hole_l,
+        .hole_t = w->hole_t,
+        .hole_r = w->hole_r,
+        .hole_b = w->hole_b,
+        .title = w->title,
+        .decorated = (w->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) ? 0u : 1u,
+        .has_title = (w->flags & GUI_WIN_HAS_TITLE) ? 1u : 0u,
+        .has_close = (w->flags & GUI_WIN_HAS_CLOSE) ? 1u : 0u,
+        .has_minmax = (w->flags & GUI_WIN_HAS_MINMAX) ? 1u : 0u,
+        .resizable = (w->flags & GUI_WIN_RESIZABLE) ? 1u : 0u,
+        .focused = w->focused ? 1u : 0u,
+        .maximized = w->maximized ? 1u : 0u,
+        .hover_button = (hover_btn_wid == wid) ? (uint32_t)hover_btn_kind : 0u,
+    };
+
+    gui_render_theme_t rt = {
+        .window_bg = active_theme.win_bg,
+        .window_content = active_theme.win_content,
+        .title_active = active_theme.title_active,
+        .title_inactive = active_theme.title_inactive,
+        .title_text = active_theme.title_text,
+        .border = active_theme.border,
+        .border_active = active_theme.border_active,
+        .close_hover = active_theme.close_bg_hover,
+        .max_hover = active_theme.max_bg,
+        .min_hover = active_theme.min_bg,
+        .titlebar_height = active_theme.titlebar_h,
+        .border_width = active_theme.border_w,
+        .resize_grip = active_theme.resize_grip,
+        .text_size = 16,
+    };
+
+    (void)gui_render_window(&rw, &rt);
+    spinlock_release(&gui_lock);
 }
 
-static void gui_copy32(
-    uint32_t *dst,
-    const uint32_t *src,
-    size_t count)
-{
-#if GUI_HAVE_SSE2
-    if (count >= 4) {
-        gui_copy32_sse2(dst, src, count);
-        return;
-    }
-#endif
 
-    while (count--) {
-        *dst++ = *src++;
-    }
-}
-
-/* Shared scalar fallback for individual pixels. */
-static uint32_t gui_blend_value(
-    uint32_t dst,
-    uint32_t src,
-    uint8_t alpha)
-{
-    if (alpha == 0)
-        return dst;
-
-    if (alpha == 255)
-        return src;
-
-    uint8_t sr = (src >> 16) & 0xFF;
-    uint8_t sg = (src >> 8) & 0xFF;
-    uint8_t sb = src & 0xFF;
-
-    uint8_t dr = (dst >> 16) & 0xFF;
-    uint8_t dg = (dst >> 8) & 0xFF;
-    uint8_t db = dst & 0xFF;
-
-    uint32_t ia = 255 - alpha;
-
-    uint32_t r = (
-        (uint32_t)sr * alpha +
-        (uint32_t)dr * ia
-    ) / 255;
-
-    uint32_t g = (
-        (uint32_t)sg * alpha +
-        (uint32_t)dg * ia
-    ) / 255;
-
-    uint32_t b = (
-        (uint32_t)sb * alpha +
-        (uint32_t)db * ia
-    ) / 255;
-
-    return (r << 16) | (g << 8) | b;
-}
-
-/* Blend two 24-bit colours with an 8-bit alpha (0 = dst, 255 = src).
- * Used for the soft shadow: the source is the theme's shadow colour,
- * the destination is the desktop gradient under the window. */
-static uint32_t blend_u32(uint32_t dst, uint32_t src, uint32_t a) {
-    uint32_t ia = 255 - a;
-    uint32_t r = (((src >> 16) & 0xFF) * a + ((dst >> 16) & 0xFF) * ia) / 255;
-    uint32_t g = (((src >>  8) & 0xFF) * a + ((dst >>  8) & 0xFF) * ia) / 255;
-    uint32_t b = (((src      ) & 0xFF) * a + ((dst      ) & 0xFF) * ia) / 255;
-    return (r << 16) | (g << 8) | b;
-}
-
-/* ===================================================================
- * Rounded-corner helpers
- *
- * A rounded rectangle is drawn as r tapered rows at the top, a straight
- * slab in the middle, and r mirrored tapered rows at the bottom.  For
- * each tapered row we solve x² + y² <= r² for the largest integer x
- * and inset the fill by (r - x) pixels on both sides.  This keeps the
- * flat edges pixel-exact and only touches the corners, so the cost is
- * O(r) per corner regardless of window size.
- * =================================================================== */
-
-static void gfx_fill_round_rect(int32_t x, int32_t y,
-                                uint32_t w, uint32_t h,
-                                uint32_t r, uint32_t color) {
-    if (w == 0 || h == 0) return;
-    uint32_t rmax = (w < h ? w : h) / 2;
-    if (r > rmax) r = rmax;
-    if (r == 0) {
-        gfx_fill_rect((uint32_t)x, (uint32_t)y, w, h, color);
-        return;
-    }
-    for (uint32_t row = 0; row < r; row++) {
-        int32_t dy = (int32_t)r - 1 - (int32_t)row;
-        int32_t rr = (int32_t)r * (int32_t)r - dy * dy;
-        int32_t dx = 0;
-        while ((dx + 1) * (dx + 1) <= rr) dx++;
-        uint32_t inset = (uint32_t)((int32_t)r - dx);
-        if (w <= 2 * inset) continue;
-        uint32_t bw = w - 2 * inset;
-        gfx_fill_rect((uint32_t)(x + (int32_t)inset),
-                      (uint32_t)(y + (int32_t)row), bw, 1, color);
-        gfx_fill_rect((uint32_t)(x + (int32_t)inset),
-                      (uint32_t)(y + (int32_t)h - 1 - (int32_t)row),
-                      bw, 1, color);
-    }
-    if (h > 2 * r) {
-        gfx_fill_rect((uint32_t)x, (uint32_t)(y + (int32_t)r),
-                      w, h - 2 * r, color);
-    }
-}
-
-static int point_in_round_rect(int32_t mx, int32_t my,
-                               int32_t x, int32_t y,
-                               uint32_t w, uint32_t h,
-                               uint32_t r) {
-    if (mx < x || mx >= x + (int32_t)w ||
-        my < y || my >= y + (int32_t)h) return 0;
-    if (r == 0) return 1;
-    uint32_t rmax = (w < h ? w : h) / 2;
-    if (r > rmax) r = rmax;
-    int32_t lx = mx - x, ly = my - y;
-    int32_t cx, cy;
-    if (lx < (int32_t)r) cx = (int32_t)r;
-    else if (lx > (int32_t)w - 1 - (int32_t)r) cx = (int32_t)w - 1 - (int32_t)r;
-    else return 1;
-    if (ly < (int32_t)r) cy = (int32_t)r;
-    else if (ly > (int32_t)h - 1 - (int32_t)r) cy = (int32_t)h - 1 - (int32_t)r;
-    else return 1;
-    int32_t dx = lx - cx, dy = ly - cy;
-    return dx * dx + dy * dy <= (int32_t)r * (int32_t)r;
+static int point_in_rect(int32_t mx, int32_t my,
+                         int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    return (int64_t)mx >= x && (int64_t)my >= y &&
+           (int64_t)mx < (int64_t)x + w &&
+           (int64_t)my < (int64_t)y + h;
 }
 
 static int win_alive(int wid) {
     return windows && wid >= 0 && wid < GUI_MAX_WINDOWS && windows[wid].in_use;
 }
 
-/* ---- Helpers for gui_shell.c -------------------------------------- */
+
+/* ---- C services consumed by the Rust desktop --------------------- */
 
 int gui_taskbar_win_count(void) {
     int n = 0;
@@ -820,11 +641,8 @@ static void gui_mark_cursor_dirty(int32_t x, int32_t y) {
                    CURSOR_DIRTY_H);
 }
 
-/* Mark the bounding rect of a window (including shadow) as dirty. */
 static void mark_window_dirty(const gui_win_t *w) {
-    int off = active_theme.shadow_offset;
-    /* CW-1: use the absolute origin so a child marks the right screen region. */
-    gui_mark_dirty(win_abs_x(w) - 1, win_abs_y(w) - 1, w->w + off + 2, w->h + off + 2);
+    gui_mark_dirty(win_abs_x(w), win_abs_y(w), w->w, w->h);
 }
 
 /* ===================================================================
@@ -1248,6 +1066,12 @@ int gui_pid_has_windows(uint64_t owner_pid) {
     return 0;
 }
 
+uint64_t gui_current_pid(void)
+{
+    tcb_t *current = sched_current();
+    return current ? current->id : 0;
+}
+
 void gui_cleanup_process(uint64_t owner_pid) {
     if (owner_pid == 0) return;
     /* The window table is heap-allocated in gui_init(); thread teardown
@@ -1369,43 +1193,17 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
         uint32_t alloc_h = (new_bh + 63u) & ~63u;
         size_t buf_size = (size_t)alloc_w * alloc_h * 4;
         if (buf_size / 4 != (size_t)alloc_w * alloc_h) {
-            if (buf_size / 4 != (size_t)alloc_w * alloc_h) {
-                /* Integer overflow. */
-                win->w = win->back_w
-                    + ((win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS))
-                        ? 0 : 2 * active_theme.border_w + 2 * GUI_CONTENT_PAD);
-                win->h = win->back_h
-                    + ((win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS))
-                        ? 0 : active_theme.titlebar_h + 2 * active_theme.border_w
-                            + 2 * GUI_CONTENT_PAD);
-                kprintf("[gui] resize_window: buffer size overflow %ux%u\n", alloc_w, alloc_h);
-                spinlock_release(&gui_lock);
-                return -1;
-            }
-            kprintf("[gui] resize_window: buffer size overflow %ux%u\n", alloc_w, alloc_h);
-            spinlock_release(&gui_lock);
-            return -1;
-        }
+        kprintf("[gui] resize_window: buffer size overflow %ux%u\n", alloc_w, alloc_h);
+        spinlock_release(&gui_lock);
+        return -1;
+    }
         uint32_t *nb = (uint32_t *)kmalloc(buf_size);
         if (!nb) {
-            uint32_t *nb = (uint32_t *)kmalloc(buf_size);
-            if (!nb) {
-                /* Roll back w/h to keep consistency. */
-                win->w = win->back_w
-                    + ((win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS))
-                        ? 0 : 2 * active_theme.border_w + 2 * GUI_CONTENT_PAD);
-                win->h = win->back_h
-                    + ((win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS))
-                        ? 0 : active_theme.titlebar_h + 2 * active_theme.border_w
-                            + 2 * GUI_CONTENT_PAD);
-                kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", alloc_w, alloc_h);
-                spinlock_release(&gui_lock);
-                return -1;
-            }
-            kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", alloc_w, alloc_h);
-            spinlock_release(&gui_lock);
-            return -1;
-        }
+        kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", alloc_w, alloc_h);
+        spinlock_release(&gui_lock);
+        return -1;
+    }
+
         size_t pixels = (size_t)alloc_w * (size_t)alloc_h;
 
         gui_fill32(nb, active_theme.win_content, pixels);
@@ -1644,25 +1442,32 @@ void gui_set_cursor(gui_cursor_t c) {
 }
 
 /* ===================================================================
- * Drawing primitives (operate on window back buffer)
+ * C API compatibility wrappers for the Rust drawing core
+ *
+ * Window validation and content-dirty bookkeeping stay in C. Pixel
+ * operations, clipping, blending, blitting, and bulk fills/copies are
+ * implemented by kernel/gui/gui_drawing.rs through the C ABI.
  * =================================================================== */
 
 int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
     if (!win_alive(wid)) return -1;
     gui_win_t *w = &windows[wid];
-    if (x < 0 || y < 0 || (uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h) return 0;
-    w->back[y * (int32_t)w->back_w + x] = color;
-    return 0;
+    int result = gui_rust_draw_pixel(w->back, w->back_w, w->back_h,
+                                     w->back_w, x, y, color);
+    if (result == 0 && x >= 0 && y >= 0 &&
+        (uint32_t)x < w->back_w && (uint32_t)y < w->back_h)
+        w->content_dirty = 1;
+    return result;
 }
 
+
 int gui_get_pixel(int wid, int32_t x, int32_t y, uint32_t *out) {
-    if (!out) return -1;
-    if (!win_alive(wid)) return -1;
+    if (!out || !win_alive(wid)) return -1;
     gui_win_t *w = &windows[wid];
-    if (x < 0 || y < 0 || (uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h) return -1;
-    *out = w->back[y * (int32_t)w->back_w + x];
-    return 0;
+    return gui_rust_get_pixel(w->back, w->back_w, w->back_h,
+                              w->back_w, x, y, out);
 }
+
 
 int gui_font_metrics(uint32_t *width, uint32_t *height,
                      uint32_t *ascent, uint32_t *descent,
@@ -1684,36 +1489,18 @@ int gui_font_metrics(uint32_t *width, uint32_t *height,
  * rounded corners, shadows.  Same formula as gui_blit_alpha, but a single
  * pixel and no source pointer, so renderers can call it directly.
  * Returns 0 on success (including out-of-bounds clip), -1 if wid is dead. */
-int gui_blend_pixel(
-    int wid,
-    int32_t x,
-    int32_t y,
-    uint32_t color,
-    uint8_t a)
-{
-    if (!win_alive(wid))
-        return -1;
-
+int gui_blend_pixel(int wid, int32_t x, int32_t y,
+                    uint32_t color, uint8_t a) {
+    if (!win_alive(wid)) return -1;
     gui_win_t *w = &windows[wid];
-
-    if (x < 0 || y < 0 ||
-        (uint32_t)x >= w->back_w ||
-        (uint32_t)y >= w->back_h)
-        return 0;
-
-    if (a == 0)
-        return 0;
-
-    uint32_t *p = &w->back[
-        (uint32_t)y * w->back_w + (uint32_t)x
-    ];
-
-    *p = gui_blend_value(*p, color, a);
-
-    w->content_dirty = 1;
-
-    return 0;
+    int result = gui_rust_blend_pixel(w->back, w->back_w, w->back_h,
+                                      w->back_w, x, y, color, a);
+    if (result == 0 && a != 0 && x >= 0 && y >= 0 &&
+        (uint32_t)x < w->back_w && (uint32_t)y < w->back_h)
+        w->content_dirty = 1;
+    return result;
 }
+
 
 /*
  * Blend four consecutive pixels.
@@ -1724,225 +1511,111 @@ int gui_blend_pixel(
  * x is the first pixel coordinate.
  * alpha points to exactly four alpha values.
  */
-int gui_blend_pixels4(
-    int wid,
-    int32_t x,
-    int32_t y,
-    uint32_t color,
-    const uint8_t alpha[4])
-{
-    if (!win_alive(wid) || !alpha)
-        return -1;
-
+int gui_blend_pixels4(int wid, int32_t x, int32_t y,
+                      uint32_t color, const uint8_t alpha[4]) {
+    if (!win_alive(wid) || !alpha) return -1;
     gui_win_t *w = &windows[wid];
-
-    if (y < 0 || (uint32_t)y >= w->back_h)
-        return 0;
-
-    int any = 0;
-
-    for (int i = 0; i < 4; i++) {
-        if (alpha[i] != 0) {
-            any = 1;
-            break;
-        }
-    }
-
-    if (!any)
-        return 0;
-
-    /*
-     * Fast path: all four pixels are inside the window.
-     */
-    if (x >= 0 &&
-        (uint64_t)(uint32_t)x + 4u <= w->back_w)
-    {
-        uint32_t source[4] = {
-            color,
-            color,
-            color,
-            color
-        };
-
-        uint32_t *dst = &w->back[
-            (uint32_t)y * w->back_w + (uint32_t)x
-        ];
-
-#if GUI_HAVE_SSE2
-
-        gui_blend4_sse2(dst, source, alpha);
-
-#else
-
-        for (int i = 0; i < 4; i++) {
-            if (alpha[i] != 0) {
-                dst[i] = gui_blend_value(
-                    dst[i],
-                    color,
-                    alpha[i]
-                );
+    int result = gui_rust_blend_pixels4(w->back, w->back_w, w->back_h,
+                                        w->back_w, x, y, color, alpha);
+    int touched = 0;
+    if (result == 0 && y >= 0 && (uint32_t)y < w->back_h) {
+        for (int i = 0; i < 4; ++i) {
+            int64_t px = (int64_t)x + i;
+            if (alpha[i] != 0 && px >= 0 && px < (int64_t)w->back_w) {
+                touched = 1;
+                break;
             }
         }
-
-#endif
-
-        w->content_dirty = 1;
-        return 0;
     }
-
-    /*
-     * Clipped scalar path.
-     */
-    uint32_t *row = w->back + (uint32_t)y * w->back_w;
-    int touched = 0;
-
-    for (int i = 0; i < 4; i++) {
-        if (alpha[i] == 0)
-            continue;
-
-        int64_t px = (int64_t)x + i;
-
-        if (px < 0 || px >= (int64_t)w->back_w)
-            continue;
-
-        row[(uint32_t)px] = gui_blend_value(
-            row[(uint32_t)px],
-            color,
-            alpha[i]
-        );
-
-        touched = 1;
-    }
-
-    if (touched)
-        w->content_dirty = 1;
-
-    return 0;
+    if (touched) w->content_dirty = 1;
+    return result;
 }
 
 
-int gui_fill_rect(
-    int wid,
-    int32_t x,
-    int32_t y,
-    uint32_t W,
-    uint32_t H,
-    uint32_t color)
-{
-    if (!win_alive(wid))
-        return -1;
+
+int gui_fill_rect(int wid, int32_t x, int32_t y,
+                  uint32_t W, uint32_t H, uint32_t color) {
+    if (!win_alive(wid)) return -1;
+    gui_win_t *w = &windows[wid];
+    int result = gui_rust_fill_rect(w->back, w->back_w, w->back_h,
+                                    w->back_w, x, y, W, H, color);
+    if (result == 0 && W != 0 && H != 0 &&
+        (int64_t)x < (int64_t)w->back_w &&
+        (int64_t)y < (int64_t)w->back_h &&
+        (int64_t)x + (int64_t)W > 0 &&
+        (int64_t)y + (int64_t)H > 0)
+        w->content_dirty = 1;
+    return result;
+}
+
+
+int gui_draw_rect(int wid, int32_t x, int32_t y,
+                  uint32_t W, uint32_t H, uint32_t color) {
+    if (!win_alive(wid)) return -1;
+    gui_win_t *w = &windows[wid];
+    int result = gui_rust_draw_rect(w->back, w->back_w, w->back_h,
+                                    w->back_w, x, y, W, H, color);
+    if (result == 0 && W != 0 && H != 0 &&
+        (int64_t)x < (int64_t)w->back_w &&
+        (int64_t)y < (int64_t)w->back_h &&
+        (int64_t)x + (int64_t)W > 0 &&
+        (int64_t)y + (int64_t)H > 0)
+        w->content_dirty = 1;
+    return result;
+}
+
+
+int gui_draw_line(int wid, int32_t x0, int32_t y0,
+                  int32_t x1, int32_t y1, uint32_t color) {
+    if (!win_alive(wid)) return -1;
+    gui_win_t *w = &windows[wid];
+    int result = gui_rust_draw_line(w->back, w->back_w, w->back_h,
+                                    w->back_w, x0, y0, x1, y1, color);
+    if (result == 0) w->content_dirty = 1;
+    return result;
+}
+
+
+/* Client text is rasterized into window buffers by gui_sdf_draw_buffer().
+ * render.rs uses gui_sdf_draw_screen() for titlebar text.
+ * The Rust desktop shell uses the shared Inter MSDF renderer through
+ * gui_draw_screen_text() and gui_screen_text_width(). */
+int sdf_draw_text(int wid, int32_t x, int32_t y, const char *s,
+                  uint32_t color, uint32_t px_size) {
+    if (!win_alive(wid)) return -1;
 
     gui_win_t *w = &windows[wid];
-
-    if (x < 0) {
-        uint32_t skip = (uint32_t)(-(int64_t)x);
-        if (W <= skip) return 0;
-        W -= skip;
-        x = 0;
-    }
-
-    if (y < 0) {
-        uint32_t skip = (uint32_t)(-(int64_t)y);
-        if (H <= skip) return 0;
-        H -= skip;
-        y = 0;
-    }
-
-    if ((uint32_t)x >= w->back_w ||
-        (uint32_t)y >= w->back_h)
-        return 0;
-
-    if (W > w->back_w - (uint32_t)x)
-        W = w->back_w - (uint32_t)x;
-
-    if (H > w->back_h - (uint32_t)y)
-        H = w->back_h - (uint32_t)y;
-
-    if (W == 0 || H == 0)
-        return 0;
-
-    uint32_t *row_start =
-        w->back + (uint32_t)y * w->back_w + (uint32_t)x;
-
-    /* First row: SIMD fill. */
-    gui_fill32(row_start, color, W);
-
-    /* Remaining rows: SIMD copy. */
-    for (uint32_t row = 1; row < H; row++) {
-        gui_copy32(
-            row_start + (size_t)row * w->back_w,
-            row_start,
-            W
-        );
-    }
-
-    w->content_dirty = 1;
-
-    return 0;
+    int result = gui_sdf_draw_buffer(w->back,
+                                     w->back_w, w->back_h, w->back_w,
+                                     x, y, s, color, px_size);
+    if (result == 0) w->content_dirty = 1;
+    return result;
 }
 
-int gui_draw_rect(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H, uint32_t color) {
-    if (W == 0 || H == 0) return 0;
-    gui_fill_rect(wid, x, y, W, 1, color);
-    gui_fill_rect(wid, x, y + (int32_t)H - 1, W, 1, color);
-    gui_fill_rect(wid, x, y, 1, H, color);
-    gui_fill_rect(wid, x + (int32_t)W - 1, y, 1, H, color);
-    return 0;
-}
-
-int gui_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t color) {
-    if (!win_alive(wid)) return -1;
-    int dx =  ((x1 > x0) ? (x1 - x0) : (x0 - x1));
-    int dy = -((y1 > y0) ? (y1 - y0) : (y0 - y1));
-    int sx = (x0 < x1) ? 1 : -1;
-    int sy = (y0 < y1) ? 1 : -1;
-    int err = dx + dy;
-    for (;;) {
-        gui_draw_pixel(wid, x0, y0, color);
-        if (x0 == x1 && y0 == y1) break;
-        int e2 = 2*err;
-        if (e2 >= dy) { err += dy; x0 += sx; }
-        if (e2 <= dx) { err += dx; y0 += sy; }
-    }
-    windows[wid].content_dirty = 1;
-    return 0;
-}
-
-/* Client text goes through the kernel-space Rust SDF renderer.  The
- * compositor's own chrome (taskbar, titlebar, notifications, start menu,
- * clock) still uses gfx_draw_text -- PSF 8x16 -- because it draws into the
- * front framebuffer, not a window back-buffer, and the SDF module only
- * knows how to composite into a window.  The 16 px default is twice the
- * PSF cell height and matches the Inter atlas's design size. */
-int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) {
+int gui_draw_text(int wid, int32_t x, int32_t y,
+                  const char *s, uint32_t color) {
     if (!win_alive(wid)) return -1;
     return sdf_draw_text(wid, x, y, s, color, 16);
 }
 
-int gui_clear(int wid, uint32_t color) {
-    if (!win_alive(wid))
-        return -1;
-
-    gui_win_t *w = &windows[wid];
-
-    if (w->back_w > 0 && w->back_h > 0) {
-        size_t row_pixels = w->back_w;
-
-        gui_fill32(w->back, color, row_pixels);
-
-        for (uint32_t row = 1; row < w->back_h; row++) {
-            gui_copy32(
-                w->back + (size_t)row * w->back_w,
-                w->back,
-                row_pixels
-            );
-        }
-    }
-
-    w->content_dirty = 1;
-
-    return 0;
+int gui_draw_screen_text(int32_t x, int32_t y, const char *text,
+                         uint32_t color, uint32_t px_size) {
+    return gui_sdf_draw_screen(x, y, text, color, px_size);
 }
+
+int gui_screen_text_width(const char *text, uint32_t px_size,
+                          uint32_t *out_width) {
+    return gui_sdf_measure_text(text, px_size, out_width, NULL);
+}
+int gui_clear(int wid, uint32_t color) {
+    if (!win_alive(wid)) return -1;
+    gui_win_t *w = &windows[wid];
+    int result = gui_rust_clear(w->back, w->back_w, w->back_h,
+                                w->back_w, color);
+    if (result == 0) w->content_dirty = 1;
+    return result;
+}
+
 
 /* Frame brackets.
  *
@@ -2009,131 +1682,25 @@ int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
              const uint32_t *src, uint32_t src_stride) {
     if (!win_alive(wid) || !src) return -1;
     gui_win_t *w = &windows[wid];
-    for (uint32_t row = 0; row < H; row++) {
-        int32_t dy = y + (int32_t)row;
-        if (dy < 0 || (uint32_t)dy >= w->back_h) continue;
-        int32_t dx = x;
-        uint32_t copy_w = W;
-        if (dx < 0) {
-            uint32_t skip = (uint32_t)(-(int64_t)dx);
-            if (copy_w <= skip) continue;
-            copy_w -= skip;
-            dx = 0;
-        }
-        if ((uint32_t)dx >= w->back_w) continue;
-        if (copy_w > w->back_w - (uint32_t)dx) copy_w = w->back_w - (uint32_t)dx;
-        if (copy_w > 0) {
-            if (copy_w > 0) {
-                gui_copy32(
-                    w->back + (uint32_t)dy * w->back_w + (uint32_t)dx,
-                    src + row * src_stride + (uint32_t)(dx - x),
-                    copy_w
-                );
-            }
-        }
-    }
-    w->content_dirty = 1;
-    return 0;
+    int result = gui_rust_blit(w->back, w->back_w, w->back_h, w->back_w,
+                               x, y, W, H, src, src_stride);
+    if (result == 0 && W != 0 && H != 0) w->content_dirty = 1;
+    return result;
 }
 
-int gui_blit_alpha(
-    int wid,
-    int32_t x,
-    int32_t y,
-    uint32_t W,
-    uint32_t H,
-    const uint32_t *src,
-    uint32_t src_stride)
-{
-    if (!win_alive(wid) || !src)
-        return -1;
 
+int gui_blit_alpha(int wid, int32_t x, int32_t y,
+                   uint32_t W, uint32_t H, const uint32_t *src,
+                   uint32_t src_stride) {
+    if (!win_alive(wid) || !src) return -1;
     gui_win_t *w = &windows[wid];
-
-    for (uint32_t row = 0; row < H; row++) {
-        int32_t dy = y + (int32_t)row;
-
-        if (dy < 0 || (uint32_t)dy >= w->back_h)
-            continue;
-
-        int32_t dx = x;
-        uint32_t src_x = 0;
-        uint32_t copy_w = W;
-
-        if (dx < 0) {
-            uint32_t skip = (uint32_t)(-(int64_t)dx);
-
-            if (copy_w <= skip)
-                continue;
-
-            copy_w -= skip;
-            src_x = skip;
-            dx = 0;
-        }
-
-        if ((uint32_t)dx >= w->back_w)
-            continue;
-
-        if (copy_w > w->back_w - (uint32_t)dx)
-            copy_w = w->back_w - (uint32_t)dx;
-
-        if (copy_w == 0)
-            continue;
-
-        uint32_t *drow =
-            w->back + (uint32_t)dy * w->back_w + (uint32_t)dx;
-
-        const uint32_t *srow =
-            src + row * src_stride + src_x;
-
-        uint32_t col = 0;
-
-#if GUI_HAVE_SSE2
-
-        /*
-         * SIMD blocks: four pixels per iteration.
-         */
-        while (col + 4 <= copy_w) {
-            uint8_t alpha[4] = {
-                (uint8_t)(srow[col + 0] >> 24),
-                (uint8_t)(srow[col + 1] >> 24),
-                (uint8_t)(srow[col + 2] >> 24),
-                (uint8_t)(srow[col + 3] >> 24)
-            };
-
-            gui_blend4_sse2(
-                drow + col,
-                srow + col,
-                alpha
-            );
-
-            col += 4;
-        }
-
-#endif
-
-        /*
-         * Scalar tail: 0-3 pixels.
-         */
-        for (; col < copy_w; col++) {
-            uint32_t s = srow[col];
-            uint8_t a = (uint8_t)(s >> 24);
-
-            if (a == 0)
-                continue;
-
-            drow[col] = gui_blend_value(
-                drow[col],
-                s,
-                a
-            );
-        }
-    }
-
-    w->content_dirty = 1;
-
-    return 0;
+    int result = gui_rust_blit_alpha(w->back, w->back_w, w->back_h,
+                                     w->back_w, x, y, W, H,
+                                     src, src_stride);
+    if (result == 0 && W != 0 && H != 0) w->content_dirty = 1;
+    return result;
 }
+
 
 /* WR-3: store (or clear) the see-through hole.  The rect is clamped into
  * the live buffer so a stale oversized hole cannot outlive a shrink, and
@@ -2231,307 +1798,6 @@ int gui_wait_event(int wid, uint64_t owner_pid, gui_event_t *out) {
 /* ===================================================================
  * Compositor rendering
  * =================================================================== */
-
-/* Implemented as concentric rounded rectangles drawn OUTSIDE the
- * window, one per layer.  Each layer is a full rectangle fill, but we
- * draw them largest-to-smallest, so the inner layers overwrite the
- * outer ones — the final visual is a smooth gradient from the desktop
- * (outermost) to the shadow's densest colour (innermost).*/
-static void blit_window_shadow(const gui_win_t *win) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t round = (win->flags & GUI_WIN_NO_DECOR) ? 0 : t->win_round;
-
-    /* Desktop colour at the window's vertical centre. */
-    uint32_t screen_h = gfx_get_height();
-    int32_t  cy = win->y + (int32_t)win->h / 2;
-    if (cy < 0) cy = 0;
-    if (cy >= (int32_t)screen_h) cy = (int32_t)screen_h - 1;
-    uint32_t fy = (screen_h > 1) ? (uint32_t)cy * 255u / (screen_h - 1) : 0;
-    uint32_t top = t->desktop_top, bot = t->desktop_bot;
-    uint32_t rt = (top >> 16) & 0xFF, gt = (top >>  8) & 0xFF, bt = top & 0xFF;
-    uint32_t rb = (bot >> 16) & 0xFF, gb = (bot >>  8) & 0xFF, bb = bot & 0xFF;
-    uint32_t r = (rt * (255 - fy) + rb * fy) / 255;
-    uint32_t g = (gt * (255 - fy) + gb * fy) / 255;
-    uint32_t b = (bt * (255 - fy) + bb * fy) / 255;
-    uint32_t desktop = (r << 16) | (g << 8) | b;
-
-    const int layers = 2;
-    const int spread = 4;
-
-    for (int i = layers - 1; i >= 0; i--) {
-        /* i = 7 → outermost (largest, faintest)
-         * i = 0 → innermost (smallest, densest) */
-        int grow = (spread * (i + 1)) / layers;  /* 1..14 px outward */
-        /* Alpha rises sharply toward the window edge, like a Gaussian. */
-        uint32_t alpha = (uint32_t)(255 - (i * 220 / layers));
-        if (alpha > 255) alpha = 255;
-
-        uint32_t col = blend_u32(desktop, t->shadow_color, alpha);
-
-        int32_t  sx = win->x - grow;
-        int32_t  sy = win->y - grow;
-        uint32_t sw = win->w + (uint32_t)(2 * grow);
-        uint32_t sh = win->h + (uint32_t)(2 * grow);
-        uint32_t sr = round + (uint32_t)grow;
-        uint32_t lim = (sw < sh ? sw : sh) / 2;
-        if (sr > lim) sr = lim;
-
-        gfx_fill_round_rect((uint32_t)sx, (uint32_t)sy, sw, sh, sr, col);
-    }
-}
-
-/* ---- Window decoration rendering ---- */
-
-static void blit_window_decor(const gui_win_t *win) {
-    const gui_theme_t *t = &active_theme;
-    int active = win->focused;
-    uint32_t bg    = t->win_bg;
-    uint32_t textc = t->title_text;
-    uint32_t brd   = c_border();
-    uint32_t tbh   = c_titlebar();
-    uint32_t pad   = GUI_CONTENT_PAD;
-    uint32_t round = (win->flags & GUI_WIN_NO_DECOR) ? 0 : t->win_round;
-
-    if (win->flags & GUI_WIN_NO_DECOR) return;
-
-    /* Whole window background: frame + titlebar + padding around the
-     * content card are the same colour.  No outline; the shadow (drawn
-     * by blit_window_shadow before this function) separates the window
-     * from the desktop. */
-    if (round)
-        gfx_fill_round_rect((uint32_t)win->x, (uint32_t)win->y,
-                            win->w, win->h, round, bg);
-    else
-        gfx_fill_rect((uint32_t)win->x, (uint32_t)win->y,
-                      win->w, win->h, bg);
-
-    /* Title text. */
-    {
-        uint32_t fh = gui_font_h();
-        uint32_t ty = (uint32_t)win->y + brd
-                    + (tbh > fh ? (tbh - fh) / 2 : 0);
-        gfx_draw_text((uint32_t)win->x + brd + 6, ty, win->title, textc);
-    }
-
-    /* Title-bar buttons: glyph only, no fill.  Hover recolours the glyph. */
-    uint32_t btn_w = 18, btn_h = 16, btn_pad = 2;
-    int mywid = (int)(win - windows);
-
-    if (win->flags & GUI_WIN_HAS_CLOSE) {
-        uint32_t bx = (uint32_t)win->x + win->w - brd - btn_w - btn_pad;
-        uint32_t by = (uint32_t)win->y + brd + (tbh - btn_h) / 2;
-        uint32_t glyph = (hover_btn_wid == mywid && hover_btn_kind == 1)
-                       ? t->close_bg_hover : textc;
-        gfx_draw_line(bx + 4, by + 3, bx + btn_w - 5, by + btn_h - 4, glyph);
-        gfx_draw_line(bx + btn_w - 5, by + 3, bx + 4, by + btn_h - 4, glyph);
-    }
-    if (win->flags & GUI_WIN_HAS_MINMAX) {
-        uint32_t bx = (uint32_t)win->x + win->w - brd - 2 * (btn_w + btn_pad);
-        uint32_t by = (uint32_t)win->y + brd + (tbh - btn_h) / 2;
-        uint32_t glyph = textc;
-        if (hover_btn_wid == mywid && hover_btn_kind == 2) glyph = t->max_bg;
-        if (win->maximized) {
-            gfx_draw_rect(bx + 4, by + 3, 9, 9, glyph);
-            gfx_draw_rect(bx + 7, by + 6, 9, 9, glyph);
-        } else {
-            gfx_draw_rect(bx + 4, by + 3, 10, 9, glyph);
-        }
-        uint32_t mx2 = bx - btn_w - btn_pad;
-        uint32_t mglyph = (hover_btn_wid == mywid && hover_btn_kind == 3)
-                        ? t->min_bg : textc;
-        gfx_draw_line(mx2 + 4, by + btn_h / 2,
-                      mx2 + btn_w - 5, by + btn_h / 2, mglyph);
-    }
-
-    /* Content "card": rounded background behind the client's pixels.
-     * The radius is the outer radius shrunk by (border + pad), so the
-     * card nests inside the window's rounded corners with `pad` pixels
-     * of win_bg visible in every corner. */
-    int32_t card_x = win->x + (int32_t)brd + (int32_t)pad;
-    int32_t card_y = win->y + (int32_t)brd + (int32_t)tbh + (int32_t)pad;
-    uint32_t card_w = win->w - 2 * brd - 2 * pad;
-    uint32_t card_h = win->h - tbh - 2 * brd - 2 * pad;
-    if (card_w > 0 && card_h > 0) {
-        int32_t card_round = (int32_t)round - (int32_t)brd;
-        if (card_round < 0) card_round = 0;
-        if (card_round)
-            gfx_fill_round_rect((uint32_t)card_x, (uint32_t)card_y,
-                                card_w, card_h,
-                                (uint32_t)card_round, t->win_content);
-        else
-            gfx_fill_rect((uint32_t)card_x, (uint32_t)card_y,
-                          card_w, card_h, t->win_content);
-    }
-
-    /* Resize grip. */
-    if ((win->flags & GUI_WIN_RESIZABLE) && !win->maximized) {
-        uint32_t grip = active_theme.resize_grip;
-        uint32_t gx = (uint32_t)win->x + win->w - grip - 1;
-        uint32_t gy = (uint32_t)win->y + win->h - grip - 1;
-        for (int i = 0; i < (int)grip; i += 3) {
-            gfx_draw_line(gx + i, gy + grip - 1,
-                          gx + grip - 1, gy + i, t->border);
-        }
-    }
-}
-
-/* ---- Window content blitting (optimised with memcpy rows) ---- */
-
-static void blit_window_pixels(
-    int32_t dst_x,
-    int32_t dst_y,
-    uint32_t width,
-    uint32_t height,
-    const uint32_t *src,
-    uint32_t src_stride
-) {
-    if (width == 0 || height == 0 || !src) return;
-
-    /* gfx_blit_rgb888 applies the active compositor clip and uses the
-     * graphics driver's SSE2 bulk-copy path on x86_64. */
-    (void)gfx_blit_rgb888(
-        dst_x, dst_y, width, height,
-        src, src_stride, NULL, 0
-    );
-}
-
-static void blit_window_content_locked(const gui_win_t *win) {
-    const uint32_t *pixels = win->front ? win->front : win->back;
-    if (!pixels || win->back_w == 0 || win->back_h == 0) return;
-
-    int32_t cx = content_x(win);
-    int32_t cy = content_y(win);
-    int32_t fw = (int32_t)gfx_get_width();
-    int32_t fh = (int32_t)gfx_get_height();
-
-    int32_t src_y = 0, src_x = 0;
-    int32_t dst_y = cy, dst_x = cx;
-    uint32_t copy_w = win->back_w, copy_h = win->back_h;
-
-    {
-        uint32_t lw = content_w(win), lh = content_h(win);
-        if (copy_w > lw) copy_w = lw;
-        if (copy_h > lh) copy_h = lh;
-    }
-
-    if (dst_y < 0) {
-        src_y = -dst_y;
-        if ((uint32_t)src_y >= copy_h) return;
-        copy_h -= (uint32_t)src_y;
-        dst_y = 0;
-    }
-    if (dst_x < 0) {
-        src_x = -dst_x;
-        if ((uint32_t)src_x >= copy_w) return;
-        copy_w -= (uint32_t)src_x;
-        dst_x = 0;
-    }
-    if (dst_y >= fh || dst_x >= fw) return;
-    if (copy_h > (uint32_t)(fh - dst_y)) copy_h = (uint32_t)(fh - dst_y);
-    if (copy_w > (uint32_t)(fw - dst_x)) copy_w = (uint32_t)(fw - dst_x);
-    if (copy_w == 0 || copy_h == 0) return;
-
-    const uint32_t stride = win->back_w;
-    const uint32_t *src = pixels + (size_t)src_y * stride + (uint32_t)src_x;
-
-    /* Content card radius: outer radius shrunk by (border + pad) so the
-     * card nests inside the rounded window frame. */
-    uint32_t outer_round = (win->flags & GUI_WIN_NO_DECOR) ? 0 : active_theme.win_round;
-    int32_t  inner_round = (int32_t)outer_round - (int32_t)c_border();
-    if (inner_round < 0) inner_round = 0;
-    uint32_t round = (uint32_t)inner_round;
-
-    /* Holes already split the content into multiple rectangles; keep the
-     * existing path in that case (a hole is orthogonal to rounded outer
-     * corners). */
-    if (win->hole_r > win->hole_l && win->hole_b > win->hole_t) {
-        int32_t sx1 = src_x + (int32_t)copy_w;
-        int32_t sy1 = src_y + (int32_t)copy_h;
-        int32_t hx0 = win->hole_l > src_x ? win->hole_l : src_x;
-        int32_t hy0 = win->hole_t > src_y ? win->hole_t : src_y;
-        int32_t hx1 = win->hole_r < sx1 ? win->hole_r : sx1;
-        int32_t hy1 = win->hole_b < sy1 ? win->hole_b : sy1;
-
-        if (hx1 > hx0 && hy1 > hy0) {
-            uint32_t top_h = (uint32_t)(hy0 - src_y);
-            uint32_t hole_h = (uint32_t)(hy1 - hy0);
-            uint32_t left_w = (uint32_t)(hx0 - src_x);
-            uint32_t right_x = (uint32_t)(hx1 - src_x);
-            uint32_t right_w = copy_w - right_x;
-
-            if (top_h != 0)
-                blit_window_pixels(dst_x, dst_y, copy_w, top_h, src, stride);
-            if (left_w != 0) {
-                const uint32_t *left_src =
-                    pixels + (size_t)hy0 * stride + (uint32_t)src_x;
-                blit_window_pixels(dst_x, dst_y + (int32_t)top_h,
-                                   left_w, hole_h, left_src, stride);
-            }
-            if (right_w != 0) {
-                const uint32_t *right_src =
-                    pixels + (size_t)hy0 * stride + (uint32_t)hx1;
-                blit_window_pixels(dst_x + (int32_t)right_x,
-                                   dst_y + (int32_t)top_h,
-                                   right_w, hole_h, right_src, stride);
-            }
-            uint32_t bottom_h = (uint32_t)(sy1 - hy1);
-            if (bottom_h != 0) {
-                const uint32_t *bottom_src =
-                    pixels + (size_t)hy1 * stride + (uint32_t)src_x;
-                blit_window_pixels(dst_x, dst_y + (int32_t)(hy1 - src_y),
-                                   copy_w, bottom_h, bottom_src, stride);
-            }
-            return;
-        }
-        /* Hole does not intersect the visible rect: fall through to the
-         * normal path below. */
-    }
-
-    if (round == 0) {
-        blit_window_pixels(dst_x, dst_y, copy_w, copy_h, src, stride);
-        return;
-    }
-
-    /* Rounded content: taper the top and bottom r rows. */
-    uint32_t r = round;
-    uint32_t rmax = (copy_w < copy_h ? copy_w : copy_h) / 2;
-    if (r > rmax) r = rmax;
-
-    for (uint32_t row = 0; row < r; row++) {
-        int32_t dy = (int32_t)r - 1 - (int32_t)row;
-        int32_t rr = (int32_t)r * (int32_t)r - dy * dy;
-        int32_t dx = 0;
-        while ((dx + 1) * (dx + 1) <= rr) dx++;
-        uint32_t inset = (uint32_t)((int32_t)r - dx);
-        if (copy_w <= 2 * inset) continue;
-        uint32_t bw = copy_w - 2 * inset;
-
-        const uint32_t *stop =
-            pixels + (size_t)(src_y + (int32_t)row) * stride + (uint32_t)src_x + inset;
-        blit_window_pixels(dst_x + (int32_t)inset, dst_y + (int32_t)row,
-                           bw, 1, stop, stride);
-
-        uint32_t sbot_y = (uint32_t)(copy_h - 1 - row);
-        const uint32_t *sbot =
-            pixels + (size_t)(src_y + (int32_t)sbot_y) * stride + (uint32_t)src_x + inset;
-        blit_window_pixels(dst_x + (int32_t)inset, dst_y + (int32_t)sbot_y,
-                           bw, 1, sbot, stride);
-    }
-    if (copy_h > 2 * r) {
-        const uint32_t *smid =
-            pixels + (size_t)(src_y + (int32_t)r) * stride + (uint32_t)src_x;
-        blit_window_pixels(dst_x, dst_y + (int32_t)r,
-                           copy_w, copy_h - 2 * r, smid, stride);
-    }
-}
-
-static void blit_window_content(const gui_win_t *win) {
-    spinlock_acquire(&gui_lock);
-
-    blit_window_content_locked(win);
-
-    spinlock_release(&gui_lock);
-}
 
 /* ---- Desktop rendering ---- */
 
@@ -2775,7 +2041,7 @@ static void blit_children(int pidx,
         if (nr <= nl || nb <= nt) continue; /* fully clipped away */
 
         gfx_clip_set(nl, nt, (uint32_t)(nr - nl), (uint32_t)(nb - nt));
-        blit_window_content(c);
+        gui_render_window_rust(ci);
 
         /* Grandchildren clip to this child's content rect ∩ the current clip. */
         int32_t gl = content_x(c), gt = content_y(c);
@@ -2796,9 +2062,7 @@ static void blit_window_tree(int idx,
                              int32_t base_l, int32_t base_t,
                              int32_t base_r, int32_t base_b) {
     gui_win_t *w = &windows[idx];
-    blit_window_shadow(w);
-    blit_window_decor(w);
-    blit_window_content(w);
+    gui_render_window_rust(idx);
 
     int32_t cl = content_x(w), ct = content_y(w);
     int32_t cr = cl + (int32_t)content_w(w);
@@ -2853,10 +2117,9 @@ static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
 
         for (int k = 0; k < n_ord; k++) {
             const gui_win_t *w = &windows[order[k]];
-            int off = active_theme.shadow_offset;
-            int32_t wx0 = w->x - 1, wy0 = w->y - 1;
-            int32_t wx1 = w->x + (int32_t)w->w + off + 1;
-            int32_t wy1 = w->y + (int32_t)w->h + off + 1;
+            int32_t wx0 = w->x, wy0 = w->y;
+            int32_t wx1 = w->x + (int32_t)w->w;
+            int32_t wy1 = w->y + (int32_t)w->h;
             if (wx1 <= x0 || wy1 <= y0 || wx0 >= x1 || wy0 >= y1) continue;
             gfx_clip_set(x0, y0, rw, rh);
             blit_window_tree(order[k], x0, y0, x1, y1);
@@ -2956,8 +2219,7 @@ static int hit_child(int pidx, int32_t mx, int32_t my) {
         if (!c->in_use || !c->visible || c->minimized || c->parent != pidx)
             continue;
         int32_t ax = win_abs_x(c), ay = win_abs_y(c);
-        uint32_t r = (c->flags & GUI_WIN_NO_DECOR) ? 0 : active_theme.win_round;
-            if (point_in_round_rect(mx, my, ax, ay, c->w, c->h, r)) {
+        if (point_in_rect(mx, my, ax, ay, c->w, c->h)) {
             /* WR-3: clicks fall through the see-through hole exactly like
              * pixels do, or the tab would swallow the editor's mouse.  The
              * hole lives in buffer pixels, whose origin is the content
@@ -2987,8 +2249,7 @@ static int hit_window(int32_t mx, int32_t my) {
             if (pass == 0 && !(windows[i].flags & GUI_WIN_ALWAYS_TOP)) continue;
             if (pass == 1 && (windows[i].flags & GUI_WIN_ALWAYS_TOP)) continue;
             gui_win_t *w = &windows[i];
-            uint32_t r = (w->flags & GUI_WIN_NO_DECOR) ? 0 : active_theme.win_round;
-            if (point_in_round_rect(mx, my, w->x, w->y, w->w, w->h, r)) {
+            if (point_in_rect(mx, my, w->x, w->y, w->w, w->h)) {
                 if (w->z > bestz) { bestz = w->z; best = i; }
             }
         }

@@ -1,11 +1,20 @@
 /* kernel/gui/gui_shell.h
  *
- * Internal interface between gui.c (core: windows, compositor, input
- * routing) and gui_shell.c (shell: start menu, taskbar, desktop icons,
- * notifications).
+ * Internal C ABI bridge between gui.c and the Rust desktop subsystem.
  *
- * Everything declared here is private to the GUI implementation; user
- * space continues to use the public API from gui.h.
+ * Rust implementations live in kernel/gui/desktop/:
+ *   - apps.rs
+ *   - icons.rs
+ *   - notifications.rs
+ *   - start_menu.rs
+ *   - taskbar.rs
+ *   - taskbar_layout.rs
+ *
+ * gui.c owns window management, compositor orchestration and input routing.
+ * Rust owns desktop state, rendering and shell interaction handlers.
+ *
+ * Everything declared here is private to the GUI implementation;
+ * user space continues to use the public API from gui.h.
  */
 #ifndef AURALITE_KERNEL_GUI_SHELL_H
 #define AURALITE_KERNEL_GUI_SHELL_H
