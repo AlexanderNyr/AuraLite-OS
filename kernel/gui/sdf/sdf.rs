@@ -30,8 +30,8 @@ const PIXEL_FORMAT_RGB888: u32 = 0;
 // These values must match the msdf-atlas-gen configuration used to create
 // atlas.bin for the Inter font.
 const ATLAS_PX_RANGE: f32 = 8.0;
-const ATLAS_ASCENT_EM: f32 = 0.95;
-const ATLAS_LINE_HEIGHT_EM: f32 = 1.20;
+const ATLAS_ASCENT_EM: f32 = 0.96875;
+const ATLAS_LINE_HEIGHT_EM: f32 = 1.2109375;
 const INV_255: f32 = 1.0 / 255.0;
 
 #[used]
@@ -382,6 +382,7 @@ unsafe fn blend_one(
     }
 }
 
+
 fn draw_glyph(
     target: TextTarget,
     atlas: &Atlas,
@@ -395,94 +396,201 @@ fn draw_glyph(
         return;
     }
 
-    let scale = px_size;
+    let x0 = pen_x + glyph.plane_l * px_size;
+    let y0 = baseline_y - glyph.plane_t * px_size;
+    let x1 = pen_x + glyph.plane_r * px_size;
+    let y1 = baseline_y - glyph.plane_b * px_size;
 
-    let x0 = pen_x + glyph.plane_l * scale;
-    let y0 = baseline_y - glyph.plane_t * scale;
-    let x1 = pen_x + glyph.plane_r * scale;
-    let y1 = baseline_y - glyph.plane_b * scale;
+    let screen_w = x1 - x0;
+    let screen_h = y1 - y0;
 
-    let quad_w = floor_f((x1 - x0) + 0.5) as i32;
-    let quad_h = floor_f((y1 - y0) + 0.5) as i32;
-    if quad_w <= 0 || quad_h <= 0 || quad_w > 4096 || quad_h > 4096 {
+    if !x0.is_finite()
+        || !y0.is_finite()
+        || !x1.is_finite()
+        || !y1.is_finite()
+        || !screen_w.is_finite()
+        || !screen_h.is_finite()
+        || screen_w <= 0.0
+        || screen_h <= 0.0
+    {
         return;
     }
 
-    let x0i = floor_f(x0 + 0.5) as i32;
-    let y0i = floor_f(y0 + 0.5) as i32;
+    // Rasterize only pixels whose centers are inside the glyph quad.
+    // Do not snap each glyph origin independently.
+    let left_f = ceil_f(x0 - 0.5);
+    let top_f = ceil_f(y0 - 0.5);
+    let right_f = ceil_f(x1 - 0.5);
+    let bottom_f = ceil_f(y1 - 0.5);
 
-    let atlas_h = atlas.height as f32;
-    let gx0 = floor_f(glyph.atlas_l.max(0.0)) as u32;
-    let gx1 = ((ceil_f(glyph.atlas_r) as u32).max(gx0.saturating_add(1)))
-        .min(atlas.width);
+    let left64 = left_f as i64;
+    let top64 = top_f as i64;
+    let right64 = right_f as i64;
+    let bottom64 = bottom_f as i64;
 
-    // Atlas Y grows down: top = atlas_h - atlas_t, bottom = atlas_h - atlas_b.
-    let gy_top = floor_f((atlas_h - glyph.atlas_t).max(0.0)) as u32;
-    let gy_bottom = ceil_f(atlas_h - glyph.atlas_b) as u32;
-    let gy0 = gy_top.min(atlas.height);
-    let gy1 = gy_bottom.min(atlas.height).max(gy0.saturating_add(1));
+    if left64 < i32::MIN as i64
+        || top64 < i32::MIN as i64
+        || right64 > i32::MAX as i64
+        || bottom64 > i32::MAX as i64
+    {
+        return;
+    }
+
+    let quad_w64 = right64 - left64;
+    let quad_h64 = bottom64 - top64;
+
+    if quad_w64 <= 0
+        || quad_h64 <= 0
+        || quad_w64 > 4096
+        || quad_h64 > 4096
+    {
+        return;
+    }
+
+    let left = left64 as i32;
+    let top = top64 as i32;
+    let quad_w = quad_w64 as i32;
+    let quad_h = quad_h64 as i32;
+
+    // Original floating-point atlas dimensions.
+    let atlas_glyph_w = glyph.atlas_r - glyph.atlas_l;
+    let atlas_glyph_h = glyph.atlas_t - glyph.atlas_b;
+
+    if atlas_glyph_w <= 0.0 || atlas_glyph_h <= 0.0 {
+        return;
+    }
+
+    // Convert bottom-left atlas coordinates to top-left image coordinates.
+    let atlas_top = atlas.height as f32 - glyph.atlas_t;
+    let atlas_bottom = atlas.height as f32 - glyph.atlas_b;
+
+    // Include the bilinear sampling footprint around the glyph bounds.
+    // Integer indices represent texel centers in sample_bilinear().
+    let gx0 = floor_f((glyph.atlas_l - 0.5).max(0.0)) as u32;
+    let gx1 = (ceil_f(glyph.atlas_r - 0.5) + 1.0)
+        .min(atlas.width as f32) as u32;
+
+    let gy0 = floor_f((atlas_top - 0.5).max(0.0)) as u32;
+    let gy1 = (ceil_f(atlas_bottom - 0.5) + 1.0)
+        .min(atlas.height as f32) as u32;
 
     if gx1 <= gx0 || gy1 <= gy0 {
         return;
     }
 
-    let atlas_glyph_w = (gx1 - gx0) as f32;
-    let atlas_glyph_h = (gy1 - gy0) as f32;
-    let screen_px_range = (ATLAS_PX_RANGE
-        * (quad_w as f32 / atlas_glyph_w).max(quad_h as f32 / atlas_glyph_h))
-        .max(1.0);
+    // Preserve the exact screen-to-atlas scale on both axes.
+    let dfx = atlas_glyph_w / screen_w;
+    let dfy = atlas_glyph_h / screen_h;
 
-    let dfx = (glyph.atlas_r - glyph.atlas_l) / quad_w as f32;
-    let fx_start = glyph.atlas_l + dfx * 0.5;
-    let dfy = (gy1 - gy0) as f32 / quad_h as f32;
-    let fy_start = gy0 as f32 + dfy * 0.5;
+    // Pixel centers in screen coordinates.
+    let first_screen_x = left_f + 0.5;
+    let first_screen_y = top_f + 0.5;
+
+    // Atlas coordinates are converted to texel-index coordinates
+    // by subtracting the half-texel offset.
+    let fx_start = glyph.atlas_l
+        + ((first_screen_x - x0) / screen_w) * atlas_glyph_w
+        - 0.5;
+
+    let fy_start = atlas_top
+        + ((first_screen_y - y0) / screen_h) * atlas_glyph_h
+        - 0.5;
+
+    // MSDF range converted into screen pixels.
+    let screen_px_range = (ATLAS_PX_RANGE
+        * (screen_w / atlas_glyph_w)
+            .max(screen_h / atlas_glyph_h))
+        .max(1.0);
 
     let mut alpha_buf = [0u8; 4];
 
     for py in 0..quad_h {
         let fy = fy_start + dfy * py as f32;
-        let dy = y0i + py;
+        let dy = top + py;
         let mut px = 0i32;
 
         while px + 4 <= quad_w {
             let mut any = false;
             let mut k = 0usize;
+
             while k < 4 {
                 let fx = fx_start + dfx * (px + k as i32) as f32;
-                let (r, g, b) = sample_bilinear(atlas, fx, fy, gx0, gy0, gx1, gy1);
+
+                let (r, g, b) = sample_bilinear(
+                    atlas,
+                    fx,
+                    fy,
+                    gx0,
+                    gy0,
+                    gx1,
+                    gy1,
+                );
+
                 let distance = median3(r, g, b);
+
                 let coverage = ((distance - 0.5) * screen_px_range + 0.5)
                     .clamp(0.0, 1.0);
+
                 let value = (coverage * 255.0 + 0.5) as u8;
+
                 alpha_buf[k] = value;
                 any |= value != 0;
+
                 k += 1;
             }
 
             if any {
                 unsafe {
-                    blend_four(target, x0i + px, dy, color, &alpha_buf);
+                    blend_four(
+                        target,
+                        left + px,
+                        dy,
+                        color,
+                        &alpha_buf,
+                    );
                 }
             }
+
             px += 4;
         }
 
         while px < quad_w {
             let fx = fx_start + dfx * px as f32;
-            let (r, g, b) = sample_bilinear(atlas, fx, fy, gx0, gy0, gx1, gy1);
+
+            let (r, g, b) = sample_bilinear(
+                atlas,
+                fx,
+                fy,
+                gx0,
+                gy0,
+                gx1,
+                gy1,
+            );
+
             let distance = median3(r, g, b);
+
             let coverage = ((distance - 0.5) * screen_px_range + 0.5)
                 .clamp(0.0, 1.0);
+
             let alpha = (coverage * 255.0 + 0.5) as u8;
+
             if alpha != 0 {
                 unsafe {
-                    blend_one(target, x0i + px, dy, color, alpha);
+                    blend_one(
+                        target,
+                        left + px,
+                        dy,
+                        color,
+                        alpha,
+                    );
                 }
             }
+
             px += 1;
         }
     }
 }
+
 
 fn draw_text(
     target: TextTarget,
