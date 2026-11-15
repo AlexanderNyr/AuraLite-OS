@@ -830,11 +830,34 @@ The shared raw inflater also passed 500 zlib-generated streams (levels 0–9).
 passes. The guest case is registered and syntax-checked, but not executed in
 this environment.
 
-The full gates remain pending: `make test-unit` stops at the existing W32
-fixture prerequisite because `lld-link` is not installed; executable linking
-and QEMU integration are unavailable because `nasm`, `ld.lld`, and
-`qemu-system-x86_64` are not installed. The changed user C objects and all
-OF7 host tests compile cleanly.
+The full gates now pass, measured on `42b665b`:
+
+* host: `test_ao_zip` 165 checks / 0 fails, `test_ao_xml` 43 / 0,
+  `test_ao_doc` 121 checks PASS. Python `zipfile.testzip()` returns `None`
+  for the C-generated archive, `namelist()` is exactly
+  `['mimetype', 'content.xml', 'styles.xml']`, and `mimetype` is
+  `ZIP_STORED` — an independent reader agrees with our writer;
+* guest: `tests/integration/cases/test_office_container.sh` **13/13** — the
+  `.aod` is visible in `/documents`, both saves emit ZIPs, the reader
+  reports all three parts with `mimetype` first and stored, CRC-checked
+  `content.xml` is extracted for the shell `cat`, Cyrillic survives the
+  round trip, and a second Writer process reloads the package;
+* suite: the whole office group (`bash tests/integration/run_all.sh office`)
+  — OF0 11/11, OF1 16/16, OF2 19/19, OF3 13/13, OF4 12/12, OF5 grid 7/7,
+  OF6 11/11, OF7 13/13;
+* `make test-unit` exits 0 with the full toolchain (clang, lld/nasm,
+  qemu-system-x86_64, rustc) installed.
+
+One gate stays machine-dependent and is **not** closed by this entry: the
+OF5 `test_office_sheet_perf.sh` 50 ms worst-frame ceiling measures
+`avg ~204 000 us / worst ~333 000 us` under TCG here. The A/B below shows
+the same figure at `411752a`, i.e. before PR #12 rewrote
+`drivers/framebuffer/graphics.c`, so it is the emulator's throughput and
+not a regression from OF7 or from that rewrite. The guest clock is
+tick-quantised (`clock_gettime` = `ticks * (10^9 / 99)`, so one tick is
+10 101 us), which is why the plan's `worst 20202 us` is exactly two ticks
+and the measurement here is ~33 of them. The ceiling is left alone
+deliberately: loosening it would hide the number, not fix the cost.
 
 #### Deliverable
 
@@ -1063,6 +1086,6 @@ serial receipts — the same standard the rest of the plans hold to.
 | OF4 | ✅ done (aocalc engine: sparse workbook, 49 functions, dependency recalc + #CYCLE!, budget refusal, number formats, CSV/TSV; unit 89+50, guest eval 12/12) | `patches/OFFICE_OF4_sheet_engine.patch` |
 | OF5 | ✅ done (aogrid: virtualised viewport, selection, fill handle, copy/paste with formula translation, resize, freeze panes, stable sort, filter; bar/line/pie charts anchored to cells and persisted in the file; unit 37, guest grid gate, perf gate avg 4444 us / worst 20202 us) | `patches/OFFICE_OF5_sheet_gui.patch` |
 | OF6 | ✅ done (aoslide: text boxes, shapes, images, z-order, master slide + sorter; fullscreen show with click/Space advance and Esc exit, chrome suppressed; speaker notes stored; unit 91, guest 11/11, VNC LIVE SLIDE PASS) | `patches/OFFICE_OF6_slide.patch` |
-| OF7 | 🟨 implemented; host gates pass, guest/full-suite gates pending toolchain | `patches/OFFICE_OF7_container.patch` |
+| OF7 | ✅ done (ZIP reader + writer, strict bounded XML, `.aod` = 3 ordered parts, legacy plain-XML sniffing; host `test_ao_zip` 165/0, `test_ao_xml` 43/0, `test_ao_doc` 121 checks, Python `zipfile` interop; guest `test_office_container.sh` 13/13; full office integration OF0 11/11, OF1 16/16, OF2 19/19, OF3 13/13, OF4 12/12, OF5 7/7, OF6 11/11, OF7 13/13; `make test-unit` rc=0) | — |
 | OF8 | ⬜ planned | — |
 | OF9 | ⬜ planned | — |
