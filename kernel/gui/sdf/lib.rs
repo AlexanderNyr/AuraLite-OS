@@ -15,15 +15,44 @@ fn panic(_: &PanicInfo) -> ! {
 
 extern "C" {
     fn gui_blend_pixel(wid: i32, x: i32, y: i32, color: u32, a: u8) -> i32;
+    fn gui_blend_pixels4(wid: i32, x: i32, y: i32, color: u32, alpha: *const u8) -> i32;
+}
+
+// ---------------------------------------------------------------------------
+// Math shims (variant 1: truncate-toward-zero + one correction).
+//
+// `x as i64 as f32` rounds toward zero.  Floor is that value minus one when
+// it overshoots `x` (only happens for negative fractional `x`); ceil is plus
+// one when it undershoots.  Both lower to fptosi + sitofp + a compare, with
+// no libc, no libm, no compiler_builtins math.
+//
+// Assumes finite `x` in i64 range.  Every call site in this file feeds
+// atlas coordinates and screen coords (0..8192), so the assumption holds.
+// ---------------------------------------------------------------------------
+
+#[inline]
+fn floor_f(x: f32) -> f32 {
+    let t = x as i64 as f32;
+    if t > x { t - 1.0 } else { t }
+}
+
+#[inline]
+fn ceil_f(x: f32) -> f32 {
+    let t = x as i64 as f32;
+    if t < x { t + 1.0 } else { t }
 }
 
 const HEADER_BYTES: usize = 24;
 const GLYPH_RECORD_BYTES: usize = 40;
 const PIXEL_FORMAT_RGB888: u32 = 0;
 
-const ATLAS_PX_RANGE:       f32 = 8.0;
-const ATLAS_ASCENT_EM:      f32 = 0.95; // приблизительный ascender для Inter
+// MUST match the atlas generator's `-pxrange`.  msdf-atlas-gen's default is
+// 4; if atlas.bin was regenerated with a different value, change this.
+const ATLAS_PX_RANGE: f32 = 8.0;
+const ATLAS_ASCENT_EM: f32 = 0.95;      // Inter's OS/2 ascender ≈ 0.969
 const ATLAS_LINE_HEIGHT_EM: f32 = 1.20;
+
+const INV_255: f32 = 1.0 / 255.0;
 
 #[used]
 static ATLAS_RAW: &[u8] = include_bytes!("atlas.bin");
@@ -44,9 +73,11 @@ const INIT_BUSY:   u8 = 3;
 
 static mut ATLAS: Option<Atlas> = None;
 
+#[inline]
 fn read_u32(buf: &[u8], off: usize) -> u32 {
     u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
+#[inline]
 fn read_f32(buf: &[u8], off: usize) -> f32 {
     f32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
@@ -113,13 +144,12 @@ struct Glyph {
     atlas_l: f32, atlas_b: f32, atlas_r: f32, atlas_t: f32,
 }
 
-// ИСПОЛЬЗУЕМ ЛИНЕЙНЫЙ ПОИСК: массив из msdf-atlas-gen не отсортирован!
+// Linear scan: msdf-atlas-gen doesn't guarantee sorted codepoints.
 fn glyph_for(a: &Atlas, cp: u32) -> Option<Glyph> {
     for i in 0..a.glyph_count {
         let off = (i as usize) * GLYPH_RECORD_BYTES;
         let rec = &a.glyphs[off..off + GLYPH_RECORD_BYTES];
-        let c = read_u32(rec, 0);
-        if c == cp {
+        if read_u32(rec, 0) == cp {
             return Some(Glyph {
                 advance: read_f32(rec,  4),
                 plane_l: read_f32(rec,  8),
@@ -136,42 +166,60 @@ fn glyph_for(a: &Atlas, cp: u32) -> Option<Glyph> {
     None
 }
 
+#[inline]
 fn pixel_rgb(a: &Atlas, x: u32, y: u32) -> (f32, f32, f32) {
-    let x = x.min(a.width.saturating_sub(1)) as usize;
-    let y = y.min(a.height.saturating_sub(1)) as usize;
-    let off = (y * a.width as usize + x) * 3;
+    let off = ((y * a.width + x) * 3) as usize;
     (
-        a.pixels[off] as f32 / 255.0,
-        a.pixels[off + 1] as f32 / 255.0,
-        a.pixels[off + 2] as f32 / 255.0,
+        a.pixels[off]     as f32 * INV_255,
+        a.pixels[off + 1] as f32 * INV_255,
+        a.pixels[off + 2] as f32 * INV_255,
     )
 }
 
-fn sample_bilinear(a: &Atlas, u: f32, v: f32) -> (f32, f32, f32) {
-    let fx = u.clamp(0.0, 1.0) * (a.width  as f32 - 1.0);
-    let fy = v.clamp(0.0, 1.0) * (a.height as f32 - 1.0);
+/// Bilinear sample in ATLAS PIXEL SPACE, clamped to [gx0, gx1-1] × [gy0, gy1-1].
+/// This is the fix for the "blurry" edges: the atlas is packed without
+/// padding, so an unclamped fetch leaks the neighbouring glyph's MSDF values
+/// into the edge pixels of the current glyph and corrupts `median3`.
+#[inline]
+fn sample_bilinear(
+    a: &Atlas,
+    fx: f32,
+    fy: f32,
+    gx0: u32,
+    gy0: u32,
+    gx1: u32, // exclusive
+    gy1: u32, // exclusive
+) -> (f32, f32, f32) {
+    // Highest valid pixel index inside the glyph.
+    let max_x = if gx1 > gx0 { gx1 - 1 } else { gx0 };
+    let max_y = if gy1 > gy0 { gy1 - 1 } else { gy0 };
 
-    let x0i = fx as u32;
-    let y0i = fy as u32;
-    let x0 = x0i.min(a.width  - 1);
-    let y0 = y0i.min(a.height - 1);
-    let x1 = (x0 + 1).min(a.width  - 1);
-    let y1 = (y0 + 1).min(a.height - 1);
-    let tx = fx - x0i as f32;
-    let ty = fy - y0i as f32;
+    let cx = fx.clamp(gx0 as f32, max_x as f32);
+    let cy = fy.clamp(gy0 as f32, max_y as f32);
+
+    let x0 = (floor_f(cx) as u32).min(max_x);
+    let y0 = (floor_f(cy) as u32).min(max_y);
+    let x1 = (x0 + 1).min(max_x);
+    let y1 = (y0 + 1).min(max_y);
+    let tx = cx - x0 as f32;
+    let ty = cy - y0 as f32;
 
     let (r00, g00, b00) = pixel_rgb(a, x0, y0);
     let (r10, g10, b10) = pixel_rgb(a, x1, y0);
     let (r01, g01, b01) = pixel_rgb(a, x0, y1);
     let (r11, g11, b11) = pixel_rgb(a, x1, y1);
 
-    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-    let r = lerp(lerp(r00, r10, tx), lerp(r01, r11, tx), ty);
-    let g = lerp(lerp(g00, g10, tx), lerp(g01, g11, tx), ty);
-    let b = lerp(lerp(b00, b10, tx), lerp(b01, b11, tx), ty);
-    (r, g, b)
+    #[inline(always)]
+    fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+
+    (
+        lerp(lerp(r00, r10, tx), lerp(r01, r11, tx), ty),
+        lerp(lerp(g00, g10, tx), lerp(g01, g11, tx), ty),
+        lerp(lerp(b00, b10, tx), lerp(b01, b11, tx), ty),
+    )
 }
 
+#[inline]
 fn median3(a: f32, b: f32, c: f32) -> f32 {
     if a > b {
         if b > c { b } else if a > c { c } else { a }
@@ -191,46 +239,99 @@ fn draw_glyph(
 ) {
     let scale = px_size;
 
+    // Plane quad in continuous screen space.
     let x0 = pen_x + g.plane_l * scale;
     let y0 = baseline_y - g.plane_t * scale;
     let x1 = pen_x + g.plane_r * scale;
     let y1 = baseline_y - g.plane_b * scale;
 
-    let qw = ((x1 - x0) + 0.5) as i32;
-    let qh = ((y1 - y0) + 0.5) as i32;
+    let qw = floor_f((x1 - x0) + 0.5) as i32;
+    let qh = floor_f((y1 - y0) + 0.5) as i32;
     if qw <= 0 || qh <= 0 || qw > 4096 || qh > 4096 { return; }
 
+    // Snap quad origin to integers.  `as i32` truncates toward zero, which
+    // shifts partially-offscreen glyphs by one pixel; floor matches the
+    // convention used everywhere else.
+    let x0i = floor_f(x0 + 0.5) as i32;
+    let y0i = floor_f(y0 + 0.5) as i32;
+
+    // Glyph bbox in ATLAS PIXEL SPACE (Y grows downward in the atlas array).
     let aw = atlas.width  as f32;
     let ah = atlas.height as f32;
-    let u0 = g.atlas_l / aw;
-    let u1 = g.atlas_r / aw;
-    let v0 = 1.0 - g.atlas_t / ah;
-    let v1 = 1.0 - g.atlas_b / ah;
+    let _ = aw;
 
-    let atlas_glyph_w = (g.atlas_r - g.atlas_l).abs().max(1.0);
-    let atlas_glyph_h = (g.atlas_t - g.atlas_b).abs().max(1.0);
+    let gx0 = floor_f(g.atlas_l.max(0.0)) as u32;
+    let gx1 = ((ceil_f(g.atlas_r) as u32).max(gx0 + 1)).min(atlas.width);
 
-    let screen_px_range = (
-        0.5 * ATLAS_PX_RANGE *
-        (qw as f32 / atlas_glyph_w)
-            .max(qh as f32 / atlas_glyph_h)
-    ).max(1.0);
+    // atlas_b/t are stored in text coords where atlas_t > atlas_b.
+    // In the array (Y down), the top row of the glyph is `ah - atlas_t`
+    // and the bottom row is `ah - atlas_b`.
+    let gy_top = floor_f((ah - g.atlas_t).max(0.0)) as u32;
+    let gy_bot = ceil_f(ah - g.atlas_b) as u32;
+    let gy0 = gy_top;
+    let gy1 = gy_bot.min(atlas.height).max(gy0 + 1);
+
+    if gx1 <= gx0 || gy1 <= gy0 { return; }
+
+    let atlas_glyph_w = (gx1 - gx0) as f32;
+    let atlas_glyph_h = (gy1 - gy0) as f32;
+
+    // Same formula as msdf-atlas-gen's shader, without the spurious 0.5.
+    let screen_px_range = (ATLAS_PX_RANGE
+        * (qw as f32 / atlas_glyph_w).max(qh as f32 / atlas_glyph_h))
+        .max(1.0);
+
+    // Per-glyph linear ramps (no division in the inner loop).
+    // fx(px) = atlas_l + (atlas_r - atlas_l) * ((px as f32) + 0.5) / qw
+    // fy(py) = gy0     + (gy1     - gy0    ) * ((py as f32) + 0.5) / qh
+    let dfx = (g.atlas_r - g.atlas_l) / qw as f32;
+    let fx_start = g.atlas_l + dfx * 0.5;
+
+    let dfy = (gy1 - gy0) as f32 / qh as f32;
+    let fy_start = gy0 as f32 + dfy * 0.5;
+
+    let mut alpha_buf = [0u8; 4];
 
     for py in 0..qh {
-        let ty = (py as f32 + 0.5) / qh as f32;
-        let v = v0 + (v1 - v0) * ty;
-        for px in 0..qw {
-            let tx = (px as f32 + 0.5) / qw as f32;
-            let u = u0 + (u1 - u0) * tx;
-            let (r, g_ch, b) = sample_bilinear(atlas, u, v);
+        let fy = fy_start + dfy * py as f32;
+        let dy = y0i + py;
+
+        // ---- 4-pixel SIMD batch ----
+        let mut px = 0i32;
+        while px + 4 <= qw {
+            let mut any = false;
+            let mut k: usize = 0;
+            while k < 4 {
+                let fx = fx_start + dfx * (px + k as i32) as f32;
+                let (r, g_ch, b) = sample_bilinear(atlas, fx, fy, gx0, gy0, gx1, gy1);
+                let sd = median3(r, g_ch, b);
+                let a = ((sd - 0.5) * screen_px_range + 0.5).clamp(0.0, 1.0);
+                let av = (a * 255.0 + 0.5) as u8;
+                alpha_buf[k] = av;
+                if av != 0 { any = true; }
+                k += 1;
+            }
+            if any {
+                let dx = x0i + px;
+                unsafe {
+                    gui_blend_pixels4(wid, dx, dy, color, alpha_buf.as_ptr());
+                }
+            }
+            px += 4;
+        }
+
+        // ---- scalar tail (0..3 px) ----
+        while px < qw {
+            let fx = fx_start + dfx * px as f32;
+            let (r, g_ch, b) = sample_bilinear(atlas, fx, fy, gx0, gy0, gx1, gy1);
             let sd = median3(r, g_ch, b);
-            let alpha_f = ((sd - 0.5) * screen_px_range + 0.5).clamp(0.0, 1.0);
-            let alpha = (alpha_f * 255.0) as u8;
-            if alpha == 0 { continue; }
-            
-            let dx = (x0 + 0.5) as i32 + px;
-            let dy = (y0 + 0.5) as i32 + py;
-            unsafe { gui_blend_pixel(wid, dx, dy, color, alpha); }
+            let a = ((sd - 0.5) * screen_px_range + 0.5).clamp(0.0, 1.0);
+            let av = (a * 255.0 + 0.5) as u8;
+            if av != 0 {
+                let dx = x0i + px;
+                unsafe { gui_blend_pixel(wid, dx, dy, color, av); }
+            }
+            px += 1;
         }
     }
 }

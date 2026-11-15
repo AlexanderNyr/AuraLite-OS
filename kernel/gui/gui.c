@@ -23,6 +23,7 @@
  * its <stdatomic.h>; see kernel/arch/x86_64/tlb_shootdown.c. */
 #include <stdatomic.h>
 #include "kernel/gui/gui.h"
+#include "kernel/gui/gui_shell.h"
 #include "kernel/gui/taskbar_layout.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -39,6 +40,22 @@
 #include "drivers/keyboard/keyboard.h"
 #include "drivers/mouse/mouse.h"
 #include "drivers/timer/pit.h"
+
+#if defined(__x86_64__) && \
+    (defined(__clang__) || defined(__GNUC__)) && \
+    !defined(__TINYC__)
+
+#include <emmintrin.h>
+
+#define GUI_HAVE_SSE2 1
+#define GUI_SSE2_TARGET __attribute__((target("sse2")))
+
+#else
+
+#define GUI_HAVE_SSE2 0
+#define GUI_SSE2_TARGET
+
+#endif
 
 /* ===================================================================
  * Theme
@@ -210,13 +227,16 @@ static int key_focus = -1;
 static int captured = -1;
 static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 
-/* Software cursor underlay.  The sprite is stamped onto the back buffer
- * only for the flip, then restored so the back buffer stays scene-only.
- * last_drawn_* is the position that actually reached the front. */
-#define CURSOR_SAVE_W 24
-#define CURSOR_SAVE_H 24
-static uint32_t cursor_under[CURSOR_SAVE_W * CURSOR_SAVE_H];
+/* Software cursor is a normal final compositor layer.  It remains in the
+ * back buffer; repainting the old cursor rectangle removes the previous
+ * image before the new position is drawn.
+ * The bounds cover every cursor shape: x=[mx-8, mx+11], y=[my-8, my+15]. */
+#define CURSOR_DIRTY_LEFT   8
+#define CURSOR_DIRTY_TOP    8
+#define CURSOR_DIRTY_W      20
+#define CURSOR_DIRTY_H      24
 static int last_drawn_mx = -1, last_drawn_my = -1;
+static int last_drawn_valid = 0;
 
 /* Dirty-rect tracking. */
 static gui_rect_t dirty_rects[GUI_MAX_DIRTY_RECTS];
@@ -269,34 +289,332 @@ static uint8_t  last_click_button = 0;
 
 #define GUI_DBLCLICK_SLOP_PX 5
 
-/* Desktop icons. */
-static gui_icon_t icons[GUI_MAX_ICONS];
-static int icon_selected = -1;
-
-/* Notifications. */
-static gui_notification_t notifications[GUI_MAX_NOTIFICATIONS];
-
-/* Start menu. */
-static int start_menu_open = 0;
-
-/* OF0: taskbar overflow list ("»" button).  Closed by the same rules as the
- * Start menu: any left click outside it. */
-static int taskbar_more_open = 0;
-static unsigned taskbar_more_page = 0;
-
 /* ===================================================================
  * Helpers
  * =================================================================== */
 
+/* ===================================================================
+ * SIMD helpers
+ *
+ * SSE2 is isolated in target-specific functions. The rest of the
+ * kernel continues to compile with -mno-sse -mno-sse2.
+ *
+ * Pixel format: 0x00RRGGBB in memory as B,G,R,0.
+ * =================================================================== */
+
+#if GUI_HAVE_SSE2
+
+static GUI_SSE2_TARGET void gui_fill32_sse2(
+    uint32_t *dst,
+    uint32_t value,
+    size_t count)
+{
+    __m128i v = _mm_set1_epi32((int)value);
+
+    while (count >= 4) {
+        _mm_storeu_si128((__m128i *)dst, v);
+        dst += 4;
+        count -= 4;
+    }
+
+    while (count--) {
+        *dst++ = value;
+    }
+}
+
+static GUI_SSE2_TARGET void gui_copy32_sse2(
+    uint32_t *dst,
+    const uint32_t *src,
+    size_t count)
+{
+    while (count >= 4) {
+        __m128i v = _mm_loadu_si128(
+            (const __m128i *)src
+        );
+
+        _mm_storeu_si128(
+            (__m128i *)dst,
+            v
+        );
+
+        dst += 4;
+        src += 4;
+        count -= 4;
+    }
+
+    while (count--) {
+        *dst++ = *src++;
+    }
+}
+
+/*
+ * Blend four pixels simultaneously.
+ *
+ * src[i] contains the source pixel.
+ * alpha[i] contains its alpha.
+ *
+ * Alpha == 0:
+ *     destination is preserved, including its upper byte.
+ *
+ * Alpha == 255:
+ *     source is copied exactly.
+ *
+ * Intermediate alpha:
+ *     RGB channels are blended and the upper byte is zeroed.
+ *
+ * The division formula:
+ *
+ *     floor(x / 255) = (x + 1 + (x >> 8)) >> 8
+ *
+ * is exact for x in [0, 65025].
+ */
+
+static GUI_SSE2_TARGET void gui_blend4_sse2(
+    uint32_t *dst,
+    const uint32_t *src,
+    const uint8_t alpha[4])
+{
+    __m128i sv = _mm_loadu_si128(
+        (const __m128i *)src
+    );
+
+    __m128i dv = _mm_loadu_si128(
+        (const __m128i *)dst
+    );
+
+    __m128i zero = _mm_setzero_si128();
+
+    __m128i sl = _mm_unpacklo_epi8(sv, zero);
+    __m128i sh = _mm_unpackhi_epi8(sv, zero);
+
+    __m128i dl = _mm_unpacklo_epi8(dv, zero);
+    __m128i dh = _mm_unpackhi_epi8(dv, zero);
+
+    /* Four alpha values expanded to the B,G,R,A lanes. */
+    __m128i al = _mm_set_epi16(
+        alpha[1], alpha[1], alpha[1], alpha[1],
+        alpha[0], alpha[0], alpha[0], alpha[0]
+    );
+
+    __m128i ah = _mm_set_epi16(
+        alpha[3], alpha[3], alpha[3], alpha[3],
+        alpha[2], alpha[2], alpha[2], alpha[2]
+    );
+
+    __m128i inv255 = _mm_set1_epi16(255);
+
+    __m128i il = _mm_sub_epi16(inv255, al);
+    __m128i ih = _mm_sub_epi16(inv255, ah);
+
+    /* source * alpha + destination * (255 - alpha) */
+    __m128i ql = _mm_add_epi16(
+        _mm_mullo_epi16(sl, al),
+        _mm_mullo_epi16(dl, il)
+    );
+
+    __m128i qh = _mm_add_epi16(
+        _mm_mullo_epi16(sh, ah),
+        _mm_mullo_epi16(dh, ih)
+    );
+
+    /* Exact unsigned division by 255. */
+    __m128i one = _mm_set1_epi16(1);
+
+    ql = _mm_srli_epi16(
+        _mm_add_epi16(
+            ql,
+            _mm_add_epi16(
+                _mm_srli_epi16(ql, 8),
+                one
+            )
+        ),
+        8
+    );
+
+    qh = _mm_srli_epi16(
+        _mm_add_epi16(
+            qh,
+            _mm_add_epi16(
+                _mm_srli_epi16(qh, 8),
+                one
+            )
+        ),
+        8
+    );
+
+    /* Pack four RGBA pixels into bytes. */
+    __m128i result = _mm_packus_epi16(ql, qh);
+
+    /* Intermediate-alpha pixels use RGB only. */
+    result = _mm_and_si128(
+        result,
+        _mm_set1_epi32(0x00FFFFFF)
+    );
+
+    /* Preserve exact original values for alpha 0 and 255. */
+    __m128i av = _mm_set_epi32(
+        alpha[3],
+        alpha[2],
+        alpha[1],
+        alpha[0]
+    );
+
+    __m128i zero_mask = _mm_cmpeq_epi32(
+        av,
+        zero
+    );
+
+    __m128i full_mask = _mm_cmpeq_epi32(
+        av,
+        _mm_set1_epi32(255)
+    );
+
+    result = _mm_or_si128(
+        result,
+        _mm_and_si128(dv, zero_mask)
+    );
+
+    result = _mm_or_si128(
+        result,
+        _mm_and_si128(sv, full_mask)
+    );
+
+    _mm_storeu_si128(
+        (__m128i *)dst,
+        result
+    );
+}
+
+#endif
+
+/* Portable entry points. */
+
+static void gui_fill32(
+    uint32_t *dst,
+    uint32_t value,
+    size_t count)
+{
+#if GUI_HAVE_SSE2
+    if (count >= 4) {
+        gui_fill32_sse2(dst, value, count);
+        return;
+    }
+#endif
+
+    while (count--) {
+        *dst++ = value;
+    }
+}
+
+static void gui_copy32(
+    uint32_t *dst,
+    const uint32_t *src,
+    size_t count)
+{
+#if GUI_HAVE_SSE2
+    if (count >= 4) {
+        gui_copy32_sse2(dst, src, count);
+        return;
+    }
+#endif
+
+    while (count--) {
+        *dst++ = *src++;
+    }
+}
+
+/* Shared scalar fallback for individual pixels. */
+static uint32_t gui_blend_value(
+    uint32_t dst,
+    uint32_t src,
+    uint8_t alpha)
+{
+    if (alpha == 0)
+        return dst;
+
+    if (alpha == 255)
+        return src;
+
+    uint8_t sr = (src >> 16) & 0xFF;
+    uint8_t sg = (src >> 8) & 0xFF;
+    uint8_t sb = src & 0xFF;
+
+    uint8_t dr = (dst >> 16) & 0xFF;
+    uint8_t dg = (dst >> 8) & 0xFF;
+    uint8_t db = dst & 0xFF;
+
+    uint32_t ia = 255 - alpha;
+
+    uint32_t r = (
+        (uint32_t)sr * alpha +
+        (uint32_t)dr * ia
+    ) / 255;
+
+    uint32_t g = (
+        (uint32_t)sg * alpha +
+        (uint32_t)dg * ia
+    ) / 255;
+
+    uint32_t b = (
+        (uint32_t)sb * alpha +
+        (uint32_t)db * ia
+    ) / 255;
+
+    return (r << 16) | (g << 8) | b;
+}
+
 static int win_alive(int wid) {
     return windows && wid >= 0 && wid < GUI_MAX_WINDOWS && windows[wid].in_use;
+}
+
+/* ---- Helpers for gui_shell.c -------------------------------------- */
+
+int gui_taskbar_win_count(void) {
+    int n = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use || !windows[i].visible) continue;
+        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW))
+            continue;
+        n++;
+    }
+    return n;
+}
+
+int gui_taskbar_win_at(int slot) {
+    int n = 0;
+    if (slot < 0) return -1;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use || !windows[i].visible) continue;
+        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW))
+            continue;
+        if (n == slot) return i;
+        n++;
+    }
+    return -1;
+}
+
+void gui_get_window_title(int wid, char *buf, uint32_t size) {
+    if (!buf || size == 0) return;
+    buf[0] = 0;
+    if (!win_alive(wid)) return;
+    uint32_t n = 0;
+    while (n < size - 1 && windows[wid].title[n]) {
+        buf[n] = windows[wid].title[n];
+        n++;
+    }
+    buf[n] = 0;
+}
+
+int gui_window_is_minimized(int wid) {
+    if (!win_alive(wid)) return 0;
+    return windows[wid].minimized;
 }
 
 /* A visible presentation window owns the whole display.  Unlike NO_DECOR,
  * which only removes a titlebar, this mode also suppresses the taskbar and
  * notification/snap overlays so the app can show exactly one slide per
  * screen.  The window itself remains an ordinary owner-checked GUI surface. */
-static int gui_presentation_active(void) {
+int gui_presentation_active(void) {
     if (!windows) return 0;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         const gui_win_t *w = &windows[i];
@@ -308,7 +626,7 @@ static int gui_presentation_active(void) {
 
 static int32_t abs_diff(int32_t a, int32_t b) { return a > b ? a - b : b - a; }
 
-static int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
+int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
                                int wid, int part, uint8_t button) {
     return last_click_tick != 0 &&
            last_click_wid == wid &&
@@ -319,7 +637,7 @@ static int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
            abs_diff(y, last_click_y) <= GUI_DBLCLICK_SLOP_PX;
 }
 
-static void gui_record_click(uint32_t now, int32_t x, int32_t y,
+void gui_record_click(uint32_t now, int32_t x, int32_t y,
                              int wid, int part, uint8_t button) {
     last_click_tick = now;
     last_click_x = x;
@@ -338,7 +656,7 @@ static uint32_t c_titlebar(void)  { return active_theme.titlebar_h; }
  * button, notifications, ...). Falls back to 8 if no font is loaded yet
  * (shouldn't happen once fb_init()/psf_init() have run, but keeps this
  * arithmetic safe either way). */
-static uint32_t gui_font_h(void) {
+uint32_t gui_font_h(void) {
     const struct psf_font *f = psf_get_font();
     return f ? f->height : 8;
 }
@@ -400,6 +718,15 @@ void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     dirty_count++;
 }
 
+/* Damage the complete cursor footprint.  The same rectangle is used for
+ * old and new positions, so shape changes and edge clipping are safe. */
+static void gui_mark_cursor_dirty(int32_t x, int32_t y) {
+    gui_mark_dirty(x - CURSOR_DIRTY_LEFT,
+                   y - CURSOR_DIRTY_TOP,
+                   CURSOR_DIRTY_W,
+                   CURSOR_DIRTY_H);
+}
+
 /* Mark the bounding rect of a window (including shadow) as dirty. */
 static void mark_window_dirty(const gui_win_t *w) {
     int off = active_theme.shadow_offset;
@@ -422,10 +749,11 @@ void gui_init(void) {
         }
     }
     memset(windows, 0, (size_t)GUI_MAX_WINDOWS * sizeof(gui_win_t));
+    last_drawn_mx = -1;
+    last_drawn_my = -1;
+    last_drawn_valid = 0;
     memset(drop_epoch, 0, sizeof(drop_epoch));
     memset(window_epoch, 0, sizeof(window_epoch));
-    memset(icons, 0, sizeof(icons));
-    memset(notifications, 0, sizeof(notifications));
     spinlock_init(&gui_lock);
     spinlock_init(&gui_evt_lock);
     wq_init(&gui_wq);
@@ -440,10 +768,8 @@ void gui_init(void) {
     gui_clock_last_second = (uint64_t)-1;
     full_dirty = 1;
     dirty_count = 0;
-    start_menu_open = 0;
-    taskbar_more_open = 0;
-    taskbar_more_page = 0;
-    icon_selected = -1;
+
+    gui_shell_init();
 }
 
 /* ===================================================================
@@ -677,11 +1003,6 @@ static void request_window_close(int wid) {
 int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                       const char *title, uint32_t flags) {
     if (w == 0 || h == 0) return -1;
-    if (flags & GUI_WIN_PRESENTATION) {
-        flags |= GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS | GUI_WIN_ALWAYS_TOP;
-        start_menu_open = 0;
-        taskbar_more_open = 0;
-    }
 
     /* Pre-compute content size to reject before allocating a slot. */
     uint32_t bw, bh;
@@ -751,7 +1072,7 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
         return -1;
     }
     size_t pixels = (size_t)bw * (size_t)bh;
-    for (size_t i = 0; i < pixels; i++) win->back[i] = active_theme.win_content;
+    gui_fill32(win->back, active_theme.win_content, pixels);
     spinlock_release(&gui_lock);
     return id;
 }
@@ -858,13 +1179,9 @@ void gui_cleanup_process(uint64_t owner_pid) {
         if (last_hover_wid == i) last_hover_wid = -1;
         cleaned++;
     }
-    /* Also clean up icons owned by this process. */
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (icons[i].in_use && (uint64_t)(uint32_t)icons[i].owner_pid == owner_pid) {
-            memset(&icons[i], 0, sizeof(icons[i]));
-            if (icon_selected == i) icon_selected = -1;
-        }
-    }
+
+    shell_cleanup_icons(owner_pid);
+
     if (cleaned) {
         recompute_focus();
         full_dirty = 1;
@@ -974,12 +1291,17 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
             return -1;
         }
         size_t pixels = (size_t)alloc_w * (size_t)alloc_h;
-        for (size_t i = 0; i < pixels; i++) nb[i] = active_theme.win_content;
+
+        gui_fill32(nb, active_theme.win_content, pixels);
         /* Copy overlapping region with the OLD row stride. */
         uint32_t cw = new_bw < win->back_w ? new_bw : win->back_w;
         uint32_t ch = new_bh < win->back_h ? new_bh : win->back_h;
         for (uint32_t row = 0; row < ch; row++) {
-            memcpy(nb + (size_t)row * alloc_w, win->back + (size_t)row * win->back_w, (size_t)cw * 4);
+            gui_copy32(
+                nb + (size_t)row * alloc_w,
+                win->back + (size_t)row * win->back_w,
+                cw
+            );
         }
         if (win->back) kfree(win->back);
         win->back   = nb;
@@ -1184,80 +1506,22 @@ int gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h) {
 }
 
 void gui_request_redraw(void) { full_dirty = 1; }
-void gui_set_cursor(gui_cursor_t c) { cursor = c; }
 
-/* ===================================================================
- * Desktop icons
- * =================================================================== */
+void gui_set_cursor(gui_cursor_t c) {
+    if (cursor == c) return;
 
-int gui_add_icon(int32_t x, int32_t y, const char *label, int icon_id) {
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (!icons[i].in_use) {
-            icons[i].in_use = 1;
-            icons[i].x = x;
-            icons[i].y = y;
-            strncpy(icons[i].label, label, sizeof(icons[i].label) - 1);
-            icons[i].label[sizeof(icons[i].label) - 1] = 0;
-            icons[i].icon_id = icon_id;
-            tcb_t *owner = sched_current();
-            icons[i].owner_pid = owner ? (int)owner->id : 0;
-            gui_mark_dirty(x, y, active_theme.icon_size + active_theme.icon_pad * 2,
-                           active_theme.icon_size + 20);
-            return i;
-        }
+    cursor = c;
+
+    /* A cursor shape can change without pointer movement.  Invalidate its
+     * current footprint so the new shape is composed immediately. */
+    int mx = -1, my = -1;
+    if (mouse_get_position(&mx, &my) == 1) {
+        gui_mark_cursor_dirty(mx, my);
+    } else if (last_drawn_valid) {
+        gui_mark_cursor_dirty(last_drawn_mx, last_drawn_my);
     }
-    return -1;
-}
 
-int gui_remove_icon(int icon_idx) {
-    if (icon_idx < 0 || icon_idx >= GUI_MAX_ICONS || !icons[icon_idx].in_use) return -1;
-    gui_mark_dirty(icons[icon_idx].x, icons[icon_idx].y,
-                   active_theme.icon_size + active_theme.icon_pad * 2,
-                   active_theme.icon_size + 20);
-    memset(&icons[icon_idx], 0, sizeof(icons[icon_idx]));
-    return 0;
-}
-
-int gui_icon_owned_by(int icon_idx, uint64_t owner_pid) {
-    if (icon_idx < 0 || icon_idx >= GUI_MAX_ICONS || !icons[icon_idx].in_use) return 0;
-    return (uint64_t)(uint32_t)icons[icon_idx].owner_pid == owner_pid;
-}
-
-int gui_icon_count(void) {
-    int n = 0;
-    for (int i = 0; i < GUI_MAX_ICONS; i++) if (icons[i].in_use) n++;
-    return n;
-}
-
-/* ===================================================================
- * Notifications
- * =================================================================== */
-
-int gui_notify(const char *text, uint32_t color, uint32_t duration_ms) {
-    /* Find a free slot or overwrite oldest. */
-    int slot = -1;
-    uint32_t oldest_tick = (uint32_t)-1;
-    int oldest_slot = 0;
-    for (int i = 0; i < GUI_MAX_NOTIFICATIONS; i++) {
-        if (!notifications[i].in_use) { slot = i; break; }
-        if (notifications[i].start_tick < oldest_tick) {
-            oldest_tick = notifications[i].start_tick;
-            oldest_slot = i;
-        }
-    }
-    if (slot < 0) slot = oldest_slot; /* overwrite oldest */
-    notifications[slot].in_use = 1;
-    strncpy(notifications[slot].text, text, sizeof(notifications[slot].text) - 1);
-    notifications[slot].text[sizeof(notifications[slot].text) - 1] = 0;
-    notifications[slot].color = color;
-    notifications[slot].start_tick = (uint32_t)timer_get_ticks();
-    notifications[slot].duration_ms = duration_ms ? duration_ms : 3000;
-    /* Mark the notification area dirty. */
-    uint32_t fw = gfx_get_width();
-    uint32_t fh = gfx_get_height();
-    gui_mark_dirty((int32_t)(fw - 320), (int32_t)(fh - active_theme.taskbar_h - 60),
-                   310, 50);
-    return slot;
+    gui_poke();
 }
 
 /* ===================================================================
@@ -1301,43 +1565,200 @@ int gui_font_metrics(uint32_t *width, uint32_t *height,
  * rounded corners, shadows.  Same formula as gui_blit_alpha, but a single
  * pixel and no source pointer, so renderers can call it directly.
  * Returns 0 on success (including out-of-bounds clip), -1 if wid is dead. */
-int gui_blend_pixel(int wid, int32_t x, int32_t y, uint32_t color, uint8_t a) {
-    if (!win_alive(wid)) return -1;
+int gui_blend_pixel(
+    int wid,
+    int32_t x,
+    int32_t y,
+    uint32_t color,
+    uint8_t a)
+{
+    if (!win_alive(wid))
+        return -1;
+
     gui_win_t *w = &windows[wid];
-    if (x < 0 || y < 0 || (uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h)
+
+    if (x < 0 || y < 0 ||
+        (uint32_t)x >= w->back_w ||
+        (uint32_t)y >= w->back_h)
         return 0;
-    if (a == 0) return 0;                       /* fully transparent */
-    uint32_t *p = &w->back[y * (int32_t)w->back_w + x];
-    if (a == 255) { *p = color; return 0; }     /* fast path: opaque */
-    uint32_t d  = *p;
-    uint8_t sr = (color >> 16) & 0xFF, sg = (color >> 8) & 0xFF, sb = color & 0xFF;
-    uint8_t dr = (d >> 16) & 0xFF,     dg = (d >> 8) & 0xFF,     db = d & 0xFF;
-    uint8_t ia = 255 - a;
-    uint32_t r = ((uint32_t)sr * a + (uint32_t)dr * ia) / 255;
-    uint32_t g = ((uint32_t)sg * a + (uint32_t)dg * ia) / 255;
-    uint32_t b = ((uint32_t)sb * a + (uint32_t)db * ia) / 255;
-    *p = (r << 16) | (g << 8) | b;
+
+    if (a == 0)
+        return 0;
+
+    uint32_t *p = &w->back[
+        (uint32_t)y * w->back_w + (uint32_t)x
+    ];
+
+    *p = gui_blend_value(*p, color, a);
+
     w->content_dirty = 1;
+
+    return 0;
+}
+
+/*
+ * Blend four consecutive pixels.
+ *
+ * Intended for MSDF/SDF rendering, where four adjacent pixels
+ * have independently calculated alpha values but share one color.
+ *
+ * x is the first pixel coordinate.
+ * alpha points to exactly four alpha values.
+ */
+int gui_blend_pixels4(
+    int wid,
+    int32_t x,
+    int32_t y,
+    uint32_t color,
+    const uint8_t alpha[4])
+{
+    if (!win_alive(wid) || !alpha)
+        return -1;
+
+    gui_win_t *w = &windows[wid];
+
+    if (y < 0 || (uint32_t)y >= w->back_h)
+        return 0;
+
+    int any = 0;
+
+    for (int i = 0; i < 4; i++) {
+        if (alpha[i] != 0) {
+            any = 1;
+            break;
+        }
+    }
+
+    if (!any)
+        return 0;
+
+    /*
+     * Fast path: all four pixels are inside the window.
+     */
+    if (x >= 0 &&
+        (uint64_t)(uint32_t)x + 4u <= w->back_w)
+    {
+        uint32_t source[4] = {
+            color,
+            color,
+            color,
+            color
+        };
+
+        uint32_t *dst = &w->back[
+            (uint32_t)y * w->back_w + (uint32_t)x
+        ];
+
+#if GUI_HAVE_SSE2
+
+        gui_blend4_sse2(dst, source, alpha);
+
+#else
+
+        for (int i = 0; i < 4; i++) {
+            if (alpha[i] != 0) {
+                dst[i] = gui_blend_value(
+                    dst[i],
+                    color,
+                    alpha[i]
+                );
+            }
+        }
+
+#endif
+
+        w->content_dirty = 1;
+        return 0;
+    }
+
+    /*
+     * Clipped scalar path.
+     */
+    uint32_t *row = w->back + (uint32_t)y * w->back_w;
+    int touched = 0;
+
+    for (int i = 0; i < 4; i++) {
+        if (alpha[i] == 0)
+            continue;
+
+        int64_t px = (int64_t)x + i;
+
+        if (px < 0 || px >= (int64_t)w->back_w)
+            continue;
+
+        row[(uint32_t)px] = gui_blend_value(
+            row[(uint32_t)px],
+            color,
+            alpha[i]
+        );
+
+        touched = 1;
+    }
+
+    if (touched)
+        w->content_dirty = 1;
+
     return 0;
 }
 
 
-int gui_fill_rect(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+int gui_fill_rect(
+    int wid,
+    int32_t x,
+    int32_t y,
+    uint32_t W,
+    uint32_t H,
+    uint32_t color)
+{
+    if (!win_alive(wid))
+        return -1;
+
     gui_win_t *w = &windows[wid];
-    if (x < 0) { uint32_t skip = (uint32_t)(-(int64_t)x); if (W <= skip) return 0; W -= skip; x = 0; }
-    if (y < 0) { uint32_t skip = (uint32_t)(-(int64_t)y); if (H <= skip) return 0; H -= skip; y = 0; }
-    if ((uint32_t)x >= w->back_w || (uint32_t)y >= w->back_h) return 0;
-    if (W > w->back_w - (uint32_t)x) W = w->back_w - (uint32_t)x;
-    if (H > w->back_h - (uint32_t)y) H = w->back_h - (uint32_t)y;
-    if (W == 0 || H == 0) return 0;
-    /* Optimised: fill each row with a repeated pattern then memcpy. */
-    uint32_t *row_start = w->back + (uint32_t)y * w->back_w + (uint32_t)x;
-    for (uint32_t col = 0; col < W; col++) row_start[col] = color;
-    for (uint32_t row = 1; row < H; row++) {
-        memcpy(row_start + row * w->back_w, row_start, W * 4);
+
+    if (x < 0) {
+        uint32_t skip = (uint32_t)(-(int64_t)x);
+        if (W <= skip) return 0;
+        W -= skip;
+        x = 0;
     }
+
+    if (y < 0) {
+        uint32_t skip = (uint32_t)(-(int64_t)y);
+        if (H <= skip) return 0;
+        H -= skip;
+        y = 0;
+    }
+
+    if ((uint32_t)x >= w->back_w ||
+        (uint32_t)y >= w->back_h)
+        return 0;
+
+    if (W > w->back_w - (uint32_t)x)
+        W = w->back_w - (uint32_t)x;
+
+    if (H > w->back_h - (uint32_t)y)
+        H = w->back_h - (uint32_t)y;
+
+    if (W == 0 || H == 0)
+        return 0;
+
+    uint32_t *row_start =
+        w->back + (uint32_t)y * w->back_w + (uint32_t)x;
+
+    /* First row: SIMD fill. */
+    gui_fill32(row_start, color, W);
+
+    /* Remaining rows: SIMD copy. */
+    for (uint32_t row = 1; row < H; row++) {
+        gui_copy32(
+            row_start + (size_t)row * w->back_w,
+            row_start,
+            W
+        );
+    }
+
     w->content_dirty = 1;
+
     return 0;
 }
 
@@ -1380,16 +1801,27 @@ int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color) 
 }
 
 int gui_clear(int wid, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+    if (!win_alive(wid))
+        return -1;
+
     gui_win_t *w = &windows[wid];
-    /* Optimised: fill first row then memcpy the rest. */
+
     if (w->back_w > 0 && w->back_h > 0) {
-        for (uint32_t i = 0; i < w->back_w; i++) w->back[i] = color;
+        size_t row_pixels = w->back_w;
+
+        gui_fill32(w->back, color, row_pixels);
+
         for (uint32_t row = 1; row < w->back_h; row++) {
-            memcpy(w->back + row * w->back_w, w->back, w->back_w * 4);
+            gui_copy32(
+                w->back + (size_t)row * w->back_w,
+                w->back,
+                row_pixels
+            );
         }
     }
+
     w->content_dirty = 1;
+
     return 0;
 }
 
@@ -1401,31 +1833,57 @@ int gui_clear(int wid, uint32_t color) {
  * 400 times, and the compositor would simply land in one of the 399 gaps.
  * The bracket has to span the whole frame, so the syscall wrapper owns it. */
 void gui_frame_begin(int wid) {
-    if (!win_alive(wid)) return;
-    gui_win_t *w = &windows[wid];
-    if (!w->front) {
-        /* Allocated lazily, so windows that never use the brackets cost
-         * nothing.  If the allocation fails the window simply keeps the
-         * old single-buffered behaviour rather than failing to draw. */
-        w->front = (uint32_t *)kmalloc((uint64_t)w->back_w * w->back_h * 4ull);
+    spinlock_acquire(&gui_lock);
+
+    if (!win_alive(wid)) {
+        spinlock_release(&gui_lock);
+        return;
     }
+
+    gui_win_t *w = &windows[wid];
+
+    if (!w->front && w->back) {
+        size_t pixels = (size_t)w->back_w * w->back_h;
+
+        uint32_t *front = (uint32_t *)kmalloc(
+            (uint64_t)pixels * sizeof(uint32_t)
+        );
+
+        if (front) {
+            gui_copy32(front, w->back, pixels);
+
+            /* Publish only after the initial contents are ready. */
+            w->front = front;
+        }
+    }
+
     w->updating = 1;
-    __asm__ volatile ("" ::: "memory");
+
+    spinlock_release(&gui_lock);
 }
 
 void gui_frame_end(int wid) {
-    if (!win_alive(wid)) return;
-    gui_win_t *w = &windows[wid];
-    if (w->front) {
-        /* Publish: copy the finished frame where the compositor can read it
-         * without racing the next one.  The copy costs a memcpy per frame
-         * and buys a guarantee that what reaches the screen is always one
-         * whole frame. */
-        memcpy(w->front, w->back, (size_t)w->back_w * w->back_h * 4u);
+    spinlock_acquire(&gui_lock);
+
+    if (!win_alive(wid)) {
+        spinlock_release(&gui_lock);
+        return;
     }
-    __asm__ volatile ("" ::: "memory");
+
+    gui_win_t *w = &windows[wid];
+
+    if (w->front && w->back) {
+        gui_copy32(
+            w->front,
+            w->back,
+            (size_t)w->back_w * w->back_h
+        );
+    }
+
     w->updating = 0;
     w->content_dirty = 1;
+
+    spinlock_release(&gui_lock);
 }
 
 int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
@@ -1446,42 +1904,115 @@ int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
         if ((uint32_t)dx >= w->back_w) continue;
         if (copy_w > w->back_w - (uint32_t)dx) copy_w = w->back_w - (uint32_t)dx;
         if (copy_w > 0) {
-            memcpy(w->back + (uint32_t)dy * w->back_w + (uint32_t)dx,
-                   src + row * src_stride + (dx - x), copy_w * 4);
+            if (copy_w > 0) {
+                gui_copy32(
+                    w->back + (uint32_t)dy * w->back_w + (uint32_t)dx,
+                    src + row * src_stride + (uint32_t)(dx - x),
+                    copy_w
+                );
+            }
         }
     }
     w->content_dirty = 1;
     return 0;
 }
 
-int gui_blit_alpha(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
-                   const uint32_t *src, uint32_t src_stride) {
-    if (!win_alive(wid) || !src) return -1;
+int gui_blit_alpha(
+    int wid,
+    int32_t x,
+    int32_t y,
+    uint32_t W,
+    uint32_t H,
+    const uint32_t *src,
+    uint32_t src_stride)
+{
+    if (!win_alive(wid) || !src)
+        return -1;
+
     gui_win_t *w = &windows[wid];
+
     for (uint32_t row = 0; row < H; row++) {
         int32_t dy = y + (int32_t)row;
-        if (dy < 0 || (uint32_t)dy >= w->back_h) continue;
-        for (uint32_t col = 0; col < W; col++) {
-            int32_t dx = x + (int32_t)col;
-            if (dx < 0 || (uint32_t)dx >= w->back_w) continue;
-            uint32_t s = src[row * src_stride + col];
-            uint8_t a = (s >> 24) & 0xFF;
-            if (a == 0) continue;
-            if (a == 255) {
-                w->back[(uint32_t)dy * w->back_w + (uint32_t)dx] = s;
-            } else {
-                uint32_t d = w->back[(uint32_t)dy * w->back_w + (uint32_t)dx];
-                uint8_t sr = (s >> 16) & 0xFF, sg = (s >> 8) & 0xFF, sb = s & 0xFF;
-                uint8_t dr = (d >> 16) & 0xFF, dg = (d >> 8) & 0xFF, db = d & 0xFF;
-                uint8_t ia = 255 - a;
-                uint32_t r = ((uint32_t)sr * a + (uint32_t)dr * ia) / 255;
-                uint32_t g = ((uint32_t)sg * a + (uint32_t)dg * ia) / 255;
-                uint32_t b = ((uint32_t)sb * a + (uint32_t)db * ia) / 255;
-                w->back[(uint32_t)dy * w->back_w + (uint32_t)dx] = (r << 16) | (g << 8) | b;
-            }
+
+        if (dy < 0 || (uint32_t)dy >= w->back_h)
+            continue;
+
+        int32_t dx = x;
+        uint32_t src_x = 0;
+        uint32_t copy_w = W;
+
+        if (dx < 0) {
+            uint32_t skip = (uint32_t)(-(int64_t)dx);
+
+            if (copy_w <= skip)
+                continue;
+
+            copy_w -= skip;
+            src_x = skip;
+            dx = 0;
+        }
+
+        if ((uint32_t)dx >= w->back_w)
+            continue;
+
+        if (copy_w > w->back_w - (uint32_t)dx)
+            copy_w = w->back_w - (uint32_t)dx;
+
+        if (copy_w == 0)
+            continue;
+
+        uint32_t *drow =
+            w->back + (uint32_t)dy * w->back_w + (uint32_t)dx;
+
+        const uint32_t *srow =
+            src + row * src_stride + src_x;
+
+        uint32_t col = 0;
+
+#if GUI_HAVE_SSE2
+
+        /*
+         * SIMD blocks: four pixels per iteration.
+         */
+        while (col + 4 <= copy_w) {
+            uint8_t alpha[4] = {
+                (uint8_t)(srow[col + 0] >> 24),
+                (uint8_t)(srow[col + 1] >> 24),
+                (uint8_t)(srow[col + 2] >> 24),
+                (uint8_t)(srow[col + 3] >> 24)
+            };
+
+            gui_blend4_sse2(
+                drow + col,
+                srow + col,
+                alpha
+            );
+
+            col += 4;
+        }
+
+#endif
+
+        /*
+         * Scalar tail: 0-3 pixels.
+         */
+        for (; col < copy_w; col++) {
+            uint32_t s = srow[col];
+            uint8_t a = (uint8_t)(s >> 24);
+
+            if (a == 0)
+                continue;
+
+            drow[col] = gui_blend_value(
+                drow[col],
+                s,
+                a
+            );
         }
     }
+
     w->content_dirty = 1;
+
     return 0;
 }
 
@@ -1656,25 +2187,41 @@ static void blit_window_decor(const gui_win_t *win) {
 
 /* ---- Window content blitting (optimised with memcpy rows) ---- */
 
-static void blit_window_content(const gui_win_t *win) {
+static void blit_window_pixels(
+    int32_t dst_x,
+    int32_t dst_y,
+    uint32_t width,
+    uint32_t height,
+    const uint32_t *src,
+    uint32_t src_stride
+) {
+    if (width == 0 || height == 0 || !src) return;
+
+    /* gfx_blit_rgb888 applies the active compositor clip and uses the
+     * graphics driver's SSE2 bulk-copy path on x86_64. */
+    (void)gfx_blit_rgb888(
+        dst_x, dst_y, width, height,
+        src, src_stride, NULL, 0
+    );
+}
+
+static void blit_window_content_locked(const gui_win_t *win) {
     /* Draw the last complete frame when the window is double-buffered,
      * otherwise the live buffer exactly as before. */
     const uint32_t *pixels = win->front ? win->front : win->back;
-
+    if (!pixels || win->back_w == 0 || win->back_h == 0) return;
 
     int32_t cx = content_x(win);
     int32_t cy = content_y(win);
     int32_t fw = (int32_t)gfx_get_width();
     int32_t fh = (int32_t)gfx_get_height();
 
-    /* Calculate visible region. */
+    /* Calculate the visible source rectangle. */
     int32_t src_y = 0, src_x = 0;
     int32_t dst_y = cy, dst_x = cx;
     uint32_t copy_w = win->back_w, copy_h = win->back_h;
 
-    /* FIX: clip to the logical content area, not the (possibly larger)
-     * allocated buffer, so a window that was shrunk (its buffer is kept)
-     * never draws outside its frame. */
+    /* Clip to the logical content area, not the possibly larger allocation. */
     {
         uint32_t lw = content_w(win), lh = content_h(win);
         if (copy_w > lw) copy_w = lw;
@@ -1698,22 +2245,78 @@ static void blit_window_content(const gui_win_t *win) {
     if (copy_w > (uint32_t)(fw - dst_x)) copy_w = (uint32_t)(fw - dst_x);
     if (copy_w == 0 || copy_h == 0) return;
 
-    /* WR-3: the hole test runs in buffer pixels (what src_x/src_y index),
-     * and hoisting the empty check keeps the common no-hole path to one
-     * predictable branch per window. */
-    int has_hole = (win->hole_r > win->hole_l) && (win->hole_b > win->hole_t);
-    for (uint32_t row = 0; row < copy_h; row++) {
-        int32_t by = src_y + (int32_t)row;
-        int row_in_hole = has_hole && by >= win->hole_t && by < win->hole_b;
-        for (uint32_t col = 0; col < copy_w; col++) {
-            int32_t bx = src_x + (int32_t)col;
-            if (row_in_hole && bx >= win->hole_l && bx < win->hole_r)
-                continue;
-            uint32_t pixel = pixels[by * win->back_w + bx];
-            gfx_putpixel((uint32_t)(dst_x + (int32_t)col),
-                         (uint32_t)(dst_y + (int32_t)row), pixel);
-        }
+    const uint32_t stride = win->back_w;
+    const uint32_t *src = pixels + (size_t)src_y * stride + (uint32_t)src_x;
+
+    /* The overwhelmingly common path is one contiguous rectangle.  Let the
+     * graphics layer clip it and copy rows in SIMD-sized chunks. */
+    if (win->hole_r <= win->hole_l || win->hole_b <= win->hole_t) {
+        blit_window_pixels(dst_x, dst_y, copy_w, copy_h, src, stride);
+        return;
     }
+
+    /* Intersect the transparent hole with the visible source rectangle. */
+    int32_t sx1 = src_x + (int32_t)copy_w;
+    int32_t sy1 = src_y + (int32_t)copy_h;
+    int32_t hx0 = win->hole_l > src_x ? win->hole_l : src_x;
+    int32_t hy0 = win->hole_t > src_y ? win->hole_t : src_y;
+    int32_t hx1 = win->hole_r < sx1 ? win->hole_r : sx1;
+    int32_t hy1 = win->hole_b < sy1 ? win->hole_b : sy1;
+
+    /* If the hole does not intersect this visible rectangle, retain the
+     * single-call fast path. */
+    if (hx1 <= hx0 || hy1 <= hy0) {
+        blit_window_pixels(dst_x, dst_y, copy_w, copy_h, src, stride);
+        return;
+    }
+
+    uint32_t top_h = (uint32_t)(hy0 - src_y);
+    uint32_t hole_h = (uint32_t)(hy1 - hy0);
+    uint32_t left_w = (uint32_t)(hx0 - src_x);
+    uint32_t right_x = (uint32_t)(hx1 - src_x);
+    uint32_t right_w = copy_w - right_x;
+
+    /* Above the hole: full-width rectangle. */
+    if (top_h != 0) {
+        blit_window_pixels(dst_x, dst_y, copy_w, top_h, src, stride);
+    }
+
+    /* Rows crossing the hole: copy the opaque left and right spans only. */
+    if (left_w != 0) {
+        const uint32_t *left_src =
+            pixels + (size_t)hy0 * stride + (uint32_t)src_x;
+        blit_window_pixels(
+            dst_x, dst_y + (int32_t)top_h,
+            left_w, hole_h, left_src, stride
+        );
+    }
+    if (right_w != 0) {
+        const uint32_t *right_src =
+            pixels + (size_t)hy0 * stride + (uint32_t)hx1;
+        blit_window_pixels(
+            dst_x + (int32_t)right_x, dst_y + (int32_t)top_h,
+            right_w, hole_h, right_src, stride
+        );
+    }
+
+    /* Below the hole: full-width rectangle. */
+    uint32_t bottom_h = (uint32_t)(sy1 - hy1);
+    if (bottom_h != 0) {
+        const uint32_t *bottom_src =
+            pixels + (size_t)hy1 * stride + (uint32_t)src_x;
+        blit_window_pixels(
+            dst_x, dst_y + (int32_t)(hy1 - src_y),
+            copy_w, bottom_h, bottom_src, stride
+        );
+    }
+}
+
+static void blit_window_content(const gui_win_t *win) {
+    spinlock_acquire(&gui_lock);
+
+    blit_window_content_locked(win);
+
+    spinlock_release(&gui_lock);
 }
 
 /* ---- Desktop rendering ---- */
@@ -1727,39 +2330,6 @@ static void draw_desktop(void) {
     /* Subtle horizontal stripes for texture. */
     for (uint32_t y = 0; y < h; y += 48) {
         gfx_draw_line(0, y, w, y, 0x00000018);
-    }
-}
-
-/* ---- Desktop icons rendering ---- */
-
-static void draw_icons(void) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t isz = t->icon_size;
-    (void)t->icon_pad; /* used below indirectly */
-
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (!icons[i].in_use) continue;
-        int32_t ix = icons[i].x;
-        int32_t iy = icons[i].y;
-        int sel = (i == icon_selected);
-
-        /* Icon background rectangle (placeholder for real icon). */
-        if (sel) {
-            gfx_fill_rect((uint32_t)ix, (uint32_t)iy, isz, isz, t->icon_selected);
-        } else {
-            gfx_fill_rect((uint32_t)ix, (uint32_t)iy, isz, isz, 0x00406080);
-        }
-        gfx_draw_rect((uint32_t)ix, (uint32_t)iy, isz, isz, t->icon_text);
-
-        /* Simple icon pattern: a small document/app shape. */
-        uint32_t cx = (uint32_t)ix + isz / 2;
-        uint32_t cy = (uint32_t)iy + isz / 2;
-        /* App icon: filled circle with inner square. */
-        gfx_fill_circle(cx, cy, 8, sel ? 0x00FFFFFF : 0x0080B0E0);
-        gfx_fill_rect(cx - 3, cy - 3, 7, 7, sel ? t->icon_selected : 0x00406080);
-
-        /* Label below icon. */
-        gfx_draw_text((uint32_t)ix, (uint32_t)iy + isz + 2, icons[i].label, t->icon_text);
     }
 }
 
@@ -1793,17 +2363,14 @@ static void draw_snap_preview(void) {
 
 /* ---- Cursor rendering ---- */
 
-static void draw_cursor(void) {
-    int mx, my;
-    if (!mouse_get_position(&mx, &my)) return;
+static void draw_cursor(int mx, int my) {
     switch (cursor) {
         case GUI_CURSOR_ARROW:
         default: {
             /* Refined arrow cursor. */
             for (int i = 0; i < 16; i++) {
-                for (int j = 0; j <= i / 2; j++) {
-                    gfx_putpixel((uint32_t)(mx + j), (uint32_t)(my + i), 0x00FFFFFF);
-                }
+                gfx_fill_rect((uint32_t)mx, (uint32_t)(my + i),
+                              (uint32_t)(i / 2 + 1), 1, 0x00FFFFFF);
             }
             /* Black outline. */
             gfx_draw_line((uint32_t)mx, (uint32_t)my,
@@ -1891,428 +2458,54 @@ static void draw_cursor(void) {
     }
 }
 
-static void cursor_stamp_and_flip_full(void) {
-    int mx = -1, my = -1;
-    int have = mouse_get_position(&mx, &my);
-    if (have) gfx_back_get_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
-    draw_cursor();
+static void cursor_commit_presented(int have_cursor, int mx, int my) {
+    last_drawn_valid = have_cursor;
+    last_drawn_mx = have_cursor ? mx : -1;
+    last_drawn_my = have_cursor ? my : -1;
+}
+
+/* Cursor coordinates are sampled once by the compositor tick and passed
+ * through the complete render.  Never re-read mouse state between damage
+ * calculation and drawing: doing so can stamp outside the flipped rectangle. */
+static void cursor_draw_and_flip_full(int have_cursor, int mx, int my) {
+    if (have_cursor) draw_cursor(mx, my);
     gfx_flip();
-    if (have) gfx_back_put_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
-    last_drawn_mx = have ? mx : -1;
-    last_drawn_my = have ? my : -1;
+    cursor_commit_presented(have_cursor, mx, my);
 }
 
-static void cursor_stamp_and_flip_rect(int32_t ux, int32_t uy, uint32_t uw, uint32_t uh) {
-    int mx = -1, my = -1;
-    int have = mouse_get_position(&mx, &my);
-    if (have) gfx_back_get_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
-    draw_cursor();
+static int cursor_intersects_rect(
+    int mx,
+    int my,
+    int32_t x,
+    int32_t y,
+    uint32_t w,
+    uint32_t h
+) {
+    int32_t cx0 = mx - CURSOR_DIRTY_LEFT;
+    int32_t cy0 = my - CURSOR_DIRTY_TOP;
+    int32_t cx1 = cx0 + CURSOR_DIRTY_W;
+    int32_t cy1 = cy0 + CURSOR_DIRTY_H;
+    int32_t rx1 = x + (int32_t)w;
+    int32_t ry1 = y + (int32_t)h;
+
+    return cx0 < rx1 && cy0 < ry1 && cx1 > x && cy1 > y;
+}
+
+static void cursor_draw_and_flip_rect(
+    int32_t ux,
+    int32_t uy,
+    uint32_t uw,
+    uint32_t uh,
+    int have_cursor,
+    int mx,
+    int my
+) {
+    /* Avoid issuing cursor primitives for dirty regions nowhere near it. */
+    if (have_cursor && cursor_intersects_rect(mx, my, ux, uy, uw, uh))
+        draw_cursor(mx, my);
+
     gfx_flip_rect(ux, uy, uw, uh);
-    if (have) gfx_back_put_rect(mx, my, CURSOR_SAVE_W, CURSOR_SAVE_H, cursor_under);
-    last_drawn_mx = have ? mx : -1;
-    last_drawn_my = have ? my : -1;
-}
-
-/* ---- Built-in GUI application launcher ---- */
-
-/* OF0: menu entries are grouped.  The dropdown is rendered from a derived
- * row list (group headers + entries) rather than from gui_apps[] directly, so
- * adding the office suite later is an entry here, not layout surgery. */
-typedef enum {
-    GUI_APP_GRP_APPS = 0,   /* everyday small tools */
-    GUI_APP_GRP_OFFICE,     /* the office suite start centre (arrives in OF9) */
-    GUI_APP_GRP_SYSTEM,     /* monitors, managers, About */
-    GUI_APP_GRP_COUNT
-} gui_app_group_t;
-
-typedef struct gui_app_entry {
-    const char *name;
-    const char *path;
-    int icon_id;
-    gui_app_group_t group;
-} gui_app_entry_t;
-
-static const char *const gui_group_titles[GUI_APP_GRP_COUNT] = {
-    "Applications",
-    "Office",
-    "System",
-};
-
-/* Paths are absolute and canonical (FSLAYOUT_PLAN F3/F5).
- *
- * These held root-level names until F5 removed the compatibility aliases.
- * The kernel cannot use libc's prog_resolve() the way userspace does, so
- * these stay literal — which makes them the one place in the system where a
- * layout change must be applied by hand.  Nothing clicks these menu entries
- * in any test, so a stale path here is a menu item that silently does
- * nothing.  They were found by grep, not by a failure. */
-static const gui_app_entry_t gui_apps[] = {
-    { "Calculator",      "/apps/gcalc",     4,  GUI_APP_GRP_APPS },
-    { "Text Editor",     "/apps/gedit",     3,  GUI_APP_GRP_APPS },
-    { "File Manager",    "/apps/gfiles",    2,  GUI_APP_GRP_APPS },
-    { "Terminal",        "/apps/gterm",     1,  GUI_APP_GRP_APPS },
-    { "Web Browser",     "/apps/gbrowser",  9,  GUI_APP_GRP_APPS },
-    { "Music Player",    "/apps/gaudio",    8,  GUI_APP_GRP_APPS },
-    /* OF0: the office suite's start centre.  The group existed empty until
-     * this binary did; the checker refuses a path the image does not ship. */
-    { "Office",           "/apps/aoffice",  11, GUI_APP_GRP_OFFICE },
-    { "System Monitor",  "/apps/gsysmon",   5,  GUI_APP_GRP_SYSTEM },
-    { "Task Manager",    "/apps/gtaskmgr",  7,  GUI_APP_GRP_SYSTEM },
-    { "USB Manager",     "/apps/gusb",      10, GUI_APP_GRP_SYSTEM },
-    { "About",           "/apps/gabout",    6,  GUI_APP_GRP_SYSTEM },
-};
-
-#define GUI_START_MENU_W 180u
-/* OF0: the menu height is DERIVED from the entry count, not fixed.  It used to
- * be a constant 220 px sized for exactly the ten entries that existed, so a
- * suite that adds four more would have drawn its last rows under the taskbar
- * while the hit test kept mapping them to entries.  Everything that needs the
- * geometry goes through start_menu_rect(), which is also what the renderer
- * and the hit test both call. */
-#define GUI_START_MENU_X 4u
-#define GUI_START_BUTTON_W GUI_TB_START_W
-#define GUI_START_MENU_ITEM_Y 28u
-#define GUI_START_MENU_ITEM_H 18u
-
-static int gui_app_count(void) {
-    return (int)(sizeof(gui_apps) / sizeof(gui_apps[0]));
-}
-
-static const gui_app_entry_t *gui_app_by_icon_id(int icon_id) {
-    for (int i = 0; i < gui_app_count(); i++) {
-        if (gui_apps[i].icon_id == icon_id) return &gui_apps[i];
-    }
-    return NULL;
-}
-
-static void gui_launch_app(const gui_app_entry_t *app) {
-    if (!app || !app->path) return;
-    int64_t pid = process_spawn(app->path);
-    if (pid < 0) {
-        kprintf("[gui] launch failed: %s (%s)\n", app->name, app->path);
-        gui_notify("Launch failed", 0x00C04040, 2500);
-    } else {
-        kprintf("[gui] launched: %s (%s) pid=%lld\n",
-                app->name, app->path, (long long)pid);
-    }
-}
-
-/* One row of the dropdown: a group header (app < 0) or an entry.  Uniform
- * row height keeps start_menu_hit() a single division. */
-#define GUI_MENU_MAX_ROWS 64
-
-typedef struct gui_menu_row {
-    int app;            /* index into gui_apps[], or -1 for a group header */
-    const char *title;
-} gui_menu_row_t;
-
-/* Build the visible row list in group order, skipping empty groups.  Returns
- * the number of rows written.  Renderer, hit test and height all use this. */
-static int gui_menu_rows(gui_menu_row_t *rows, int max) {
-    int n = 0;
-    for (int g = 0; g < GUI_APP_GRP_COUNT; g++) {
-        int first = 1;
-        for (int i = 0; i < gui_app_count(); i++) {
-            if (gui_apps[i].group != (gui_app_group_t)g) continue;
-            if (first) {
-                if (n < max) {
-                    rows[n].app = -1;
-                    rows[n].title = gui_group_titles[g];
-                }
-                n++;
-                first = 0;
-            }
-            if (n < max) { rows[n].app = i; rows[n].title = gui_apps[i].name; }
-            n++;
-        }
-    }
-    return (n > max) ? max : n;
-}
-
-/* Height of the dropdown: a title strip, one row each, a bottom pad.  Never
- * smaller than the historical 220 px so the current menu keeps its look. */
-#define GUI_START_MENU_MIN_H 220u
-#define GUI_START_MENU_PAD_B 8u
-
-static uint32_t start_menu_height(void) {
-    gui_menu_row_t rows[GUI_MENU_MAX_ROWS];
-    int n = gui_menu_rows(rows, GUI_MENU_MAX_ROWS);
-    uint32_t h = GUI_START_MENU_ITEM_Y +
-                 (uint32_t)n * GUI_START_MENU_ITEM_H +
-                 GUI_START_MENU_PAD_B;
-    return (h < GUI_START_MENU_MIN_H) ? GUI_START_MENU_MIN_H : h;
-}
-
-static int start_menu_rect(int32_t *x, int32_t *y, uint32_t *w, uint32_t *h) {
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = active_theme.taskbar_h;
-    uint32_t menu_h = start_menu_height();
-    if (fh <= tb_h + menu_h) return 0;
-    if (x) *x = (int32_t)GUI_START_MENU_X;
-    if (y) *y = (int32_t)(fh - tb_h - menu_h);
-    if (w) *w = GUI_START_MENU_W;
-    if (h) *h = menu_h;
-    return 1;
-}
-
-static int start_menu_hit(int32_t mx, int32_t my) {
-    if (!start_menu_open) return -1;
-    int32_t menu_x = 0, menu_y = 0;
-    uint32_t menu_w = 0, menu_h = 0;
-    if (!start_menu_rect(&menu_x, &menu_y, &menu_w, &menu_h)) return -1;
-    if (mx < menu_x || mx >= menu_x + (int32_t)menu_w ||
-        my < menu_y || my >= menu_y + (int32_t)menu_h) return -1;
-
-    int32_t rel_y = my - menu_y;
-    if (rel_y < (int32_t)GUI_START_MENU_ITEM_Y) return -2; /* title strip */
-    int row = (rel_y - (int32_t)GUI_START_MENU_ITEM_Y) / (int32_t)GUI_START_MENU_ITEM_H;
-    gui_menu_row_t rows[GUI_MENU_MAX_ROWS];
-    int n = gui_menu_rows(rows, GUI_MENU_MAX_ROWS);
-    if (row < 0 || row >= n) return -2;
-    return rows[row].app;   /* -1 for a group header: in the menu, launches nothing */
-}
-
-static int start_menu_contains(int32_t mx, int32_t my) {
-    return start_menu_hit(mx, my) != -1;
-}
-
-/* ---- Taskbar window-button layout --------------------------------------
- *
- * OF0: the geometry itself lives in kernel/gui/taskbar_layout.h, so the
- * renderer, the hit test and the host unit test all run the same arithmetic.
- * These two helpers are the only kernel-side part: which windows get a button
- * (the filter) and slot -> window-index mapping, shared by draw and hit.
- */
-static int taskbar_win_count(void) {
-    int n = 0;
-    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (!windows[i].in_use || !windows[i].visible) continue;
-        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW)) continue;
-        n++;
-    }
-    return n;
-}
-
-/* slot is an ordinal among taskbar-listed windows, in draw order. */
-static int taskbar_win_at(int slot) {
-    int n = 0;
-    if (slot < 0) return -1;
-    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (!windows[i].in_use || !windows[i].visible) continue;
-        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW)) continue;
-        if (n == slot) return i;
-        n++;
-    }
-    return -1;
-}
-
-/* Draw the overflow list above the "»" button. */
-static void draw_taskbar_overflow(uint32_t fw, uint32_t fh, uint32_t tb_h) {
-    if (!taskbar_more_open) return;
-    int n = taskbar_win_count();
-    gui_tb_overflow_t ov;
-    gui_tb_overflow_geometry(fw, fh, tb_h, (unsigned)n, &ov);
-    if (ov.rows == 0) return;
-
-    gfx_fill_rect((uint32_t)ov.x, (uint32_t)ov.y, ov.w, ov.h, 0x00282838);
-    gfx_draw_rect((uint32_t)ov.x, (uint32_t)ov.y, ov.w, ov.h, 0x0060A0E0);
-
-    gui_tb_layout_t l;
-    gui_tb_layout(fw, (unsigned)n, &l);
-    uint32_t cols = (ov.w > 20u) ? ((ov.w - 20u) / 8u) : 0u;
-    if (cols > 19u) cols = 19u;
-
-    for (unsigned r = 0; r < ov.rows; r++) {
-        int entry = gui_tb_overflow_row_entry(&ov, taskbar_more_page, r);
-        uint32_t ry = (uint32_t)ov.y + GUI_TB_OV_PAD + r * ov.row_h;
-        if (entry < 0) {
-            gfx_draw_text((uint32_t)ov.x + 8u, ry, "\xAF more", 0x0070B0D8);
-            continue;
-        }
-        int wid = taskbar_win_at((int)l.visible + entry);
-        if (wid < 0) continue;
-        char title[20];
-        uint32_t k = 0;
-        while (k < cols && windows[wid].title[k]) { title[k] = windows[wid].title[k]; k++; }
-        title[k] = 0;
-        gfx_draw_text((uint32_t)ov.x + 8u, ry, title, active_theme.taskbar_text);
-    }
-}
-
-/* Hit test for the open overflow list: >=0 window id, -3 the "more" row,
- * -1 outside. */
-static int taskbar_overflow_hit(int32_t mx, int32_t my) {
-    if (!taskbar_more_open) return -1;
-    uint32_t fw = gfx_get_width(), fh = gfx_get_height();
-    uint32_t tb_h = active_theme.taskbar_h;
-    int n = taskbar_win_count();
-    gui_tb_overflow_t ov;
-    gui_tb_overflow_geometry(fw, fh, tb_h, (unsigned)n, &ov);
-    if (ov.rows == 0) return -1;
-    if (mx < ov.x || mx >= ov.x + (int32_t)ov.w) return -1;
-    if (my < ov.y || my >= ov.y + (int32_t)ov.h) return -1;
-    int32_t rel = my - ov.y - (int32_t)GUI_TB_OV_PAD;
-    if (rel < 0) return -1;
-    unsigned r = (unsigned)(rel / (int32_t)ov.row_h);
-    int entry = gui_tb_overflow_row_entry(&ov, taskbar_more_page, r);
-    if (entry < 0) return -3;
-    gui_tb_layout_t l;
-    gui_tb_layout(fw, (unsigned)n, &l);
-    return taskbar_win_at((int)l.visible + entry);
-}
-
-/* ---- Taskbar rendering ---- */
-
-static void draw_taskbar(void) {
-    if (gui_presentation_active()) return;
-    const gui_theme_t *t = &active_theme;
-    uint32_t fw = gfx_get_width();
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = t->taskbar_h;
-    uint32_t tb_y = fh - tb_h;
-
-    /* Background. */
-    gfx_fill_rect(0, tb_y, fw, tb_h, t->taskbar_bg);
-    /* Top border line. */
-    gfx_draw_line(0, tb_y, fw, tb_y, t->taskbar_border);
-
-    /* Start button. */
-    uint32_t start_w = GUI_START_BUTTON_W;
-    gfx_fill_rect(4, tb_y + 4, start_w, tb_h - 8, t->start_btn_bg);
-    gfx_draw_rect(4, tb_y + 4, start_w, tb_h - 8,
-                  start_menu_open ? 0x00FFFFFF : 0x00306090);
-    {
-        uint32_t fh = gui_font_h();
-        uint32_t ty = tb_y + (tb_h > fh ? (tb_h - fh) / 2 : 0);
-        gfx_draw_text(12, ty, "AuraLite", t->start_btn_text);
-    }
-
-    /* Start menu dropdown.  This is intentionally part of the taskbar layer,
-     * not a normal window, so input routing has a matching start_menu_hit(). */
-    if (start_menu_open) {
-        int32_t menu_x = 0, menu_y = 0;
-        uint32_t menu_w = 0, menu_h = 0;
-        if (start_menu_rect(&menu_x, &menu_y, &menu_w, &menu_h)) {
-            gfx_fill_rect((uint32_t)menu_x, (uint32_t)menu_y, menu_w, menu_h, 0x00282838);
-            gfx_draw_rect((uint32_t)menu_x, (uint32_t)menu_y, menu_w, menu_h, 0x0060A0E0);
-            gfx_draw_text((uint32_t)menu_x + 12, (uint32_t)menu_y + 10, "AuraLite", t->taskbar_text);
-            gfx_draw_line((uint32_t)menu_x + 8, (uint32_t)menu_y + 22,
-                          (uint32_t)menu_x + menu_w - 8, (uint32_t)menu_y + 22, 0x00405060);
-
-            /* Rows come from gui_menu_rows() -- the same list start_menu_hit()
-             * walks, so a label cannot drift from the row it launches. */
-            gui_menu_row_t rows[GUI_MENU_MAX_ROWS];
-            int nrows = gui_menu_rows(rows, GUI_MENU_MAX_ROWS);
-            for (int r = 0; r < nrows; r++) {
-                uint32_t ay = (uint32_t)menu_y + GUI_START_MENU_ITEM_Y +
-                              (uint32_t)r * GUI_START_MENU_ITEM_H;
-                if (ay + 16 > tb_y) break;
-                if (rows[r].app < 0) {
-                    gfx_draw_text((uint32_t)menu_x + 8, ay, rows[r].title, 0x0070B0D8);
-                    gfx_draw_line((uint32_t)menu_x + 8, ay + 15,
-                                  (uint32_t)menu_x + menu_w - 8, ay + 15, 0x00384858);
-                } else {
-                    gfx_draw_text((uint32_t)menu_x + 16, ay, rows[r].title, t->taskbar_text);
-                }
-            }
-        }
-    }
-
-    /* Window list -- every rect comes from gui_tb_layout(), the same call the
-     * hit test makes, so a button is clickable exactly where it is drawn and
-     * no open window can be left without a reachable button. */
-    int nwin = taskbar_win_count();
-    gui_tb_layout_t tl;
-    gui_tb_layout(fw, (unsigned)nwin, &tl);
-    uint32_t btn_h = tb_h - 8;
-    uint32_t title_cols = (tl.btn_w > 12u) ? ((tl.btn_w - 12u) / 8u) : 0u;   /* 8 px cell */
-    if (title_cols > 19u) title_cols = 19u;
-    for (unsigned slot = 0; slot < tl.visible; slot++) {
-        int i = taskbar_win_at((int)slot);
-        if (i < 0) break;
-        uint32_t bx = 0, btn_w = 0;
-        if (!gui_tb_button_rect(fw, (unsigned)nwin, slot, &bx, &btn_w)) break;
-        uint32_t col;
-        if (i == focused)        col = windows[i].focused ? t->title_active : t->title_inactive;
-        else if (windows[i].minimized) col = 0x00202830;
-        else                     col = 0x00303840;
-        gfx_fill_rect(bx, tb_y + 4, btn_w, btn_h, col);
-        gfx_draw_rect(bx, tb_y + 4, btn_w, btn_h, 0x00606878);
-        /* Truncate the title to the button that actually exists. */
-        char title_short[20];
-        uint32_t n = 0;
-        while (n < title_cols && windows[i].title[n]) { title_short[n] = windows[i].title[n]; n++; }
-        title_short[n] = 0;
-        gfx_draw_text(bx + 6, tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0),
-                      title_short, t->taskbar_text);
-    }
-    /* "»": every window that did not get a button is one click away. */
-    if (tl.more_w != 0u) {
-        gfx_fill_rect(tl.more_x, tb_y + 4, tl.more_w, btn_h,
-                      taskbar_more_open ? 0x00405060 : 0x00303840);
-        gfx_draw_rect(tl.more_x, tb_y + 4, tl.more_w, btn_h, 0x00606878);
-        uint32_t ty = tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0);
-        gfx_draw_text(tl.more_x + (tl.more_w > 12u ? (tl.more_w - 8u) / 2u : 2u), ty,
-                      "\xAF", t->taskbar_text);
-    }
-
-    /* System tray area (right side). */
-    uint32_t tray_x = fw - 90;
-    /* Clock. */
-    uint64_t ticks = timer_get_ticks();
-    uint32_t hz = timer_get_frequency();
-    if (hz == 0) hz = 100;
-    uint64_t elapsed_ticks = (ticks >= gui_clock_base_ticks) ?
-        (ticks - gui_clock_base_ticks) : ticks;
-    uint64_t s = elapsed_ticks / hz;
-    uint32_t mm = (uint32_t)((s / 60) % 60);
-    uint32_t hh = (uint32_t)((s / 3600) % 24);
-    uint32_t ss = (uint32_t)(s % 60);
-    char clk[16];
-    int p = 0;
-    clk[p++] = '0' + (hh / 10) % 10; clk[p++] = '0' + hh % 10;
-    clk[p++] = ':'; clk[p++] = '0' + (mm / 10) % 10; clk[p++] = '0' + mm % 10;
-    clk[p++] = ':'; clk[p++] = '0' + (ss / 10) % 10; clk[p++] = '0' + ss % 10;
-    clk[p] = 0;
-    gfx_draw_text(tray_x, tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0),
-                  clk, t->taskbar_text);
-
-    /* Overflow list last: it overlaps the windows above the taskbar. */
-    draw_taskbar_overflow(fw, fh, tb_h);
-}
-
-/* ---- Notifications rendering ---- */
-
-static void draw_notifications(void) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t fw = gfx_get_width();
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = t->taskbar_h;
-    uint32_t hz = timer_get_frequency();
-    if (hz == 0) hz = 100;
-
-    int idx = 0;
-    for (int i = 0; i < GUI_MAX_NOTIFICATIONS; i++) {
-        if (!notifications[i].in_use) continue;
-        uint32_t elapsed = ((uint32_t)timer_get_ticks() - notifications[i].start_tick) * 1000 / hz;
-        if (elapsed >= notifications[i].duration_ms) {
-            notifications[i].in_use = 0;
-            continue;
-        }
-        uint32_t nw = 300, nh = 40;
-        uint32_t nx = fw - nw - 8;
-        uint32_t ny = fh - tb_h - nh - 8 - (uint32_t)idx * (nh + 6);
-
-        /* Background. */
-        gfx_fill_rect(nx, ny, nw, nh, t->notif_bg);
-        gfx_draw_rect(nx, ny, nw, nh, t->notif_border);
-        /* Colored accent bar on left. */
-        gfx_fill_rect(nx, ny, 4, nh, notifications[i].color);
-        /* Text. */
-        gfx_draw_text(nx + 10, ny + (nh > gui_font_h() ? (nh - gui_font_h()) / 2 : 0),
-                      notifications[i].text, t->notif_text);
-        idx++;
-    }
+    cursor_commit_presented(have_cursor, mx, my);
 }
 
 /* ---- Full compositor render ---- */
@@ -2427,11 +2620,10 @@ static void compute_dirty_union(int32_t *ox, int32_t *oy,
 }
 
 /*
- * Partial redraw: composite the whole back buffer (draw order must be
- * preserved), then flip only the dirty bounding box to avoid tearing on
- * unchanged areas.
+ * Partial redraw: rebuild only the dirty bounding box in draw order, then
+ * present that rectangle.  The cursor is redrawn as the final overlay layer.
  */
-static void compositor_render_dirty(void) {
+static void compositor_render_dirty(int have_cursor, int cursor_x, int cursor_y) {
     /* OPT_PLAN.md O4: the union bounds the WORK now, not just the flip.
      * Compute it up front, arm the gfx clip, and let every primitive
      * refuse pixels outside it.  (BUG-32 ordering still holds: nothing
@@ -2446,7 +2638,7 @@ static void compositor_render_dirty(void) {
     gfx_clip_set(ux, uy, uw, uh);
 
     draw_desktop();
-    draw_icons();
+    shell_draw_icons();
 
     /* Z-sorted index of visible windows (same logic as compositor_render). */
     int order[GUI_MAX_WINDOWS], n = 0;
@@ -2470,7 +2662,7 @@ static void compositor_render_dirty(void) {
     for (int i = 0; i < n; i++) {
         /* O4: whole-window fast reject — a window (shadow included)
          * that misses the union cannot contribute a pixel; skip it
-         * before its per-pixel blit loops run. */
+         * before its bulk blit calls run. */
         const gui_win_t *w = &windows[order[i]];
         int off = active_theme.shadow_offset;
         int32_t wx0 = w->x - 1, wy0 = w->y - 1;
@@ -2489,17 +2681,14 @@ static void compositor_render_dirty(void) {
     /* Restore the union clip for the taskbar / notifications that follow. */
     gfx_clip_set(ux, uy, uw, uh);
 
-    if (!gui_presentation_active()) {
-        draw_snap_preview();
-        draw_taskbar();
-        draw_notifications();
-    }
+    if (!gui_presentation_active()) { draw_snap_preview(); shell_draw_taskbar(); shell_draw_notifications(); }
 
-    /* Flip the union we clipped the composite to (BUG-32: dirty_count is
-     * cleared only now, after the union has been consumed).  Cursor is
-     * stamped for the flip only, then peeled off the back buffer. */
+    /* Draw the cursor as the final compositor layer.  Its current position
+     * is inside the damage generated from the same mouse snapshot used here. */
     dirty_count = 0;
-    cursor_stamp_and_flip_rect(ux, uy, uw, uh);
+    cursor_draw_and_flip_rect(
+        ux, uy, uw, uh, have_cursor, cursor_x, cursor_y
+    );
     gfx_clip_clear();
 
     /* OPT_PLAN.md O0/O4: composited pixels are now the REAL post-clip
@@ -2513,11 +2702,11 @@ static void compositor_render_dirty(void) {
     }
 }
 
-static void compositor_render(void) {
+static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
     draw_desktop();
 
     /* Draw desktop icons. */
-    draw_icons();
+    shell_draw_icons();
 
     /* Build z-sorted index of visible windows. */
     int order[GUI_MAX_WINDOWS], n = 0;
@@ -2554,14 +2743,10 @@ static void compositor_render(void) {
     }
 
     /* Desktop chrome yields completely to a presentation surface. */
-    if (!gui_presentation_active()) {
-        draw_snap_preview();
-        draw_taskbar();
-        draw_notifications();
-    }
+    if (!gui_presentation_active()) { draw_snap_preview(); shell_draw_taskbar(); shell_draw_notifications(); }
 
-    /* Cursor stamped for the flip only, then peeled off the back buffer. */
-    cursor_stamp_and_flip_full();
+    /* Cursor is composited last and remains in the back buffer. */
+    cursor_draw_and_flip_full(have_cursor, cursor_x, cursor_y);
 
     /* OPT_PLAN.md O0/O4: full path — the pixel count is the gfx layer's
      * real post-clip store count now (clip is full-screen here). */
@@ -2747,46 +2932,6 @@ int gui_take_file_drop(int destination_wid, uint64_t destination_pid,
     return 0;
 }
 
-/* ---- Desktop icon hit-test ---- */
-static int hit_icon(int32_t mx, int32_t my) {
-    uint32_t isz = active_theme.icon_size;
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (!icons[i].in_use) continue;
-        if (mx >= icons[i].x && mx < icons[i].x + (int32_t)isz &&
-            my >= icons[i].y && my < icons[i].y + (int32_t)isz + 16) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-/* ---- Taskbar hit-test ---- */
-static int taskbar_hit(int32_t mx, int32_t my) {
-    if (gui_presentation_active()) return -1;
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = active_theme.taskbar_h;
-    if ((uint32_t)my < fh - tb_h) return -1;
-
-    /* Start button. */
-    if ((uint32_t)mx >= 4 && (uint32_t)mx < 4 + GUI_START_BUTTON_W &&
-        (uint32_t)my >= fh - tb_h + 4) return -2;
-
-    /* Window list: the same gui_tb_layout() the renderer uses, so a button is
-     * hit exactly where it was drawn.  Returns -3 for the "»" button. */
-    uint32_t fw = gfx_get_width();
-    int nwin = taskbar_win_count();
-    gui_tb_layout_t tl;
-    gui_tb_layout(fw, (unsigned)nwin, &tl);
-    for (unsigned slot = 0; slot < tl.visible; slot++) {
-        uint32_t bx = 0, btn_w = 0;
-        if (!gui_tb_button_rect(fw, (unsigned)nwin, slot, &bx, &btn_w)) break;
-        if ((uint32_t)mx >= bx && (uint32_t)mx < bx + btn_w) return taskbar_win_at((int)slot);
-    }
-    if (tl.more_w != 0u &&
-        (uint32_t)mx >= tl.more_x && (uint32_t)mx < tl.more_x + tl.more_w) return -3;
-    return -1;
-}
-
 /* ===================================================================
  * Input → event routing
  * =================================================================== */
@@ -2911,117 +3056,22 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
     /* Start menu is not a normal window.  Keep it open while the cursor moves
      * from the Start button into the menu; only a left-click outside closes it. */
-    if (start_menu_open) {
-        int sm_hit = start_menu_hit(mx, my);
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            if (sm_hit >= 0) {
-                gui_launch_app(&gui_apps[sm_hit]);
-                start_menu_open = 0;
-                full_dirty = 1;
-                return;
-            }
-            if (sm_hit == -2) {
-                /* Header/empty menu area: consume click but keep menu open. */
-                return;
-            }
-            if (!(wid < 0 && taskbar_hit(mx, my) == -2)) {
-                start_menu_open = 0;
-                full_dirty = 1;
-                return;
-            }
-        } else if (start_menu_contains(mx, my)) {
-            gui_set_cursor(GUI_CURSOR_ARROW);
-            return;
-        }
+    if (shell_handle_start_menu_click(mx, my, wid,
+            (ev->pressed & MOUSE_BTN_LEFT) != 0)) {
+        return;
     }
 
     /* OF0: the taskbar overflow list, when open, is modal-ish: it sits above
      * the taskbar and swallows clicks inside itself. */
-    if (taskbar_more_open) {
-        int om = taskbar_overflow_hit(mx, my);
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            if (om >= 0) {
-                if (windows[om].minimized) gui_restore_window(om);
-                else                       gui_focus_window(om);
-                taskbar_more_open = 0;
-                full_dirty = 1;
-                return;
-            }
-            if (om == -3) {
-                unsigned n = taskbar_win_count();
-                gui_tb_overflow_t ov;
-                gui_tb_overflow_geometry(gfx_get_width(), gfx_get_height(),
-                                         active_theme.taskbar_h, n, &ov);
-                taskbar_more_page = gui_tb_overflow_next_page(&ov, taskbar_more_page);
-                full_dirty = 1;
-                return;
-            }
-            /* Click elsewhere: close the list and let the click through --
-             * except on the "»" button itself, where closing IS the effect.
-             * Falling through there toggled it straight back open, so the
-             * list could not be dismissed with the button that opened it. */
-            taskbar_more_open = 0;
-            full_dirty = 1;
-            if (taskbar_hit(mx, my) == -3) return;
-        } else if (om != -1) {
-            gui_set_cursor(GUI_CURSOR_ARROW);
-            return;
-        }
+    if (shell_handle_overflow_click(mx, my,
+            (ev->pressed & MOUSE_BTN_LEFT) != 0)) {
+        return;
     }
 
     if (wid < 0) {
-        /* Check taskbar. */
-        int tb = taskbar_hit(mx, my);
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            if (tb == -2) {
-                /* Start button. */
-                start_menu_open = !start_menu_open;
-                taskbar_more_open = 0;
-                full_dirty = 1;
-                gui_set_cursor(GUI_CURSOR_ARROW);
-                last_hover_wid = -1;
-                return;
-            }
-            if (tb == -3) {
-                /* "»": open the list of windows with no button of their own. */
-                taskbar_more_open = !taskbar_more_open;
-                taskbar_more_page = 0;
-                start_menu_open = 0;
-                full_dirty = 1;
-                return;
-            }
-            if (tb >= 0) {
-                if (windows[tb].minimized) gui_restore_window(tb);
-                else if (focused == tb)    gui_minimize_window(tb);
-                else                       gui_focus_window(tb);
-                full_dirty = 1;
-            }
-        }
-        /* Check desktop icons. */
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            int ic = hit_icon(mx, my);
-            if (ic >= 0) {
-                icon_selected = ic;
-                full_dirty = 1;
-            } else {
-                icon_selected = -1;
-            }
-        }
-        if (ev->pressed & MOUSE_BTN_LEFT && icon_selected >= 0) {
-            int ic = hit_icon(mx, my);
-            if (ic >= 0 && ic == icon_selected) {
-                /* Double-click detection on the same desktop icon. */
-                uint32_t now = (uint32_t)timer_get_ticks();
-                int icon_part = 1000 + ic;
-                if (gui_is_double_click(now, mx, my, -1, icon_part, MOUSE_BTN_LEFT)) {
-                    /* Icon activated. */
-                    kprintf("[gui] icon double-clicked: %s (id=%d)\n", icons[ic].label, icons[ic].icon_id);
-                    gui_launch_app(gui_app_by_icon_id(icons[ic].icon_id));
-                    gui_record_click(0, -999, -999, -999, -1, 0);
-                } else {
-                    gui_record_click(now, mx, my, -1, icon_part, MOUSE_BTN_LEFT);
-                }
-            }
+        int left = (ev->pressed & MOUSE_BTN_LEFT) != 0;
+        if (!shell_handle_taskbar_click(mx, my, left)) {
+            shell_handle_icon_click(mx, my, left);
         }
         gui_set_cursor(GUI_CURSOR_ARROW);
         last_hover_wid = -1;
@@ -3279,27 +3329,22 @@ void gui_compositor_tick(void) {
     kb_event_t ke;
     while (keyboard_get_event(&ke)) route_key_event(&ke);
 
-    /* Dirty the last FRONT cursor (not just the last mouse read) plus
-     * the current one, and the bbox between them.  The sprite is peeled
-     * off the back buffer after every flip; the front still needs those
-     * rects or the old stamp stays visible. */
-    int mx, my;
-    if (mouse_get_position(&mx, &my)) {
-        if (last_drawn_mx != mx || last_drawn_my != my) {
-            const int pad = 8, ext = CURSOR_SAVE_W;
-            int ox = (last_drawn_mx >= 0) ? last_drawn_mx : mx;
-            int oy = (last_drawn_my >= 0) ? last_drawn_my : my;
-            gui_mark_dirty(ox - pad, oy - pad, (uint32_t)(ext + pad * 2),
-                           (uint32_t)(CURSOR_SAVE_H + pad * 2));
-            gui_mark_dirty(mx - pad, my - pad, (uint32_t)(ext + pad * 2),
-                           (uint32_t)(CURSOR_SAVE_H + pad * 2));
-            int32_t x0 = (ox < mx ? ox : mx) - pad;
-            int32_t y0 = (oy < my ? oy : my) - pad;
-            int32_t x1 = (ox > mx ? ox : mx) + ext + pad;
-            int32_t y1 = (oy > my ? oy : my) + CURSOR_SAVE_H + pad;
-            if (x1 > x0 && y1 > y0)
-                gui_mark_dirty(x0, y0, (uint32_t)(x1 - x0), (uint32_t)(y1 - y0));
+    /* Capture the pointer once.  The exact same snapshot drives both damage
+     * calculation and cursor drawing/flip, preventing cursor/frame divergence. */
+    int cursor_x = -1;
+    int cursor_y = -1;
+    int have_cursor = (mouse_get_position(&cursor_x, &cursor_y) == 1);
+
+    if (have_cursor) {
+        if (!last_drawn_valid ||
+            last_drawn_mx != cursor_x || last_drawn_my != cursor_y) {
+            if (last_drawn_valid)
+                gui_mark_cursor_dirty(last_drawn_mx, last_drawn_my);
+            gui_mark_cursor_dirty(cursor_x, cursor_y);
         }
+    } else if (last_drawn_valid) {
+        /* Mouse device disappeared or became unavailable: erase its old stamp. */
+        gui_mark_cursor_dirty(last_drawn_mx, last_drawn_my);
     }
 
     /* Clock tick: mark taskbar dirty once per second for the clock. */
@@ -3324,15 +3369,7 @@ void gui_compositor_tick(void) {
     }
 
     /* Expire notifications. */
-    for (int i = 0; i < GUI_MAX_NOTIFICATIONS; i++) {
-        if (notifications[i].in_use) {
-            uint32_t elapsed = ((uint32_t)timer_get_ticks() - notifications[i].start_tick) * 1000 / hz;
-            if (elapsed >= notifications[i].duration_ms) {
-                notifications[i].in_use = 0;
-                full_dirty = 1;
-            }
-        }
-    }
+    shell_expire_notifications();
 
     /* Branch: full redraw, partial dirty-redraw, or idle frame.
      * NOTE: dirty_count must NOT be cleared here for the partial-redraw path;
@@ -3342,18 +3379,22 @@ void gui_compositor_tick(void) {
     if (full_dirty) {
         full_dirty = 0;
         dirty_count = 0;
-        compositor_render();
+        compositor_render(have_cursor, cursor_x, cursor_y);
     } else if (dirty_count > 0) {
-        compositor_render_dirty();
+        compositor_render_dirty(have_cursor, cursor_x, cursor_y);
     } else {
         /* Idle frame — no work needed, zero bandwidth consumed. */
     }
 }
 
 void gui_render_now(void) {
+    int cursor_x = -1;
+    int cursor_y = -1;
+    int have_cursor = (mouse_get_position(&cursor_x, &cursor_y) == 1);
+
     full_dirty = 0;
     dirty_count = 0;
-    compositor_render();
+    compositor_render(have_cursor, cursor_x, cursor_y);
 }
 
 /* ===================================================================
