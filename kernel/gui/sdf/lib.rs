@@ -16,6 +16,15 @@ fn panic(_: &PanicInfo) -> ! {
 extern "C" {
     fn gui_blend_pixel(wid: i32, x: i32, y: i32, color: u32, a: u8) -> i32;
     fn gui_blend_pixels4(wid: i32, x: i32, y: i32, color: u32, alpha: *const u8) -> i32;
+    
+}
+
+#[no_mangle]
+pub extern "C" fn gui_dirty_is_empty() -> i32 {
+    dirty_lock();
+    let empty = unsafe { DIRTY_COUNT == 0 } as i32;
+    dirty_unlock();
+    empty
 }
 
 // ---------------------------------------------------------------------------
@@ -369,4 +378,174 @@ pub extern "C" fn sdf_draw_text(
         }
     }
     0
+}
+
+// ---------------------------------------------------------------------------
+// Dirty rectangle tracker (replaces the C dirty_rects[] / dirty_count).
+//
+// C used ONE bounding box for all dirty regions, so moving the cursor from
+// one corner to the other damaged the whole diagonal.  Here the rectangles
+// stay disjoint: overlapping/touching ones are merged, and the compositor
+// renders each rectangle separately.
+//
+// The tracker is shared between the compositor thread (which snapshots and
+// renders) and syscall threads (which add rects via gui_invalidate_rect).
+// A small spinlock serialises them.
+// ---------------------------------------------------------------------------
+
+use core::sync::atomic::AtomicBool;
+
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct DirtyRect {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+}
+
+const MAX_DIRTY_RECTS: usize = 64;
+const MERGE_PAD: i64 = 4;
+
+static DIRTY_LOCK: AtomicBool = AtomicBool::new(false);
+
+#[inline]
+fn dirty_lock() {
+    while DIRTY_LOCK.compare_exchange_weak(
+        false, true, Ordering::Acquire, Ordering::Relaxed
+    ).is_err() {
+        core::hint::spin_loop();
+    }
+}
+
+#[inline]
+fn dirty_unlock() {
+    DIRTY_LOCK.store(false, Ordering::Release);
+}
+
+static mut DIRTY_RECTS: [DirtyRect; MAX_DIRTY_RECTS] = [
+    DirtyRect { x: 0, y: 0, w: 0, h: 0 }; MAX_DIRTY_RECTS
+];
+static mut DIRTY_COUNT: usize = 0;
+static mut DIRTY_OVERFLOW: bool = false;
+
+/// Clear all pending rects.  Called from gui_request_redraw() before a
+/// full-screen render.
+#[no_mangle]
+pub extern "C" fn gui_dirty_reset() {
+    dirty_lock();
+    unsafe {
+        DIRTY_COUNT = 0;
+        DIRTY_OVERFLOW = false;
+    }
+    dirty_unlock();
+}
+
+/// Add a rect.  Returns 0 on success, -1 on overflow (caller should fall
+/// back to a full redraw).
+#[no_mangle]
+pub extern "C" fn gui_dirty_add(x: i32, y: i32, w: u32, h: u32) -> i32 {
+    if w == 0 || h == 0 { return 0; }
+    dirty_lock();
+    let result = unsafe { add_unsafe(x, y, w, h) };
+    dirty_unlock();
+    result
+}
+
+unsafe fn add_unsafe(x: i32, y: i32, w: u32, h: u32) -> i32 {
+    if DIRTY_OVERFLOW { return -1; }
+
+    let nx1 = x as i64 + w as i64;
+    let ny1 = y as i64 + h as i64;
+
+    // Try to merge with an existing rect (overlap or within MERGE_PAD).
+    for i in 0..DIRTY_COUNT {
+        let r = &mut DIRTY_RECTS[i];
+        let rx1 = r.x as i64 + r.w as i64;
+        let ry1 = r.y as i64 + r.h as i64;
+        if x as i64 <= rx1 + MERGE_PAD && nx1 + MERGE_PAD >= r.x as i64
+            && y as i64 <= ry1 + MERGE_PAD && ny1 + MERGE_PAD >= r.y as i64
+        {
+            let mx = r.x.min(x) as i64;
+            let my = r.y.min(y) as i64;
+            let mx1 = rx1.max(nx1);
+            let my1 = ry1.max(ny1);
+            r.x = mx as i32;
+            r.y = my as i32;
+            r.w = (mx1 - mx) as u32;
+            r.h = (my1 - my) as u32;
+            // The merged rect may now touch others; cascade.
+            merge_all_unsafe();
+            return 0;
+        }
+    }
+
+    if DIRTY_COUNT >= MAX_DIRTY_RECTS {
+        DIRTY_OVERFLOW = true;
+        DIRTY_COUNT = 0;
+        return -1;
+    }
+    DIRTY_RECTS[DIRTY_COUNT] = DirtyRect { x, y, w, h };
+    DIRTY_COUNT += 1;
+    0
+}
+
+unsafe fn merge_all_unsafe() {
+    let mut changed = true;
+    while changed {
+        changed = false;
+        let mut i = 0;
+        while i < DIRTY_COUNT {
+            let mut j = i + 1;
+            while j < DIRTY_COUNT {
+                let ax = DIRTY_RECTS[i].x as i64;
+                let ay = DIRTY_RECTS[i].y as i64;
+                let ax1 = ax + DIRTY_RECTS[i].w as i64;
+                let ay1 = ay + DIRTY_RECTS[i].h as i64;
+                let bx = DIRTY_RECTS[j].x as i64;
+                let by = DIRTY_RECTS[j].y as i64;
+                let bx1 = bx + DIRTY_RECTS[j].w as i64;
+                let by1 = by + DIRTY_RECTS[j].h as i64;
+                if ax <= bx1 + MERGE_PAD && ax1 + MERGE_PAD >= bx
+                    && ay <= by1 + MERGE_PAD && ay1 + MERGE_PAD >= by
+                {
+                    let mx = DIRTY_RECTS[i].x.min(DIRTY_RECTS[j].x) as i64;
+                    let my = DIRTY_RECTS[i].y.min(DIRTY_RECTS[j].y) as i64;
+                    let mx1 = ax1.max(bx1);
+                    let my1 = ay1.max(by1);
+                    DIRTY_RECTS[i].x = mx as i32;
+                    DIRTY_RECTS[i].y = my as i32;
+                    DIRTY_RECTS[i].w = (mx1 - mx) as u32;
+                    DIRTY_RECTS[i].h = (my1 - my) as u32;
+                    DIRTY_RECTS[j] = DIRTY_RECTS[DIRTY_COUNT - 1];
+                    DIRTY_COUNT -= 1;
+                    changed = true;
+                } else {
+                    j += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+}
+
+/// Atomically copy all pending rects into `out` and clear the internal list.
+/// Returns the number copied (0 when nothing is pending).  The compositor
+/// calls this once per tick, then iterates the copy with no locking.
+#[no_mangle]
+pub extern "C" fn gui_dirty_snapshot(out: *mut DirtyRect, max: usize) -> usize {
+    if out.is_null() || max == 0 { return 0; }
+    dirty_lock();
+    let n = unsafe { DIRTY_COUNT.min(max) };
+    for i in 0..n {
+        unsafe {
+            core::ptr::write(out.add(i), DIRTY_RECTS[i]);
+        }
+    }
+    unsafe {
+        DIRTY_COUNT = 0;
+        DIRTY_OVERFLOW = false;
+    }
+    dirty_unlock();
+    n
 }
