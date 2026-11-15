@@ -129,23 +129,19 @@ RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
 RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
 
 # =============================================================================
-# SDF font renderer (kernel-space Rust, x86_64-unknown-none).
-#
-# Same shape as RSBR in the userspace section: one .rs -> one object via
-# rustc, no Cargo.toml.  The atlas.bin is include_bytes!'d at compile time,
-# so it must sit next to lib.rs.  RUSTFLAGS is already x86_64-unknown-none +
-# relocation-model=static, exactly what a higher-half kernel module needs;
-# -C panic=abort is added because a Rust panic in kernel space must halt,
-# not unwind (there is no unwind runtime here).
+# Aura GUI Rust migration (GUIRust)
 # =============================================================================
-SDF_DIR       := kernel/gui/sdf
-SDF_LIB       := $(SDF_DIR)/lib.rs
-SDF_OBJ       := $(BUILD_DIR)/sdf_font.o
-SDF_RUSTFLAGS = $(RUSTFLAGS) -C panic=abort
+GUI_DIR          := kernel/gui
+GUI_LIB          := $(GUI_DIR)/lib.rs
+GUI_RUST_OBJ     := $(BUILD_DIR)/gui_core.o
+GUI_ATLAS        := $(GUI_DIR)/sdf/atlas.bin
+GUI_RUST_SOURCES := $(shell find $(GUI_DIR) -type f -name '*.rs')
+
+GUI_RUSTFLAGS = $(RUSTFLAGS) -C panic=abort
 
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
                $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS)) \
-               $(SDF_OBJ) \
+               $(GUI_RUST_OBJ) \
                $(RUST_CORE_RLIB) \
                $(RUST_COMPILER_BUILTINS_RLIB)
 
@@ -836,18 +832,22 @@ $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# Rust -> object.  --emit obj gives one relocatable directly; no rlib, no
-# ar extraction, no linker gymnastics.  --crate-type lib matches what cargo
-# would do for a `lib` crate.
-$(SDF_OBJ): $(SDF_LIB) $(SDF_DIR)/atlas.bin
+# =============================================================================
+# GUIRust: compile the complete kernel GUI Rust crate.
+#
+# lib.rs is the crate root and includes gui_drawing, gui_dirty and gui_sdf.
+# All Rust modules are compiled into one relocatable object.
+# =============================================================================
+
+$(GUI_RUST_OBJ): $(GUI_LIB) $(GUI_RUST_SOURCES) $(GUI_ATLAS)
 	@mkdir -p $(dir $@)
-	$(RUSTC) $(SDF_RUSTFLAGS) \
+	$(RUSTC) $(GUI_RUSTFLAGS) \
 		--edition=2021 \
-		--crate-name sdf \
+		--crate-name gui_core \
 		--crate-type lib \
 		--emit obj \
 		-o $@ \
-		$(SDF_LIB)
+		$(GUI_LIB)
 	@echo "[rustc] $@ ($$(du -h $@ | cut -f1))"
 
 # USB_PLAN U2: -Wunreachable-code, as an error, for the USB drivers.
