@@ -423,8 +423,8 @@ void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg)
     v->widget_cap = cap;
     v->focused_widget = -1;
     v->bg = bg ? bg : AG_PANEL;
+    v->dirty = 1;   /* first frame */
 
-    /* Try to load a custom theme background color. */
     int fd = open("/disk/theme.txt", O_RDONLY);
     if (fd >= 0) {
         char thm[16];
@@ -899,6 +899,7 @@ static void render_contextmenu(int wid, ag_widget_t *w) {
 }
 
 void ag_view_render(ag_view_t *v) {
+    v->dirty = 0;
     ag_clear(v->wid, v->bg);
     for (int i = 0; i < v->widget_count; i++) {
         ag_widget_t *w = &v->widgets[i];
@@ -915,7 +916,7 @@ void ag_view_render(ag_view_t *v) {
             case AG_W_SCROLLAREA:  render_scrollarea(v->wid, w);  break;
             case AG_W_TAB:         render_tab(v->wid, w);         break;
             case AG_W_CONTEXTMENU: render_contextmenu(v->wid, w); break;
-            case AG_W_TREE:        render_tree(v->wid, w);         break;
+            case AG_W_TREE:        render_tree(v->wid, w);        break;
         }
     }
     ag_render_now();
@@ -944,6 +945,7 @@ static void set_focus(ag_view_t *v, int idx) {
     }
     v->focused_widget = idx;
     if (idx >= 0 && idx < v->widget_count) v->widgets[idx].focused = 1;
+    v->dirty = 1;   /* focused border / cursor may have moved */
 }
 
 static int is_focusable(ag_widget_t *w) {
@@ -992,7 +994,6 @@ static ag_widget_t *find_contextmenu(ag_view_t *v) {
 int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
     if (e->type == AG_EVT_CLOSE_REQ) return 1;
 
-    /* Handle context menu visibility. */
     ag_widget_t *cm = find_contextmenu(v);
 
     /* Right-click: show context menu. */
@@ -1001,6 +1002,7 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
         cm->menu_visible = 1;
         cm->visible = 1;
         cm->selected = -1;
+        v->dirty = 1;
         return 0;
     }
 
@@ -1012,15 +1014,17 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                 int item_h = 20;
                 int idx = (e->y - cm->y - 2) / item_h;
                 if (idx >= 0 && idx < cm->menu_count) {
-                    /* Menu item clicked — fire on_click if set. */
                     cm->selected = idx;
                     if (cm->on_click) cm->on_click(cm, cm->user);
                 }
             }
             cm->menu_visible = 0;
             cm->visible = 0;
+            v->dirty = 1;
             return 0;
         }
+        /* Any other event while the menu is open: let it fall through so
+         * the caller can decide (the menu is only dismissed on MOUSE_DOWN). */
     }
 
     if (e->type == AG_EVT_MOUSE_DOWN || e->type == AG_EVT_MOUSE_DBLCLICK) {
@@ -1030,11 +1034,15 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
             switch (w->kind) {
                 case AG_W_BUTTON:
                     w->state = 2;
+                    /* A click callback may mutate any widget in the view;
+                     * mark dirty unconditionally so its changes appear. */
+                    v->dirty = 1;
                     if (w->on_click) w->on_click(w, w->user);
                     set_focus(v, idx);
                     break;
                 case AG_W_CHECKBOX:
                     w->state = !w->state;
+                    v->dirty = 1;
                     if (w->on_change) w->on_change(w, w->user);
                     set_focus(v, idx);
                     break;
@@ -1044,14 +1052,18 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                       if (rel < 0) rel = 0;
                       int len = (int)strlen(w->text);
                       if (rel > len) rel = len;
-                      w->cursor_pos = rel;
+                      if (rel != w->cursor_pos) {
+                          w->cursor_pos = rel;
+                          v->dirty = 1;
+                      }
                     }
                     break;
                 case AG_W_LISTBOX: {
                     int row_h = AG_ROW_H;
                     int row = (e->y - w->y - 2) / row_h;
-                    if (row >= 0 && row < w->item_count) {
+                    if (row >= 0 && row < w->item_count && row != w->selected) {
                         w->selected = row;
+                        v->dirty = 1;
                         if (w->on_select) w->on_select(w, w->user);
                     }
                     set_focus(v, idx);
@@ -1062,8 +1074,12 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     int32_t rel  = e->x - w->x - 6;
                     if (rel < 0) rel = 0;
                     if (rel > span) rel = span;
-                    w->value = span ? (rel * w->value_max) / span : 0;
-                    if (w->on_change) w->on_change(w, w->user);
+                    int newv = span ? (rel * w->value_max) / span : 0;
+                    if (newv != w->value) {
+                        w->value = newv;
+                        v->dirty = 1;
+                        if (w->on_change) w->on_change(w, w->user);
+                    }
                     set_focus(v, idx);
                     break;
                 }
@@ -1073,8 +1089,7 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                     if (tab >= 0 && tab < w->tab_count &&
                         tab != w->active_tab) {
                         w->active_tab = tab;
-                        /* W32A-8: a switched tab reports, so a host
-                         * (the tab control) can raise TCN_SELCHANGE. */
+                        v->dirty = 1;
                         if (w->on_change) w->on_change(w, w->user);
                     }
                     break;
@@ -1087,34 +1102,44 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                         int d = 0;
                         for (int p = w->tree[n].parent; p >= 0; p = w->tree[p].parent) d++;
                         int32_t gutter = w->x + 2 + d * 12;
+                        int changed = 0;
                         if (w->tree[n].has_children &&
                             e->x >= gutter && e->x < gutter + 12) {
                             w->tree[n].expanded = !w->tree[n].expanded;
+                            changed = 1;
                         } else if (e->type == AG_EVT_MOUSE_DBLCLICK &&
                                    w->tree[n].has_children) {
-                            /* label double-click toggles, like the
-                             * Win32 treeview does */
                             w->tree[n].expanded = !w->tree[n].expanded;
+                            changed = 1;
                         } else if (n != w->tree_sel) {
                             w->tree_sel = n;
+                            changed = 1;
                             if (w->on_select) w->on_select(w, w->user);
                         }
+                        if (changed) v->dirty = 1;
                     }
                     set_focus(v, idx);
                     break;
                 }
+                default:
+                    break;
             }
         } else {
             set_focus(v, -1);
         }
     }
+
     if (e->type == AG_EVT_MOUSE_UP) {
+        int changed = 0;
         for (int i = 0; i < v->widget_count; i++) {
             if (v->widgets[i].kind == AG_W_BUTTON && v->widgets[i].state == 2) {
                 v->widgets[i].state = 0;
+                changed = 1;
             }
         }
+        if (changed) v->dirty = 1;
     }
+
     if (e->type == AG_EVT_KEY_DOWN) {
         if (e->key == '\t') {
             focus_next(v, (e->mods & 0x01) ? -1 : 1);
@@ -1124,12 +1149,12 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                 if (e->mods & 0x02) {
                     if (e->key == 'c' || e->key == 'C') {
                         ag_set_clipboard(w->text);
+                        /* clipboard only: no visible change */
                     } else if (e->key == 'x' || e->key == 'X') {
-                        /* RESIDUE2 T7: cut = copy the whole line, then
-                         * clear the box (cursor home, change notified). */
                         ag_set_clipboard(w->text);
                         w->text[0] = '\0';
                         w->cursor_pos = 0;
+                        v->dirty = 1;
                         if (w->on_change) w->on_change(w, w->user);
                     } else if (e->key == 'v' || e->key == 'V') {
                         char buf[AG_MAX_WIDGET_TEXT];
@@ -1137,43 +1162,55 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
                             strncpy(w->text, buf, AG_MAX_WIDGET_TEXT - 1);
                             w->text[AG_MAX_WIDGET_TEXT - 1] = '\0';
                             w->cursor_pos = (int)strlen(w->text);
+                            v->dirty = 1;
                             if (w->on_change) w->on_change(w, w->user);
                         }
                     }
                 } else if (e->key >= 0x20 && e->key < 0x7F) {
                     tb_insert(w, (char)e->key);
+                    v->dirty = 1;
                     if (w->on_change) w->on_change(w, w->user);
                 } else if (e->key == '\b') {
-                    tb_backspace(w);
-                    if (w->on_change) w->on_change(w, w->user);
+                    if (w->cursor_pos > 0) {
+                        tb_backspace(w);
+                        v->dirty = 1;
+                        if (w->on_change) w->on_change(w, w->user);
+                    }
                 } else if (e->key == 0x100) { /* LEFT */
-                    if (w->cursor_pos > 0) w->cursor_pos--;
+                    if (w->cursor_pos > 0) { w->cursor_pos--; v->dirty = 1; }
                 } else if (e->key == 0x101) { /* RIGHT */
                     int len = (int)strlen(w->text);
-                    if (w->cursor_pos < len) w->cursor_pos++;
+                    if (w->cursor_pos < len) { w->cursor_pos++; v->dirty = 1; }
                 } else if (e->key == 0x104) { /* HOME */
-                    w->cursor_pos = 0;
+                    if (w->cursor_pos != 0) { w->cursor_pos = 0; v->dirty = 1; }
                 } else if (e->key == 0x105) { /* END */
-                    w->cursor_pos = (int)strlen(w->text);
+                    int len = (int)strlen(w->text);
+                    if (w->cursor_pos != len) { w->cursor_pos = len; v->dirty = 1; }
                 } else if (e->key == 0x109) { /* DELETE */
                     int len = (int)strlen(w->text);
                     if (w->cursor_pos < len) {
                         for (int i = w->cursor_pos; i < len; i++) w->text[i] = w->text[i + 1];
+                        v->dirty = 1;
                         if (w->on_change) w->on_change(w, w->user);
                     }
                 }
             } else if (w->kind == AG_W_LISTBOX) {
                 if (e->key == 0x102 && w->selected > 0) {
                     w->selected--;
+                    v->dirty = 1;
                     if (w->on_select) w->on_select(w, w->user);
                 } else if (e->key == 0x103 && w->selected < w->item_count - 1) {
                     w->selected++;
+                    v->dirty = 1;
                     if (w->on_select) w->on_select(w, w->user);
                 }
             } else if (w->kind == AG_W_BUTTON && (e->key == '\n' || e->key == ' ')) {
+                /* The callback may mutate any widget, so always re-render. */
+                v->dirty = 1;
                 if (w->on_click) w->on_click(w, w->user);
             } else if (w->kind == AG_W_CHECKBOX && (e->key == '\n' || e->key == ' ')) {
                 w->state = !w->state;
+                v->dirty = 1;
                 if (w->on_change) w->on_change(w, w->user);
             }
         }
@@ -1182,7 +1219,9 @@ int ag_view_dispatch(ag_view_t *v, const ag_event_t *e) {
 }
 
 void ag_view_run(ag_view_t *v, ag_loop_cb cb, void *user) {
-    ag_view_render(v);
+    v->dirty = 1;
+    ag_view_render(v);           /* initial frame; resets dirty */
+
     static ag_event_t e;
     for (;;) {
         if (!ag_poll_event(v->wid, &e)) {
@@ -1193,7 +1232,9 @@ void ag_view_run(ag_view_t *v, ag_loop_cb cb, void *user) {
         if (cb) {
             if (cb(v, &e, user)) break;
         }
-        ag_view_render(v);
+        if (v->dirty) {
+            ag_view_render(v);
+        }
         if (quit) break;
     }
     ag_window_destroy(v->wid);
@@ -1214,6 +1255,9 @@ void ag_alert(const char *title, const char *message) {
     ag_view_init(&v, wid, buf, 2, AG_PANEL);
     ag_add_label(&v, 20, 24, message, AG_BLACK);
     ag_add_button(&v, W - 100, H - 60, 80, 28, "OK", 0, 0);
+
+    ag_view_render(&v);          /* show the dialog before the first event */
+
     for (;;) {
         ag_event_t e;
         if (!ag_wait_event(wid, &e)) continue;
@@ -1224,7 +1268,7 @@ void ag_alert(const char *title, const char *message) {
                 e.y >= btn->y && e.y < btn->y + (int32_t)btn->h) break;
         }
         if (e.type == AG_EVT_KEY_DOWN && (e.key == '\n' || e.key == 0x1B)) break;
-        ag_view_render(&v);
+        if (v.dirty) ag_view_render(&v);
     }
     ag_window_destroy(wid);
 }
@@ -1241,6 +1285,9 @@ int ag_confirm(const char *title, const char *message) {
     ag_add_label(&v, 20, 24, message, AG_BLACK);
     ag_add_button(&v, W - 200, H - 60, 80, 28, "Yes", 0, 0);
     ag_add_button(&v, W - 100, H - 60, 80, 28, "No",  0, 0);
+
+    ag_view_render(&v);
+
     int answer = 0;
     for (;;) {
         ag_event_t e;
@@ -1259,7 +1306,7 @@ int ag_confirm(const char *title, const char *message) {
             if (e.key == 'n' || e.key == 'N' || e.key == 0x1B) { answer = 0; break; }
         }
         if (quit) break;
-        ag_view_render(&v);
+        if (v.dirty) ag_view_render(&v);
     }
     ag_window_destroy(wid);
     return answer;
