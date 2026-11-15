@@ -21,6 +21,14 @@ checker asserts over the *source*, where those bugs are visible:
      its own button width or its own gui_apps[] walk;
   4. the start menu height is derived, not a constant.
 
+The anchors live somewhere under kernel/gui/: PR #8 (4c5848e, "improve SDF
+rendering and extract shell logic") lifted the start menu, the taskbar and the
+desktop icons out of gui.c into gui_shell.c and renamed draw_taskbar() to
+shell_draw_taskbar().  This checker read gui.c only, so the move turned it
+into a no-op that still exited 0 -- exactly the failure it was written to
+prevent.  It now reads every C file in kernel/gui/, so the next split cannot
+blind it again.
+
 --selftest injects each defect into a temporary copy and requires a complaint,
 because a checker that cannot fail is indistinguishable from a clean tree.
 
@@ -38,8 +46,8 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GUI_C = os.path.join(ROOT, "kernel", "gui", "gui.c")
-GUI_HDR = os.path.join(ROOT, "kernel", "gui", "taskbar_layout.h")
+GUI_DIR = os.path.join(ROOT, "kernel", "gui")
+GUI_HDR = os.path.join(GUI_DIR, "taskbar_layout.h")
 MAKEFILE = os.path.join(ROOT, "Makefile")
 INITRD_APPS = os.path.join(ROOT, "build", "user", "initrd_root", "apps")
 
@@ -55,11 +63,25 @@ def read(path: str) -> str:
         return fh.read()
 
 
+def gui_source() -> str:
+    """Every C file under kernel/gui/, concatenated in sorted order.
+
+    gui_apps[] and the taskbar/start-menu functions moved from gui.c to
+    gui_shell.c in PR #8; reading the whole directory keeps this checker
+    honest through the next extraction as well.
+    """
+    names = sorted(n for n in os.listdir(GUI_DIR) if n.endswith(".c"))
+    if not names:
+        raise SystemExit("check_start_menu: no C sources under kernel/gui/")
+    return "\n".join(read(os.path.join(GUI_DIR, n)) for n in names)
+
+
 def app_table(src: str) -> list[dict]:
     """The initialiser body of gui_apps[]."""
     start = src.find("static const gui_app_entry_t gui_apps[] = {")
     if start < 0:
-        raise SystemExit("check_start_menu: gui_apps[] not found in gui.c")
+        raise SystemExit(
+            "check_start_menu: gui_apps[] not found under kernel/gui/")
     end = src.find("\n};", start)
     if end < 0:
         raise SystemExit("check_start_menu: gui_apps[] has no closing brace")
@@ -68,13 +90,23 @@ def app_table(src: str) -> list[dict]:
 
 
 def function_body(src: str, name: str) -> str:
-    """Crude but adequate body extractor: from `name(` to the matching brace."""
-    idx = src.find(name + "(")
-    if idx < 0:
+    """The body of the *definition* of `name`, or "" when it is not defined.
+
+    The first `name(` in the tree is usually a CALL, not a definition: the
+    compositor in gui.c calls shell_draw_taskbar() long before gui_shell.c
+    defines it, and the old `src.find(name + "(")` therefore returned an
+    unrelated brace block -- which is how a rename could turn a real
+    violation into a clean run.  Anchor on a definition instead: the name
+    preceded by a return type at the start of a line, then a parameter list
+    with no semicolon or brace in it, then the opening brace.
+    """
+    pattern = re.compile(
+        r"^[A-Za-z_][A-Za-z0-9_ \t*]*\b" + re.escape(name) +
+        r"\s*\([^;{}]*\)\s*\{", re.M)
+    match = pattern.search(src)
+    if not match:
         return ""
-    brace = src.find("{", idx)
-    if brace < 0:
-        return ""
+    brace = match.end() - 1
     depth = 0
     for pos in range(brace, len(src)):
         if src[pos] == "{":
@@ -98,6 +130,15 @@ def built_apps() -> set[str]:
     if not m:
         return set()
     return set(re.findall(r"[A-Za-z0-9_.-]+", m.group(1)))
+
+
+def function_body_any(src: str, names) -> tuple[str, str]:
+    """The first body found for any of `names` (a rename must not blind us)."""
+    for name in names:
+        body = function_body(src, name)
+        if body:
+            return name, body
+    return "", ""
 
 
 def check(src: str, built: set[str]) -> list[str]:
@@ -146,9 +187,13 @@ def check(src: str, built: set[str]) -> list[str]:
         errors.append("the Applications group is empty")
 
     # 3. the renderer and the hit test share the geometry
-    draw = function_body(src, "static void draw_taskbar")
-    hit = function_body(src, "static int taskbar_hit")
-    for label, body in (("draw_taskbar", draw), ("taskbar_hit", hit)):
+    # PR #8 renamed draw_taskbar() to shell_draw_taskbar() when it moved to
+    # gui_shell.c; accept either spelling so a rename is not a silent skip.
+    draw_name, draw = function_body_any(
+        src, ("shell_draw_taskbar", "draw_taskbar"))
+    hit = function_body(src, "taskbar_hit")
+    for label, body in ((draw_name or "draw_taskbar/shell_draw_taskbar", draw),
+                        ("taskbar_hit", hit)):
         if not body:
             errors.append(f"{label}() not found")
             continue
@@ -161,7 +206,7 @@ def check(src: str, built: set[str]) -> list[str]:
         if re.search(r"btn_w\s*=\s*(?:[2-9]\d|\d{3,})\b", body):
             errors.append(f"{label}() still hardcodes a button width")
 
-    sm_hit = function_body(src, "static int start_menu_hit")
+    sm_hit = function_body(src, "start_menu_hit")
     if not sm_hit:
         errors.append("start_menu_hit() not found")
     elif "gui_menu_rows(" not in sm_hit:
@@ -187,7 +232,7 @@ def check(src: str, built: set[str]) -> list[str]:
 
 
 def run_check() -> int:
-    src = read(GUI_C)
+    src = gui_source()
     errors = check(src, built_apps())
     if errors:
         print("check_start_menu: FAIL")
@@ -223,11 +268,18 @@ MUTATIONS = [
      "uint32_t btn_h = tb_h - 8;",
      "uint32_t btn_h = tb_h - 8, btn_w = 130;",
      "still hardcodes a button width"),
+    # The regression this checker actually suffered: PR #8 renamed
+    # draw_taskbar() to shell_draw_taskbar() and moved it out of gui.c, and a
+    # checker that could not find the function reported no error at all.
+    ("renderer renamed out from under the checker",
+     "void shell_draw_taskbar(void) {",
+     "void shell_draw_taskbar_v2(void) {",
+     "not found"),
 ]
 
 
 def run_selftest() -> int:
-    src = read(GUI_C)
+    src = gui_source()
     built = built_apps()
     if not built:
         print("check_start_menu --selftest: SKIP (no app list available)")

@@ -37,8 +37,18 @@ static size_t aulink_strnlen(const char *s, size_t n){
 #define strnlen aulink_strnlen
 #endif
 
-#define MAX_INPUTS   256
-#define MAX_SECTIONS 4096
+/*
+ * SH5b capacity.  The kernel link this was first sized for had 135
+ * objects and ~3k allocated input sections.  The tree has grown (161
+ * objects today) and the kernel now links Rust: build/sdf_font.o pulls
+ * ~30 members out of libcore/libcompiler_builtins, and core's single
+ * cgu.0 member alone carries ~1k allocated sections.  4096 sections
+ * overflowed, so both ceilings carry real headroom now -- and an
+ * overflow is reported as a hard error instead of a partially loaded
+ * input set (which used to crash later in apply_relocations).
+ */
+#define MAX_INPUTS   512
+#define MAX_SECTIONS 16384
 #define MAX_SYMS     65536
 #define MAX_OUT_SECS 64
 #define MAX_PHDRS    8
@@ -552,6 +562,16 @@ static void parse_script(void){
                                     if(na!=o->addr){ cur_addr+=(na-o->addr); o->addr=na; }
                                 }
                                 uint64_t end=o->addr+o->size; if(cur_addr>end) end=cur_addr; cur_addr=end;
+                                /* SH5b: the section SIZE has to follow the
+                                 * dot, not stop at the last input byte.  A
+                                 * block that ends with `. = ALIGN(n);`
+                                 * (kernel.ld's .bss does, right before
+                                 * __bss_end = .) leaves the dot past the
+                                 * content, and ld.lld counts those padding
+                                 * bytes in sh_size -- aulink used to report
+                                 * .bss 8 bytes short of ld.lld's while the
+                                 * two __bss_* symbols already agreed. */
+                                o->size=end-o->addr;
                             }
                         }
                     }else next_tok();
@@ -1026,6 +1046,11 @@ int main(int argc,char **argv){
         }
     }
     if(n_objs==0){fprintf(stderr,"aulink: no inputs\n"); return 1;}
+    /* An input that failed to load leaves dangling sections in all_secs,
+     * so there is no honest layout to emit: stop here rather than crash
+     * (or, worse, silently link a smaller kernel) inside the passes. */
+    if(errors){fprintf(stderr,"aulink: %d input error(s); not linking\n",
+                       errors); return 1;}
     FILE *sf=fopen(script,"rb"); if(!sf){fprintf(stderr,"aulink: cannot open script %s\n",script); return 1;}
     fseek(sf,0,SEEK_END); long ssz=ftell(sf); fseek(sf,0,SEEK_SET);
     sc.text=malloc((size_t)ssz+1); if(fread(sc.text,1,(size_t)ssz,sf)!=(size_t)ssz) return 1;

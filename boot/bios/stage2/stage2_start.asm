@@ -29,7 +29,7 @@ org  0x8000
 ;   0x00011000  Stage 2 scratch buffers (FAT sector, VBE info, ...).
 ;   0x00100000  Loaded kernel PT_LOAD segments.
 ;   0x00200000  kernel.elf staging buffer (BL4, temporary).
-;   0x01000000  Page tables (BL4).
+;   0x01700000  Page tables (BL4).
 ;   0x01800000  initrd.tar (up to 32 MiB, inside PMM's early reserve
 ;               which the kernel raised to 56 MiB -- see kernel/mm/pmm.c).
 ;
@@ -552,7 +552,7 @@ msg_initrd_ok:   db "[BL4] initrd.tar loaded to 0x01800000", 0x0D, 0x0A, 0
 msg_initrd_missing: db "[BL4] initrd.tar not found; continuing", 0x0D, 0x0A, 0
 msg_initrd_too_large: db "[BL4] initrd.tar exceeds 32 MiB; continuing", 0x0D, 0x0A, 0
 msg_initrd_load_fail: db "[BL4] initrd.tar load FAILED; continuing", 0x0D, 0x0A, 0
-msg_pt_ok:       db "[BL4] page tables built at 0x01000000", 0x0D, 0x0A, 0
+msg_pt_ok:       db "[BL4] page tables built at 0x01700000", 0x0D, 0x0A, 0
 msg_lm_go:       db "[BL4] entering long mode; jumping to kernel _start", 0x0D, 0x0A, 0
 msg_fat_no_kernel: db "[BL4] kernel.elf NOT FOUND", 0x0D, 0x0A, 0
 msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0

@@ -1062,7 +1062,7 @@ serial receipts — the same standard the rest of the plans hold to.
 | OF3 | ✅ done (aolayout engine, styles, lists, tables, page view/print preview; closure: PNG pixel decode blitted in the page view, table column insert/delete + merge keys, Ctrl+O dialog presented live — full VNC live pass PASS) | `patches/OFFICE_OF3_writer_layout.patch`, `patches/OFFICE_OF3_closure.patch` |
 | OF4 | ✅ done (aocalc engine: sparse workbook, 49 functions, dependency recalc + #CYCLE!, budget refusal, number formats, CSV/TSV; unit 89+50, guest eval 12/12) | `patches/OFFICE_OF4_sheet_engine.patch` |
 | OF5 | ✅ done (aogrid: virtualised viewport, selection, fill handle, copy/paste with formula translation, resize, freeze panes, stable sort, filter; bar/line/pie charts anchored to cells and persisted in the file; unit 37, guest grid gate, perf gate avg 4444 us / worst 20202 us) | `patches/OFFICE_OF5_sheet_gui.patch` |
-| OF6 | ⬜ planned | — |
+| OF6 | ✅ done (aoslide: text boxes, shapes, images, z-order, master slide + sorter; fullscreen show with click/Space advance and Esc exit, chrome suppressed; speaker notes stored; unit 91, guest 11/11, VNC LIVE SLIDE PASS) | `patches/OFFICE_OF6_slide.patch` |
 | OF7 | 🟨 implemented; host gates pass, guest/full-suite gates pending toolchain | `patches/OFFICE_OF7_container.patch` |
 | OF8 | ⬜ planned | — |
 | OF9 | ⬜ planned | — |

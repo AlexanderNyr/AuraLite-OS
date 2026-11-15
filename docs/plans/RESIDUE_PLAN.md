@@ -468,6 +468,19 @@ install both tenant targets.  status.md's two 🚧 Rust rows flipped
 ✅ — the harvest ratchet CLICKED (status-wip 15→13, baseline moved
 in this same commit).  RES-22 and RES-23 closed.
 
+> **Amended — RSBR modularisation (PR #4 `arch/`, PR #6 `time/`).**
+> `lib/rsbr/common.rs` no longer exists: it was split into
+> `common/mod.rs`, `arch/<isa>.rs` and `time/`.  The three cfg'd trap
+> instructions live in `lib/rsbr/arch/{x86_64,riscv64,aarch64}.rs`
+> (`syscall` / `ecall` / `svc #0`) behind the three `target_arch` arms
+> of `lib/rsbr/arch/mod.rs`, and rustes' per-ISA cycle counter
+> (rdtsc / rdtime / cntvct_el0) was **replaced** by one portable
+> `rsbr::time::clock_gettime` call — `rustes.rs` now contains no
+> per-ISA assembly at all.  That is the same "one bridge, three ISAs"
+> property, reached with less arch-specific code, so the row stays
+> COMPLETE; the sentence above describes the R8 shape, not today's
+> files.  `tools/check_residue_claims.py` follows the new layout.
+
 ### R9 — the net cluster — ✅ COMPLETE
 - [x] RES-24/25/27/28(IRQ-RX): SLAAC, TCP-DNS fallback, /apps/http
       on libahttp, virtio-net IRQ RX.  RES-26 (HTTPS-over-IPv6)
