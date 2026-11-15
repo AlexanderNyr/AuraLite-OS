@@ -1,8 +1,9 @@
 //! Application loop: the framework owns the dirty flag.
 
-use crate::gui::{Window, Event};
+use crate::gui::{Window, Event, EVT_RESIZE};
 
 /// What `update` decided.
+#[derive(Clone, Copy)]
 pub enum Flow {
     /// Event consumed, nothing visible changed.
     Ignore,
@@ -53,15 +54,20 @@ pub fn run<A: App>(mut app: A, w: Window) -> crate::Result<()> {
             Err(_) => break,   // window destroyed / closed
         };
 
-        match app.update(&ev) {
-            Flow::Ignore => {}
-            Flow::Changed => {
-                render_frame(&app, &w)?;
-            }
-            Flow::Quit => {
-                render_frame(&app, &w)?;
-                break;
-            }
+        /* A resize changes the client-area geometry, and the framework
+         * owns the frame brackets, so it can and should repaint without
+         * the app asking.  `update` still sees the event (an app may
+         * want to react to it), but its Flow is OR'd with `Changed` for
+         * this kind: a client that ignores EVT_RESIZE still gets its
+         * first frame drawn at the new size. */
+        let is_resize = ev.kind == EVT_RESIZE;
+        let flow = app.update(&ev);
+
+        if is_resize || flow.changed() {
+            render_frame(&app, &w)?;
+        }
+        if flow.quit() {
+            break;
         }
     }
     Ok(())

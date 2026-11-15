@@ -909,17 +909,9 @@ static void render_contextmenu(int wid, ag_widget_t *w) {
 }
 
 void ag_view_render(ag_view_t *v) {
-<<<<<<< Updated upstream
-=======
     v->dirty = 0;
-
-    /* Frame bracket: while the client paints into the back buffer the
-     * compositor keeps showing the last COMPLETE frame (front), so a
-     * ~100 Hz tick that lands mid-render can never expose a half-drawn
-     * widget set.  Pair with ag_window_frame_end() below. */
     ag_window_frame_begin(v->wid);
-
->>>>>>> Stashed changes
+    
     ag_clear(v->wid, v->bg);
     for (int i = 0; i < v->widget_count; i++) {
         ag_widget_t *w = &v->widgets[i];

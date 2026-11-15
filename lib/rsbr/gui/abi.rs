@@ -99,36 +99,46 @@ pub const OP_FRAME_END:     u32 = 50;
 // Window flags — MUST match kernel/gui/gui.h (AG_WIN_* / GUI_WIN_*)
 // ===================================================================
 
-pub const FLAG_HAS_TITLE:    u32 = 1 << 0;
-pub const FLAG_HAS_CLOSE:    u32 = 1 << 1;
-pub const FLAG_HAS_MINMAX:   u32 = 1 << 2;
-pub const FLAG_MOVABLE:      u32 = 1 << 3;
-pub const FLAG_RESIZABLE:    u32 = 1 << 4;
-pub const FLAG_MODAL:        u32 = 1 << 5;
-pub const FLAG_NO_DECOR:     u32 = 1 << 6;
-pub const FLAG_BORDERLESS:   u32 = 1 << 7;
-pub const FLAG_ALWAYS_TOP:   u32 = 1 << 8;
-pub const FLAG_TOOL_WINDOW:  u32 = 1 << 9;
-pub const FLAG_PRESENTATION: u32 = 1 << 10;
+pub const FLAG_RESIZABLE:    u32 = 0x001;
+pub const FLAG_MOVABLE:      u32 = 0x002;
+pub const FLAG_HAS_TITLE:    u32 = 0x004;
+pub const FLAG_HAS_CLOSE:    u32 = 0x008;
+pub const FLAG_HAS_MINMAX:   u32 = 0x010;
+pub const FLAG_MODAL:        u32 = 0x020;
+pub const FLAG_NO_DECOR:     u32 = 0x040;
+pub const FLAG_ALWAYS_TOP:   u32 = 0x080;
+pub const FLAG_TOOL_WINDOW:  u32 = 0x100;
+pub const FLAG_BORDERLESS:   u32 = 0x200;
+pub const FLAG_PRESENTATION: u32 = 0x800;
 
 // ===================================================================
 // Event types — MUST match kernel/gui/gui.h
 // ===================================================================
 
 pub const EVT_NONE:           u16 = 0;
-pub const EVT_MOUSE_DOWN:     u16 = 1;
-pub const EVT_MOUSE_UP:       u16 = 2;
-pub const EVT_MOUSE_MOVE:     u16 = 3;
+pub const EVT_MOUSE_MOVE:     u16 = 1;
+pub const EVT_MOUSE_DOWN:     u16 = 2;
+pub const EVT_MOUSE_UP:       u16 = 3;
 pub const EVT_MOUSE_DBLCLICK: u16 = 4;
-pub const EVT_KEY_DOWN:       u16 = 5;
-pub const EVT_KEY_UP:         u16 = 6;
-pub const EVT_CLOSE_REQ:      u16 = 7;
-pub const EVT_FOCUS:          u16 = 8;
-pub const EVT_BLUR:           u16 = 9;
-pub const EVT_RESIZE:         u16 = 10;
-pub const EVT_SNAP_CHANGED:   u16 = 11;
-pub const EVT_DROP:           u16 = 12;
-pub const EVT_CONTEXT_MENU:   u16 = 13;
+pub const EVT_MOUSE_WHEEL:    u16 = 5;
+
+pub const EVT_MOUSE_RIGHT_DOWN:  u16 = 6;
+pub const EVT_MOUSE_RIGHT_UP:    u16 = 7;
+pub const EVT_MOUSE_MIDDLE_DOWN: u16 = 8;
+pub const EVT_MOUSE_MIDDLE_UP:   u16 = 9;
+
+pub const EVT_KEY_DOWN:       u16 = 10;
+pub const EVT_KEY_UP:         u16 = 11;
+pub const EVT_FOCUS:          u16 = 12;
+pub const EVT_BLUR:           u16 = 13;
+pub const EVT_RESIZE:         u16 = 14;
+pub const EVT_CLOSE_REQ:      u16 = 15;
+pub const EVT_TIMER:          u16 = 16;
+pub const EVT_PAINT:          u16 = 17;
+pub const EVT_CONTEXT_MENU:   u16 = 18;
+pub const EVT_SNAP_CHANGED:   u16 = 19;
+pub const EVT_DROP:           u16 = 20;
+pub const EVT_ICON_CLICK:     u16 = 21;
 
 pub const KEY_LEFT:   u32 = 0x100;
 pub const KEY_RIGHT:  u32 = 0x101;
