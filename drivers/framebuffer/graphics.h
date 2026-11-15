@@ -105,4 +105,66 @@ uint64_t gfx_blit_rgb888(int32_t x, int32_t y, uint32_t w, uint32_t h,
                          const uint32_t *src, uint32_t src_stride,
                          const uint8_t *skip_mask, uint32_t mask_stride);
 
+/* ---------------------------------------------------------------------
+ * MSDF / anti-aliasing blending primitives.
+ *
+ * gfx_blend_pixel is the scalar entry point used for anti-aliased edges
+ * and single dots.  gfx_blend_pixels4 and gfx_blend_span operate on
+ * horizontal runs and use SSE2 when the CPU supports it, falling back to
+ * scalar blending otherwise.  All three honour the compositor clip.
+ * ------------------------------------------------------------------- */
+
+/* Blend one pixel with the given alpha (0 = skip, 255 = write-through). */
+void gfx_blend_pixel(int32_t x, int32_t y, uint32_t color, uint8_t alpha);
+
+/* Blend four adjacent horizontal pixels with per-pixel alphas.
+ * This is the fast path for MSDF glyph rows. */
+void gfx_blend_pixels4(int32_t x, int32_t y, uint32_t color,
+                       const uint8_t alpha[4]);
+
+/* Blend a whole horizontal run, one alpha per pixel.  Reduces per-pixel
+ * FFI overhead for the Rust glyph renderer. */
+void gfx_blend_span(int32_t x, int32_t y, uint32_t count,
+                    uint32_t color, const uint8_t *alphas);
+
+/* ---------------------------------------------------------------------
+ * Modern UI effects: translucent fills, per-pixel-alpha blits, blur.
+ * ------------------------------------------------------------------- */
+
+/* Fill a rectangle with `color` at the given alpha.  SIMD-accelerated
+ * on SSE2 hosts.  Used for Mica/acrylic panels, modal dimming,
+ * and hover highlights. */
+void gfx_fill_rect_alpha(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                         uint32_t color, uint8_t alpha);
+
+/* Blit a 0xAARRGGBB source rectangle (stride in pixels).  Pixels with
+ * source alpha 0 are skipped; 255 is copied verbatim; otherwise blended. */
+void gfx_blit_alpha(int32_t dst_x, int32_t dst_y, uint32_t w, uint32_t h,
+                    const uint32_t *src, uint32_t stride);
+
+/* Two-pass box blur over a back-buffer region.  Used for frosted-glass
+ * (Acrylic) task bars and Start menus.  Allocates a temporary buffer;
+ * becomes a no-op on allocation failure. */
+void gfx_box_blur_rect(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                       uint32_t radius);
+
+/* ---------------------------------------------------------------------
+ * Clip query, AA rounded rect, four-corner gradient.
+ * ------------------------------------------------------------------- */
+
+/* Report the current compositor clip rectangle.  Any output pointer
+ * may be NULL. */
+void gfx_get_clip(int32_t *x, int32_t *y, uint32_t *w, uint32_t *h);
+
+/* Rounded rectangle with anti-aliased edges via 4x4 supersampling of
+ * the four corner arcs.  The straight edges use the fast opaque fill. */
+void gfx_fill_round_rect_aa(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                            uint32_t r, uint32_t color);
+
+/* Four-corner bilinear gradient.  Interpolation happens in RGB space and
+ * the result is written straight into the back buffer. */
+void gfx_gradient_rect_4(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                         uint32_t c_tl, uint32_t c_tr,
+                         uint32_t c_bl, uint32_t c_br);
+
 #endif /* AURALITE_DRIVERS_FRAMEBUFFER_GRAPHICS_H */
