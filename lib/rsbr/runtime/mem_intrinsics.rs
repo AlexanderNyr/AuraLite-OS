@@ -3,7 +3,11 @@
 // x86-64 retains its existing libc/compiler-builtins link path.
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-#[allow(suspicious_runtime_symbol_definitions)]
+// These redefine C memory intrinsics that the Rust runtime expects
+// but that the AuraLite tenant does not link (no libc, no
+// compiler-builtins archive on RV64/AArch64). `#[no_mangle]` is the
+// whole point: the compiler emits calls to bare `memcpy`/`memset`
+// and we satisfy them here.
 mod intrinsics {
     #[no_mangle]
     pub unsafe extern "C" fn memset(destination: *mut u8, value: i32, length: usize) -> *mut u8 {

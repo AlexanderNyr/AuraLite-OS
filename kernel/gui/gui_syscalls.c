@@ -371,6 +371,14 @@ static uint64_t syscall_gui_call_impl(uint64_t op, uint64_t a2, uint64_t a3,
             return UINT64_MAX;
         return 0;
     }
+    case GUI_OP_FRAME_BEGIN:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        gui_frame_begin((int)a2);
+        return 0;
+    case GUI_OP_FRAME_END:
+        if (!require_owner((int)a2)) return (uint64_t)-1;
+        gui_frame_end((int)a2);
+        return 0;
     case GUI_OP_INVAL_RECT:
         if (!require_owner((int)a2)) return (uint64_t)-1;
         return (uint64_t)gui_invalidate_rect((int)a2, lo32(a3), hi32(a3),

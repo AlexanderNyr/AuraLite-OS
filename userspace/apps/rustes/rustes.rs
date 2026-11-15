@@ -1,641 +1,222 @@
 #![no_std]
-#![no_main]
 
-use rsbr::prelude::*;
-use rsbr::time::{
-    self,
-    getitimer,
-    ITIMER_REAL,
-    ITIMER_VIRTUAL,
-    ITIMER_PROF,
+use rsbr::gui::{
+    Window, Event, App, Flow,
+    EVT_KEY_DOWN, EVT_MOUSE_DOWN, EVT_MOUSE_MOVE, EVT_MOUSE_UP,
+    FLAG_HAS_TITLE, FLAG_HAS_CLOSE, FLAG_RESIZABLE,
 };
 
-const NS_PER_SEC: u128 = 1_000_000_000;
+const WIN_W: u32 = 480;
+const WIN_H: u32 = 320;
 
-const BENCH_SAMPLES: u32 = 7;
-const BENCH_ITERATIONS: u32 = 512;
-const MONOTONIC_ITERATIONS: u32 = 4096;
-const SLEEP_REPETITIONS: u32 = 3;
+/* Base (unhovered) button geometry.  Hovered/pressed sizes are computed
+ * from these; hit tests use the current visual rect, so hovering enlarges
+ * the clickable area consistently with what the user sees. */
+const BTN_W: u32 = 120;
+const BTN_H: u32 = 40;
+const BTN1_X: i32 = 40;
+const BTN1_Y: i32 = 120;
+const BTN2_X: i32 = 320;
+const BTN2_Y: i32 = 120;
 
-fn clock_ns(clock: i32) -> Option<u128> {
-    let ts = time::clock_gettime(clock).ok()?;
+/* Hover scale: 3/2 = 1.5x.  Integer math so the demo stays `no_std` and
+ * free of floating point. */
+const HOVER_NUM: u32 = 3;
+const HOVER_DEN: u32 = 2;
 
-    if ts.tv_sec < 0
-        || ts.tv_nsec < 0
-        || ts.tv_nsec >= 1_000_000_000
-    {
-        return None;
-    }
+/* Pressed scale: 7/8 — slightly smaller than base, reads as "pushed in". */
+const PRESSED_NUM: u32 = 7;
+const PRESSED_DEN: u32 = 8;
 
-    Some(
-        (ts.tv_sec as u128) * NS_PER_SEC
-            + ts.tv_nsec as u128
-    )
-}
+const BG:    u32 = 0x0018202C;
+const DIM:   u32 = 0x008090A0;
+const TEXT:  u32 = 0x00E8E8F0;
+const BTN_BORDER: u32 = 0x00607090;
+const BTN_BG:     u32 = 0x002F60C0;
+const BTN_HOVER:  u32 = 0x003D78E0;
+const BTN_ACTIVE: u32 = 0x00204890;
 
-fn monotonic_ns() -> Option<u128> {
-    clock_ns(time::CLOCK_MONOTONIC)
-}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hit { None, Btn1, Btn2 }
 
-fn print_clock_snapshot(clock: i32, name: &str) {
-    match time::clock_gettime(clock) {
-        Ok(ts) => {
-            println!(
-                "  {:<25} {}.{:09}",
-                name,
-                ts.tv_sec,
-                ts.tv_nsec
-            );
-        }
-        Err(error) => {
-            println!("  {:<25} FAILED: {}", name, error);
-        }
-    }
-}
+/* The geometry a button currently occupies, given its base rect and its
+ * visual state.  Render and hit-test both go through this, so the enlarged
+ * hover box can always be clicked and its background always lines up with
+ * what the user sees. */
+#[derive(Clone, Copy)]
+struct Rect { x: i32, y: i32, w: u32, h: u32 }
 
-fn print_time_snapshot() {
-    println!("\n[1] CLOCK SNAPSHOT");
-
-    print_clock_snapshot(
-        time::CLOCK_REALTIME,
-        "CLOCK_REALTIME"
-    );
-
-    print_clock_snapshot(
-        time::CLOCK_MONOTONIC,
-        "CLOCK_MONOTONIC"
-    );
-
-    print_clock_snapshot(
-        time::CLOCK_PROCESS_CPUTIME_ID,
-        "PROCESS_CPUTIME"
-    );
-
-    print_clock_snapshot(
-        time::CLOCK_THREAD_CPUTIME_ID,
-        "THREAD_CPUTIME"
-    );
-
-    match time::realtime() {
-        Ok(ts) => {
-            println!(
-                "  {:<25} {}.{:09}",
-                "realtime()",
-                ts.tv_sec,
-                ts.tv_nsec
-            );
-        }
-        Err(error) => {
-            println!("  realtime() FAILED: {}", error);
-        }
-    }
-
-    match time::gettimeofday() {
-        Ok(tv) => {
-            println!(
-                "  gettimeofday()           {}.{:06}",
-                tv.tv_sec,
-                tv.tv_usec
-            );
-        }
-        Err(error) => {
-            println!("  gettimeofday() FAILED: {}", error);
-        }
-    }
-
-    match time::time() {
-        Ok(value) => {
-            println!("  time()                   {}", value);
-        }
-        Err(error) => {
-            println!("  time() FAILED: {}", error);
-        }
+fn scaled_rect(bx: i32, by: i32, bw: u32, bh: u32,
+               num: u32, den: u32) -> Rect {
+    let nw = bw * num / den;
+    let nh = bh * num / den;
+    /* Grow/shrink around the base centre. */
+    let cx = bx + (bw as i32) / 2;
+    let cy = by + (bh as i32) / 2;
+    Rect {
+        x: cx - (nw as i32) / 2,
+        y: cy - (nh as i32) / 2,
+        w: nw,
+        h: nh,
     }
 }
 
-fn print_clock_resolution() {
-    println!("\n[2] CLOCK RESOLUTION");
-
-    match time::clock_getres(time::CLOCK_MONOTONIC) {
-        Ok(resolution) => {
-            println!(
-                "  Reported resolution: {} sec, {} ns",
-                resolution.tv_sec,
-                resolution.tv_nsec
-            );
-        }
-        Err(error) => {
-            println!("  clock_getres FAILED: {}", error);
-        }
-    }
-
-    println!(
-        "  Note: clock_getres currently ignores its clock argument."
-    );
+fn rect_contains(r: &Rect, mx: i32, my: i32) -> bool {
+    mx >= r.x && mx < r.x + r.w as i32
+        && my >= r.y && my < r.y + r.h as i32
 }
 
-fn check_monotonic() {
-    println!("\n[3] MONOTONIC CLOCK VALIDATION");
-
-    let mut previous = match monotonic_ns() {
-        Some(value) => value,
-        None => {
-            println!("  FAILED: cannot read CLOCK_MONOTONIC");
-            return;
-        }
-    };
-
-    let mut regressions = 0u32;
-    let mut identical = 0u32;
-
-    let mut min_step = u128::MAX;
-    let mut max_step = 0u128;
-
-    for _ in 0..MONOTONIC_ITERATIONS {
-        let current = match monotonic_ns() {
-            Some(value) => value,
-            None => {
-                println!("  FAILED: clock_gettime returned invalid data");
-                return;
-            }
-        };
-
-        if current < previous {
-            regressions += 1;
-        } else if current == previous {
-            identical += 1;
-        } else {
-            let step = current - previous;
-
-            if step < min_step {
-                min_step = step;
-            }
-
-            if step > max_step {
-                max_step = step;
-            }
-        }
-
-        previous = current;
-    }
-
-    println!(
-        "  Samples:                  {}",
-        MONOTONIC_ITERATIONS
-    );
-
-    println!(
-        "  Clock regressions:        {}",
-        regressions
-    );
-
-    println!(
-        "  Identical readings:       {}",
-        identical
-    );
-
-    if min_step != u128::MAX {
-        println!(
-            "  Minimum observed step:    {} ns",
-            min_step
-        );
-
-        println!(
-            "  Maximum observed step:    {} ns",
-            max_step
-        );
+fn button_rect(base_x: i32, base_y: i32,
+               hover: bool, pressed: bool) -> Rect {
+    if pressed {
+        scaled_rect(base_x, base_y, BTN_W, BTN_H, PRESSED_NUM, PRESSED_DEN)
+    } else if hover {
+        scaled_rect(base_x, base_y, BTN_W, BTN_H, HOVER_NUM, HOVER_DEN)
     } else {
-        println!("  No positive clock step observed.");
-    }
-
-    if regressions == 0 {
-        println!("  Result: PASS");
-    } else {
-        println!("  Result: FAIL");
+        Rect { x: base_x, y: base_y, w: BTN_W, h: BTN_H }
     }
 }
 
-fn benchmark_calls<F>(name: &str, mut operation: F)
-where
-    F: FnMut() -> Option<u64>,
-{
-    let mut total = 0u128;
-    let mut min = u128::MAX;
-    let mut max = 0u128;
-    let mut checksum = 0u64;
+fn hit_test(mx: i32, my: i32, hover: Hit) -> Hit {
+    /* Hit-test against the CURRENT visual rect of each button.  A hovered
+     * button is 1.5x larger, so the enlarged area is clickable too — the
+     * user never has to "find" the base rect again after the button grew. */
+    let r1 = button_rect(BTN1_X, BTN1_Y, hover == Hit::Btn1, false);
+    let r2 = button_rect(BTN2_X, BTN2_Y, hover == Hit::Btn2, false);
+    if rect_contains(&r1, mx, my) { Hit::Btn1 }
+    else if rect_contains(&r2, mx, my) { Hit::Btn2 }
+    else { Hit::None }
+}
 
-    for _ in 0..BENCH_SAMPLES {
-        let start = match monotonic_ns() {
-            Some(value) => value,
-            None => {
-                println!("  {:<30} FAILED: monotonic clock", name);
-                return;
-            }
-        };
+struct RustesApp {
+    count: i32,
+    hover: Hit,
+    /* Button on which MOUSE_DOWN landed; the click only counts on
+     * MOUSE_UP over the same button.  None between events. */
+    pressed: Hit,
+}
 
-        for _ in 0..BENCH_ITERATIONS {
-            match operation() {
-                Some(value) => {
-                    checksum = checksum.wrapping_add(value);
-                }
-                None => {
-                    println!("  {:<30} FAILED: operation", name);
-                    return;
+impl App for RustesApp {
+    fn update(&mut self, ev: &Event) -> Flow {
+        match ev.kind {
+            EVT_MOUSE_DOWN => {
+                let h = hit_test(ev.x, ev.y, self.hover);
+                if h != Hit::None {
+                    self.pressed = h;
+                    Flow::Changed
+                } else {
+                    Flow::Ignore
                 }
             }
-        }
-
-        let end = match monotonic_ns() {
-            Some(value) => value,
-            None => {
-                println!("  {:<30} FAILED: monotonic clock", name);
-                return;
+            EVT_MOUSE_UP => {
+                if self.pressed == Hit::None {
+                    return Flow::Ignore;
+                }
+                let h = hit_test(ev.x, ev.y, self.hover);
+                if h == self.pressed {
+                    self.count += if h == Hit::Btn1 { 1 } else { -1 };
+                }
+                self.pressed = Hit::None;
+                Flow::Changed
             }
-        };
-
-        if end < start {
-            println!("  {:<30} FAILED: clock regression", name);
-            return;
-        }
-
-        let elapsed = end - start;
-        let per_call = elapsed / BENCH_ITERATIONS as u128;
-
-        total += per_call;
-
-        if per_call < min {
-            min = per_call;
-        }
-
-        if per_call > max {
-            max = per_call;
+            EVT_MOUSE_MOVE => {
+                /* Hover is computed against the CURRENT visual rect (so
+                 * a hovered button keeps its enlarged box while the
+                 * cursor is anywhere inside it). */
+                let h = hit_test(ev.x, ev.y, self.hover);
+                if h != self.hover {
+                    self.hover = h;
+                    Flow::Changed
+                } else {
+                    Flow::Ignore
+                }
+            }
+            EVT_KEY_DOWN => {
+                if ev.key == 0x1B || ev.key == b'q' as u32 {
+                    return Flow::Quit;
+                }
+                self.count += 1;
+                Flow::Changed
+            }
+            _ => Flow::Ignore,
         }
     }
 
-    let average = total / BENCH_SAMPLES as u128;
+    fn render(&self, w: &Window) -> rsbr::Result<()> {
+        w.clear(BG)?;
+        w.draw_text(24, 24, "Hello, AuraLite (Rust edition)", TEXT)?;
+        w.draw_text(24, 48, "Click a button to change the counter.", DIM)?;
 
-    println!(
-        "  {:<30} avg {:>8} ns | min {:>8} | max {:>8}",
-        name,
-        average,
-        min,
-        max
-    );
+        let r1 = button_rect(BTN1_X, BTN1_Y,
+                             self.hover == Hit::Btn1,
+                             self.pressed == Hit::Btn1);
+        let r2 = button_rect(BTN2_X, BTN2_Y,
+                             self.hover == Hit::Btn2,
+                             self.pressed == Hit::Btn2);
 
-    // The checksum makes the operation's return values observable.
-    let _ = checksum;
-}
+        draw_button(w, &r1, "+1",
+                    self.hover == Hit::Btn1,
+                    self.pressed == Hit::Btn1)?;
+        draw_button(w, &r2, "-1",
+                    self.hover == Hit::Btn2,
+                    self.pressed == Hit::Btn2)?;
 
-fn benchmark_syscalls() {
-    println!("\n[4] SYSCALL OVERHEAD");
+        let mut buf = [0u8; 16];
+        let s = fmt_i32(&mut buf, self.count);
+        w.draw_text(WIN_W as i32 / 2 - 8 * s.len() as i32, 220, s, TEXT)?;
 
-    println!(
-        "  {} samples x {} calls per sample",
-        BENCH_SAMPLES,
-        BENCH_ITERATIONS
-    );
-
-    benchmark_calls(
-        "clock_gettime(MONOTONIC)",
-        || {
-            time::clock_gettime(time::CLOCK_MONOTONIC)
-                .ok()
-                .map(|ts| {
-                    (ts.tv_sec as u64)
-                        .wrapping_add(ts.tv_nsec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "clock_gettime(REALTIME)",
-        || {
-            time::clock_gettime(time::CLOCK_REALTIME)
-                .ok()
-                .map(|ts| {
-                    (ts.tv_sec as u64)
-                        .wrapping_add(ts.tv_nsec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "clock_gettime(PROCESS)",
-        || {
-            time::clock_gettime(time::CLOCK_PROCESS_CPUTIME_ID)
-                .ok()
-                .map(|ts| {
-                    (ts.tv_sec as u64)
-                        .wrapping_add(ts.tv_nsec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "clock_gettime(THREAD)",
-        || {
-            time::clock_gettime(time::CLOCK_THREAD_CPUTIME_ID)
-                .ok()
-                .map(|ts| {
-                    (ts.tv_sec as u64)
-                        .wrapping_add(ts.tv_nsec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "realtime()",
-        || {
-            time::realtime()
-                .ok()
-                .map(|ts| {
-                    (ts.tv_sec as u64)
-                        .wrapping_add(ts.tv_nsec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "gettimeofday()",
-        || {
-            time::gettimeofday()
-                .ok()
-                .map(|tv| {
-                    (tv.tv_sec as u64)
-                        .wrapping_add(tv.tv_usec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "time()",
-        || {
-            time::time()
-                .ok()
-                .map(|value| value as u64)
-        },
-    );
-
-    benchmark_calls(
-        "clock_getres()",
-        || {
-            time::clock_getres(time::CLOCK_MONOTONIC)
-                .ok()
-                .map(|ts| {
-                    (ts.tv_sec as u64)
-                        .wrapping_add(ts.tv_nsec as u64)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "getitimer(REAL)",
-        || {
-            getitimer(ITIMER_REAL)
-                .ok()
-                .map(|state| {
-                    state.interval_ticks
-                        .wrapping_add(state.deadline_ticks)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "getitimer(VIRTUAL)",
-        || {
-            getitimer(ITIMER_VIRTUAL)
-                .ok()
-                .map(|state| {
-                    state.interval_ticks
-                        .wrapping_add(state.deadline_ticks)
-                })
-        },
-    );
-
-    benchmark_calls(
-        "getitimer(PROF)",
-        || {
-            getitimer(ITIMER_PROF)
-                .ok()
-                .map(|state| {
-                    state.interval_ticks
-                        .wrapping_add(state.deadline_ticks)
-                })
-        },
-    );
-}
-
-fn print_timer_state(which: i32, name: &str) {
-    match getitimer(which) {
-        Ok(state) => {
-            println!(
-                "  {:<20} interval={:<12} deadline={}",
-                name,
-                state.interval_ticks,
-                state.deadline_ticks
-            );
-        }
-        Err(error) => {
-            println!("  {:<20} FAILED: {}", name, error);
-        }
+        w.draw_text(24, WIN_H as i32 - 36,
+                    "Esc or Q to quit.  Window [X] also quits.",
+                    DIM)?;
+        Ok(())
     }
 }
 
-fn print_timer_snapshots() {
-    println!("\n[5] INTERVAL TIMER SNAPSHOT");
+fn draw_button(w: &Window, r: &Rect, label: &str,
+               hover: bool, pressed: bool) -> rsbr::Result<()> {
+    let bg = if pressed { BTN_ACTIVE } else if hover { BTN_HOVER } else { BTN_BG };
+    w.fill_rect(r.x, r.y, r.w, r.h, bg)?;
+    w.draw_rect(r.x, r.y, r.w, r.h, BTN_BORDER)?;
 
-    println!("  Values are expressed in kernel ticks.");
-
-    print_timer_state(ITIMER_REAL, "ITIMER_REAL");
-    print_timer_state(ITIMER_VIRTUAL, "ITIMER_VIRTUAL");
-    print_timer_state(ITIMER_PROF, "ITIMER_PROF");
+    /* Font metrics: 8 px advance, 16 px cell.  When the button grows, the
+     * label grows with it so the hover effect is visible in the text too. */
+    let char_w: u32 = 8;
+    let line_h: u32 = 16;
+    let text_w = label.len() as u32 * char_w;
+    /* Slight extra for pressed (feels like it "sinks"). */
+    let grow = if pressed { 0 } else { 0 }; // reserved for future tweaks
+    let tx = r.x + (r.w as i32 - text_w as i32) / 2;
+    let ty = r.y + (r.h as i32 - line_h as i32) / 2 + grow;
+    w.draw_text(tx, ty, label, TEXT)?;
+    Ok(())
 }
 
-fn nanosleep_complete(ns: u64) -> bool {
-    let mut remaining = time::TimeSpec {
-        tv_sec: (ns / 1_000_000_000) as i64,
-        tv_nsec: (ns % 1_000_000_000) as i64,
-    };
-
-    loop {
-        match time::nanosleep(remaining) {
-            Ok(None) => return true,
-            Ok(Some(rem)) => {
-                remaining = rem;
-            }
-            Err(_) => return false,
-        }
+fn fmt_i32(buf: &mut [u8; 16], mut n: i32) -> &str {
+    let neg = n < 0;
+    if neg { n = -n; }
+    let mut i = buf.len();
+    if n == 0 { i -= 1; buf[i] = b'0'; }
+    else {
+        while n > 0 && i > 0 { i -= 1; buf[i] = b'0' + (n % 10) as u8; n /= 10; }
     }
-}
-
-fn benchmark_sleep<F>(
-    name: &str,
-    requested_ns: u64,
-    mut sleeper: F,
-)
-where
-    F: FnMut() -> bool,
-{
-    let mut total = 0u128;
-    let mut min = u128::MAX;
-    let mut max = 0u128;
-
-    for _ in 0..SLEEP_REPETITIONS {
-        let start = match monotonic_ns() {
-            Some(value) => value,
-            None => {
-                println!("  {} FAILED: monotonic clock", name);
-                return;
-            }
-        };
-
-        if !sleeper() {
-            println!("  {} FAILED: sleep operation", name);
-            return;
-        }
-
-        let end = match monotonic_ns() {
-            Some(value) => value,
-            None => {
-                println!("  {} FAILED: monotonic clock", name);
-                return;
-            }
-        };
-
-        if end < start {
-            println!("  {} FAILED: clock regression", name);
-            return;
-        }
-
-        let elapsed = end - start;
-
-        total += elapsed;
-
-        if elapsed < min {
-            min = elapsed;
-        }
-
-        if elapsed > max {
-            max = elapsed;
-        }
-    }
-
-    let average = total / SLEEP_REPETITIONS as u128;
-    let difference = average as i128 - requested_ns as i128;
-
-    println!(
-        "  {:<25} target {:>8} ns | avg {:>10} ns | min {:>10} | max {:>10} | delta {:+} ns",
-        name,
-        requested_ns,
-        average,
-        min,
-        max,
-        difference
-    );
-}
-
-fn benchmark_sleep_functions() {
-    println!("\n[6] SLEEP ACCURACY");
-
-    println!(
-        "  {} repetitions per test",
-        SLEEP_REPETITIONS
-    );
-
-    println!("\n  sleep_ms:");
-
-    benchmark_sleep(
-        "sleep_ms(1)",
-        1_000_000,
-        || time::sleep_ms(1).is_ok(),
-    );
-
-    benchmark_sleep(
-        "sleep_ms(5)",
-        5_000_000,
-        || time::sleep_ms(5).is_ok(),
-    );
-
-    benchmark_sleep(
-        "sleep_ms(10)",
-        10_000_000,
-        || time::sleep_ms(10).is_ok(),
-    );
-
-    println!("\n  usleep:");
-
-    benchmark_sleep(
-        "usleep(1000)",
-        1_000_000,
-        || time::usleep(1_000).is_ok(),
-    );
-
-    benchmark_sleep(
-        "usleep(5000)",
-        5_000_000,
-        || time::usleep(5_000).is_ok(),
-    );
-
-    benchmark_sleep(
-        "usleep(10000)",
-        10_000_000,
-        || time::usleep(10_000).is_ok(),
-    );
-
-    println!("\n  nanosleep:");
-
-    benchmark_sleep(
-        "nanosleep(1ms)",
-        1_000_000,
-        || nanosleep_complete(1_000_000),
-    );
-
-    benchmark_sleep(
-        "nanosleep(5ms)",
-        5_000_000,
-        || nanosleep_complete(5_000_000),
-    );
-
-    benchmark_sleep(
-        "nanosleep(10ms)",
-        10_000_000,
-        || nanosleep_complete(10_000_000),
-    );
-}
-
-fn run_benchmark() {
-    print_time_snapshot();
-    print_clock_resolution();
-    check_monotonic();
-    print_timer_snapshots();
-    benchmark_syscalls();
-    benchmark_sleep_functions();
+    if neg && i > 0 { i -= 1; buf[i] = b'-'; }
+    core::str::from_utf8(&buf[i..]).unwrap_or("?")
 }
 
 #[no_mangle]
-pub extern "Rust" fn main() -> i32 {
-    println!();
-    println!("========================================");
-    println!("          RSBR TIME BENCHMARK");
-    println!("========================================");
+pub extern "C" fn main() -> i32 {
+    let w = match Window::create(
+        100, 100, WIN_W, WIN_H,
+        Some("Buttons demo"),
+        FLAG_HAS_TITLE | FLAG_HAS_CLOSE | FLAG_RESIZABLE,
+    ) {
+        Ok(w) => w,
+        Err(e) => { rsbr::eprintln!("create: {}", e); return 1; }
+    };
+    if w.show().is_err() { return 1; }
 
-    match getpid() {
-        Ok(pid) => println!("Process ID: {}", pid),
-        Err(error) => {
-            eprintln!("getpid failed: {}", error);
-        }
+    match rsbr::gui::run(RustesApp { count: 0, hover: Hit::None, pressed: Hit::None }, w) {
+        Ok(()) => 0,
+        Err(e) => { rsbr::eprintln!("run: {}", e); 1 }
     }
-
-    println!("Mode: no_std userspace");
-    println!("Allocation: disabled");
-    println!("Timer: CLOCK_MONOTONIC");
-
-    run_benchmark();
-
-    println!();
-    println!("========================================");
-    println!("          BENCHMARK COMPLETE");
-    println!("========================================");
-
-    0
 }

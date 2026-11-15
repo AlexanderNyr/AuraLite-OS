@@ -14,6 +14,8 @@
 #define SYS_GUI_CALL    200
 #define SYS_GUI_EVENT   201
 #define SYS_GUI_THEME   202
+#define GUI_OP_FRAME_BEGIN  49
+#define GUI_OP_FRAME_END    50
 
 /* Sub-ops for SYS_GUI_CALL. */
 enum {

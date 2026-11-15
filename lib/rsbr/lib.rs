@@ -7,6 +7,7 @@ mod syscall;
 pub mod io;
 pub mod process;
 pub mod time;
+pub mod gui;
 mod runtime;
 
 pub use common::error::{Error, Result};
@@ -29,6 +30,12 @@ pub mod prelude {
         CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID,
     };
     pub use crate::{eprint, eprintln, print, println};
+    pub use crate::gui::{
+        Window, Event, Color, Cursor, Snap, Theme, FontMetrics,
+        rgb,
+        EVT_CLOSE_REQ, EVT_KEY_DOWN, EVT_MOUSE_DOWN, EVT_MOUSE_UP,
+        FLAG_HAS_TITLE, FLAG_HAS_CLOSE, FLAG_RESIZABLE, FLAG_ALWAYS_TOP,
+    };
 }
 
 /// Writes formatted text to stdout.
