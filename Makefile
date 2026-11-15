@@ -2071,6 +2071,15 @@ $(USER_BUILD)/aoffice.o: userspace/office/office/aoffice.c \
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -I userspace/office/libaoglyph -I userspace/apps/gbrowser -c $< -o $@
 # OFFICE_PLAN OF4: the Sheet engine, headless.  libaodoc/aocalc is the
 # engine; this program is its receipt printer (--eval/--csv/--demo).
+# OF8: the .docx bridge, linked into the Writer (and covered on the host by
+# tests/unit/test_ao_ooxml.c).
+$(USER_BUILD)/aodox.o: userspace/office/libaodoc/aodox.c \
+                       userspace/office/libaodoc/aodox.h \
+                       userspace/office/libaodoc/aozip.h \
+                       userspace/office/libaodoc/aoxml.h \
+                       userspace/office/libaodoc/aomodel.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+
 $(USER_BUILD)/aocalc.o: userspace/office/libaodoc/aocalc.c \
                       userspace/office/libaodoc/aocalc.h \
                       userspace/office/libaodoc/aodoc.h
@@ -2126,6 +2135,7 @@ $(USER_BUILD)/aoffice.elf: $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
                            $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
                            $(USER_BUILD)/aopackage.o $(USER_BUILD)/aozip.o \
                            $(USER_BUILD)/aoxml.o $(USER_BUILD)/aolayout.o \
+                           $(USER_BUILD)/aodox.o \
                            $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
                            $(USER_BUILD)/wv_image.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
@@ -2135,6 +2145,7 @@ $(USER_BUILD)/aoffice.elf: $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
 	      $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
 	      $(USER_BUILD)/aopackage.o $(USER_BUILD)/aozip.o \
 	      $(USER_BUILD)/aoxml.o $(USER_BUILD)/aolayout.o \
+	      $(USER_BUILD)/aodox.o \
 	      $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
 	      $(USER_BUILD)/wv_image.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
@@ -4126,6 +4137,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_ao_doc $(BUILD_DIR)/test_ao_undo \
                 $(BUILD_DIR)/test_ao_layout $(BUILD_DIR)/test_ao_xml \
                 $(BUILD_DIR)/test_ao_zip \
+                $(BUILD_DIR)/test_ao_ooxml \
                 $(BUILD_DIR)/test_ao_formula $(BUILD_DIR)/test_ao_sheet \
                 $(BUILD_DIR)/test_ao_grid $(BUILD_DIR)/test_ao_slide \
                 $(BUILD_DIR)/test_apkg \
@@ -4677,6 +4689,10 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # asserting nothing.  Recipe on its own line, one tab, as make wants.
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
 	@python3 -c 'import sys,zipfile; p="$(BUILD_DIR)/test_ao_zip_interop.aod"; z=zipfile.ZipFile(p); assert z.testzip() is None; assert z.namelist()==["mimetype","content.xml","styles.xml"]; assert z.getinfo("mimetype").compress_type==zipfile.ZIP_STORED; print("[unit] Python ZIP interop: PASS ("+", ".join(z.namelist())+")")'
+# OF8: the same idea for .docx, but with a reader we did not write -- Python's
+# zipfile and xml.etree -- checking the part layout and XML well-formedness of
+# the archive our writer produced.
+	@python3 tools/office/check_docx.py $(BUILD_DIR)/test_ao_ooxml_docx.docx
 # W32A-1: the committed bindreport agrees textually with a fresh one.
 	@echo "[unit] running $(BUILD_DIR)/test_w32_a1 --emit-report"
 	@$(BUILD_DIR)/test_w32_a1 --emit-report $(BUILD_DIR)/user > \
@@ -5862,6 +5878,29 @@ $(BUILD_DIR)/test_ao_xml: tests/unit/test_ao_xml.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_ao_xml.c userspace/office/libaodoc/aoxml.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
+
+# OF8: the .docx bridge.  Host-tested like the rest of libaodoc -- the library
+# makes no syscalls, so the whole import/export/refusal surface runs here.
+$(BUILD_DIR)/test_ao_ooxml: tests/unit/test_ao_ooxml.c \
+                          userspace/office/libaodoc/aodox.c \
+                          userspace/office/libaodoc/aodox.h \
+                          userspace/office/libaodoc/aozip.c \
+                          userspace/office/libaodoc/aozip.h \
+                          userspace/office/libaodoc/aoxml.c \
+                          userspace/office/libaodoc/aoxml.h \
+                          userspace/office/libaodoc/aomodel.c \
+                          userspace/office/libaodoc/aomodel.h \
+                          userspace/office/libaodoc/aoinflate.c \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_ooxml.c \
+	          userspace/office/libaodoc/aodox.c \
+	          userspace/office/libaodoc/aozip.c \
+	          userspace/office/libaodoc/aoxml.c \
+	          userspace/office/libaodoc/aomodel.c \
+	          userspace/office/libaodoc/aoinflate.c \
 	          userspace/office/libaodoc/aodoc.c -o $@
 
 $(BUILD_DIR)/test_ao_zip: tests/unit/test_ao_zip.c \

@@ -871,29 +871,72 @@ deliberately: loosening it would hide the number, not fix the cost.
 
 #### Tasks
 
-- [ ] `.docx` **import**: `word/document.xml` — paragraphs, runs with
-      `b/i/u`, alignment, list numbering (basic), tables (rows/cells/spans),
-      inline images from `word/media/` (PNG only), section page size/margins.
-- [ ] `.docx` **export**: the same subset, valid `[Content_Types].xml`,
-      `_rels/.rels`, `word/_rels/document.xml.rels`, deterministic output.
+- [x] `.docx` **import**: `word/document.xml` — paragraphs, runs with
+      `b/i/u`/`w:sz`/`w:rFonts`, alignment, list numbering (basic: bullet vs
+      decimal, resolved through `word/numbering.xml`), tables (rows and cells),
+      inline images from `word/media/` (PNG only, resolved through
+      `word/_rels/document.xml.rels`), section page size/margins.
+      **Not done:** cell spans (`w:gridSpan`, `w:vMerge`) are refused with a
+      receipt rather than merged — the model has no span, and inventing one is
+      how a table silently changes shape.
+- [x] `.docx` **export**: the same subset, valid `[Content_Types].xml`,
+      `_rels/.rels`, `word/_rels/document.xml.rels`, plus `word/styles.xml`
+      and `word/numbering.xml` so the style ids and list numbers we emit are
+      not dangling. Output is deterministic: fixed part order, fixed
+      relationship ids, timestamps pinned by `aozip` at 1980-01-01.
 - [ ] `.xlsx` **import/export**: sheets, cells (number/string/boolean/formula),
       `sharedStrings.xml`, number formats (subset), column widths, merged cells.
       Formula export is text-pass-through (`<f>`), values written as
       `<v>` so a viewer without recalculation still shows numbers.
 - [ ] `.pptx` **import/export**: slides, text frames, placeholder positions,
       simple shapes, images; notes slide text.
-- [ ] **Refusal, not corruption:** an unsupported construct is reported in the
+- [x] **Refusal, not corruption:** an unsupported construct is reported in the
       window and in the log (`[aodoc] import: skipped <w:sdt>`), and the import
-      continues. Nothing is silently dropped without a receipt.
-- [ ] A documented subset table in `docs/office.md`, kept in sync by a unit
-      test that fails when the code and the table disagree.
+      continues. Nothing is silently dropped without a receipt. Deduped by
+      name, so four thousand structured tags produce one line, not a flood
+      that hides the real error.
+- [x] A documented subset table in `docs/office.md` (§8), kept in sync by
+      `tests/unit/test_ao_ooxml.c`, which reads the table and fails when the
+      code and the table disagree **in either direction** — a construct the
+      importer handles that the table omits, or one the table promises that
+      the code has never heard of.
 
 #### Test gate
 
+Measured on `9c2fffd`:
+
+* host `tests/unit/test_ao_ooxml.c`: **486 checks, 0 failures** — export
+  layout and part list, every XML part well-formed by our own strict reader,
+  export → import → export byte-identical, a hand-written Word-shaped
+  document (markup our exporter did not produce) mapped field by field,
+  refusals, and deduped skip receipts;
+* independent host check `tools/office/check_docx.py` (new): validates the
+  emitted package with Python's `zipfile` and `xml.etree` — part layout,
+  well-formedness, content-type overrides, relationship targets that resolve,
+  and timestamps pinned at 1980-01-01. A reader we did not write, agreeing
+  with one we did;
+* guest `tests/integration/cases/test_office_docx.sh`: **9/9** — the Writer
+  types a Cyrillic two-paragraph document (90 bytes, 2 runs), saves
+  `/documents/docx-gate.docx` (4 928 bytes, 343-byte `document.xml`, 0
+  skipped), reloads it unchanged, and then still saves and reloads a native
+  `.aod` (740 bytes) — sniffing did not cost us the format we had.
+
 - `tests/unit/test_ao_ooxml.c`: parse fixtures (hand-written minimal
   documents, one per feature), assert model contents; export then re-import →
-  model equality; hostile inputs (XXE-shaped entity, a 100 MB `document.xml`
-  claimed size, a zip entry that is itself a zip).
+  model equality; and hostile inputs — an XXE-shaped `<!DOCTYPE>` with an
+  external entity (refused by the strict reader before the entity is ever a
+  question), a `document.xml` that is itself an archive, a truncated archive,
+  a package with no `word/document.xml`, and input that is not a ZIP at all.
+  Every refusal leaves the model EMPTY, and the test asserts that: a
+  half-loaded document is the one outcome the model forbids.
+
+  One input from the original list is **not** exercised here, and saying so is
+  cheaper than a reader assuming it is: "a `document.xml` claiming a 100 MB
+  size".  Our writer only stores, and a stored part is a CRC-checked
+  zero-copy view that needs no scratch buffer, so this test cannot produce a
+  lying header.  The bound itself is the DEFLATE branch of `extract_part()`,
+  shared with OF7 and covered there by `tests/unit/test_ao_zip.c` against a
+  Python-generated deflated fixture.
 - `tests/integration/cases/test_office_docx.sh`: import a fixture `.docx` from
   the initrd, print the paragraph/table/run counts from the app, export it,
   and assert the exported zip's part list and CRCs on the host.
@@ -903,7 +946,14 @@ deliberately: loosening it would hide the number, not fix the cost.
 
 #### Deliverable
 
-`patches/OFFICE_OF8_ooxml.patch`
+`userspace/office/libaodoc/aodox.{h,c}` — the translation layer — with
+`tests/unit/test_ao_ooxml.c` and `tools/office/check_docx.py` as the receipts.
+
+#### Not yet done
+
+`.xlsx` and `.pptx` are untouched. They want the same shape — a part list, a
+translation, a subset table — and the reason to do `.docx` first is that it
+is the one with the most surfaces to get wrong per line of code.
 
 ---
 
@@ -1087,5 +1137,5 @@ serial receipts — the same standard the rest of the plans hold to.
 | OF5 | ✅ done (aogrid: virtualised viewport, selection, fill handle, copy/paste with formula translation, resize, freeze panes, stable sort, filter; bar/line/pie charts anchored to cells and persisted in the file; unit 37, guest grid gate, perf gate avg 4444 us / worst 20202 us) | `patches/OFFICE_OF5_sheet_gui.patch` |
 | OF6 | ✅ done (aoslide: text boxes, shapes, images, z-order, master slide + sorter; fullscreen show with click/Space advance and Esc exit, chrome suppressed; speaker notes stored; unit 91, guest 11/11, VNC LIVE SLIDE PASS) | `patches/OFFICE_OF6_slide.patch` |
 | OF7 | ✅ done (ZIP reader + writer, strict bounded XML, `.aod` = 3 ordered parts, legacy plain-XML sniffing; host `test_ao_zip` 165/0, `test_ao_xml` 43/0, `test_ao_doc` 121 checks, Python `zipfile` interop; guest `test_office_container.sh` 13/13; full office integration OF0 11/11, OF1 16/16, OF2 19/19, OF3 13/13, OF4 12/12, OF5 7/7, OF6 11/11, OF7 13/13; `make test-unit` rc=0) | — |
-| OF8 | ⬜ planned | — |
+| OF8 | 🟨 partial — `.docx` import + export done (aodox, 486 host checks, Python interop, guest 9/9, subset table gated); `.xlsx` and `.pptx` not started | — |
 | OF9 | ⬜ planned | — |

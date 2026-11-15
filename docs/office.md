@@ -401,7 +401,70 @@ verify: `testzip()` returns `None` and `namelist()` is exactly the three parts
 above with `mimetype` stored. An independent reader agreeing with our writer
 is worth more than our writer agreeing with itself.
 
-## 8. Where the constraints come from
+## 8. The OOXML bridge (OF8)
+
+From OF8 the Writer reads and writes `.docx`.  OF7 already paid for the
+container and the markup, so the only new code is the translation — and the
+only interesting question is what does *not* survive.  That is what this table
+is for.
+
+<!-- OF8-SUBSET-BEGIN -->
+| OOXML | what it becomes | supported |
+|---|---|---|
+| `w:p` | a paragraph | ✅ |
+| `w:r` | a run | ✅ |
+| `w:t` | the run's text (`xml:space` respected) | ✅ |
+| `w:b` | `AO_STYLE_BOLD` | ✅ |
+| `w:i` | `AO_STYLE_ITALIC` | ✅ |
+| `w:u` | `AO_STYLE_UNDERLINE` (any value but `none`) | ✅ |
+| `w:sz` | run size, half-points → px | ✅ |
+| `w:rFonts` | mono if the name says mono, else sans | ✅ |
+| `w:jc` | alignment (`both` → justify) | ✅ |
+| `w:pStyle` | `Heading1-3`, `Quote` | ✅ |
+| `w:numPr` | bullet or numbered list, resolved through `numbering.xml` | ✅ |
+| `w:ind` | left indent, twips → px at 96 dpi | ✅ |
+| `w:tbl` | one paragraph per row, cells joined by a tab | ✅ |
+| `a:blip` | a paragraph holding the image path | ✅ |
+| `w:sectPr` | page size and margins | ✅ |
+| `w:gridSpan` | — | ❌ |
+| `w:vMerge` | — | ❌ |
+| `w:hyperlink` | the link target is dropped, the text is kept | ❌ |
+| `w:sdt` | the wrapper is dropped, its content is kept | ❌ |
+| `w:footnote` | — | ❌ |
+| `w:bookmarkStart` | — | ❌ |
+| tracked changes, comments, fields, headers, footers | — | ❌ |
+<!-- OF8-SUBSET-END -->
+
+Three things about that table are deliberate:
+
+**A ❌ is a receipt, not a shrug.**  Everything unsupported is named in the
+log as it happens — `[aodoc] import: skipped <w:sdt>` — once per distinct
+construct, so a document with four thousand structured tags prints one line
+rather than burying the real error.  The import continues and nothing is
+dropped without having been named.
+
+**`w:hyperlink` and `w:sdt` keep their text.**  They are wrappers around
+content we do understand, so refusing them would lose a document to preserve
+an attribute of it.
+
+**The table is checked, not remembered.**  `tests/unit/test_ao_ooxml.c` opens
+this file, extracts the region between the two markers, and fails if the set
+of ✅ rows and the set of constructs the importer actually handles disagree in
+either direction.  A plan document that quietly stops describing the code is
+the normal fate of plan documents; this one has a gate.
+
+Two more things an exporter has to decide, and what we decided:
+
+* **Images keep their bytes but not their geometry.**  libaodoc is pure and
+  does not decode bitmaps, so an exported picture is written at a fixed 2×2
+  inch extent; a viewer re-flows around it.  The PNG is stored, never
+  re-encoded.
+* **The image path is renamed.**  The model holds a filesystem path, the
+  package holds a part name, so `/documents/pic.png` comes back from a save as
+  `media/image1.png`.  `test_round_trip_with_image` pins exactly this: the
+  first save renames, the second is a fixed point.
+
+## 9. Where the constraints come from
 
 Every number above was measured on this tree, not assumed:
 
@@ -416,7 +479,7 @@ Every number above was measured on this tree, not assumed:
   reader-then-writer order;
 * `SPAWN_MAX_IMAGE` is 16 MiB — the suite's binaries are sized against that.
 
-## 9. Running the gates
+## 10. Running the gates
 
 ```bash
 make test-unit                                        # incl. test_taskbar_layout,
@@ -429,6 +492,8 @@ python3 tools/check_plan_tables.py --check            # plan/TODO/ledger agree
 ./build/test_ao_zip && ./build/test_ao_xml            # OF7 container (host)
 bash tests/integration/cases/test_office_container.sh # OF7 container (guest)
 bash tests/integration/run_all.sh office              # the whole office group
+./build/test_ao_ooxml                                # OF8 .docx (host)
+python3 tools/office/check_docx.py build/test_ao_ooxml_docx.docx
 /home/user/vnc/drive.sh                              # live pass, screenshots
 ```
 

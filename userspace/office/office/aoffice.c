@@ -35,6 +35,7 @@
 #include "aoio.h"
 #include "aopackage.h"
 #include "aozip.h"
+#include "aodox.h"   /* OF8: .docx import/export */
 #include "aolayout.h"
 #include "wv_image.h"   /* OF3 closure: the gbrowser PNG decoder, shared */
 
@@ -574,9 +575,50 @@ static void ed_replace_sel(const char *with) {
 /* ---- files -------------------------------------------------------------
  * `.aod` is a deterministic store-only ZIP package. The XML remains a part
  * inside the package, while the loader keeps accepting legacy OF2–OF6 XML.
+ * From OF8 the same window also reads and writes `.docx`: the container and
+ * the XML layer are shared, only the translation differs, and the choice is
+ * made by the path's extension on save and by sniffing on load.
  */
 static char io_buf[IO_MAX];
 static char io_buf2[IO_MAX];
+
+/* ---- OF8: .docx -------------------------------------------------------
+ * The two things libaodoc refuses to do for itself: open a file, and know
+ * where /documents is.  Both arrive here as callbacks, so the rule
+ * "unsupported construct => named receipt, not silent loss" stays testable
+ * on the host by tests/unit/test_ao_ooxml.c.
+ */
+static ao_docx_rels_t docx_rels;
+static uint8_t docx_media[IO_MAX];
+static uint32_t docx_skipped;
+
+static int docx_media_read(void *context, const char *path,
+                           uint8_t *out, size_t cap, size_t *len_out) {
+    (void)context;
+    if (!path || !*path) return AO_E_ARG;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return AO_E_FORMAT;
+    ssize_t n = read(fd, out, cap);
+    close(fd);
+    if (n <= 0 || (size_t)n > cap) return AO_E_FULL;
+    *len_out = (size_t)n;
+    return AO_OK;
+}
+
+/* One line per distinct construct we did not translate.  The importer dedupes
+ * by name, so a document with four thousand tags prints one line, not a flood
+ * that pushes the real error off the screen. */
+static int docx_note(void *context, const char *text, size_t length) {
+    (void)context;
+    printf("[aodoc] import: %.*s\n", (int)length, text);
+    return 0;
+}
+
+static int path_ends_with(const char *path, const char *suffix) {
+    if (!path || !suffix) return 0;
+    size_t pn = strlen(path), sn = strlen(suffix);
+    return pn >= sn && !strcmp(path + (pn - sn), suffix);
+}
 
 typedef struct {
     int fd;
@@ -601,6 +643,41 @@ static int discard_xml(void *context, const void *bytes, size_t length) {
 }
 
 static int ed_save_as(const char *path) {
+    int docx = path_ends_with(path, ".docx");
+
+    if (docx) {
+        /* Measure first: the writer needs the document part's size and CRC
+         * before it can emit a local header, and it streams the XML twice so
+         * no full copy is ever staged. */
+        size_t xml_len = 0;
+        if (ao_io_export_stream(&md, discard_xml, NULL, &xml_len) != AO_OK) {
+            printf("[writer] export refused (document too large?)\n");
+            return -1;
+        }
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) { printf("[writer] cannot open %s for writing\n", path); return -1; }
+        zip_fd_sink_t sink = { fd, 0 };
+        size_t archive_len = 0;
+        uint32_t skipped = 0;
+        int rc = ao_docx_export_ex(&md, zip_fd_write, &sink, &archive_len,
+                                   NULL, docx_media_read, NULL,
+                                   docx_media, sizeof docx_media,
+                                   docx_note, NULL, &skipped);
+        close(fd);
+        if (rc != AO_OK || sink.written != archive_len) {
+            printf("[writer] DOCX save failed for %s (rc=%d, wrote=%u/%u bytes)\n",
+                   path, rc, (unsigned)sink.written, (unsigned)archive_len);
+            return -1;
+        }
+        printf("[writer] saved %s: %u-byte DOCX (%u bytes document.xml), "
+               "%u paragraphs, %u runs, %u skipped\n",
+               path, (unsigned)archive_len, (unsigned)xml_len,
+               ao_model_para_count(&md), ao_model_run_count(&md),
+               (unsigned)skipped);
+        dirty = 0;
+        return 0;
+    }
+
     size_t xml_len = 0;
     if (ao_io_export_stream(&md, discard_xml, NULL, &xml_len) != AO_OK) {
         printf("[writer] export refused (document too large?)\n");
@@ -633,13 +710,23 @@ static int ed_load_from(const char *path) {
     ssize_t n = read(fd, io_buf, sizeof(io_buf));
     close(fd);
     if (n <= 0) { printf("[writer] %s is empty or unreadable\n", path); return -1; }
-    int rc = ao_package_import(&md, io_buf, (size_t)n, io_buf2, sizeof(io_buf2));
+    /* OF8: try .docx first.  A ZIP without word/document.xml is refused with
+     * AO_E_FORMAT, and that refusal is exactly the signal to fall through to
+     * the native reader -- so a .aod, a legacy plain-XML document and a .docx
+     * can all arrive through the same Ctrl+O. */
+    int rc = ao_docx_import(&md, io_buf, (size_t)n, io_buf2, sizeof(io_buf2),
+                            &docx_rels, NULL, docx_note, NULL, &docx_skipped);
+    if (rc != AO_OK)
+        rc = ao_package_import(&md, io_buf, (size_t)n, io_buf2, sizeof(io_buf2));
     if (rc != AO_OK) {
-        /* The importer leaves the model empty on every refusal path. */
+        /* Both importers leave the model empty on every refusal path. */
         printf("[writer] %s is not a document this version reads (rc=%d)\n", path, rc);
         md_sync();
         return -1;
     }
+    if (docx_skipped)
+        printf("[writer] %s: %u construct(s) were not translated (see above)\n",
+               path, (unsigned)docx_skipped);
     ao_undo_reset(&undo);
     ao_undo_push(&undo, &md, AO_UNDO_BARRIER);
     caret = 0;
@@ -1851,6 +1938,74 @@ static void on_edit_key(uint32_t key, uint32_t cp, uint8_t mods) {
  * byte for byte -- plus undo, which is the one feature that cannot be checked
  * by looking at the text.
  */
+/* OF8: the .docx gate, driven exactly like the OF2 one -- through the
+ * keystroke path and the file dialog's own save/load, not through bespoke
+ * calls -- because the claim is "the Writer can open and save .docx", and a
+ * test that bypasses the Writer would not be evidence of that. */
+static int docx_test(void) {
+    int fails = 0;
+
+    ao_arena_init(&arena, arena_mem, sizeof arena_mem);
+    doc = ao_doc_new(&arena, "DOCX gate");
+    if (ao_model_init(&md, md_text, sizeof md_text, md_runs, MD_RUNS,
+                      md_paras, MD_PARAS) != AO_OK ||
+        ao_undo_init(&undo, undo_mem, sizeof undo_mem, redo_mem,
+                     sizeof redo_mem) != AO_OK) {
+        printf("DOCX GATE: FAIL (model or history refused to initialise)\n");
+        return 1;
+    }
+    ed_reset();
+
+    /* Cyrillic, two paragraphs, one run style: the smallest document that
+     * would expose an escaping or a codepoint bug on the way out. */
+    ed_insert_utf8("Заголовок документа");
+    ed_newline();
+    ed_insert_utf8("Второй абзац с кириллицей ёЁ");
+    ed_select_all();
+    ed_style(AO_STYLE_BOLD);
+
+    uint32_t want_len = ao_model_text_len(&md);
+    uint32_t want_paras = ao_model_para_count(&md);
+    printf("[writer] docx source: %u bytes, %u paragraphs, %u runs\n",
+           want_len, want_paras, ao_model_run_count(&md));
+
+    const char *docx_path = "/documents/docx-gate.docx";
+    if (ed_save_as(docx_path) != 0) {
+        printf("DOCX GATE: FAIL (save as .docx)\n");
+        return 1;
+    }
+    if (ed_load_from(docx_path) != 0) {
+        printf("DOCX GATE: FAIL (reload the .docx)\n");
+        return 1;
+    }
+    printf("[writer] docx round trip: %u bytes, %u paragraphs, %u runs\n",
+           ao_model_text_len(&md), ao_model_para_count(&md),
+           ao_model_run_count(&md));
+    if (ao_model_text_len(&md) != want_len ||
+        ao_model_para_count(&md) != want_paras) {
+        printf("DOCX GATE: FAIL (the document changed shape across the round trip)\n");
+        fails++;
+    }
+    if (ao_model_style_at(&md, 0) != AO_STYLE_BOLD) {
+        printf("DOCX GATE: FAIL (the bold run did not survive)\n");
+        fails++;
+    }
+
+    /* The native package still works after the OOXML path ran: the loader
+     * sniffs, and sniffing must not have made .aod unreadable. */
+    if (ed_save_as("/documents/docx-gate.aod") != 0) {
+        printf("DOCX GATE: FAIL (native .aod save after a .docx round trip)\n");
+        fails++;
+    }
+    if (ed_load_from("/documents/docx-gate.aod") != 0) {
+        printf("DOCX GATE: FAIL (native .aod reload after a .docx round trip)\n");
+        fails++;
+    }
+
+    printf("DOCX GATE: %s\n", fails ? "FAIL" : "PASS");
+    return fails ? 1 : 0;
+}
+
 static int writer_test(void) {
     int fails = 0;
     printf("[writer] text buffer %u bytes, %u runs, %u paragraphs, undo %u+%u bytes\n",
@@ -2224,6 +2379,7 @@ int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--bench") == 0) return bench();
     if (argc > 1 && strcmp(argv[1], "--font-test") == 0) return font_test();
     if (argc > 1 && strcmp(argv[1], "--writer-test") == 0) return writer_test();
+    if (argc > 1 && strcmp(argv[1], "--docx-test") == 0) return docx_test();
     if (argc > 3 && strcmp(argv[1], "--extract-content") == 0)
         return extract_content_part(argv[2], argv[3]);
     if (argc > 1 && strcmp(argv[1], "--layout-test") == 0) return layout_test();
