@@ -23,6 +23,7 @@
  * its <stdatomic.h>; see kernel/arch/x86_64/tlb_shootdown.c. */
 #include <stdatomic.h>
 #include "kernel/gui/gui.h"
+#include "kernel/gui/gui_shell.h"
 #include "kernel/gui/taskbar_layout.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
@@ -287,21 +288,6 @@ static int      last_click_part = -1;
 static uint8_t  last_click_button = 0;
 
 #define GUI_DBLCLICK_SLOP_PX 5
-
-/* Desktop icons. */
-static gui_icon_t icons[GUI_MAX_ICONS];
-static int icon_selected = -1;
-
-/* Notifications. */
-static gui_notification_t notifications[GUI_MAX_NOTIFICATIONS];
-
-/* Start menu. */
-static int start_menu_open = 0;
-
-/* OF0: taskbar overflow list ("»" button).  Closed by the same rules as the
- * Start menu: any left click outside it. */
-static int taskbar_more_open = 0;
-static unsigned taskbar_more_page = 0;
 
 /* ===================================================================
  * Helpers
@@ -581,11 +567,54 @@ static int win_alive(int wid) {
     return windows && wid >= 0 && wid < GUI_MAX_WINDOWS && windows[wid].in_use;
 }
 
+/* ---- Helpers for gui_shell.c -------------------------------------- */
+
+int gui_taskbar_win_count(void) {
+    int n = 0;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use || !windows[i].visible) continue;
+        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW))
+            continue;
+        n++;
+    }
+    return n;
+}
+
+int gui_taskbar_win_at(int slot) {
+    int n = 0;
+    if (slot < 0) return -1;
+    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
+        if (!windows[i].in_use || !windows[i].visible) continue;
+        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW))
+            continue;
+        if (n == slot) return i;
+        n++;
+    }
+    return -1;
+}
+
+void gui_get_window_title(int wid, char *buf, uint32_t size) {
+    if (!buf || size == 0) return;
+    buf[0] = 0;
+    if (!win_alive(wid)) return;
+    uint32_t n = 0;
+    while (n < size - 1 && windows[wid].title[n]) {
+        buf[n] = windows[wid].title[n];
+        n++;
+    }
+    buf[n] = 0;
+}
+
+int gui_window_is_minimized(int wid) {
+    if (!win_alive(wid)) return 0;
+    return windows[wid].minimized;
+}
+
 /* A visible presentation window owns the whole display.  Unlike NO_DECOR,
  * which only removes a titlebar, this mode also suppresses the taskbar and
  * notification/snap overlays so the app can show exactly one slide per
  * screen.  The window itself remains an ordinary owner-checked GUI surface. */
-static int gui_presentation_active(void) {
+int gui_presentation_active(void) {
     if (!windows) return 0;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         const gui_win_t *w = &windows[i];
@@ -597,7 +626,7 @@ static int gui_presentation_active(void) {
 
 static int32_t abs_diff(int32_t a, int32_t b) { return a > b ? a - b : b - a; }
 
-static int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
+int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
                                int wid, int part, uint8_t button) {
     return last_click_tick != 0 &&
            last_click_wid == wid &&
@@ -608,7 +637,7 @@ static int gui_is_double_click(uint32_t now, int32_t x, int32_t y,
            abs_diff(y, last_click_y) <= GUI_DBLCLICK_SLOP_PX;
 }
 
-static void gui_record_click(uint32_t now, int32_t x, int32_t y,
+void gui_record_click(uint32_t now, int32_t x, int32_t y,
                              int wid, int part, uint8_t button) {
     last_click_tick = now;
     last_click_x = x;
@@ -627,7 +656,7 @@ static uint32_t c_titlebar(void)  { return active_theme.titlebar_h; }
  * button, notifications, ...). Falls back to 8 if no font is loaded yet
  * (shouldn't happen once fb_init()/psf_init() have run, but keeps this
  * arithmetic safe either way). */
-static uint32_t gui_font_h(void) {
+uint32_t gui_font_h(void) {
     const struct psf_font *f = psf_get_font();
     return f ? f->height : 8;
 }
@@ -725,8 +754,6 @@ void gui_init(void) {
     last_drawn_valid = 0;
     memset(drop_epoch, 0, sizeof(drop_epoch));
     memset(window_epoch, 0, sizeof(window_epoch));
-    memset(icons, 0, sizeof(icons));
-    memset(notifications, 0, sizeof(notifications));
     spinlock_init(&gui_lock);
     spinlock_init(&gui_evt_lock);
     wq_init(&gui_wq);
@@ -741,10 +768,8 @@ void gui_init(void) {
     gui_clock_last_second = (uint64_t)-1;
     full_dirty = 1;
     dirty_count = 0;
-    start_menu_open = 0;
-    taskbar_more_open = 0;
-    taskbar_more_page = 0;
-    icon_selected = -1;
+
+    gui_shell_init();
 }
 
 /* ===================================================================
@@ -978,11 +1003,6 @@ static void request_window_close(int wid) {
 int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                       const char *title, uint32_t flags) {
     if (w == 0 || h == 0) return -1;
-    if (flags & GUI_WIN_PRESENTATION) {
-        flags |= GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS | GUI_WIN_ALWAYS_TOP;
-        start_menu_open = 0;
-        taskbar_more_open = 0;
-    }
 
     /* Pre-compute content size to reject before allocating a slot. */
     uint32_t bw, bh;
@@ -1159,13 +1179,9 @@ void gui_cleanup_process(uint64_t owner_pid) {
         if (last_hover_wid == i) last_hover_wid = -1;
         cleaned++;
     }
-    /* Also clean up icons owned by this process. */
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (icons[i].in_use && (uint64_t)(uint32_t)icons[i].owner_pid == owner_pid) {
-            memset(&icons[i], 0, sizeof(icons[i]));
-            if (icon_selected == i) icon_selected = -1;
-        }
-    }
+
+    shell_cleanup_icons(owner_pid);
+
     if (cleaned) {
         recompute_focus();
         full_dirty = 1;
@@ -1506,80 +1522,6 @@ void gui_set_cursor(gui_cursor_t c) {
     }
 
     gui_poke();
-}
-
-/* ===================================================================
- * Desktop icons
- * =================================================================== */
-
-int gui_add_icon(int32_t x, int32_t y, const char *label, int icon_id) {
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (!icons[i].in_use) {
-            icons[i].in_use = 1;
-            icons[i].x = x;
-            icons[i].y = y;
-            strncpy(icons[i].label, label, sizeof(icons[i].label) - 1);
-            icons[i].label[sizeof(icons[i].label) - 1] = 0;
-            icons[i].icon_id = icon_id;
-            tcb_t *owner = sched_current();
-            icons[i].owner_pid = owner ? (int)owner->id : 0;
-            gui_mark_dirty(x, y, active_theme.icon_size + active_theme.icon_pad * 2,
-                           active_theme.icon_size + 20);
-            return i;
-        }
-    }
-    return -1;
-}
-
-int gui_remove_icon(int icon_idx) {
-    if (icon_idx < 0 || icon_idx >= GUI_MAX_ICONS || !icons[icon_idx].in_use) return -1;
-    gui_mark_dirty(icons[icon_idx].x, icons[icon_idx].y,
-                   active_theme.icon_size + active_theme.icon_pad * 2,
-                   active_theme.icon_size + 20);
-    memset(&icons[icon_idx], 0, sizeof(icons[icon_idx]));
-    return 0;
-}
-
-int gui_icon_owned_by(int icon_idx, uint64_t owner_pid) {
-    if (icon_idx < 0 || icon_idx >= GUI_MAX_ICONS || !icons[icon_idx].in_use) return 0;
-    return (uint64_t)(uint32_t)icons[icon_idx].owner_pid == owner_pid;
-}
-
-int gui_icon_count(void) {
-    int n = 0;
-    for (int i = 0; i < GUI_MAX_ICONS; i++) if (icons[i].in_use) n++;
-    return n;
-}
-
-/* ===================================================================
- * Notifications
- * =================================================================== */
-
-int gui_notify(const char *text, uint32_t color, uint32_t duration_ms) {
-    /* Find a free slot or overwrite oldest. */
-    int slot = -1;
-    uint32_t oldest_tick = (uint32_t)-1;
-    int oldest_slot = 0;
-    for (int i = 0; i < GUI_MAX_NOTIFICATIONS; i++) {
-        if (!notifications[i].in_use) { slot = i; break; }
-        if (notifications[i].start_tick < oldest_tick) {
-            oldest_tick = notifications[i].start_tick;
-            oldest_slot = i;
-        }
-    }
-    if (slot < 0) slot = oldest_slot; /* overwrite oldest */
-    notifications[slot].in_use = 1;
-    strncpy(notifications[slot].text, text, sizeof(notifications[slot].text) - 1);
-    notifications[slot].text[sizeof(notifications[slot].text) - 1] = 0;
-    notifications[slot].color = color;
-    notifications[slot].start_tick = (uint32_t)timer_get_ticks();
-    notifications[slot].duration_ms = duration_ms ? duration_ms : 3000;
-    /* Mark the notification area dirty. */
-    uint32_t fw = gfx_get_width();
-    uint32_t fh = gfx_get_height();
-    gui_mark_dirty((int32_t)(fw - 320), (int32_t)(fh - active_theme.taskbar_h - 60),
-                   310, 50);
-    return slot;
 }
 
 /* ===================================================================
@@ -2391,39 +2333,6 @@ static void draw_desktop(void) {
     }
 }
 
-/* ---- Desktop icons rendering ---- */
-
-static void draw_icons(void) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t isz = t->icon_size;
-    (void)t->icon_pad; /* used below indirectly */
-
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (!icons[i].in_use) continue;
-        int32_t ix = icons[i].x;
-        int32_t iy = icons[i].y;
-        int sel = (i == icon_selected);
-
-        /* Icon background rectangle (placeholder for real icon). */
-        if (sel) {
-            gfx_fill_rect((uint32_t)ix, (uint32_t)iy, isz, isz, t->icon_selected);
-        } else {
-            gfx_fill_rect((uint32_t)ix, (uint32_t)iy, isz, isz, 0x00406080);
-        }
-        gfx_draw_rect((uint32_t)ix, (uint32_t)iy, isz, isz, t->icon_text);
-
-        /* Simple icon pattern: a small document/app shape. */
-        uint32_t cx = (uint32_t)ix + isz / 2;
-        uint32_t cy = (uint32_t)iy + isz / 2;
-        /* App icon: filled circle with inner square. */
-        gfx_fill_circle(cx, cy, 8, sel ? 0x00FFFFFF : 0x0080B0E0);
-        gfx_fill_rect(cx - 3, cy - 3, 7, 7, sel ? t->icon_selected : 0x00406080);
-
-        /* Label below icon. */
-        gfx_draw_text((uint32_t)ix, (uint32_t)iy + isz + 2, icons[i].label, t->icon_text);
-    }
-}
-
 /* ---- Snap preview overlay ---- */
 
 static void draw_snap_preview(void) {
@@ -2599,408 +2508,6 @@ static void cursor_draw_and_flip_rect(
     cursor_commit_presented(have_cursor, mx, my);
 }
 
-/* ---- Built-in GUI application launcher ---- */
-
-/* OF0: menu entries are grouped.  The dropdown is rendered from a derived
- * row list (group headers + entries) rather than from gui_apps[] directly, so
- * adding the office suite later is an entry here, not layout surgery. */
-typedef enum {
-    GUI_APP_GRP_APPS = 0,   /* everyday small tools */
-    GUI_APP_GRP_OFFICE,     /* the office suite start centre (arrives in OF9) */
-    GUI_APP_GRP_SYSTEM,     /* monitors, managers, About */
-    GUI_APP_GRP_COUNT
-} gui_app_group_t;
-
-typedef struct gui_app_entry {
-    const char *name;
-    const char *path;
-    int icon_id;
-    gui_app_group_t group;
-} gui_app_entry_t;
-
-static const char *const gui_group_titles[GUI_APP_GRP_COUNT] = {
-    "Applications",
-    "Office",
-    "System",
-};
-
-/* Paths are absolute and canonical (FSLAYOUT_PLAN F3/F5).
- *
- * These held root-level names until F5 removed the compatibility aliases.
- * The kernel cannot use libc's prog_resolve() the way userspace does, so
- * these stay literal — which makes them the one place in the system where a
- * layout change must be applied by hand.  Nothing clicks these menu entries
- * in any test, so a stale path here is a menu item that silently does
- * nothing.  They were found by grep, not by a failure. */
-static const gui_app_entry_t gui_apps[] = {
-    { "Calculator",      "/apps/gcalc",     4,  GUI_APP_GRP_APPS },
-    { "Text Editor",     "/apps/gedit",     3,  GUI_APP_GRP_APPS },
-    { "File Manager",    "/apps/gfiles",    2,  GUI_APP_GRP_APPS },
-    { "Terminal",        "/apps/gterm",     1,  GUI_APP_GRP_APPS },
-    { "Web Browser",     "/apps/gbrowser",  9,  GUI_APP_GRP_APPS },
-    { "Music Player",    "/apps/gaudio",    8,  GUI_APP_GRP_APPS },
-    /* OF0: the office suite's start centre.  The group existed empty until
-     * this binary did; the checker refuses a path the image does not ship. */
-    { "Office",           "/apps/aoffice",  11, GUI_APP_GRP_OFFICE },
-    { "System Monitor",  "/apps/gsysmon",   5,  GUI_APP_GRP_SYSTEM },
-    { "Task Manager",    "/apps/gtaskmgr",  7,  GUI_APP_GRP_SYSTEM },
-    { "USB Manager",     "/apps/gusb",      10, GUI_APP_GRP_SYSTEM },
-    { "About",           "/apps/gabout",    6,  GUI_APP_GRP_SYSTEM },
-};
-
-#define GUI_START_MENU_W 180u
-/* OF0: the menu height is DERIVED from the entry count, not fixed.  It used to
- * be a constant 220 px sized for exactly the ten entries that existed, so a
- * suite that adds four more would have drawn its last rows under the taskbar
- * while the hit test kept mapping them to entries.  Everything that needs the
- * geometry goes through start_menu_rect(), which is also what the renderer
- * and the hit test both call. */
-#define GUI_START_MENU_X 4u
-#define GUI_START_BUTTON_W GUI_TB_START_W
-#define GUI_START_MENU_ITEM_Y 28u
-#define GUI_START_MENU_ITEM_H 18u
-
-static int gui_app_count(void) {
-    return (int)(sizeof(gui_apps) / sizeof(gui_apps[0]));
-}
-
-static const gui_app_entry_t *gui_app_by_icon_id(int icon_id) {
-    for (int i = 0; i < gui_app_count(); i++) {
-        if (gui_apps[i].icon_id == icon_id) return &gui_apps[i];
-    }
-    return NULL;
-}
-
-static void gui_launch_app(const gui_app_entry_t *app) {
-    if (!app || !app->path) return;
-    int64_t pid = process_spawn(app->path);
-    if (pid < 0) {
-        kprintf("[gui] launch failed: %s (%s)\n", app->name, app->path);
-        gui_notify("Launch failed", 0x00C04040, 2500);
-    } else {
-        kprintf("[gui] launched: %s (%s) pid=%lld\n",
-                app->name, app->path, (long long)pid);
-    }
-}
-
-/* One row of the dropdown: a group header (app < 0) or an entry.  Uniform
- * row height keeps start_menu_hit() a single division. */
-#define GUI_MENU_MAX_ROWS 64
-
-typedef struct gui_menu_row {
-    int app;            /* index into gui_apps[], or -1 for a group header */
-    const char *title;
-} gui_menu_row_t;
-
-/* Build the visible row list in group order, skipping empty groups.  Returns
- * the number of rows written.  Renderer, hit test and height all use this. */
-static int gui_menu_rows(gui_menu_row_t *rows, int max) {
-    int n = 0;
-    for (int g = 0; g < GUI_APP_GRP_COUNT; g++) {
-        int first = 1;
-        for (int i = 0; i < gui_app_count(); i++) {
-            if (gui_apps[i].group != (gui_app_group_t)g) continue;
-            if (first) {
-                if (n < max) {
-                    rows[n].app = -1;
-                    rows[n].title = gui_group_titles[g];
-                }
-                n++;
-                first = 0;
-            }
-            if (n < max) { rows[n].app = i; rows[n].title = gui_apps[i].name; }
-            n++;
-        }
-    }
-    return (n > max) ? max : n;
-}
-
-/* Height of the dropdown: a title strip, one row each, a bottom pad.  Never
- * smaller than the historical 220 px so the current menu keeps its look. */
-#define GUI_START_MENU_MIN_H 220u
-#define GUI_START_MENU_PAD_B 8u
-
-static uint32_t start_menu_height(void) {
-    gui_menu_row_t rows[GUI_MENU_MAX_ROWS];
-    int n = gui_menu_rows(rows, GUI_MENU_MAX_ROWS);
-    uint32_t h = GUI_START_MENU_ITEM_Y +
-                 (uint32_t)n * GUI_START_MENU_ITEM_H +
-                 GUI_START_MENU_PAD_B;
-    return (h < GUI_START_MENU_MIN_H) ? GUI_START_MENU_MIN_H : h;
-}
-
-static int start_menu_rect(int32_t *x, int32_t *y, uint32_t *w, uint32_t *h) {
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = active_theme.taskbar_h;
-    uint32_t menu_h = start_menu_height();
-    if (fh <= tb_h + menu_h) return 0;
-    if (x) *x = (int32_t)GUI_START_MENU_X;
-    if (y) *y = (int32_t)(fh - tb_h - menu_h);
-    if (w) *w = GUI_START_MENU_W;
-    if (h) *h = menu_h;
-    return 1;
-}
-
-static int start_menu_hit(int32_t mx, int32_t my) {
-    if (!start_menu_open) return -1;
-    int32_t menu_x = 0, menu_y = 0;
-    uint32_t menu_w = 0, menu_h = 0;
-    if (!start_menu_rect(&menu_x, &menu_y, &menu_w, &menu_h)) return -1;
-    if (mx < menu_x || mx >= menu_x + (int32_t)menu_w ||
-        my < menu_y || my >= menu_y + (int32_t)menu_h) return -1;
-
-    int32_t rel_y = my - menu_y;
-    if (rel_y < (int32_t)GUI_START_MENU_ITEM_Y) return -2; /* title strip */
-    int row = (rel_y - (int32_t)GUI_START_MENU_ITEM_Y) / (int32_t)GUI_START_MENU_ITEM_H;
-    gui_menu_row_t rows[GUI_MENU_MAX_ROWS];
-    int n = gui_menu_rows(rows, GUI_MENU_MAX_ROWS);
-    if (row < 0 || row >= n) return -2;
-    return rows[row].app;   /* -1 for a group header: in the menu, launches nothing */
-}
-
-static int start_menu_contains(int32_t mx, int32_t my) {
-    return start_menu_hit(mx, my) != -1;
-}
-
-/* ---- Taskbar window-button layout --------------------------------------
- *
- * OF0: the geometry itself lives in kernel/gui/taskbar_layout.h, so the
- * renderer, the hit test and the host unit test all run the same arithmetic.
- * These two helpers are the only kernel-side part: which windows get a button
- * (the filter) and slot -> window-index mapping, shared by draw and hit.
- */
-static int taskbar_win_count(void) {
-    int n = 0;
-    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (!windows[i].in_use || !windows[i].visible) continue;
-        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW)) continue;
-        n++;
-    }
-    return n;
-}
-
-/* slot is an ordinal among taskbar-listed windows, in draw order. */
-static int taskbar_win_at(int slot) {
-    int n = 0;
-    if (slot < 0) return -1;
-    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (!windows[i].in_use || !windows[i].visible) continue;
-        if (windows[i].flags & (GUI_WIN_NO_DECOR | GUI_WIN_TOOL_WINDOW)) continue;
-        if (n == slot) return i;
-        n++;
-    }
-    return -1;
-}
-
-/* Draw the overflow list above the "»" button. */
-static void draw_taskbar_overflow(uint32_t fw, uint32_t fh, uint32_t tb_h) {
-    if (!taskbar_more_open) return;
-    int n = taskbar_win_count();
-    gui_tb_overflow_t ov;
-    gui_tb_overflow_geometry(fw, fh, tb_h, (unsigned)n, &ov);
-    if (ov.rows == 0) return;
-
-    gfx_fill_rect((uint32_t)ov.x, (uint32_t)ov.y, ov.w, ov.h, 0x00282838);
-    gfx_draw_rect((uint32_t)ov.x, (uint32_t)ov.y, ov.w, ov.h, 0x0060A0E0);
-
-    gui_tb_layout_t l;
-    gui_tb_layout(fw, (unsigned)n, &l);
-    uint32_t cols = (ov.w > 20u) ? ((ov.w - 20u) / 8u) : 0u;
-    if (cols > 19u) cols = 19u;
-
-    for (unsigned r = 0; r < ov.rows; r++) {
-        int entry = gui_tb_overflow_row_entry(&ov, taskbar_more_page, r);
-        uint32_t ry = (uint32_t)ov.y + GUI_TB_OV_PAD + r * ov.row_h;
-        if (entry < 0) {
-            gfx_draw_text((uint32_t)ov.x + 8u, ry, "\xAF more", 0x0070B0D8);
-            continue;
-        }
-        int wid = taskbar_win_at((int)l.visible + entry);
-        if (wid < 0) continue;
-        char title[20];
-        uint32_t k = 0;
-        while (k < cols && windows[wid].title[k]) { title[k] = windows[wid].title[k]; k++; }
-        title[k] = 0;
-        gfx_draw_text((uint32_t)ov.x + 8u, ry, title, active_theme.taskbar_text);
-    }
-}
-
-/* Hit test for the open overflow list: >=0 window id, -3 the "more" row,
- * -1 outside. */
-static int taskbar_overflow_hit(int32_t mx, int32_t my) {
-    if (!taskbar_more_open) return -1;
-    uint32_t fw = gfx_get_width(), fh = gfx_get_height();
-    uint32_t tb_h = active_theme.taskbar_h;
-    int n = taskbar_win_count();
-    gui_tb_overflow_t ov;
-    gui_tb_overflow_geometry(fw, fh, tb_h, (unsigned)n, &ov);
-    if (ov.rows == 0) return -1;
-    if (mx < ov.x || mx >= ov.x + (int32_t)ov.w) return -1;
-    if (my < ov.y || my >= ov.y + (int32_t)ov.h) return -1;
-    int32_t rel = my - ov.y - (int32_t)GUI_TB_OV_PAD;
-    if (rel < 0) return -1;
-    unsigned r = (unsigned)(rel / (int32_t)ov.row_h);
-    int entry = gui_tb_overflow_row_entry(&ov, taskbar_more_page, r);
-    if (entry < 0) return -3;
-    gui_tb_layout_t l;
-    gui_tb_layout(fw, (unsigned)n, &l);
-    return taskbar_win_at((int)l.visible + entry);
-}
-
-/* ---- Taskbar rendering ---- */
-
-static void draw_taskbar(void) {
-    if (gui_presentation_active()) return;
-    const gui_theme_t *t = &active_theme;
-    uint32_t fw = gfx_get_width();
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = t->taskbar_h;
-    uint32_t tb_y = fh - tb_h;
-
-    /* Background. */
-    gfx_fill_rect(0, tb_y, fw, tb_h, t->taskbar_bg);
-    /* Top border line. */
-    gfx_draw_line(0, tb_y, fw, tb_y, t->taskbar_border);
-
-    /* Start button. */
-    uint32_t start_w = GUI_START_BUTTON_W;
-    gfx_fill_rect(4, tb_y + 4, start_w, tb_h - 8, t->start_btn_bg);
-    gfx_draw_rect(4, tb_y + 4, start_w, tb_h - 8,
-                  start_menu_open ? 0x00FFFFFF : 0x00306090);
-    {
-        uint32_t fh = gui_font_h();
-        uint32_t ty = tb_y + (tb_h > fh ? (tb_h - fh) / 2 : 0);
-        gfx_draw_text(12, ty, "AuraLite", t->start_btn_text);
-    }
-
-    /* Start menu dropdown.  This is intentionally part of the taskbar layer,
-     * not a normal window, so input routing has a matching start_menu_hit(). */
-    if (start_menu_open) {
-        int32_t menu_x = 0, menu_y = 0;
-        uint32_t menu_w = 0, menu_h = 0;
-        if (start_menu_rect(&menu_x, &menu_y, &menu_w, &menu_h)) {
-            gfx_fill_rect((uint32_t)menu_x, (uint32_t)menu_y, menu_w, menu_h, 0x00282838);
-            gfx_draw_rect((uint32_t)menu_x, (uint32_t)menu_y, menu_w, menu_h, 0x0060A0E0);
-            gfx_draw_text((uint32_t)menu_x + 12, (uint32_t)menu_y + 10, "AuraLite", t->taskbar_text);
-            gfx_draw_line((uint32_t)menu_x + 8, (uint32_t)menu_y + 22,
-                          (uint32_t)menu_x + menu_w - 8, (uint32_t)menu_y + 22, 0x00405060);
-
-            /* Rows come from gui_menu_rows() -- the same list start_menu_hit()
-             * walks, so a label cannot drift from the row it launches. */
-            gui_menu_row_t rows[GUI_MENU_MAX_ROWS];
-            int nrows = gui_menu_rows(rows, GUI_MENU_MAX_ROWS);
-            for (int r = 0; r < nrows; r++) {
-                uint32_t ay = (uint32_t)menu_y + GUI_START_MENU_ITEM_Y +
-                              (uint32_t)r * GUI_START_MENU_ITEM_H;
-                if (ay + 16 > tb_y) break;
-                if (rows[r].app < 0) {
-                    gfx_draw_text((uint32_t)menu_x + 8, ay, rows[r].title, 0x0070B0D8);
-                    gfx_draw_line((uint32_t)menu_x + 8, ay + 15,
-                                  (uint32_t)menu_x + menu_w - 8, ay + 15, 0x00384858);
-                } else {
-                    gfx_draw_text((uint32_t)menu_x + 16, ay, rows[r].title, t->taskbar_text);
-                }
-            }
-        }
-    }
-
-    /* Window list -- every rect comes from gui_tb_layout(), the same call the
-     * hit test makes, so a button is clickable exactly where it is drawn and
-     * no open window can be left without a reachable button. */
-    int nwin = taskbar_win_count();
-    gui_tb_layout_t tl;
-    gui_tb_layout(fw, (unsigned)nwin, &tl);
-    uint32_t btn_h = tb_h - 8;
-    uint32_t title_cols = (tl.btn_w > 12u) ? ((tl.btn_w - 12u) / 8u) : 0u;   /* 8 px cell */
-    if (title_cols > 19u) title_cols = 19u;
-    for (unsigned slot = 0; slot < tl.visible; slot++) {
-        int i = taskbar_win_at((int)slot);
-        if (i < 0) break;
-        uint32_t bx = 0, btn_w = 0;
-        if (!gui_tb_button_rect(fw, (unsigned)nwin, slot, &bx, &btn_w)) break;
-        uint32_t col;
-        if (i == focused)        col = windows[i].focused ? t->title_active : t->title_inactive;
-        else if (windows[i].minimized) col = 0x00202830;
-        else                     col = 0x00303840;
-        gfx_fill_rect(bx, tb_y + 4, btn_w, btn_h, col);
-        gfx_draw_rect(bx, tb_y + 4, btn_w, btn_h, 0x00606878);
-        /* Truncate the title to the button that actually exists. */
-        char title_short[20];
-        uint32_t n = 0;
-        while (n < title_cols && windows[i].title[n]) { title_short[n] = windows[i].title[n]; n++; }
-        title_short[n] = 0;
-        gfx_draw_text(bx + 6, tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0),
-                      title_short, t->taskbar_text);
-    }
-    /* "»": every window that did not get a button is one click away. */
-    if (tl.more_w != 0u) {
-        gfx_fill_rect(tl.more_x, tb_y + 4, tl.more_w, btn_h,
-                      taskbar_more_open ? 0x00405060 : 0x00303840);
-        gfx_draw_rect(tl.more_x, tb_y + 4, tl.more_w, btn_h, 0x00606878);
-        uint32_t ty = tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0);
-        gfx_draw_text(tl.more_x + (tl.more_w > 12u ? (tl.more_w - 8u) / 2u : 2u), ty,
-                      "\xAF", t->taskbar_text);
-    }
-
-    /* System tray area (right side). */
-    uint32_t tray_x = fw - 90;
-    /* Clock. */
-    uint64_t ticks = timer_get_ticks();
-    uint32_t hz = timer_get_frequency();
-    if (hz == 0) hz = 100;
-    uint64_t elapsed_ticks = (ticks >= gui_clock_base_ticks) ?
-        (ticks - gui_clock_base_ticks) : ticks;
-    uint64_t s = elapsed_ticks / hz;
-    uint32_t mm = (uint32_t)((s / 60) % 60);
-    uint32_t hh = (uint32_t)((s / 3600) % 24);
-    uint32_t ss = (uint32_t)(s % 60);
-    char clk[16];
-    int p = 0;
-    clk[p++] = '0' + (hh / 10) % 10; clk[p++] = '0' + hh % 10;
-    clk[p++] = ':'; clk[p++] = '0' + (mm / 10) % 10; clk[p++] = '0' + mm % 10;
-    clk[p++] = ':'; clk[p++] = '0' + (ss / 10) % 10; clk[p++] = '0' + ss % 10;
-    clk[p] = 0;
-    gfx_draw_text(tray_x, tb_y + (tb_h > gui_font_h() ? (tb_h - gui_font_h()) / 2 : 0),
-                  clk, t->taskbar_text);
-
-    /* Overflow list last: it overlaps the windows above the taskbar. */
-    draw_taskbar_overflow(fw, fh, tb_h);
-}
-
-/* ---- Notifications rendering ---- */
-
-static void draw_notifications(void) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t fw = gfx_get_width();
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = t->taskbar_h;
-    uint32_t hz = timer_get_frequency();
-    if (hz == 0) hz = 100;
-
-    int idx = 0;
-    for (int i = 0; i < GUI_MAX_NOTIFICATIONS; i++) {
-        if (!notifications[i].in_use) continue;
-        uint32_t elapsed = ((uint32_t)timer_get_ticks() - notifications[i].start_tick) * 1000 / hz;
-        if (elapsed >= notifications[i].duration_ms) {
-            notifications[i].in_use = 0;
-            continue;
-        }
-        uint32_t nw = 300, nh = 40;
-        uint32_t nx = fw - nw - 8;
-        uint32_t ny = fh - tb_h - nh - 8 - (uint32_t)idx * (nh + 6);
-
-        /* Background. */
-        gfx_fill_rect(nx, ny, nw, nh, t->notif_bg);
-        gfx_draw_rect(nx, ny, nw, nh, t->notif_border);
-        /* Colored accent bar on left. */
-        gfx_fill_rect(nx, ny, 4, nh, notifications[i].color);
-        /* Text. */
-        gfx_draw_text(nx + 10, ny + (nh > gui_font_h() ? (nh - gui_font_h()) / 2 : 0),
-                      notifications[i].text, t->notif_text);
-        idx++;
-    }
-}
-
 /* ---- Full compositor render ---- */
 
 /* Z-order insertion sort for visible-window arrays.
@@ -3131,7 +2638,7 @@ static void compositor_render_dirty(int have_cursor, int cursor_x, int cursor_y)
     gfx_clip_set(ux, uy, uw, uh);
 
     draw_desktop();
-    draw_icons();
+    shell_draw_icons();
 
     /* Z-sorted index of visible windows (same logic as compositor_render). */
     int order[GUI_MAX_WINDOWS], n = 0;
@@ -3174,11 +2681,7 @@ static void compositor_render_dirty(int have_cursor, int cursor_x, int cursor_y)
     /* Restore the union clip for the taskbar / notifications that follow. */
     gfx_clip_set(ux, uy, uw, uh);
 
-    if (!gui_presentation_active()) {
-        draw_snap_preview();
-        draw_taskbar();
-        draw_notifications();
-    }
+    if (!gui_presentation_active()) { draw_snap_preview(); shell_draw_taskbar(); shell_draw_notifications(); }
 
     /* Draw the cursor as the final compositor layer.  Its current position
      * is inside the damage generated from the same mouse snapshot used here. */
@@ -3203,7 +2706,7 @@ static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
     draw_desktop();
 
     /* Draw desktop icons. */
-    draw_icons();
+    shell_draw_icons();
 
     /* Build z-sorted index of visible windows. */
     int order[GUI_MAX_WINDOWS], n = 0;
@@ -3240,11 +2743,7 @@ static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
     }
 
     /* Desktop chrome yields completely to a presentation surface. */
-    if (!gui_presentation_active()) {
-        draw_snap_preview();
-        draw_taskbar();
-        draw_notifications();
-    }
+    if (!gui_presentation_active()) { draw_snap_preview(); shell_draw_taskbar(); shell_draw_notifications(); }
 
     /* Cursor is composited last and remains in the back buffer. */
     cursor_draw_and_flip_full(have_cursor, cursor_x, cursor_y);
@@ -3433,46 +2932,6 @@ int gui_take_file_drop(int destination_wid, uint64_t destination_pid,
     return 0;
 }
 
-/* ---- Desktop icon hit-test ---- */
-static int hit_icon(int32_t mx, int32_t my) {
-    uint32_t isz = active_theme.icon_size;
-    for (int i = 0; i < GUI_MAX_ICONS; i++) {
-        if (!icons[i].in_use) continue;
-        if (mx >= icons[i].x && mx < icons[i].x + (int32_t)isz &&
-            my >= icons[i].y && my < icons[i].y + (int32_t)isz + 16) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-/* ---- Taskbar hit-test ---- */
-static int taskbar_hit(int32_t mx, int32_t my) {
-    if (gui_presentation_active()) return -1;
-    uint32_t fh = gfx_get_height();
-    uint32_t tb_h = active_theme.taskbar_h;
-    if ((uint32_t)my < fh - tb_h) return -1;
-
-    /* Start button. */
-    if ((uint32_t)mx >= 4 && (uint32_t)mx < 4 + GUI_START_BUTTON_W &&
-        (uint32_t)my >= fh - tb_h + 4) return -2;
-
-    /* Window list: the same gui_tb_layout() the renderer uses, so a button is
-     * hit exactly where it was drawn.  Returns -3 for the "»" button. */
-    uint32_t fw = gfx_get_width();
-    int nwin = taskbar_win_count();
-    gui_tb_layout_t tl;
-    gui_tb_layout(fw, (unsigned)nwin, &tl);
-    for (unsigned slot = 0; slot < tl.visible; slot++) {
-        uint32_t bx = 0, btn_w = 0;
-        if (!gui_tb_button_rect(fw, (unsigned)nwin, slot, &bx, &btn_w)) break;
-        if ((uint32_t)mx >= bx && (uint32_t)mx < bx + btn_w) return taskbar_win_at((int)slot);
-    }
-    if (tl.more_w != 0u &&
-        (uint32_t)mx >= tl.more_x && (uint32_t)mx < tl.more_x + tl.more_w) return -3;
-    return -1;
-}
-
 /* ===================================================================
  * Input → event routing
  * =================================================================== */
@@ -3597,117 +3056,22 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
     /* Start menu is not a normal window.  Keep it open while the cursor moves
      * from the Start button into the menu; only a left-click outside closes it. */
-    if (start_menu_open) {
-        int sm_hit = start_menu_hit(mx, my);
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            if (sm_hit >= 0) {
-                gui_launch_app(&gui_apps[sm_hit]);
-                start_menu_open = 0;
-                full_dirty = 1;
-                return;
-            }
-            if (sm_hit == -2) {
-                /* Header/empty menu area: consume click but keep menu open. */
-                return;
-            }
-            if (!(wid < 0 && taskbar_hit(mx, my) == -2)) {
-                start_menu_open = 0;
-                full_dirty = 1;
-                return;
-            }
-        } else if (start_menu_contains(mx, my)) {
-            gui_set_cursor(GUI_CURSOR_ARROW);
-            return;
-        }
+    if (shell_handle_start_menu_click(mx, my, wid,
+            (ev->pressed & MOUSE_BTN_LEFT) != 0)) {
+        return;
     }
 
     /* OF0: the taskbar overflow list, when open, is modal-ish: it sits above
      * the taskbar and swallows clicks inside itself. */
-    if (taskbar_more_open) {
-        int om = taskbar_overflow_hit(mx, my);
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            if (om >= 0) {
-                if (windows[om].minimized) gui_restore_window(om);
-                else                       gui_focus_window(om);
-                taskbar_more_open = 0;
-                full_dirty = 1;
-                return;
-            }
-            if (om == -3) {
-                unsigned n = taskbar_win_count();
-                gui_tb_overflow_t ov;
-                gui_tb_overflow_geometry(gfx_get_width(), gfx_get_height(),
-                                         active_theme.taskbar_h, n, &ov);
-                taskbar_more_page = gui_tb_overflow_next_page(&ov, taskbar_more_page);
-                full_dirty = 1;
-                return;
-            }
-            /* Click elsewhere: close the list and let the click through --
-             * except on the "»" button itself, where closing IS the effect.
-             * Falling through there toggled it straight back open, so the
-             * list could not be dismissed with the button that opened it. */
-            taskbar_more_open = 0;
-            full_dirty = 1;
-            if (taskbar_hit(mx, my) == -3) return;
-        } else if (om != -1) {
-            gui_set_cursor(GUI_CURSOR_ARROW);
-            return;
-        }
+    if (shell_handle_overflow_click(mx, my,
+            (ev->pressed & MOUSE_BTN_LEFT) != 0)) {
+        return;
     }
 
     if (wid < 0) {
-        /* Check taskbar. */
-        int tb = taskbar_hit(mx, my);
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            if (tb == -2) {
-                /* Start button. */
-                start_menu_open = !start_menu_open;
-                taskbar_more_open = 0;
-                full_dirty = 1;
-                gui_set_cursor(GUI_CURSOR_ARROW);
-                last_hover_wid = -1;
-                return;
-            }
-            if (tb == -3) {
-                /* "»": open the list of windows with no button of their own. */
-                taskbar_more_open = !taskbar_more_open;
-                taskbar_more_page = 0;
-                start_menu_open = 0;
-                full_dirty = 1;
-                return;
-            }
-            if (tb >= 0) {
-                if (windows[tb].minimized) gui_restore_window(tb);
-                else if (focused == tb)    gui_minimize_window(tb);
-                else                       gui_focus_window(tb);
-                full_dirty = 1;
-            }
-        }
-        /* Check desktop icons. */
-        if (ev->pressed & MOUSE_BTN_LEFT) {
-            int ic = hit_icon(mx, my);
-            if (ic >= 0) {
-                icon_selected = ic;
-                full_dirty = 1;
-            } else {
-                icon_selected = -1;
-            }
-        }
-        if (ev->pressed & MOUSE_BTN_LEFT && icon_selected >= 0) {
-            int ic = hit_icon(mx, my);
-            if (ic >= 0 && ic == icon_selected) {
-                /* Double-click detection on the same desktop icon. */
-                uint32_t now = (uint32_t)timer_get_ticks();
-                int icon_part = 1000 + ic;
-                if (gui_is_double_click(now, mx, my, -1, icon_part, MOUSE_BTN_LEFT)) {
-                    /* Icon activated. */
-                    kprintf("[gui] icon double-clicked: %s (id=%d)\n", icons[ic].label, icons[ic].icon_id);
-                    gui_launch_app(gui_app_by_icon_id(icons[ic].icon_id));
-                    gui_record_click(0, -999, -999, -999, -1, 0);
-                } else {
-                    gui_record_click(now, mx, my, -1, icon_part, MOUSE_BTN_LEFT);
-                }
-            }
+        int left = (ev->pressed & MOUSE_BTN_LEFT) != 0;
+        if (!shell_handle_taskbar_click(mx, my, left)) {
+            shell_handle_icon_click(mx, my, left);
         }
         gui_set_cursor(GUI_CURSOR_ARROW);
         last_hover_wid = -1;
@@ -4005,15 +3369,7 @@ void gui_compositor_tick(void) {
     }
 
     /* Expire notifications. */
-    for (int i = 0; i < GUI_MAX_NOTIFICATIONS; i++) {
-        if (notifications[i].in_use) {
-            uint32_t elapsed = ((uint32_t)timer_get_ticks() - notifications[i].start_tick) * 1000 / hz;
-            if (elapsed >= notifications[i].duration_ms) {
-                notifications[i].in_use = 0;
-                full_dirty = 1;
-            }
-        }
-    }
+    shell_expire_notifications();
 
     /* Branch: full redraw, partial dirty-redraw, or idle frame.
      * NOTE: dirty_count must NOT be cleared here for the partial-redraw path;
