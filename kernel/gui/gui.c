@@ -238,9 +238,20 @@ static gui_cursor_t cursor = GUI_CURSOR_ARROW;
 static int last_drawn_mx = -1, last_drawn_my = -1;
 static int last_drawn_valid = 0;
 
+/* Rust dirty-rect tracker (kernel/gui/sdf/lib.rs).  Rects are kept disjoint
+ * and rendered individually, so a diagonal cursor move no longer damages
+ * the whole bounding box. */
+typedef struct {
+    int32_t x, y;
+    uint32_t w, h;
+} gui_dirty_rect_t;
+
+extern void   gui_dirty_reset(void);
+extern int    gui_dirty_add(int32_t x, int32_t y, uint32_t w, uint32_t h);
+extern size_t gui_dirty_snapshot(gui_dirty_rect_t *out, size_t max);
+extern int gui_dirty_is_empty(void);
+
 /* Dirty-rect tracking. */
-static gui_rect_t dirty_rects[GUI_MAX_DIRTY_RECTS];
-static int dirty_count = 0;
 static volatile int full_dirty = 1;  /* start with a full redraw */
 
 /* OPT_PLAN.md O4: the compositor sleeps between events instead of
@@ -706,16 +717,11 @@ static int32_t content_y(const gui_win_t *w) {
 void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     if (w == 0 || h == 0) return;
     if (full_dirty) return;
-    if (dirty_count >= GUI_MAX_DIRTY_RECTS) {
+    if (gui_dirty_add(x, y, w, h) < 0) {
+        /* Overflow: Rust dropped the list.  Promote to a full redraw. */
         full_dirty = 1;
-        dirty_count = 0;
-        return;
+        gui_dirty_reset();
     }
-    dirty_rects[dirty_count].x = x;
-    dirty_rects[dirty_count].y = y;
-    dirty_rects[dirty_count].w = w;
-    dirty_rects[dirty_count].h = h;
-    dirty_count++;
 }
 
 /* Damage the complete cursor footprint.  The same rectangle is used for
@@ -767,7 +773,7 @@ void gui_init(void) {
     gui_clock_base_ticks = timer_get_ticks();
     gui_clock_last_second = (uint64_t)-1;
     full_dirty = 1;
-    dirty_count = 0;
+    gui_dirty_reset();
 
     gui_shell_init();
 }
@@ -1505,7 +1511,10 @@ int gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h) {
     return 0;
 }
 
-void gui_request_redraw(void) { full_dirty = 1; }
+void gui_request_redraw(void) {
+    full_dirty = 1;
+    gui_dirty_reset();
+}
 
 void gui_set_cursor(gui_cursor_t c) {
     if (cursor == c) return;
@@ -2367,20 +2376,25 @@ static void draw_cursor(int mx, int my) {
     switch (cursor) {
         case GUI_CURSOR_ARROW:
         default: {
-            /* Refined arrow cursor. */
+            /* Classic 11x16 arrow.  Each row is [black | white... | black]; the
+            * tail narrows at rows 11..15 to leave the notch.  White cannot leak
+            * outside the outline because the fill is computed from the row
+            * width, not from a fixed triangle. */
+            static const uint8_t arrow_w[16] = {
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 6, 5, 4, 3, 2
+            };
             for (int i = 0; i < 16; i++) {
-                gfx_fill_rect((uint32_t)mx, (uint32_t)(my + i),
-                              (uint32_t)(i / 2 + 1), 1, 0x00FFFFFF);
+                int w = arrow_w[i];
+                if (w > 2) {
+                    gfx_fill_rect((uint32_t)(mx + 1), (uint32_t)(my + i),
+                                (uint32_t)(w - 2), 1, 0x00FFFFFF);
+                }
+                gfx_fill_rect((uint32_t)mx, (uint32_t)(my + i), 1, 1, 0x00000000);
+                if (w > 1) {
+                    gfx_fill_rect((uint32_t)(mx + w - 1), (uint32_t)(my + i),
+                                1, 1, 0x00000000);
+                }
             }
-            /* Black outline. */
-            gfx_draw_line((uint32_t)mx, (uint32_t)my,
-                          (uint32_t)mx, (uint32_t)(my + 15), 0x00000000);
-            gfx_draw_line((uint32_t)mx, (uint32_t)(my + 15),
-                          (uint32_t)(mx + 7), (uint32_t)(my + 11), 0x00000000);
-            gfx_draw_line((uint32_t)mx, (uint32_t)my,
-                          (uint32_t)(mx + 11), (uint32_t)(my + 11), 0x00000000);
-            gfx_draw_line((uint32_t)(mx + 7), (uint32_t)(my + 11),
-                          (uint32_t)(mx + 5), (uint32_t)(my + 15), 0x00000000);
             break;
         }
         case GUI_CURSOR_IBEAM:
@@ -2590,116 +2604,80 @@ static void blit_window_tree(int idx,
     blit_children(idx, cl, ct, cr, cb);
 }
 
-/*
- * Compute the bounding-box union of all dirty rects.
- * Writes (ox,oy,ow,oh) — the minimal rect covering every dirty entry.
- * If dirty_count == 0, sets ow=oh=0.
- */
-static void compute_dirty_union(int32_t *ox, int32_t *oy,
-                                uint32_t *ow, uint32_t *oh) {
-    int32_t x0 = 0x7FFFFFFF, y0 = 0x7FFFFFFF;
-    int32_t x1 = -0x7FFFFFFF, y1 = -0x7FFFFFFF;
-    for (int i = 0; i < dirty_count; i++) {
-        gui_rect_t *r = &dirty_rects[i];
-        if (r->x < x0) x0 = r->x;
-        if (r->y < y0) y0 = r->y;
-        int32_t rx1 = r->x + (int32_t)r->w;
-        int32_t ry1 = r->y + (int32_t)r->h;
-        if (rx1 > x1) x1 = rx1;
-        if (ry1 > y1) y1 = ry1;
-    }
-    /* Clamp to screen. */
-    uint32_t fw = gfx_get_width(), fh = gfx_get_height();
-    if (x0 < 0) x0 = 0;
-    if (y0 < 0) y0 = 0;
-    if (x1 > (int32_t)fw) x1 = (int32_t)fw;
-    if (y1 > (int32_t)fh) y1 = (int32_t)fh;
-    *ox = x0; *oy = y0;
-    *ow = (x0 < x1) ? (uint32_t)(x1 - x0) : 0;
-    *oh = (y0 < y1) ? (uint32_t)(y1 - y0) : 0;
-}
+/* Per-rect partial redraw.  Each rect is clipped, redrawn, and flipped on
+ * its own — a small cursor-adjacent update and a far-away window update
+ * cost the sum of their areas, not the bounding box of both. */
+static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
+                                    int have_cursor, int cursor_x, int cursor_y) {
+    int32_t sw = (int32_t)gfx_get_width();
+    int32_t sh = (int32_t)gfx_get_height();
+    uint64_t total_px = 0;
 
-/*
- * Partial redraw: rebuild only the dirty bounding box in draw order, then
- * present that rectangle.  The cursor is redrawn as the final overlay layer.
- */
-static void compositor_render_dirty(int have_cursor, int cursor_x, int cursor_y) {
-    /* OPT_PLAN.md O4: the union bounds the WORK now, not just the flip.
-     * Compute it up front, arm the gfx clip, and let every primitive
-     * refuse pixels outside it.  (BUG-32 ordering still holds: nothing
-     * has cleared dirty_count yet.) */
-    int32_t ux, uy;
-    uint32_t uw, uh;
-    compute_dirty_union(&ux, &uy, &uw, &uh);
-    if (uw == 0 || uh == 0) {
-        dirty_count = 0;
-        return;
-    }
-    gfx_clip_set(ux, uy, uw, uh);
+    for (size_t ri = 0; ri < n; ri++) {
+        int32_t x0 = rects[ri].x;
+        int32_t y0 = rects[ri].y;
+        int32_t x1 = rects[ri].x + (int32_t)rects[ri].w;
+        int32_t y1 = rects[ri].y + (int32_t)rects[ri].h;
+        if (x0 < 0) x0 = 0;
+        if (y0 < 0) y0 = 0;
+        if (x1 > sw) x1 = sw;
+        if (y1 > sh) y1 = sh;
+        if (x0 >= x1 || y0 >= y1) continue;
+        uint32_t rw = (uint32_t)(x1 - x0);
+        uint32_t rh = (uint32_t)(y1 - y0);
 
-    draw_desktop();
-    shell_draw_icons();
+        gfx_clip_set(x0, y0, rw, rh);
+        draw_desktop();
+        shell_draw_icons();
 
-    /* Z-sorted index of visible windows (same logic as compositor_render). */
-    int order[GUI_MAX_WINDOWS], n = 0;
-    int normal[GUI_MAX_WINDOWS], nn = 0;
-    int atop[GUI_MAX_WINDOWS], na = 0;
-    for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        /* CW-1: only TOP-LEVEL windows enter the z-order; children are drawn
-         * recursively as part of their parent's subtree. */
-        if (windows[i].in_use && windows[i].visible && !windows[i].minimized &&
-            windows[i].parent < 0) {
-            if (windows[i].flags & GUI_WIN_ALWAYS_TOP) atop[na++] = i;
-            else normal[nn++] = i;
+        int order[GUI_MAX_WINDOWS], n_ord = 0;
+        int normal[GUI_MAX_WINDOWS], nn = 0;
+        int atop[GUI_MAX_WINDOWS], na = 0;
+        for (int k = 0; k < GUI_MAX_WINDOWS; k++) {
+            if (windows[k].in_use && windows[k].visible && !windows[k].minimized &&
+                windows[k].parent < 0) {
+                if (windows[k].flags & GUI_WIN_ALWAYS_TOP) atop[na++] = k;
+                else normal[nn++] = k;
+            }
         }
-    }
-    SORT_ARR(normal, nn);
-    SORT_ARR(atop, na);
-    n = 0;
-    for (int i = 0; i < nn; i++) order[n++] = normal[i];
-    for (int i = 0; i < na; i++) order[n++] = atop[i];
+        SORT_ARR(normal, nn);
+        SORT_ARR(atop, na);
+        for (int k = 0; k < nn; k++) order[n_ord++] = normal[k];
+        for (int k = 0; k < na; k++) order[n_ord++] = atop[k];
 
-    for (int i = 0; i < n; i++) {
-        /* O4: whole-window fast reject — a window (shadow included)
-         * that misses the union cannot contribute a pixel; skip it
-         * before its bulk blit calls run. */
-        const gui_win_t *w = &windows[order[i]];
-        int off = active_theme.shadow_offset;
-        int32_t wx0 = w->x - 1, wy0 = w->y - 1;
-        int32_t wx1 = w->x + (int32_t)w->w + off + 1;
-        int32_t wy1 = w->y + (int32_t)w->h + off + 1;
-        if (wx1 <= ux || wy1 <= uy ||
-            wx0 >= ux + (int32_t)uw || wy0 >= uy + (int32_t)uh) {
-            continue;
+        for (int k = 0; k < n_ord; k++) {
+            const gui_win_t *w = &windows[order[k]];
+            int off = active_theme.shadow_offset;
+            int32_t wx0 = w->x - 1, wy0 = w->y - 1;
+            int32_t wx1 = w->x + (int32_t)w->w + off + 1;
+            int32_t wy1 = w->y + (int32_t)w->h + off + 1;
+            if (wx1 <= x0 || wy1 <= y0 || wx0 >= x1 || wy0 >= y1) continue;
+            gfx_clip_set(x0, y0, rw, rh);
+            blit_window_tree(order[k], x0, y0, x1, y1);
         }
-        /* Re-arm the dirty-union clip: a previous window's subtree left a
-         * narrower child clip armed, which must not leak into this window. */
-        gfx_clip_set(ux, uy, uw, uh);
-        blit_window_tree(order[i], ux, uy,
-                         ux + (int32_t)uw, uy + (int32_t)uh);
+        gfx_clip_set(x0, y0, rw, rh);
+
+        if (!gui_presentation_active()) {
+            draw_snap_preview();
+            shell_draw_taskbar();
+            shell_draw_notifications();
+        }
+
+        if (have_cursor &&
+            cursor_intersects_rect(cursor_x, cursor_y, x0, y0, rw, rh)) {
+            draw_cursor(cursor_x, cursor_y);
+        }
+
+        gfx_flip_rect(x0, y0, rw, rh);
+        gfx_clip_clear();
+        total_px += (uint64_t)rw * rh;
     }
-    /* Restore the union clip for the taskbar / notifications that follow. */
-    gfx_clip_set(ux, uy, uw, uh);
 
-    if (!gui_presentation_active()) { draw_snap_preview(); shell_draw_taskbar(); shell_draw_notifications(); }
+    cursor_commit_presented(have_cursor, cursor_x, cursor_y);
 
-    /* Draw the cursor as the final compositor layer.  Its current position
-     * is inside the damage generated from the same mouse snapshot used here. */
-    dirty_count = 0;
-    cursor_draw_and_flip_rect(
-        ux, uy, uw, uh, have_cursor, cursor_x, cursor_y
-    );
-    gfx_clip_clear();
-
-    /* OPT_PLAN.md O0/O4: composited pixels are now the REAL post-clip
-     * store count from the gfx layer (overdraw included), not a
-     * full-screen approximation — O4's whole point, measured. */
-    {
-        uint64_t fw = uw, fh = uh;
-        perfstat_add(PERF_COMPOSITOR_FRAMES_PARTIAL, 1);
-        perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
-        perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, fw * fh);
-    }
+    perfstat_add(PERF_COMPOSITOR_FRAMES_PARTIAL, 1);
+    perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
+    perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, total_px);
 }
 
 static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
@@ -3371,29 +3349,26 @@ void gui_compositor_tick(void) {
     /* Expire notifications. */
     shell_expire_notifications();
 
-    /* Branch: full redraw, partial dirty-redraw, or idle frame.
-     * NOTE: dirty_count must NOT be cleared here for the partial-redraw path;
-     * compositor_render_dirty() reads it (via compute_dirty_union()) to know
-     * which rectangle to flip to the visible framebuffer, and clears it
-     * itself once that's done (BUG-32 fix). */
+    /* The dirty list lives in Rust (gui_dirty_snapshot).  It is drained by
+    * gui_dirty_snapshot() before the render, so a concurrent gui_mark_dirty()
+    * from a syscall thread lands in the NEXT tick, not in this frame. */
     if (full_dirty) {
         full_dirty = 0;
-        dirty_count = 0;
+        gui_dirty_reset();
         compositor_render(have_cursor, cursor_x, cursor_y);
-    } else if (dirty_count > 0) {
-        compositor_render_dirty(have_cursor, cursor_x, cursor_y);
     } else {
-        /* Idle frame — no work needed, zero bandwidth consumed. */
+        gui_dirty_rect_t rects[GUI_MAX_DIRTY_RECTS];
+        size_t n = gui_dirty_snapshot(rects, GUI_MAX_DIRTY_RECTS);
+        if (n > 0)
+            compositor_render_dirty(rects, n, have_cursor, cursor_x, cursor_y);
     }
 }
 
 void gui_render_now(void) {
-    int cursor_x = -1;
-    int cursor_y = -1;
+    int cursor_x = -1, cursor_y = -1;
     int have_cursor = (mouse_get_position(&cursor_x, &cursor_y) == 1);
-
     full_dirty = 0;
-    dirty_count = 0;
+    gui_dirty_reset();
     compositor_render(have_cursor, cursor_x, cursor_y);
 }
 
@@ -3437,7 +3412,7 @@ void gui_compositor_thread(void *arg) {
             gui_compositor_tick();
             timer_sleep_ms(10);
         } while (__atomic_load_n(&gui_pending, __ATOMIC_ACQUIRE) ||
-                 full_dirty || dirty_count > 0);
+            full_dirty || !gui_dirty_is_empty());
     }
 }
 
