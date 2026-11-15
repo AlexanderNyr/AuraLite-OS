@@ -145,15 +145,31 @@ def claims():
     # --- R8: the Rust rows (when the plan says the phase landed) --------
     if re.search(r"^### R8[^\n]*✅ COMPLETE", plan, re.M):
         makefl = read("Makefile")
-        common = read("lib", "rsbr", "common.rs")
+        # The RSBR modularisation (PR #4 arch/, PR #6 time/) split the single
+        # lib/rsbr/common.rs into common/mod.rs + arch/<isa>.rs + time/, and
+        # REPLACED rustes' per-ISA cycle counter (rdtsc / rdtime /
+        # cntvct_el0) with one portable rsbr::time::clock_gettime call.
+        # Reading the old paths made this claim permanently false for a
+        # reason that had nothing to do with the property it guards, so it
+        # now follows the current layout and asserts the same thing:
+        # three ISAs behind ONE bridge, and no per-ISA assembly left in the
+        # application.
+        arch_mod = read("lib", "rsbr", "arch", "mod.rs")
+        arch_x86 = read("lib", "rsbr", "arch", "x86_64.rs")
+        arch_rv = read("lib", "rsbr", "arch", "riscv64.rs")
+        arch_a64 = read("lib", "rsbr", "arch", "aarch64.rs")
         rustes = read("userspace", "apps", "rustes", "rustes.rs")
         checks.append((
-            "R8: one bridge, three ISAs — common.rs carries all three "
-            "cfg'd trap instructions, rustes.rs all three counters",
-            all(k in common for k in
+            "R8: one bridge, three ISAs — rsbr's arch module carries all "
+            "three cfg'd trap instructions and rustes.rs holds no per-ISA "
+            "assembly",
+            all(k in arch_mod for k in
                 ('target_arch = "x86_64"', 'target_arch = "riscv64"',
-                 'target_arch = "aarch64"', '"ecall"', '"svc #0"')) and
-            all(k in rustes for k in ("rdtsc", "rdtime", "cntvct_el0"))))
+                 'target_arch = "aarch64"')) and
+            all(k in arch_rv for k in ('"ecall"',)) and
+            all(k in arch_a64 for k in ('"svc #0"',)) and
+            all(k in arch_x86 for k in ('"syscall"',)) and
+            "target_arch" not in rustes))
         checks.append((
             "R8: both tenant editions build through the Makefile and "
             "ship in the initrd copy list",

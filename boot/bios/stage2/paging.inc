@@ -26,8 +26,8 @@
 ;
 ;   0x00010000  -- boot_info_t (already there)
 ;   0x00011000  -- Stage 2 scratch (BPB / FAT / dir sector)
-;   0x01000000  PML4
-;   0x01001000  PDPT0    (identity map)
+;   0x01700000  PML4
+;   0x01701000  PDPT0    (identity map)
 ;   0x01002000  PDPT256  (HHDM base 0xffff800000000000)
 ;   0x01003000  PDPT511  (kernel higher half 0xFFFFFFFF80000000)
 ;   0x01004000  PD0      (2 MiB large pages for physical 0..1 GiB)
@@ -40,7 +40,7 @@
 ; (~2 MiB from 0x100000) with a fat safety margin.
 ; =============================================================================
 
-PT_BASE        equ 0x01000000
+PT_BASE        equ 0x01700000
 PML4_ADDR      equ PT_BASE + 0x0000
 PDPT0_ADDR     equ PT_BASE + 0x1000
 PDPT256_ADDR   equ PT_BASE + 0x2000
@@ -56,6 +56,12 @@ PT_TOTAL_BYTES equ 9 * 4096
 PTE_P          equ 0x001                    ; present
 PTE_W          equ 0x002                    ; writable
 PTE_PS         equ 0x080                    ; page size (2 MiB / 1 GiB)
+
+; Kernel higher-half window: 16 x 2 MiB = 32 MiB, mirroring the UEFI loader
+; (boot/uefi/efi_paging.c).  The SDF font atlas (kernel/gui/sdf/atlas.bin,
+; ~12 MiB) is include_bytes!'d into .rodata, so the kernel image is now ~17 MiB
+; and the old 3-page (6 MiB) window left .data/.bss/.got unmapped.
+KERNEL_WINDOW_PAGES equ 16
 
 ; ---------------------------------------------------------------------------
 ; build_page_tables -- assemble the three PT hierarchies at PT_BASE.
@@ -189,28 +195,33 @@ build_page_tables:
     dec  ecx
     jnz  .pd3
 
-    ; ---- PD511[0..2]: 3 x 2-MiB pages mapping virt 0xFFFFFFFF80000000
-    ;                   .. +6 MiB to physical 0 .. 6 MiB.  Kernel image
+    ; ---- PD511[0..15]: 16 x 2-MiB pages mapping virt 0xFFFFFFFF80000000
+    ;                   .. +32 MiB to physical 0 .. 32 MiB.  Kernel image
     ;                   sits at phys 0x100000 which is inside the first
-    ;                   2-MiB page.  SELFHOST SH5c: the window was 2 x 2 MiB
-    ;                   (4 MiB) and the clang kernel peaked at 3.96 MiB --
-    ;                   the tcc-built kernel (no -O2, no --gc-sections)
-    ;                   needs 4.27 MiB and faulted its .bss zero-fill on the
-    ;                   unmapped 4-MiB boundary.  6 MiB gives that build
-    ;                   ~1.7 MiB of headroom; the PMM keeps the whole low
-    ;                   40 MiB out of the allocator, so the extra physical
-    ;                   window costs nothing.  The UEFI loader maps the
-    ;                   same window (efi_paging.c) -- keep them in sync.
+    ;                   2-MiB page.  History: the window was 2 x 2 MiB
+    ;                   (4 MiB); SELFHOST SH5c widened it to 3 x 2 MiB
+    ;                   (6 MiB) because the tcc-built kernel needs 4.27 MiB.
+    ;                   The Rust SDF renderer (kernel/gui/sdf/lib.rs)
+    ;                   include_bytes!'s a 12.6 MiB atlas.bin into .rodata,
+    ;                   which took the clang kernel to ~17 MiB and made
+    ;                   .data/.bss/.got fall outside a 6 MiB window -- the
+    ;                   kernel then faulted in _start's .bss zero-fill with
+    ;                   no IDT yet, i.e. a silent triple fault.  32 MiB
+    ;                   mirrors the UEFI loader (efi_paging.c maps the same
+    ;                   16 entries); the PMM keeps the low 56 MiB out of
+    ;                   the allocator, so the wider window costs nothing.
     mov  edi, PD511_ADDR
-    mov  eax, 0x00000000 | (PTE_PS | PTE_P | PTE_W)
+    mov  ebx, 0x00000000                    ; running phys address
+    mov  ecx, KERNEL_WINDOW_PAGES
+.pd511:
+    mov  eax, ebx
+    or   eax, (PTE_PS | PTE_P | PTE_W)
     mov  [fs:edi + 0], eax
     mov  dword [fs:edi + 4], 0
-    mov  eax, 0x00200000 | (PTE_PS | PTE_P | PTE_W)
-    mov  [fs:edi + 8], eax
-    mov  dword [fs:edi + 12], 0
-    mov  eax, 0x00400000 | (PTE_PS | PTE_P | PTE_W)
-    mov  [fs:edi + 16], eax
-    mov  dword [fs:edi + 20], 0
+    add  ebx, 0x00200000
+    add  edi, 8
+    dec  ecx
+    jnz  .pd511
 
     popad
     ret

@@ -966,6 +966,32 @@ objects.  Receipt:
 
 **Deliverable.** The changes above, in the tree (D9: no patch artefact).
 
+**Amended 2026-11-15 (the Rust link line, and a section-size bug).** The
+kernel link is no longer C and ASM only: `build/sdf_font.o` pulls ~30
+members out of `libcore` / `libcompiler_builtins` (`.rlib`), and the
+object count grew 135 -> 161.  Three things had to move with it:
+
+- `test_sh5b_layout.sh` scraped the Makefile's link line for `\.o$` only,
+  so the archives were dropped and ld.lld failed on `__floatunsisf`
+  (this recipe ends in `|| exit 1`, so one stale scrape took the whole
+  `make test-unit` target down).  The scrape now keeps objects and
+  archives apart, and ld.lld runs with `-Map=` so the members it
+  ACTUALLY fetches can be extracted and handed to aulink as plain
+  objects -- aulink has no lazy archive semantics, it takes every member
+  it is given, so the .rlib itself cannot be passed to both sides.
+- aulink's `MAX_SECTIONS` / `MAX_INPUTS` (4096 / 256) overflowed on those
+  members: core's single cgu.0 carries ~1k allocated sections on its
+  own.  Both ceilings were raised, and an input that fails to load is
+  now a hard error instead of a partly-loaded set that crashed later.
+- aulink stopped an output section's SIZE at the last input byte, so a
+  block ending in `. = ALIGN(16);` (kernel.ld's `.bss`, right before
+  `__bss_end`) came out 8 bytes shorter than ld.lld's while the two
+  `__bss_*` symbols already agreed.  The size now tracks the dot.
+
+The gate is still met 1:1 (entry, PHDRs, `.text` address AND size,
+`.data` / `.bss` sizes, `.rodata` address, every key `.text` symbol),
+with the documented `.rodata` / `isr_table` merge delta at 0x20.
+
 ---
 
 ### Phase SH5c — the kernel, compiled by tcc (flag story + measured delta) ✅ LANDED (2026-08-28)

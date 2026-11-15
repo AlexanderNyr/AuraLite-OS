@@ -2,7 +2,7 @@
 # test_sh5b_layout.sh -- SELFHOST_PLAN.md SH5b host gate: aulink kernel.ld
 # layout parity vs ld.lld on the REAL kernel objects.
 #
-# Links the tree's 135 kernel objects with BOTH linkers against the real
+# Links the tree's kernel objects with BOTH linkers against the real
 # kernel.ld and compares the honest, semantic parts of the layout:
 #   - entry point (_start) and PT_LOAD count + flags        (must match 1:1)
 #   - .text address + size                                  (must match 1:1)
@@ -40,11 +40,57 @@ if [ ! -f "$ROOT/build/kernel/kernel.o" ]; then
 fi
 # Use the Makefile's object order (it determines the input-section order,
 # which fixes where _start lands in .text and the section sizes).
-OBJS=$(make -B -n kernel 2>/dev/null | grep 'ld.lld' | grep -- '-T kernel.ld' | tr ' ' '\n' | grep '\.o$' | tr '\n' ' ')
+#
+# Objects and archives are collected separately because the two linkers do
+# not treat an archive the same way (see the aulink invocation below).  The
+# kernel has linked Rust ever since the SDF atlas: the real link line ends
+# with libcore and libcompiler_builtins as .rlib archives, and scraping only
+# `\.o$` dropped them -- ld.lld then failed on __floatunsisf (a
+# compiler_builtins symbol sdf_font.o needs) and, because this file is run
+# with `|| exit 1`, that took the whole test-unit target down with it.
+LINK_INPUTS=$(make -B -n kernel 2>/dev/null | grep 'ld.lld' | grep -- '-T kernel.ld' | tr ' ' '\n' | grep -E '\.(o|rlib|a)$' | tr '\n' ' ')
+OBJS=$(echo "$LINK_INPUTS" | tr ' ' '\n' | grep '\.o$' | tr '\n' ' ')
+LIBS=$(echo "$LINK_INPUTS" | tr ' ' '\n' | grep -E '\.(rlib|a)$' | tr '\n' ' ')
 if [ -z "$OBJS" ]; then echo "SKIP: could not derive kernel object list from Makefile"; exit 0; fi
 
-ld.lld -nostdlib -static -T kernel.ld -z max-page-size=4096 $OBJS -o "$BUILD/lld.elf" 2>"$BUILD/lld.err" || { echo "FAIL: ld.lld could not link"; sed 's/^/    /' "$BUILD/lld.err" | head -5; exit 1; }
-"$BUILD/aulink" -T kernel.ld -o "$BUILD/au.elf" $OBJS 2>"$BUILD/au.err"
+# -Map= is what names the archive members ld.lld actually pulls (below).
+ld.lld -nostdlib -static -T kernel.ld -z max-page-size=4096 -Map="$BUILD/lld.map" $OBJS $LIBS -o "$BUILD/lld.elf" 2>"$BUILD/lld.err" || { echo "FAIL: ld.lld could not link"; sed 's/^/    /' "$BUILD/lld.err" | head -5; exit 1; }
+
+# aulink has no lazy archive semantics: it takes EVERY member it is handed,
+# while ld.lld fetches only the members that resolve an undefined symbol --
+# so a .rlib cannot simply be passed to both.  (libcore is ~200 members;
+# taking them all would change the layout this test is comparing.)  Instead
+# materialise exactly the members ld.lld fetched -- its own map file lists
+# them as `archive(member)` -- and give aulink the same input set as plain
+# objects, in first-appearance (i.e. output-address) order.
+AU_OBJS="$OBJS"
+if [ -n "$LIBS" ]; then
+    if ! command -v ar >/dev/null 2>&1; then
+        echo "SKIP: the kernel links Rust archives and 'ar' is not installed"
+        exit 0
+    fi
+    rm -rf "$BUILD/rs"
+    mkdir -p "$BUILD/rs"
+    grep -oE '[^ ]*\.(rlib|a)\([^)]*\)' "$BUILD/lld.map" 2>/dev/null |
+        awk '!seen[$0]++' > "$BUILD/rs-refs"
+    n=0
+    while IFS= read -r ref; do
+        [ -n "$ref" ] || continue
+        n=$((n + 1))
+        arch=${ref%%(*}
+        member=${ref#*(}
+        member=${member%)}
+        out="$BUILD/rs/$(printf '%03d' "$n")_${member##*/}"
+        if ar p "$arch" "$member" > "$out" 2>/dev/null && [ -s "$out" ]; then
+            AU_OBJS="$AU_OBJS $out"
+        else
+            echo "FAIL: cannot extract '$member' from '$arch'"
+            exit 1
+        fi
+    done < "$BUILD/rs-refs"
+fi
+
+"$BUILD/aulink" -T kernel.ld -o "$BUILD/au.elf" $AU_OBJS 2>"$BUILD/au.err"
 rc=$?
 if [ $rc -ne 0 ]; then echo "FAIL: aulink could not link"; sed 's/^/    /' "$BUILD/au.err" | head -8; exit 1; fi
 

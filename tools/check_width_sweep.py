@@ -59,7 +59,19 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured at the I6 landing commit.  When your change removes casts or
 # migrates includes to arch.h, lower the number in the SAME commit --
 # that is the ratchet clicking, and the whole point.
-BASELINE_UINT64_CASTS = 403   # was 402; W32RUN_PLAN.md WR-4 added 1 in
+BASELINE_UINT64_CASTS = 449   # was 403; the graphics-driver rewrite
+                              # (PR #12, 7fac1bd "feat(graphics):
+                              # modernize graphics driver") added 43 casts
+                              # in drivers/framebuffer/graphics.c (2 -> 45).
+                              # Audited one by one: they are overflow-safe
+                              # SIZE/COUNT widens -- (uint64_t)(h - 1u) *
+                              # stride, (uint64_t)w * h, (uint64_t)(a < 0 ?
+                              # -a : a) -- not addresses, so paddr_t /
+                              # uintptr_t would both be wrong here, and
+                              # not removable: dropping any of them
+                              # reopens a 32-bit overflow.  Pin moves,
+                              # code stays.
+                              # was 402; W32RUN_PLAN.md WR-4 added 1 in
                               # kernel/gui/gui_syscalls.c -- copy_gui_title's
                               # copy bound: a uint64_t loop counter compared
                               # against (uint64_t)(GUI_TITLE_MAX - 1), the

@@ -60,8 +60,13 @@ ASM_COUNT=${#ASM_SRCS[@]}
 # /documents mount point's life cycle.  Same ratchet, same reason: this pin
 # exists so the in-guest build cannot silently compile fewer files than the
 # tree has.
-if [ "$C_COUNT" -ne 150 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 150 / 9)" >&2
+#
+# 150 -> 151 (GUI shell extraction, PR #8): kernel/gui/gui_shell.c -- the
+# start-menu, desktop-icon and shell-launch logic lifted out of gui.c -- is
+# the 151st translation unit.  Found by tools/check_build_hygiene.py, not by
+# a local build: the pin only fires when the self-host closure is staged.
+if [ "$C_COUNT" -ne 151 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 151 / 9)" >&2
     exit 2
 fi
 

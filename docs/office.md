@@ -1,8 +1,8 @@
 # The office suite — what it is, what it is not, and what it costs
 
-Status: **OF0 in progress** (see `docs/plans/OFFICE_PLAN.md` §10). Nothing here
-is a promise about a finished product; it is the contract the rest of the plan
-is written against, stated once so that no later phase has to re-argue it.
+Status: **OF0–OF7 done, OF8 next** (see `docs/plans/OFFICE_PLAN.md` §10). Nothing
+here is a promise about a finished product; it is the contract the rest of the
+plan is written against, stated once so that no later phase has to re-argue it.
 
 ## 1. What this will be
 
@@ -364,7 +364,44 @@ image fitting on the host.  Honest remainder: an image paragraph is a
 correctly *sized and placed box* — the PNG pixel decode (`wv_image.c`) is
 not yet wired into the Writer, and the page view's scroll is VNC-open.
 
-## 7. Where the constraints come from
+## 7. The container (OF7)
+
+Every native save is a ZIP with exactly three parts, in this order:
+
+| part | method | what it is |
+|---|---|---|
+| `mimetype` | stored | physically first, so `file(1)` and a reader can sniff the package without inflating anything |
+| `content.xml` | stored | the document |
+| `styles.xml` | stored | named styles |
+
+Why ZIP at all, when the suite could keep writing plain XML: because OOXML
+(OF8) *is* a ZIP of XML parts. Writing the packaging layer once and pointing
+it at a different part list is the whole reason OF7 exists, and it is why the
+writer is deterministic (fixed timestamps, fixed part order) — a document that
+does not change must produce a byte-identical file, so a save is auditable by
+`cmp`.
+
+The reader is deliberately more permissive than the writer: it sniffs the ZIP
+magic and still accepts the plain XML that OF2–OF6 wrote, so no document
+created before OF7 is orphaned. The XML parser is strict and separate from the
+HTML tokenizer — document XML must fail closed, with depth, attribute and
+input-size caps and no DTD or external entities.
+
+The gates, and where they run:
+
+```bash
+./build/test_ao_zip                                  # 165 checks, 0 fails (host)
+./build/test_ao_xml                                  # 43 checks, 0 fails (host)
+./build/test_ao_doc                                  # 121 checks PASS (host)
+bash tests/integration/cases/test_office_container.sh  # 13/13 (guest, QEMU)
+```
+
+The host ZIP test also emits an archive that Python's `zipfile` is asked to
+verify: `testzip()` returns `None` and `namelist()` is exactly the three parts
+above with `mimetype` stored. An independent reader agreeing with our writer
+is worth more than our writer agreeing with itself.
+
+## 8. Where the constraints come from
 
 Every number above was measured on this tree, not assumed:
 
@@ -373,12 +410,13 @@ Every number above was measured on this tree, not assumed:
   `char` tables — hence the rasteriser and the `uint32_t` tables in §5 rather
   than "use the system font". The key field was already `uint32_t` end to end,
   which is why the `ru` layer needed no ABI change;
-* no ZIP anywhere in the tree, but an inflate implementation exists
-  (`userspace/apps/gbrowser/wv_inflate.c`) — hence OF7's reader-then-writer
-  order;
+* *before OF7* there was no ZIP anywhere in the tree, only an inflate
+  implementation (`userspace/apps/gbrowser/wv_inflate.c`, since moved to
+  `userspace/office/libaodoc/aoinflate.c` and shared) — hence OF7's
+  reader-then-writer order;
 * `SPAWN_MAX_IMAGE` is 16 MiB — the suite's binaries are sized against that.
 
-## 8. Running the gates
+## 9. Running the gates
 
 ```bash
 make test-unit                                        # incl. test_taskbar_layout,
@@ -388,8 +426,22 @@ make test-unit                                        # incl. test_taskbar_layou
 python3 tools/check_start_menu.py --check             # shell invariants
 python3 tools/check_start_menu.py --selftest          # …and that it can fail
 python3 tools/check_plan_tables.py --check            # plan/TODO/ledger agree
+./build/test_ao_zip && ./build/test_ao_xml            # OF7 container (host)
+bash tests/integration/cases/test_office_container.sh # OF7 container (guest)
+bash tests/integration/run_all.sh office              # the whole office group
 /home/user/vnc/drive.sh                              # live pass, screenshots
 ```
+
+One gate is machine-dependent and worth knowing before you trust a red:
+`test_office_sheet_perf.sh` asserts a 50 ms ceiling on the worst frame of a
+200-frame scroll of a 10 000-row sheet. The plan records `avg 4444 us /
+worst 20202 us`; under TCG in a sandbox it measures `avg ~204 000 us /
+worst ~333 000 us`. The same number appears at `411752a`, before PR #12
+rewrote the graphics driver, so it is emulator throughput, not a regression.
+The guest's `clock_gettime` is tick-quantised at 99 Hz (one tick = 10 101 us),
+which is why 20 202 us is exactly two ticks. The ceiling is deliberately not
+loosened: a gate that measures microseconds under TCG should be read as a
+trend, and moving it would hide the cost rather than pay it.
 
 `run aoffice --font-test` in the guest is the text gate: it loads both faces,
 measures «Привет, мир — 2026», draws it in three styles, prints a pixel receipt
