@@ -38,6 +38,8 @@ enum {
     GUI_OP_SET_PARENT,
     /* WR-3: see-through window region. */
     GUI_OP_SET_HOLE,
+    GUI_OP_FRAME_BEGIN,
+    GUI_OP_FRAME_END,
 };
 
 #define SYS_GUI_CALL_NUM    200
@@ -254,6 +256,14 @@ int ag_blit_alpha(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h,
                   const uint32_t *src, uint32_t src_stride) {
     return ag_blit_common(GUI_OP_BLIT_ALPHA, wid, x, y, w, h, src, src_stride);
 }
+
+int ag_window_frame_begin(int wid) {
+    return (int)gui_call(GUI_OP_FRAME_BEGIN, (uint64_t)wid, 0, 0, 0);
+}
+int ag_window_frame_end(int wid) {
+    return (int)gui_call(GUI_OP_FRAME_END, (uint64_t)wid, 0, 0, 0);
+}
+
 int ag_draw_text_centered(int wid, int32_t x, int32_t y, uint32_t w,
                           const char *s, uint32_t color) {
     int32_t tw = (int32_t)(strlen(s) * 8);
@@ -899,6 +909,17 @@ static void render_contextmenu(int wid, ag_widget_t *w) {
 }
 
 void ag_view_render(ag_view_t *v) {
+<<<<<<< Updated upstream
+=======
+    v->dirty = 0;
+
+    /* Frame bracket: while the client paints into the back buffer the
+     * compositor keeps showing the last COMPLETE frame (front), so a
+     * ~100 Hz tick that lands mid-render can never expose a half-drawn
+     * widget set.  Pair with ag_window_frame_end() below. */
+    ag_window_frame_begin(v->wid);
+
+>>>>>>> Stashed changes
     ag_clear(v->wid, v->bg);
     for (int i = 0; i < v->widget_count; i++) {
         ag_widget_t *w = &v->widgets[i];
@@ -918,7 +939,14 @@ void ag_view_render(ag_view_t *v) {
             case AG_W_TREE:        render_tree(v->wid, w);         break;
         }
     }
-    ag_render_now();
+
+    /* Publish the freshly painted back buffer as the new front frame,
+     * then wake the compositor.  ag_window_invalidate() already pokes
+     * the compositor internally (gui_invalidate_window -> gui_poke), so
+     * the old ag_render_now() call is no longer needed here -- keeping
+     * it would only add a second, redundant wake-up per frame. */
+    ag_window_frame_end(v->wid);
+    ag_window_invalidate(v->wid);
 }
 
 /* ===================================================================

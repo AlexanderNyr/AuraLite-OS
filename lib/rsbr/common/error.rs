@@ -17,6 +17,9 @@ pub const EINVAL: i32 = 22;
 pub const EFAULT: i32 = 14;
 pub const ESRCH:  i32 = 3;
 pub const EBADF:  i32 = 9;
+pub const EPERM:  i32 = 1;
+pub const ENOMEM: i32 = 12;
+pub const ENOSYS: i32 = 38;
 
 impl Error {
     /// Returns the positive errno for syscall errors.

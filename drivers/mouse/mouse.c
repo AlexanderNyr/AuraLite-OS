@@ -37,11 +37,11 @@ static volatile uint32_t mouse_event_drops = 0;
 
 static uint8_t  pkt_buf[4];
 static uint8_t  pkt_idx = 0;
-static int      pkt_len = 3;        /* 3 by default, 4 if IntelliMouse */
+static int      pkt_len = 3;
 static int      mouse_ready = 0;
 
 /* Event ring. */
-#define MOUSE_EVT_RING 128
+#define MOUSE_EVT_RING 256    // FIX: 128 -> 256 (headroom at 200 Hz)
 static mouse_event_t mouse_events[MOUSE_EVT_RING];
 static volatile uint32_t evt_head = 0;
 static volatile uint32_t evt_tail = 0;
@@ -109,6 +109,16 @@ static int mouse_set_sample_rate(uint8_t rate) {
 }
 
 static void evt_push(const mouse_event_t *e) {
+    /* FIX (latency): only wake the compositor when the ring was EMPTY.
+     *
+     * At 200 Hz x 4-byte packets the IRQ fires ~800 times/s.  Calling
+     * gui_poke() on every push scheduled the compositor 800 times/s,
+     * each a full context switch, even though it had not drained the
+     * previous batch yet.  That was the second half of the "laggy
+     * mouse" feel.  If the ring is non-empty the compositor is already
+     * runnable (or already draining), so it will pick this event up on
+     * its own; only the first event after a drain needs a poke. */
+    int was_empty = (evt_head == evt_tail);
     uint32_t next = (evt_head + 1) % MOUSE_EVT_RING;
     if (next == evt_tail) {
         mouse_event_drops++;
@@ -116,8 +126,9 @@ static void evt_push(const mouse_event_t *e) {
     }
     mouse_events[evt_head] = *e;
     evt_head = next;
-    /* OPT_PLAN.md O4: every queued mouse event wakes the compositor. */
-    gui_poke();
+    if (was_empty) {
+        gui_poke();
+    }
 }
 
 static void mouse_handler(struct registers *regs) {
@@ -126,10 +137,10 @@ static void mouse_handler(struct registers *regs) {
     if (!(status & PS2_ST_OUT_FULL)) return;
     uint8_t data = inb(KB_DATA);
 
-    /* If the controller tells us this byte did not come from the auxiliary
-     * device, drop it rather than poisoning the packet stream.  Some virtual
-     * controllers do not set AUX_DATA reliably, so only use the bit as a guard
-     * when it is explicitly absent during packet start. */
+    /* First byte of a PS/2 packet always has bit 3 set.  If we are at
+     * packet start and the bit is clear, the byte is not a packet
+     * header -- drop it.  Some virtual controllers do not set AUX_DATA
+     * reliably, so the AUX bit in the status register is not used here. */
     if (pkt_idx == 0 && !(data & 0x08)) {
         mouse_packet_drops++;
         return;
@@ -139,12 +150,23 @@ static void mouse_handler(struct registers *regs) {
     if (pkt_idx < pkt_len) return;
     pkt_idx = 0;
 
+    /* FIX (phantom clicks): a PS/2 packet header always has bit 3 set.
+     * If it is clear here, a byte was lost mid-packet (USB/PS2 race,
+     * ps2_flush_output, an IRQ during init) and the buffer holds the
+     * tail of one packet plus the head of the next.  Parsing it would
+     * fake random button edges in `flags & 0x07`, which is exactly what
+     * made moving the mouse look like a click.  Reject the whole
+     * packet and resynchronise on the next byte. */
+    if (!(pkt_buf[0] & 0x08)) {
+        mouse_packet_drops++;
+        return;
+    }
+
     uint8_t flags = pkt_buf[0];
     int32_t dx = (int32_t)(int8_t)pkt_buf[1];
     int32_t dy = (int32_t)(int8_t)pkt_buf[2];
     int8_t  wheel = 0;
     if (pkt_len == 4) {
-        /* Byte 3: low nibble = signed wheel delta. */
         int8_t w = (int8_t)(pkt_buf[3] & 0x0F);
         if (w & 0x08) w |= (int8_t)0xF0;
         wheel = w;
@@ -171,7 +193,7 @@ static void mouse_handler(struct registers *regs) {
     if (dx || dy || wheel || (old_btn != new_btn)) {
         mouse_event_t e = {0};
         e.dx = (int16_t)dx;
-        e.dy = (int16_t)(-dy);   /* screen Y down */
+        e.dy = (int16_t)(-dy);
         e.abs_x = (int16_t)mouse_x;
         e.abs_y = (int16_t)mouse_y;
         e.wheel = wheel;
@@ -197,23 +219,21 @@ void mouse_init(void) {
     pkt_len = 3;
     mouse_ready = 0;
 
-    /* Disable ports while changing the controller config. */
-    ps2_write_cmd(0xAD); /* disable first PS/2 port */
-    ps2_write_cmd(0xA7); /* disable second PS/2 port */
+    ps2_write_cmd(0xAD);
+    ps2_write_cmd(0xA7);
     ps2_flush_output();
 
     uint8_t config = 0;
     if (ps2_write_cmd(0x20) && ps2_read_byte(&config)) {
-        config |= (1u << 0);        /* enable IRQ1 (keyboard) */
-        config |= (1u << 1);        /* enable IRQ12 (mouse) */
-        config &= (uint8_t)~(1u << 5); /* enable second-port clock */
+        config |= (1u << 0);
+        config |= (1u << 1);
+        config &= (uint8_t)~(1u << 5);
         ps2_write_cmd(0x60);
         ps2_write_data(config);
     } else {
         kprintf("[mouse] WARNING: could not read PS/2 controller config\n");
     }
 
-    /* Enable aux before sending device commands; then reset/default the mouse. */
     ps2_write_cmd(0xA8);
 
     if (mouse_send(0xFF)) {
@@ -237,21 +257,30 @@ void mouse_init(void) {
         mouse_set_sample_rate(80) && mouse_send(0xF2)) {
         uint8_t id = 0;
         if (ps2_read_byte(&id) && id == 0x03) {
-            pkt_len = 4;   /* scroll wheel supported */
+            pkt_len = 4;
             kprintf("[mouse] IntelliMouse wheel mode enabled\n");
         }
     }
 
-    mouse_set_sample_rate(60);
+    /* FIX (lag): 60 Hz is PS/2's slow default -- one packet every
+     * ~16.7 ms, so the cursor visibly steps.  200 Hz is the PS/2
+     * maximum and is what the IntelliMouse knock above already proved
+     * the device accepts.  If 200 is refused, fall back through 100 to
+     * 80; if all fail, the device stays at whatever rate the reset
+     * left it, which is correct-but-slow. */
+    if (!mouse_set_sample_rate(200)) {
+        if (!mouse_set_sample_rate(100)) {
+            mouse_set_sample_rate(80);
+        }
+    }
+
     if (mouse_send(0xF4)) {
         mouse_ready = 1;
     } else {
         kprintf("[mouse] WARNING: enable-data-reporting not acknowledged\n");
     }
 
-    /* Re-enable keyboard port too: keyboard_init() ran earlier. */
     ps2_write_cmd(0xAE);
-
     irq_register_handler(12, mouse_handler);
 }
 
@@ -277,20 +306,6 @@ uint32_t mouse_get_event_drops(void) { return mouse_event_drops; }
 
 void mouse_inject_relative(int16_t dx, int16_t dy, int8_t wheel,
                            uint8_t buttons) {
-    /* mouse_buttons/mouse_x/mouse_y are also read-modify-written by
-     * mouse_handler() running in the IRQ12 (PS/2) interrupt context. When
-     * both a PS/2 mouse and a USB pointing device are present at once (e.g.
-     * this project's run.bat adds a usb-tablet for absolute cursor capture
-     * alongside QEMU's always-on emulated PS/2 mouse), QEMU's GTK/SDL front
-     * end can deliver the very same physical click to both devices. Without
-     * this critical section, the USB HID poll thread's read-old-state /
-     * write-new-state / push-event sequence here can be interrupted midway
-     * by the PS/2 IRQ handler doing the same thing, so the USB path ends up
-     * comparing against a stale old_btn and manufactures a second, phantom
-     * "pressed" edge for the SAME physical click -- which is exactly what
-     * made double-clicking (or even single-clicking) a desktop icon launch
-     * the app twice. Disabling interrupts for this short, non-blocking
-     * span makes the read-modify-write atomic with respect to the PS/2 IRQ. */
     uint64_t irqf = irq_save();
     uint8_t old_btn = mouse_buttons;
     uint8_t new_btn = buttons & 0x07;
@@ -325,8 +340,6 @@ void mouse_inject_relative(int16_t dx, int16_t dy, int8_t wheel,
 
 void mouse_inject_absolute(int16_t x, int16_t y, int8_t wheel,
                            uint8_t buttons) {
-    /* See the comment in mouse_inject_relative(): same PS/2-vs-USB race,
-     * same fix. */
     uint64_t irqf = irq_save();
     uint8_t old_btn = mouse_buttons;
     uint8_t new_btn = buttons & 0x07;
