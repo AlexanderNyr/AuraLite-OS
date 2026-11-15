@@ -340,6 +340,7 @@ typedef struct {
     int           widget_cap;
     int           focused_widget;
     uint32_t      bg;
+    int           dirty;
 } ag_view_t;
 
 void ag_view_init(ag_view_t *v, int wid, ag_widget_t *buf, int cap, uint32_t bg);

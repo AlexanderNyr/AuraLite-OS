@@ -38,11 +38,13 @@ trap il_dump_on_error EXIT
 il_send_delay 7
 il_send "run aoffice --writer-test"
 il_send_delay 5
-# The file the Writer just wrote, printed by a program that knows nothing
-# about documents.
-il_send "cat /documents/writer-gate.aod"
+# Extract the stored content.xml part, then let the shell's ordinary cat print
+# the XML. The `.aod` itself is a real ZIP package, not plain XML any longer.
+il_send "run aoffice --extract-content /documents/writer-gate.aod /documents/writer-gate-content.xml"
 il_send_delay 3
-# A second instance: it must reopen the same file and say so again.
+il_send "cat /documents/writer-gate-content.xml"
+il_send_delay 3
+# A second instance: it must reopen the same package and say so again.
 il_send "run aoffice --writer-test"
 il_send_delay 5
 il_send "exit"
@@ -66,8 +68,8 @@ il_assert_no_grep "$LOG" "WRITER GATE: FAIL" "writer: nothing failed"
 il_assert_no_grep "$LOG" "\[writer\] no match" "writer: the search found its text"
 
 # ---- 2. the file is a file ----------------------------------------------
-il_assert_grep "$LOG" "\[writer\] saved /documents/writer-gate.aod: [0-9]+ bytes of XML" \
-    "save: the document was written to /documents and the size was reported"
+il_assert_grep "$LOG" "\[writer\] saved /documents/writer-gate.aod: [0-9]+-byte ZIP \\([0-9]+ bytes content.xml\\)" \
+    "save: the native package was written as a ZIP and its XML part size was reported"
 il_assert_grep_fixed "$LOG" "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" \
     "save: the file starts with an XML declaration"
 il_assert_grep_fixed "$LOG" "<aodoc version=\"1\">" \

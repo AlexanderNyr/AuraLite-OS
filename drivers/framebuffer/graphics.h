@@ -89,4 +89,20 @@ uint32_t gfx_get_height(void);
  * AP compositor cannot overwrite the blue screen. */
 void gfx_bsod_seize(void);
 
+/* WR-3 + SIMD: blit a packed 32-bit rectangle into the back buffer,
+ * honouring both the compositor clip and a caller-supplied skip-mask.
+ *
+ * src/src_stride are in PIXELS (stride is the source row pitch).
+ * skip_mask, if non-NULL, has one bit per source pixel: 1 = skip (the
+ * WR-3 hole).  The mask row is `(w+7)/8` bytes, MSB-first, and
+ * advances by `mask_stride` bytes per source row.
+ *
+ * Uses SSE2 when the CPU has it, scalar fallback otherwise.
+ * Returns the number of source pixels actually stored (post-clip,
+ * excluding skipped).
+ */
+uint64_t gfx_blit_rgb888(int32_t x, int32_t y, uint32_t w, uint32_t h,
+                         const uint32_t *src, uint32_t src_stride,
+                         const uint8_t *skip_mask, uint32_t mask_stride);
+
 #endif /* AURALITE_DRIVERS_FRAMEBUFFER_GRAPHICS_H */

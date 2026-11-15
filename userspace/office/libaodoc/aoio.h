@@ -45,9 +45,15 @@
  * markup.  A caller sizes its buffer with this and never guesses. */
 size_t ao_io_export_bound(const ao_model_t *m);
 
-/* Write the document as XML.  Returns AO_OK, AO_E_FULL (buffer too small: call
+/* Write the document as XML. Returns AO_OK, AO_E_FULL (buffer too small: call
  * ao_io_export_bound()), or AO_E_ARG. */
 int ao_io_export(const ao_model_t *m, char *out, size_t cap, size_t *len_out);
+
+typedef int (*ao_io_write_fn)(void *context, const void *bytes, size_t length);
+/* Two-pass callers can serialize directly to a sink, avoiding a full XML
+ * staging buffer. The callback is all-or-error; its nonzero return propagates. */
+int ao_io_export_stream(const ao_model_t *m, ao_io_write_fn write,
+                        void *context, size_t *len_out);
 
 /* Parse XML into the model, replacing its contents.  On failure the model is
  * left EMPTY (never half-loaded) and the return is AO_E_FORMAT / AO_E_FULL /

@@ -92,14 +92,12 @@ EFI_STATUS efi_setup_hhdm_paging(EFI_BOOT_SERVICES *BS) {
     /* PDPT_khigh[510]: kernel virt 0xFFFFFFFF80000000..+2 MiB. */
     pdpt_high[510] = (uint64_t)(uintptr_t)pd_kernel | PTE_P | PTE_W;
 
-    /* PD_kernel: three 2-MiB pages mapping phys 0..6 MiB.  SELFHOST SH5c:
-     * the window was 4 MiB and the clang kernel peaked at 3.96 MiB; the
-     * tcc-built kernel (no -O2, no --gc-sections) spans 4.27 MiB and
-     * faulted its .bss zero-fill on the unmapped 4-MiB boundary.  Keep this
-     * in sync with the BIOS loader's PD511 (paging.inc). */
-    pd_kernel[0] = (0x00000000ULL) | PTE_PS | PTE_P | PTE_W;
-    pd_kernel[1] = (0x00200000ULL) | PTE_PS | PTE_P | PTE_W;
-    pd_kernel[2] = (0x00400000ULL) | PTE_PS | PTE_P | PTE_W;
+    /* PD_kernel: map the first 32 MiB of physical memory.
+     * The kernel image can grow beyond the original 6 MiB window. */
+    for (uint64_t i = 0; i < 16; i++) {
+        uint64_t phys_addr = i * 0x200000ULL;
+        pd_kernel[i] = phys_addr | PTE_PS | PTE_P | PTE_W;
+    }
 
     /* PML4: identity and HHDM share the same PDPT (both cover 0..64 GiB).
      * Kernel higher half at PML4[511]. */

@@ -805,35 +805,36 @@ code.
 
 #### Tasks
 
-- [ ] ZIP **reader**: EOCD scan from the tail (with a bounded search), central
-      directory parse, local header parse, method 0 (stored) and method 8
-      (deflate **inflate only**, reusing `wv_inflate.c` moved into
-      `lib/libaodoc`), CRC-32 verification, ZIP64 refusal with a clear message.
-- [ ] ZIP **writer**: method 0 only (D4), deterministic entry order and
-      timestamps (so a save is byte-reproducible), streaming from a document
-      buffer — no full copy in RAM beyond the document itself.
-- [ ] XML **writer** and **reader**: an escaping writer and a pull parser with
-      depth/attribute/size caps, built from the `wv_html.c` state machine (the
-      HTML tokeniser is a superset of what a document needs; the XML mode is a
-      subset with no entity fuzz and no implied-close rules).
-- [ ] Native package `.aod` = ZIP{ `mimetype` (stored first), `content.xml`,
-      `styles.xml` } with the OPC-shaped part names OOXML uses.
-- [ ] Migration: OF2–OF6 saves were plain XML; the loader sniffs the ZIP magic
-      and accepts both.
+- [x] ZIP **reader**: bounded EOCD tail scan, central/local header parsing,
+      stored and raw-DEFLATE extraction, CRC-32 verification, and clear
+      ZIP64 refusal. `wv_inflate.c` now wraps the implementation moved into
+      `lib/libaodoc/aoinflate.c`.
+- [x] ZIP **writer**: store-only records, deterministic package order and
+      fixed timestamps. XML is measured in a first pass and streamed in bounded
+      chunks in a second pass; no full XML or archive copy is staged in RAM.
+- [x] XML **writer** and **reader**: strict bounded pull parser and escaper
+      with depth, attribute, and input-size caps; DTDs/external entities and
+      HTML-style error recovery are refused. The XML parser is intentionally
+      separate from the HTML tokenizer because document XML must fail closed.
+- [x] Native package `.aod` = exactly three ordered parts: `mimetype` (stored
+      and physically first), `content.xml`, and `styles.xml`.
+- [x] Migration: the loader sniffs ZIP and still accepts OF2–OF6 plain XML.
 
 #### Test gate
 
-- `tests/unit/test_ao_zip.c`: read a fixture zip (stored + deflated entries),
-  a truncated central directory, a lying uncompressed size, a CRC mismatch, a
-  ZIP64 EOCD; write→read round-trip byte-identical; a 50-entry package.
-- `tests/unit/test_ao_xml.c`: escaping (`& < > " '`), a 1 MiB text node, a
-  10 000-deep nesting (must be refused), CDATA, comments, a BOM.
-- `tests/integration/cases/test_office_container.sh`: save a Writer document
-  as `.aod`, `ls` the file, extract `content.xml` through the shell's `cat`
-  (the reader prints an entry listing), reload, assert identical text.
-- Interop receipt: the produced `.aod`/`.docx` is opened **on the host** by
-  `python3 -c "import zipfile; zipfile.ZipFile('x.docx').testzip()"` and the
-  parts are listed — a real ZIP, not a lookalike.
+Host gates passed: `test_ao_xml` 43/43, `test_ao_zip` 165/165,
+`test_ao_doc` 121 checks; Python `zipfile.testzip()` returned `None` for the
+C-generated archive with the expected three parts and stored `mimetype`.
+The shared raw inflater also passed 500 zlib-generated streams (levels 0–9).
+`check_test_registry.py` reports 236 cases registered, and `--check-groups`
+passes. The guest case is registered and syntax-checked, but not executed in
+this environment.
+
+The full gates remain pending: `make test-unit` stops at the existing W32
+fixture prerequisite because `lld-link` is not installed; executable linking
+and QEMU integration are unavailable because `nasm`, `ld.lld`, and
+`qemu-system-x86_64` are not installed. The changed user C objects and all
+OF7 host tests compile cleanly.
 
 #### Deliverable
 
@@ -1062,6 +1063,6 @@ serial receipts — the same standard the rest of the plans hold to.
 | OF4 | ✅ done (aocalc engine: sparse workbook, 49 functions, dependency recalc + #CYCLE!, budget refusal, number formats, CSV/TSV; unit 89+50, guest eval 12/12) | `patches/OFFICE_OF4_sheet_engine.patch` |
 | OF5 | ✅ done (aogrid: virtualised viewport, selection, fill handle, copy/paste with formula translation, resize, freeze panes, stable sort, filter; bar/line/pie charts anchored to cells and persisted in the file; unit 37, guest grid gate, perf gate avg 4444 us / worst 20202 us) | `patches/OFFICE_OF5_sheet_gui.patch` |
 | OF6 | ⬜ planned | — |
-| OF7 | ⬜ planned | — |
+| OF7 | 🟨 implemented; host gates pass, guest/full-suite gates pending toolchain | `patches/OFFICE_OF7_container.patch` |
 | OF8 | ⬜ planned | — |
 | OF9 | ⬜ planned | — |

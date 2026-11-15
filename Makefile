@@ -121,8 +121,33 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch
 # because both compile to the same object path build/.../foo.o, which would
 # collide and double-link. Keep assembly stubs named distinctly (e.g.
 # foo_stubs.asm). ISR stubs live in isr_stubs.asm for this reason.
+
+### RUST: x86-64 core libraries
+RUST_TARGET_LIBDIR := $(shell $(RUSTC) --print target-libdir --target=x86_64-unknown-none)
+
+RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
+RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
+
+# =============================================================================
+# SDF font renderer (kernel-space Rust, x86_64-unknown-none).
+#
+# Same shape as RSBR in the userspace section: one .rs -> one object via
+# rustc, no Cargo.toml.  The atlas.bin is include_bytes!'d at compile time,
+# so it must sit next to lib.rs.  RUSTFLAGS is already x86_64-unknown-none +
+# relocation-model=static, exactly what a higher-half kernel module needs;
+# -C panic=abort is added because a Rust panic in kernel space must halt,
+# not unwind (there is no unwind runtime here).
+# =============================================================================
+SDF_DIR       := kernel/gui/sdf
+SDF_LIB       := $(SDF_DIR)/lib.rs
+SDF_OBJ       := $(BUILD_DIR)/sdf_font.o
+SDF_RUSTFLAGS = $(RUSTFLAGS) -C panic=abort
+
 KERNEL_OBJS := $(patsubst %.c,$(BUILD_DIR)/%.o,$(KERNEL_SRCS)) \
-               $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS))
+               $(patsubst %.asm,$(BUILD_DIR)/%.o,$(KERNEL_ASMS)) \
+               $(SDF_OBJ) \
+               $(RUST_CORE_RLIB) \
+               $(RUST_COMPILER_BUILTINS_RLIB)
 
 .PHONY: all kernel user iso usb vbox vmware vm-configs run run-usb-msc clean \
         deps-check test-unit test-integration test-integration-fast test \
@@ -810,6 +835,20 @@ $(STAGE2_BIN): $(STAGE2_SRC) $(STAGE2_INCS) $(BOOT_OFFSETS_INC)
 $(BUILD_DIR)/%.o: %.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# Rust -> object.  --emit obj gives one relocatable directly; no rlib, no
+# ar extraction, no linker gymnastics.  --crate-type lib matches what cargo
+# would do for a `lib` crate.
+$(SDF_OBJ): $(SDF_LIB) $(SDF_DIR)/atlas.bin
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(SDF_RUSTFLAGS) \
+		--edition=2021 \
+		--crate-name sdf \
+		--crate-type lib \
+		--emit obj \
+		-o $@ \
+		$(SDF_LIB)
+	@echo "[rustc] $@ ($$(du -h $@ | cut -f1))"
 
 # USB_PLAN U2: -Wunreachable-code, as an error, for the USB drivers.
 #
@@ -1509,12 +1548,6 @@ RSBR_DIR  := lib/rsbr
 RSBR_LIB  := $(RSBR_DIR)/lib.rs
 RSBR_RLIB := $(BUILD_DIR)/librsbr.rlib
 
-### RUST: x86-64 core libraries
-RUST_TARGET_LIBDIR := $(shell $(RUSTC) --print target-libdir --target=x86_64-unknown-none)
-
-RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
-RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
-
 $(RSBR_RLIB): $(shell find $(RSBR_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
 	$(RUSTC) $(RUSTFLAGS) \
@@ -2005,13 +2038,33 @@ $(USER_BUILD)/aolayout.o: userspace/office/libaodoc/aolayout.c \
 
 $(USER_BUILD)/aoio.o: userspace/office/libaodoc/aoio.c \
                       userspace/office/libaodoc/aoio.h \
-                      userspace/office/libaodoc/aomodel.h
+                      userspace/office/libaodoc/aomodel.h \
+                      userspace/office/libaodoc/aoxml.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aoinflate.o: userspace/office/libaodoc/aoinflate.c \
+                           userspace/office/libaodoc/aoinflate.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aoxml.o: userspace/office/libaodoc/aoxml.c \
+                       userspace/office/libaodoc/aoxml.h \
+                       userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aozip.o: userspace/office/libaodoc/aozip.c \
+                       userspace/office/libaodoc/aozip.h \
+                       userspace/office/libaodoc/aoinflate.h \
+                       userspace/office/libaodoc/aodoc.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+$(USER_BUILD)/aopackage.o: userspace/office/libaodoc/aopackage.c \
+                           userspace/office/libaodoc/aopackage.h \
+                           userspace/office/libaodoc/aozip.h \
+                           userspace/office/libaodoc/aoio.h \
+                           userspace/office/libaodoc/aoxml.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
 $(USER_BUILD)/aoffice.o: userspace/office/office/aoffice.c \
                          userspace/office/libaodoc/aodoc.h \
                          userspace/office/libaodoc/aomodel.h \
                          userspace/office/libaodoc/aoundo.h \
                          userspace/office/libaodoc/aoio.h \
+                         userspace/office/libaodoc/aopackage.h \
                          userspace/office/libaodoc/aolayout.h \
                          userspace/office/libaoglyph/aoglyph.h \
                          lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
@@ -2057,27 +2110,33 @@ $(USER_BUILD)/aosheet.elf: $(USER_BUILD)/aosheet.o $(USER_BUILD)/aocalc.o \
 $(USER_BUILD)/aoslide.elf: $(USER_BUILD)/aoslide.o $(USER_BUILD)/aodeck.o \
                            $(USER_BUILD)/aomodel.o $(USER_BUILD)/aolayout.o \
                            $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aodoc.o \
-                           $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
+                           $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
+                           $(USER_BUILD)/wv_image.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aoslide.o $(USER_BUILD)/aodeck.o \
 	      $(USER_BUILD)/aomodel.o $(USER_BUILD)/aolayout.o \
 	      $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aodoc.o \
-	      $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
-	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	      $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
+	      $(USER_BUILD)/wv_image.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
 
 $(USER_BUILD)/aoffice.elf: $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
                            $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aomodel.o \
-                           $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o $(USER_BUILD)/aolayout.o \
-                           $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
+                           $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
+                           $(USER_BUILD)/aopackage.o $(USER_BUILD)/aozip.o \
+                           $(USER_BUILD)/aoxml.o $(USER_BUILD)/aolayout.o \
+                           $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
+                           $(USER_BUILD)/wv_image.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aoffice.o $(USER_BUILD)/aodoc.o \
 	      $(USER_BUILD)/aoglyph.o $(USER_BUILD)/aomodel.o \
-	      $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o $(USER_BUILD)/aolayout.o \
-	      $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
-	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
+	      $(USER_BUILD)/aoundo.o $(USER_BUILD)/aoio.o \
+	      $(USER_BUILD)/aopackage.o $(USER_BUILD)/aozip.o \
+	      $(USER_BUILD)/aoxml.o $(USER_BUILD)/aolayout.o \
+	      $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
+	      $(USER_BUILD)/wv_image.o $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
 
 $(USER_BUILD)/gbrowser.o: userspace/apps/gbrowser/gbrowser.c lib/libauragui/include/auragui.h \
@@ -2108,7 +2167,9 @@ $(USER_BUILD)/wv_http.o: userspace/apps/gbrowser/wv_http.c userspace/apps/gbrows
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_canvas.o: userspace/apps/gbrowser/wv_canvas.c userspace/apps/gbrowser/wv_canvas.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I lib/libgl/include -c $< -o $@
-$(USER_BUILD)/wv_inflate.o: userspace/apps/gbrowser/wv_inflate.c userspace/apps/gbrowser/wv_inflate.h
+$(USER_BUILD)/wv_inflate.o: userspace/apps/gbrowser/wv_inflate.c \
+                            userspace/apps/gbrowser/wv_inflate.h \
+                            userspace/office/libaodoc/aoinflate.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/wv_image.o: userspace/apps/gbrowser/wv_image.c userspace/apps/gbrowser/wv_image.h \
                           userspace/apps/gbrowser/wv_inflate.h
@@ -2122,8 +2183,8 @@ $(USER_BUILD)/gbrowser.elf: $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
                            $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
                            $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
                            $(USER_BUILD)/wv_canvas.o \
-                           $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
-                           $(USER_BUILD)/ahttp.o \
+                           $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
+                           $(USER_BUILD)/wv_image.o $(USER_BUILD)/ahttp.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) $(USER_GL_OBJ) \
                            $(LIBATLS) lib/libc/user.ld
 	@mkdir -p $(dir $@)
@@ -2132,8 +2193,8 @@ $(USER_BUILD)/gbrowser.elf: $(USER_BUILD)/gbrowser.o $(USER_BUILD)/wv_html.o \
 	      $(USER_BUILD)/wv_paint.o $(USER_BUILD)/wv_css.o \
 	      $(USER_BUILD)/wv_url.o $(USER_BUILD)/wv_http.o \
 	      $(USER_BUILD)/wv_canvas.o \
-	      $(USER_BUILD)/wv_inflate.o $(USER_BUILD)/wv_image.o \
-	      $(USER_BUILD)/ahttp.o \
+	      $(USER_BUILD)/aoinflate.o $(USER_BUILD)/wv_inflate.o \
+	      $(USER_BUILD)/wv_image.o $(USER_BUILD)/ahttp.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) $(USER_GL_OBJ) $(LIBATLS) -o $@
 	@echo "[link] $@ (wv_* + images + libgl canvas + libahttp/libatls https X6)"
 $(USER_BUILD)/gtheme.o: userspace/apps/gui-theme/theme.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
@@ -4063,7 +4124,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_aodoc_canvas \
                 $(BUILD_DIR)/test_ao_utf8 $(BUILD_DIR)/test_ao_glyph \
                 $(BUILD_DIR)/test_ao_doc $(BUILD_DIR)/test_ao_undo \
-                $(BUILD_DIR)/test_ao_layout \
+                $(BUILD_DIR)/test_ao_layout $(BUILD_DIR)/test_ao_xml \
+                $(BUILD_DIR)/test_ao_zip \
                 $(BUILD_DIR)/test_ao_formula $(BUILD_DIR)/test_ao_sheet \
                 $(BUILD_DIR)/test_ao_grid $(BUILD_DIR)/test_ao_slide \
                 $(BUILD_DIR)/test_apkg \
@@ -4614,6 +4676,7 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # never run -- every make test-unit in that window was green while
 # asserting nothing.  Recipe on its own line, one tab, as make wants.
 	@for t in $(UNIT_TESTS); do echo "[unit] running $$t"; ./$$t || exit 1; done
+	@python3 -c 'import sys,zipfile; p="$(BUILD_DIR)/test_ao_zip_interop.aod"; z=zipfile.ZipFile(p); assert z.testzip() is None; assert z.namelist()==["mimetype","content.xml","styles.xml"]; assert z.getinfo("mimetype").compress_type==zipfile.ZIP_STORED; print("[unit] Python ZIP interop: PASS ("+", ".join(z.namelist())+")")'
 # W32A-1: the committed bindreport agrees textually with a fresh one.
 	@echo "[unit] running $(BUILD_DIR)/test_w32_a1 --emit-report"
 	@$(BUILD_DIR)/test_w32_a1 --emit-report $(BUILD_DIR)/user > \
@@ -5110,11 +5173,14 @@ $(BUILD_DIR)/test_wv_canvas: tests/unit/test_wv_canvas.c \
 $(BUILD_DIR)/test_wv_image: tests/unit/test_wv_image.c \
                             userspace/apps/gbrowser/wv_inflate.c \
                             userspace/apps/gbrowser/wv_inflate.h \
+                            userspace/office/libaodoc/aoinflate.c \
+                            userspace/office/libaodoc/aoinflate.h \
                             userspace/apps/gbrowser/wv_image.c \
                             userspace/apps/gbrowser/wv_image.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	           tests/unit/test_wv_image.c userspace/apps/gbrowser/wv_inflate.c \
+	           userspace/office/libaodoc/aoinflate.c \
 	           userspace/apps/gbrowser/wv_image.c -o $@
 
 # M3 (MATURITY_PLAN.md): fault-recovering uaccess validation layer.
@@ -5777,11 +5843,45 @@ $(BUILD_DIR)/test_ao_doc: tests/unit/test_ao_doc.c \
                           userspace/office/libaodoc/aomodel.h \
                           userspace/office/libaodoc/aoio.c \
                           userspace/office/libaodoc/aoio.h \
+                          userspace/office/libaodoc/aoxml.c \
+                          userspace/office/libaodoc/aoxml.h \
                           userspace/office/libaodoc/aodoc.c
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_ao_doc.c userspace/office/libaodoc/aomodel.c \
 	          userspace/office/libaodoc/aoio.c \
+	          userspace/office/libaodoc/aoxml.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
+
+# OF7: strict pull XML plus the bounded ZIP/container implementation. The
+# independent Python check runs after the C archive fixture is emitted.
+$(BUILD_DIR)/test_ao_xml: tests/unit/test_ao_xml.c \
+                          userspace/office/libaodoc/aoxml.c \
+                          userspace/office/libaodoc/aoxml.h \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_xml.c userspace/office/libaodoc/aoxml.c \
+	          userspace/office/libaodoc/aodoc.c -o $@
+
+$(BUILD_DIR)/test_ao_zip: tests/unit/test_ao_zip.c \
+                          userspace/office/libaodoc/aozip.c \
+                          userspace/office/libaodoc/aozip.h \
+                          userspace/office/libaodoc/aopackage.c \
+                          userspace/office/libaodoc/aopackage.h \
+                          userspace/office/libaodoc/aoinflate.c \
+                          userspace/office/libaodoc/aoxml.c \
+                          userspace/office/libaodoc/aoio.c \
+                          userspace/office/libaodoc/aomodel.c \
+                          userspace/office/libaodoc/aodoc.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_zip.c userspace/office/libaodoc/aozip.c \
+	          userspace/office/libaodoc/aopackage.c \
+	          userspace/office/libaodoc/aoinflate.c \
+	          userspace/office/libaodoc/aoxml.c \
+	          userspace/office/libaodoc/aoio.c \
+	          userspace/office/libaodoc/aomodel.c \
 	          userspace/office/libaodoc/aodoc.c -o $@
 
 # OF3: the page layout -- wrap, pagination, styles, lists, tables, images.

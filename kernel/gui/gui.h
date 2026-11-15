@@ -340,6 +340,18 @@ int gui_draw_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h, uint32_
 int gui_draw_line(int wid, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t color);
 int gui_draw_text(int wid, int32_t x, int32_t y, const char *s, uint32_t color);
 int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color);
+int gui_blend_pixel(int wid, int32_t x, int32_t y, uint32_t color, uint8_t a);
+int sdf_draw_text(int wid, int32_t x, int32_t y, const char *s,
+                  uint32_t color, uint32_t px_size);
+
+
+int gui_blend_pixels4(
+    int wid,
+    int32_t x,
+    int32_t y,
+    uint32_t color,
+    const uint8_t alpha[4]
+);
 
 /* Read one content pixel back (W32A-7: GetPixel on a window DC).  The
  * compositor owns window pixels, so the read crosses the boundary here

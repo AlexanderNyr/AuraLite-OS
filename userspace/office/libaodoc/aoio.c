@@ -21,6 +21,7 @@
 #include <string.h>
 
 #include "aodoc.h"
+#include "aoxml.h"
 
 /* ------------------------------------------------------------------ export */
 
@@ -33,19 +34,85 @@ size_t ao_io_export_bound(const ao_model_t *m) {
 }
 
 typedef struct {
-    char  *p;
+    char *p;
     size_t cap, used;
-    int    full;
+    ao_io_write_fn write;
+    void *context;
+    char pending[1024];
+    size_t pending_len;
+    int full;
+    int error;
+    int callback_failed;
 } sink_t;
 
+static void flush_stream(sink_t *k) {
+    if (!k->write || !k->pending_len || k->error) return;
+    int rc = k->write(k->context, k->pending, k->pending_len);
+    if (rc != 0) {
+        k->error = rc; k->callback_failed = 1; return;
+    }
+    k->pending_len = 0;
+}
+
 static void put(sink_t *k, const char *s, size_t n) {
-    if (k->full) return;
-    if (k->used + n > k->cap) { k->full = 1; return; }
-    memcpy(k->p + k->used, s, n);
+    if (k->full || k->error) return;
+    if (n > SIZE_MAX - k->used) { k->full = 1; return; }
+    if (!k->write) {
+        if (n > k->cap - k->used) { k->full = 1; return; }
+        if (n) memcpy(k->p + k->used, s, n);
+        k->used += n;
+        return;
+    }
+    size_t left = n;
+    const char *at = s;
+    while (left) {
+        if (k->pending_len == sizeof(k->pending)) flush_stream(k);
+        if (k->error) return;
+        size_t room = sizeof(k->pending) - k->pending_len;
+        size_t take = left < room ? left : room;
+        memcpy(k->pending + k->pending_len, at, take);
+        k->pending_len += take;
+        at += take; left -= take;
+    }
     k->used += n;
 }
 
 static void puts_(sink_t *k, const char *s) { put(k, s, strlen(s)); }
+
+static int xml_stream_emit(void *context, const void *bytes, size_t length) {
+    sink_t *k = (sink_t *)context;
+    if (!k || !k->write) return AO_E_ARG;
+    put(k, (const char *)bytes, length);
+    return k->error ? k->error : (k->full ? AO_E_FULL : 0);
+}
+
+static void put_xml_escaped(sink_t *k, const char *s, size_t n) {
+    if (k->full || k->error) return;
+    size_t written = 0;
+    int rc;
+    if (k->write) {
+        size_t before = k->used;
+        rc = ao_xml_escape_stream(s, n, 0, xml_stream_emit, k, &written);
+        if (rc != AO_XML_OK) {
+            if (!k->callback_failed) {
+                if (rc == AO_XML_E_FULL || rc == AO_XML_E_LIMIT) k->full = 1;
+                else k->error = rc == AO_XML_E_UTF8 ? AO_E_UTF8 : AO_E_FORMAT;
+            }
+            return;
+        }
+        if (k->used - before != written) k->full = 1;
+    } else {
+        rc = ao_xml_escape(s, n, 0, k->p + k->used,
+                           k->cap - k->used, &written);
+        if (rc == AO_XML_E_FULL) { k->full = 1; return; }
+        if (rc != AO_XML_OK) {
+            k->error = rc == AO_XML_E_UTF8 ? AO_E_UTF8 : AO_E_FORMAT;
+            return;
+        }
+        if (written > SIZE_MAX - k->used) { k->full = 1; return; }
+        k->used += written;
+    }
+}
 
 static void put_u32(sink_t *k, uint32_t v) {
     char tmp[12];
@@ -57,49 +124,46 @@ static void put_u32(sink_t *k, uint32_t v) {
 }
 
 static void put_escaped(sink_t *k, const char *s, uint32_t n) {
-    for (uint32_t i = 0; i < n; i++) {
-        switch (s[i]) {
-            case '&': puts_(k, "&amp;"); break;
-            case '<': puts_(k, "&lt;"); break;
-            case '>': puts_(k, "&gt;"); break;
-            case '"': puts_(k, "&quot;"); break;
-            case '\x01': puts_(k, "&#1;"); break;   /* AO_TABLE_MERGE_MARK */
-            default:  put(k, &s[i], 1); break;
-        }
+    size_t start = 0;
+    for (size_t i = 0; i < n; i++) {
+        if ((uint8_t)s[i] != 1u) continue;
+        put_xml_escaped(k, s + start, i - start);
+        puts_(k, "&#1;"); /* AO_TABLE_MERGE_MARK: not an XML 1.0 literal. */
+        start = i + 1u;
     }
+    put_xml_escaped(k, s + start, (size_t)n - start);
 }
 
-int ao_io_export(const ao_model_t *m, char *out, size_t cap, size_t *len_out) {
-    if (!m || !out) return AO_E_ARG;
-    sink_t k = { out, cap, 0, 0 };
+static int io_export_sink(const ao_model_t *m, sink_t *k, size_t *len_out) {
+    if (!m || !k) return AO_E_ARG;
 
-    puts_(&k, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<aodoc version=\"1\">\n");
+    puts_(k, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<aodoc version=\"1\">\n");
     for (uint32_t pi = 0; pi < m->para_len; pi++) {
         const ao_para_t *p = &m->paras[pi];
-        puts_(&k, " <p align=\"");
+        puts_(k, " <p align=\"");
         switch (p->align) {
-            case AO_ALIGN_CENTER:  puts_(&k, "center"); break;
-            case AO_ALIGN_RIGHT:   puts_(&k, "right"); break;
-            case AO_ALIGN_JUSTIFY: puts_(&k, "justify"); break;
-            default:               puts_(&k, "left"); break;
+            case AO_ALIGN_CENTER:  puts_(k, "center"); break;
+            case AO_ALIGN_RIGHT:   puts_(k, "right"); break;
+            case AO_ALIGN_JUSTIFY: puts_(k, "justify"); break;
+            default:               puts_(k, "left"); break;
         }
-        puts_(&k, "\" indent=\"");
-        put_u32(&k, (uint32_t)(p->indent < 0 ? 0 : p->indent));
-        puts_(&k, "\" pstyle=\"");
+        puts_(k, "\" indent=\"");
+        put_u32(k, (uint32_t)(p->indent < 0 ? 0 : p->indent));
+        puts_(k, "\" pstyle=\"");
         switch (p->style & AO_PARA_KIND_MASK) {
-            case AO_PARA_H1:     puts_(&k, "h1"); break;
-            case AO_PARA_H2:     puts_(&k, "h2"); break;
-            case AO_PARA_H3:     puts_(&k, "h3"); break;
-            case AO_PARA_QUOTE:  puts_(&k, "quote"); break;
-            case AO_PARA_BULLET: puts_(&k, "bullet"); break;
-            case AO_PARA_NUMBER: puts_(&k, "number"); break;
-            case AO_PARA_TABLE:  puts_(&k, "table"); break;
-            case AO_PARA_IMAGE:  puts_(&k, "image"); break;
-            default:             puts_(&k, "normal"); break;
+            case AO_PARA_H1:     puts_(k, "h1"); break;
+            case AO_PARA_H2:     puts_(k, "h2"); break;
+            case AO_PARA_H3:     puts_(k, "h3"); break;
+            case AO_PARA_QUOTE:  puts_(k, "quote"); break;
+            case AO_PARA_BULLET: puts_(k, "bullet"); break;
+            case AO_PARA_NUMBER: puts_(k, "number"); break;
+            case AO_PARA_TABLE:  puts_(k, "table"); break;
+            case AO_PARA_IMAGE:  puts_(k, "image"); break;
+            default:             puts_(k, "normal"); break;
         }
-        puts_(&k, "\"");
-        if (p->style & AO_PARA_PAGEBREAK) puts_(&k, " pb=\"1\"");
-        puts_(&k, ">\n");
+        puts_(k, "\"");
+        if (p->style & AO_PARA_PAGEBREAK) puts_(k, " pb=\"1\"");
+        puts_(k, ">\n");
 
         int wrote_run = 0;
         for (uint32_t r = 0; r < p->run_count; r++) {
@@ -116,399 +180,309 @@ int ao_io_export(const ao_model_t *m, char *out, size_t cap, size_t *len_out) {
              * save is byte identical" forbids. */
             if (n == 0) continue;
             wrote_run = 1;
-            puts_(&k, "  <r style=\"");
-            if (run->style & AO_STYLE_BOLD)      put(&k, "b", 1);
-            if (run->style & AO_STYLE_ITALIC)    put(&k, "i", 1);
-            if (run->style & AO_STYLE_UNDERLINE) put(&k, "u", 1);
-            puts_(&k, "\" size=\"");
-            put_u32(&k, run->size);
-            puts_(&k, "\" font=\"");
-            puts_(&k, run->font == AO_FONT_MONO ? "mono" : "sans");
-            puts_(&k, "\">");
-            put_escaped(&k, m->text + run->off, n);
-            puts_(&k, "</r>\n");
+            puts_(k, "  <r style=\"");
+            if (run->style & AO_STYLE_BOLD)      put(k, "b", 1);
+            if (run->style & AO_STYLE_ITALIC)    put(k, "i", 1);
+            if (run->style & AO_STYLE_UNDERLINE) put(k, "u", 1);
+            puts_(k, "\" size=\"");
+            put_u32(k, run->size);
+            puts_(k, "\" font=\"");
+            puts_(k, run->font == AO_FONT_MONO ? "mono" : "sans");
+            puts_(k, "\">");
+            put_escaped(k, m->text + run->off, n);
+            puts_(k, "</r>\n");
         }
-        if (!wrote_run) puts_(&k, "  <r style=\"\" size=\"11\" font=\"sans\"/>\n");
-        puts_(&k, " </p>\n");
+        if (!wrote_run) puts_(k, "  <r style=\"\" size=\"11\" font=\"sans\"/>\n");
+        puts_(k, " </p>\n");
     }
-    puts_(&k, "</aodoc>\n");
+    puts_(k, "</aodoc>\n");
+    flush_stream(k);
 
-    if (k.full) return AO_E_FULL;
-    if (len_out) *len_out = k.used;
+    if (k->error) return k->error;
+    if (k->full) return AO_E_FULL;
+    if (len_out) *len_out = k->used;
     return AO_OK;
+}
+
+int ao_io_export(const ao_model_t *m, char *out, size_t cap, size_t *len_out) {
+    if (!m || !out) return AO_E_ARG;
+    sink_t k = { .p = out, .cap = cap };
+    return io_export_sink(m, &k, len_out);
+}
+
+int ao_io_export_stream(const ao_model_t *m, ao_io_write_fn write,
+                        void *context, size_t *len_out) {
+    if (!m || !write) return AO_E_ARG;
+    sink_t k = { .write = write, .context = context };
+    return io_export_sink(m, &k, len_out);
 }
 
 /* ------------------------------------------------------------------ import */
 
-typedef struct {
-    const char *s;
-    size_t      n, i;
-} cur_t;
+#define AO_IO_MAX_RUN_BYTES (64u * 1024u)
 
-static int at_end(const cur_t *c) { return c->i >= c->n; }
-
-/* Skip whitespace. */
-static void skip_ws(cur_t *c) {
-    while (!at_end(c)) {
-        char ch = c->s[c->i];
-        if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n') c->i++;
-        else break;
-    }
+static int token_name(const ao_xml_token_t *t, const char *s) {
+    size_t n = strlen(s);
+    return t->name_len == n && memcmp(t->name, s, n) == 0;
 }
 
-/* Read a name (element or attribute) into buf; 0 if it does not fit or is
- * empty.  Names are [A-Za-z0-9_-]+ here: enough for this format, and refusing
- * anything else keeps the scanner from guessing. */
-static int read_name(cur_t *c, char *buf, size_t cap) {
-    size_t w = 0;
-    while (!at_end(c)) {
-        char ch = c->s[c->i];
-        int ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                 (ch >= '0' && ch <= '9') || ch == '_' || ch == '-' || ch == ':';
-        if (!ok) break;
-        if (w + 1 >= cap) return 0;
-        buf[w++] = ch;
-        c->i++;
-    }
-    buf[w] = '\0';
-    return w != 0;
+static int attr_name(const ao_xml_attr_t *a, const char *s) {
+    size_t n = strlen(s);
+    return a->name_len == n && memcmp(a->name, s, n) == 0;
 }
 
-/* Decode one entity at c->i (which points at '&').  Writes UTF-8 into out
- * (up to 4 bytes) and returns the bytes written, or -1 on an unknown/invalid
- * entity -- a document with a broken entity is refused, not patched up. */
-static int read_entity(cur_t *c, char out[4]) {
-    size_t save = c->i;
-    c->i++;                                  /* '&' */
-    if (!at_end(c) && c->s[c->i] == '#') {
-        c->i++;
-        uint32_t cp = 0;
-        int hex = 0;
-        if (!at_end(c) && (c->s[c->i] == 'x' || c->s[c->i] == 'X')) { hex = 1; c->i++; }
-        int digits = 0;
-        while (!at_end(c) && c->s[c->i] != ';') {
-            char ch = c->s[c->i];
-            int v;
-            if (ch >= '0' && ch <= '9') v = ch - '0';
-            else if (hex && ch >= 'a' && ch <= 'f') v = ch - 'a' + 10;
-            else if (hex && ch >= 'A' && ch <= 'F') v = ch - 'A' + 10;
-            else { c->i = save; return -1; }
-            if (cp > 0x10FFFFu / 16u) { c->i = save; return -1; }
-            cp = cp * (hex ? 16u : 10u) + (uint32_t)v;
-            digits++;
-            c->i++;
-        }
-        if (!digits || at_end(c) || c->s[c->i] != ';') { c->i = save; return -1; }
-        c->i++;
-        int n = ao_utf8_encode(cp, out);
-        if (n <= 0) { c->i = save; return -1; }
-        return n;
-    }
-    char name[8];
-    size_t w = 0;
-    while (!at_end(c) && c->s[c->i] != ';') {
-        if (w + 1 >= sizeof name) { c->i = save; return -1; }
-        name[w++] = c->s[c->i++];
-    }
-    if (at_end(c)) { c->i = save; return -1; }
-    name[w] = '\0';
-    c->i++;                                  /* ';' */
-    if (!strcmp(name, "amp"))  { out[0] = '&'; return 1; }
-    if (!strcmp(name, "lt"))   { out[0] = '<'; return 1; }
-    if (!strcmp(name, "gt"))   { out[0] = '>'; return 1; }
-    if (!strcmp(name, "quot")) { out[0] = '"'; return 1; }
-    if (!strcmp(name, "apos")) { out[0] = '\''; return 1; }
-    c->i = save;
-    return -1;
-}
-
-/* Skip an unmatched construct: a comment, a processing instruction, a DOCTYPE
- * or a tag we do not model.  Always advances. */
-static int skip_junk(cur_t *c, int depth) {
-    if (depth > AO_IO_MAX_DEPTH) return AO_E_FORMAT;
-    if (c->i + 3 < c->n && !memcmp(c->s + c->i, "<!--", 4)) {
-        c->i += 4;
-        while (c->i + 2 < c->n && memcmp(c->s + c->i, "-->", 3)) c->i++;
-        if (c->i + 2 >= c->n) return AO_E_FORMAT;
-        c->i += 3;
-        return AO_OK;
-    }
-    if (c->i + 1 < c->n && c->s[c->i] == '<' && c->s[c->i + 1] == '?') {
-        c->i += 2;
-        while (c->i + 1 < c->n && memcmp(c->s + c->i, "?>", 2)) c->i++;
-        if (c->i + 1 >= c->n) return AO_E_FORMAT;
-        c->i += 2;
-        return AO_OK;
-    }
-    if (c->i + 8 < c->n && !memcmp(c->s + c->i, "<!DOCTYPE", 9)) {
-        while (c->i < c->n && c->s[c->i] != '>') c->i++;
-        if (at_end(c)) return AO_E_FORMAT;
-        c->i++;
-        return AO_OK;
-    }
+static int xml_to_io_error(int rc) {
+    if (rc == AO_XML_E_UTF8) return AO_E_UTF8;
+    if (rc == AO_XML_E_FULL || rc == AO_XML_E_LIMIT) return AO_E_FULL;
     return AO_E_FORMAT;
 }
 
-#define MAX_RUNS_PER_PARA 4096
-
-/* Stamp the WHOLE attribute set over [pos, pos+n): every style bit is set or
- * cleared explicitly, and so are size and font. */
-static int apply_run_attrs(ao_model_t *m, uint32_t pos, uint32_t n,
-                           uint8_t style, uint8_t size_px, uint8_t font) {
-    static const uint8_t bits[3] = { AO_STYLE_BOLD, AO_STYLE_ITALIC, AO_STYLE_UNDERLINE };
-    for (int b = 0; b < 3; b++) {
-        if (ao_model_set_style(m, pos, n, bits[b], (style & bits[b]) != 0) != AO_OK)
-            return 0;
-    }
-    return ao_model_set_size_font(m, pos, n, size_px, font) == AO_OK;
+static int decode_attr(const ao_xml_attr_t *a, char *out, size_t cap) {
+    if (!a || !out || cap == 0) return AO_E_ARG;
+    size_t n = 0;
+    int rc = ao_xml_decode_native(a->value, a->value_len, out, cap - 1u, &n);
+    if (rc != AO_XML_OK) return xml_to_io_error(rc);
+    out[n] = '\0';
+    return AO_OK;
 }
 
-/* One byte per paragraph, so the reader knows each paragraph's alignment even
- * though the model creates paragraphs lazily. */
-#define AO_IO_MAX_PARAS 4096
-static uint8_t p_aligns[AO_IO_MAX_PARAS];
-static uint8_t p_styles[AO_IO_MAX_PARAS];   /* OF3 */
-static int16_t p_indents[AO_IO_MAX_PARAS];  /* OF3: was parsed, then dropped */
+static int parse_decimal(const char *s, uint32_t max, uint32_t *value) {
+    if (!s || !*s || !value) return AO_E_FORMAT;
+    uint32_t v = 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < '0' || *p > '9') return AO_E_FORMAT;
+        uint32_t d = (uint32_t)(*p - '0');
+        if (v > (max - d) / 10u) return AO_E_FORMAT;
+        v = v * 10u + d;
+    }
+    *value = v;
+    return AO_OK;
+}
 
-/* The reader builds into the caller's model as it walks the file, so a failure
- * half way through cannot be rolled back -- which is why ao_io_import() clears
- * the document on EVERY refusal path, not just the ones that notice early.  An
- * empty page and a message beats a half-loaded document that the next save
- * would then make permanent. */
-static int import_into(ao_model_t *m, const char *xml, size_t len) {
+static int parse_para_attrs(const ao_xml_token_t *t, uint8_t *align,
+                            uint8_t *style, int16_t *indent) {
+    char value[AO_IO_MAX_ATTR];
+    *align = AO_ALIGN_LEFT; *style = AO_PARA_NORMAL; *indent = 0;
+    for (uint32_t i = 0; i < t->attr_count; i++) {
+        const ao_xml_attr_t *a = &t->attrs[i];
+        if (attr_name(a, "align")) {
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc != AO_OK) return rc;
+            if (!strcmp(value, "left")) *align = AO_ALIGN_LEFT;
+            else if (!strcmp(value, "center")) *align = AO_ALIGN_CENTER;
+            else if (!strcmp(value, "right")) *align = AO_ALIGN_RIGHT;
+            else if (!strcmp(value, "justify")) *align = AO_ALIGN_JUSTIFY;
+            else return AO_E_FORMAT;
+        } else if (attr_name(a, "pstyle")) {
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc != AO_OK) return rc;
+            if (!strcmp(value, "normal")) *style = AO_PARA_NORMAL;
+            else if (!strcmp(value, "h1")) *style = AO_PARA_H1;
+            else if (!strcmp(value, "h2")) *style = AO_PARA_H2;
+            else if (!strcmp(value, "h3")) *style = AO_PARA_H3;
+            else if (!strcmp(value, "quote")) *style = AO_PARA_QUOTE;
+            else if (!strcmp(value, "bullet")) *style = AO_PARA_BULLET;
+            else if (!strcmp(value, "number")) *style = AO_PARA_NUMBER;
+            else if (!strcmp(value, "table")) *style = AO_PARA_TABLE;
+            else if (!strcmp(value, "image")) *style = AO_PARA_IMAGE;
+            else return AO_E_FORMAT;
+        } else if (attr_name(a, "indent")) {
+            uint32_t v = 0;
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc == AO_OK) rc = parse_decimal(value, 32767u, &v);
+            if (rc != AO_OK) return rc;
+            *indent = (int16_t)v;
+        } else if (attr_name(a, "pb")) {
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc != AO_OK) return rc;
+            if (!strcmp(value, "1")) *style |= AO_PARA_PAGEBREAK;
+            else if (strcmp(value, "0") != 0) return AO_E_FORMAT;
+        }
+        /* Unknown attributes are retained by the XML reader but ignored by
+         * this version, matching the forward-compatible native XML contract. */
+    }
+    return AO_OK;
+}
 
-    cur_t c = { xml, len, 0 };
-    int depth = 0, in_aodoc = 0, in_p = 0, seen_version = 0;
-    uint8_t p_align = AO_ALIGN_LEFT;
-    uint8_t p_style = AO_PARA_NORMAL;
-    int16_t p_indent = 0;
-
-    char text[64 * 1024];          /* scratch for the current run's text */
-    uint32_t text_at = 0;
-    uint8_t r_style = AO_STYLE_OFF, r_size = AO_SIZE_DEFAULT, r_font = AO_FONT_SANS;
-    int in_r = 0;
-    uint32_t p_seen = 0;
-
-    while (!at_end(&c)) {
-        if (c.s[c.i] == '<') {
-            /* Close out a run's text before looking at markup. */
-            if (in_r) {
-                if (text_at) {
-                    /* Append the run's text, then stamp its attributes on it.
-                     * They must be stamped even when they are the defaults:
-                     * inserted text inherits the attributes of whatever run it
-                     * was typed after, so a plain run that follows a bold one
-                     * would otherwise come out bold. */
-                    uint32_t start = ao_model_text_len(m);
-                    int rc = ao_model_insert(m, start, text, text_at);
-                    if (rc != AO_OK) return rc == AO_E_FULL ? AO_E_FULL : AO_E_FORMAT;
-                    if (!apply_run_attrs(m, start, text_at, r_style, r_size, r_font))
-                        return AO_E_FORMAT;
-                }
-                in_r = 0;
-                text_at = 0;
+static int parse_run_attrs(const ao_xml_token_t *t, uint8_t *style,
+                           uint8_t *size_px, uint8_t *font) {
+    char value[AO_IO_MAX_ATTR];
+    *style = AO_STYLE_OFF; *size_px = AO_SIZE_DEFAULT; *font = AO_FONT_SANS;
+    for (uint32_t i = 0; i < t->attr_count; i++) {
+        const ao_xml_attr_t *a = &t->attrs[i];
+        if (attr_name(a, "style")) {
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc != AO_OK) return rc;
+            for (const char *p = value; *p; p++) {
+                if (*p == 'b') *style |= AO_STYLE_BOLD;
+                else if (*p == 'i') *style |= AO_STYLE_ITALIC;
+                else if (*p == 'u') *style |= AO_STYLE_UNDERLINE;
+                else return AO_E_FORMAT;
             }
+        } else if (attr_name(a, "size")) {
+            uint32_t v = 0;
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc == AO_OK) rc = parse_decimal(value, 64u, &v);
+            if (rc != AO_OK || v < 6u) return AO_E_FORMAT;
+            *size_px = (uint8_t)v;
+        } else if (attr_name(a, "font")) {
+            int rc = decode_attr(a, value, sizeof(value));
+            if (rc != AO_OK) return rc;
+            if (!strcmp(value, "sans")) *font = AO_FONT_SANS;
+            else if (!strcmp(value, "mono")) *font = AO_FONT_MONO;
+            else return AO_E_FORMAT;
+        }
+    }
+    return AO_OK;
+}
 
-            if (c.i + 1 < c.n && c.s[c.i + 1] == '/') {
-                /* closing tag */
-                c.i += 2;
-                char name[16];
-                if (!read_name(&c, name, sizeof name)) return AO_E_FORMAT;
-                skip_ws(&c);
-                if (at_end(&c) || c.s[c.i] != '>') return AO_E_FORMAT;
-                c.i++;
-                depth--;
-                if (depth < 0) return AO_E_FORMAT;
-                if (!strcmp(name, "p")) {
-                    /* Each paragraph ends with '\n' except the last; the writer
-                     * strips it, so the reader adds it back -- but only if this
-                     * was not the final paragraph.  The last one is fixed up
-                     * after the loop. */
-                    in_p = 0;
-                    (void)in_p;
-                } else if (!strcmp(name, "aodoc")) {
-                    in_aodoc = 0;
-                }
-                continue;
-            }
-            if (c.i + 1 < c.n && (c.s[c.i + 1] == '?' || c.s[c.i + 1] == '!')) {
-                int rc = skip_junk(&c, depth);
+static int all_xml_space(const char *s, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (s[i] != ' ' && s[i] != '\t' && s[i] != '\r' && s[i] != '\n')
+            return 0;
+    return 1;
+}
+
+static int append_run_text(ao_model_t *m, const ao_xml_token_t *t,
+                           int cdata, uint8_t style, uint8_t size_px,
+                           uint8_t font, char *scratch, size_t scratch_cap) {
+    size_t n = 0;
+    int rc;
+    if (cdata) {
+        if (t->text_len > scratch_cap) return AO_E_FULL;
+        if (t->text_len) memcpy(scratch, t->text, t->text_len);
+        n = t->text_len;
+        if (!ao_utf8_valid(scratch, n)) return AO_E_UTF8;
+    } else {
+        rc = ao_xml_decode_native(t->text, t->text_len, scratch,
+                                  scratch_cap, &n);
+        if (rc != AO_XML_OK) return xml_to_io_error(rc);
+    }
+    /* A paragraph is the newline boundary in the model; newline bytes inside
+     * a run would silently change its structure during import. */
+    if (memchr(scratch, '\n', n) || memchr(scratch, '\r', n)) return AO_E_FORMAT;
+    if (n > UINT32_MAX) return AO_E_FULL;
+    uint32_t at = ao_model_text_len(m);
+    rc = ao_model_insert(m, at, scratch, (uint32_t)n);
+    if (rc != AO_OK) return rc == AO_E_FULL ? AO_E_FULL : AO_E_FORMAT;
+    if (n) {
+        static const uint8_t bits[3] = {
+            AO_STYLE_BOLD, AO_STYLE_ITALIC, AO_STYLE_UNDERLINE
+        };
+        for (size_t i = 0; i < 3; i++) {
+            if (ao_model_set_style(m, at, (uint32_t)n, bits[i],
+                                   (style & bits[i]) != 0) != AO_OK)
+                return AO_E_FORMAT;
+        }
+        if (ao_model_set_size_font(m, at, (uint32_t)n, size_px, font) != AO_OK)
+            return AO_E_FORMAT;
+    }
+    return AO_OK;
+}
+
+/* Parse the complete strict XML token stream into the model. The caller clears
+ * the model on every failure, so no partial document can escape. */
+static int import_xml(ao_model_t *m, const char *xml, size_t len) {
+    ao_xml_reader_t reader;
+    int rc = ao_xml_reader_init_native(&reader, xml, len);
+    if (rc != AO_XML_OK) return xml_to_io_error(rc);
+
+    char scratch[AO_IO_MAX_RUN_BYTES];
+    ao_xml_token_t t;
+    int seen_root = 0, root_open = 0, root_closed = 0;
+    int in_para = 0, in_run = 0, seen_version = 0;
+    uint32_t para_count = 0;
+    uint8_t run_style = AO_STYLE_OFF, run_size = AO_SIZE_DEFAULT;
+    uint8_t run_font = AO_FONT_SANS;
+
+    for (;;) {
+        rc = ao_xml_next(&reader, &t);
+        if (rc != AO_XML_OK) return xml_to_io_error(rc);
+        if (t.type == AO_XML_T_EOF) break;
+
+        if (t.type == AO_XML_T_TEXT) {
+            if (in_run) {
+                rc = append_run_text(m, &t, 0, run_style, run_size, run_font,
+                                     scratch, sizeof(scratch));
                 if (rc != AO_OK) return rc;
-                continue;
-            }
-
-            /* opening tag */
-            c.i++;
-            char name[16];
-            if (!read_name(&c, name, sizeof name)) return AO_E_FORMAT;
-            depth++;
-            if (depth > AO_IO_MAX_DEPTH) return AO_E_FORMAT;
-
-            /* attributes */
-            if (!strcmp(name, "p")) { p_align = AO_ALIGN_LEFT; p_style = AO_PARA_NORMAL; p_indent = 0; }
-            int self_close = 0;
-            for (;;) {
-                skip_ws(&c);
-                if (at_end(&c)) return AO_E_FORMAT;
-                if (c.s[c.i] == '/') {
-                    c.i++;
-                    if (at_end(&c) || c.s[c.i] != '>') return AO_E_FORMAT;
-                    c.i++;
-                    self_close = 1;
-                    break;
-                }
-                if (c.s[c.i] == '>') { c.i++; break; }
-                char aname[24];
-                if (!read_name(&c, aname, sizeof aname)) return AO_E_FORMAT;
-                skip_ws(&c);
-                if (at_end(&c) || c.s[c.i] != '=') return AO_E_FORMAT;
-                c.i++;
-                skip_ws(&c);
-                if (at_end(&c) || c.s[c.i] != '"') return AO_E_FORMAT;
-                c.i++;
-                char aval[AO_IO_MAX_ATTR];
-                size_t w = 0;
-                while (!at_end(&c) && c.s[c.i] != '"') {
-                    if (w + 4 >= sizeof aval) return AO_E_FORMAT;   /* attribute cap */
-                    if (c.s[c.i] == '&') {
-                        char enc[4];
-                        int n = read_entity(&c, enc);
-                        if (n < 0) return AO_E_FORMAT;
-                        memcpy(aval + w, enc, (size_t)n);
-                        w += (size_t)n;
-                    } else {
-                        aval[w++] = c.s[c.i++];
-                    }
-                }
-                if (at_end(&c)) return AO_E_FORMAT;
-                c.i++;                                           /* closing quote */
-                aval[w] = '\0';
-
-                if (!strcmp(name, "aodoc") && !strcmp(aname, "version")) {
-                    if (strcmp(aval, "1")) return AO_E_FORMAT;    /* unknown version */
-                    seen_version = 1;
-                } else if (!strcmp(name, "p") && !strcmp(aname, "align")) {
-                    p_align = !strcmp(aval, "center")  ? AO_ALIGN_CENTER
-                            : !strcmp(aval, "right")   ? AO_ALIGN_RIGHT
-                            : !strcmp(aval, "justify") ? AO_ALIGN_JUSTIFY
-                                                       : AO_ALIGN_LEFT;
-                } else if (!strcmp(name, "p") && !strcmp(aname, "pstyle")) {
-                    p_style = !strcmp(aval, "h1")     ? AO_PARA_H1
-                            : !strcmp(aval, "h2")     ? AO_PARA_H2
-                            : !strcmp(aval, "h3")     ? AO_PARA_H3
-                            : !strcmp(aval, "quote")  ? AO_PARA_QUOTE
-                            : !strcmp(aval, "bullet") ? AO_PARA_BULLET
-                            : !strcmp(aval, "number") ? AO_PARA_NUMBER
-                            : !strcmp(aval, "table")  ? AO_PARA_TABLE
-                            : !strcmp(aval, "image")  ? AO_PARA_IMAGE
-                                                      : AO_PARA_NORMAL;
-                } else if (!strcmp(name, "p") && !strcmp(aname, "pb")) {
-                    if (!strcmp(aval, "1")) p_style |= AO_PARA_PAGEBREAK;
-                } else if (!strcmp(name, "p") && !strcmp(aname, "indent")) {
-                    int v = 0;
-                    for (const char *q = aval; *q >= '0' && *q <= '9'; q++) {
-                        if (v > 10000) return AO_E_FORMAT;
-                        v = v * 10 + (*q - '0');
-                    }
-                    p_indent = (int16_t)v;
-                } else if (!strcmp(name, "r") && !strcmp(aname, "style")) {
-                    r_style = AO_STYLE_OFF;
-                    for (const char *q = aval; *q; q++) {
-                        if (*q == 'b') r_style |= AO_STYLE_BOLD;
-                        else if (*q == 'i') r_style |= AO_STYLE_ITALIC;
-                        else if (*q == 'u') r_style |= AO_STYLE_UNDERLINE;
-                        else return AO_E_FORMAT;             /* unknown style letter */
-                    }
-                } else if (!strcmp(name, "r") && !strcmp(aname, "size")) {
-                    int v = 0;
-                    for (const char *q = aval; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
-                    if (v < 6 || v > 64) return AO_E_FORMAT;
-                    r_size = (uint8_t)v;
-                } else if (!strcmp(name, "r") && !strcmp(aname, "font")) {
-                    if (!strcmp(aval, "mono")) r_font = AO_FONT_MONO;
-                    else if (!strcmp(aval, "sans")) r_font = AO_FONT_SANS;
-                    else return AO_E_FORMAT;
-                }
-                /* Unknown ATTRIBUTES are ignored on purpose: that is what makes
-                 * a newer writer's file readable by this reader. */
-            }
-
-            if (!strcmp(name, "aodoc")) {
-                if (!seen_version) {
-                    /* A file without a version is not this format. */
-                    return AO_E_FORMAT;
-                }
-                in_aodoc = 1;
-            } else if (!strcmp(name, "p")) {
-                if (!in_aodoc) return AO_E_FORMAT;
-                /* Start a new paragraph: append the newline that ends the
-                 * PREVIOUS one, unless this is the first.  Counting paragraphs
-                 * (rather than testing text_len) is what keeps empty paragraphs
-                 * -- including several empty ones in a row -- from collapsing. */
-                if (p_seen >= AO_IO_MAX_PARAS) return AO_E_FULL;
-                if (p_seen > 0) {
-                    int rc = ao_model_insert(m, ao_model_text_len(m), "\n", 1);
-                    if (rc != AO_OK) return rc == AO_E_FULL ? AO_E_FULL : AO_E_FORMAT;
-                }
-                /* Alignment is applied after the whole document is read: the
-                 * model creates a paragraph only once something is written into
-                 * it, so the index of an empty paragraph is not known yet. */
-                p_aligns[p_seen] = p_align;
-                p_styles[p_seen] = p_style;
-                p_indents[p_seen] = p_indent;
-                p_seen++;
-                in_p = 1;
-            } else if (!strcmp(name, "r")) {
-                if (!in_p) return AO_E_FORMAT;
-                in_r = 1;
-                text_at = 0;
-            }
-            if (self_close) {
-                depth--;
-                if (!strcmp(name, "r")) {
-                    /* <r/> is an empty run: nothing to add, and the empty
-                     * paragraph keeps its one empty run from the model. */
-                    in_r = 0;
-                }
+            } else if (!all_xml_space(t.text, t.text_len)) {
+                return AO_E_FORMAT;
             }
             continue;
         }
-
-        /* Character data: only inside a run does it mean anything. */
-        if (in_r) {
-            if (c.s[c.i] == '&') {
-                char enc[4];
-                int n = read_entity(&c, enc);
-                if (n < 0) return AO_E_FORMAT;
-                if (text_at + (uint32_t)n >= sizeof text) return AO_E_FULL;
-                memcpy(text + text_at, enc, (size_t)n);
-                text_at += (uint32_t)n;
-            } else {
-                if (text_at + 1 >= sizeof text) return AO_E_FULL;
-                text[text_at++] = c.s[c.i++];
-            }
-        } else {
-            c.i++;                      /* whitespace between elements */
+        if (t.type == AO_XML_T_CDATA) {
+            if (!in_run) return AO_E_FORMAT;
+            rc = append_run_text(m, &t, 1, run_style, run_size, run_font,
+                                 scratch, sizeof(scratch));
+            if (rc != AO_OK) return rc;
+            continue;
         }
-    }
-    if (depth != 0) return AO_E_FORMAT;     /* unclosed element */
-    if (!in_aodoc && ao_model_text_len(m) == 0) return AO_E_FORMAT;
-
-    /* The model's paragraphs must be exactly the ones the file named.  Because
-     * the reader appends a newline BEFORE each paragraph after the first, the
-     * count matches by construction; verify rather than assume. */
-    if (ao_model_para_count(m) != p_seen) { ao_model_clear(m); return AO_E_FORMAT; }
-    for (uint32_t i = 0; i < p_seen; i++) {
-        if (ao_model_set_align(m, m->paras[i].off, p_aligns[i]) != AO_OK ||
-            ao_model_set_para_style(m, m->paras[i].off, p_styles[i]) != AO_OK ||
-            ao_model_set_indent(m, m->paras[i].off, p_indents[i]) != AO_OK) {
-            ao_model_clear(m);
+        if (t.type == AO_XML_T_END) {
+            if (in_run && token_name(&t, "r")) { in_run = 0; continue; }
+            if (in_para && token_name(&t, "p")) { in_para = 0; continue; }
+            if (root_open && !in_para && token_name(&t, "aodoc")) {
+                root_open = 0; root_closed = 1; continue;
+            }
             return AO_E_FORMAT;
         }
+        if (t.type != AO_XML_T_START) return AO_E_FORMAT;
+
+        if (!seen_root) {
+            if (!token_name(&t, "aodoc")) return AO_E_FORMAT;
+            seen_root = 1;
+            for (uint32_t i = 0; i < t.attr_count; i++) {
+                if (!attr_name(&t.attrs[i], "version")) continue;
+                char value[AO_IO_MAX_ATTR];
+                rc = decode_attr(&t.attrs[i], value, sizeof(value));
+                if (rc != AO_OK) return rc;
+                if (strcmp(value, "1") != 0) return AO_E_FORMAT;
+                seen_version = 1;
+            }
+            if (!seen_version) return AO_E_FORMAT;
+            if (t.empty) root_closed = 1;
+            else root_open = 1;
+            continue;
+        }
+        if (!root_open || root_closed || in_run) return AO_E_FORMAT;
+
+        if (token_name(&t, "p")) {
+            if (in_para) return AO_E_FORMAT;
+            uint8_t align = AO_ALIGN_LEFT, pstyle = AO_PARA_NORMAL;
+            int16_t indent = 0;
+            rc = parse_para_attrs(&t, &align, &pstyle, &indent);
+            if (rc != AO_OK) return rc;
+            if (para_count) {
+                rc = ao_model_insert(m, ao_model_text_len(m), "\n", 1);
+                if (rc != AO_OK) return rc == AO_E_FULL ? AO_E_FULL : AO_E_FORMAT;
+            }
+            if (para_count >= m->para_cap) return AO_E_FULL;
+            uint32_t pi = para_count;
+            uint32_t pos = m->paras[pi].off;
+            if (ao_model_set_align(m, pos, align) != AO_OK ||
+                ao_model_set_para_style(m, pos, pstyle) != AO_OK ||
+                ao_model_set_indent(m, pos, indent) != AO_OK)
+                return AO_E_FORMAT;
+            para_count++;
+            if (t.empty) in_para = 0;
+            else in_para = 1;
+            continue;
+        }
+        if (token_name(&t, "r")) {
+            if (!in_para) return AO_E_FORMAT;
+            rc = parse_run_attrs(&t, &run_style, &run_size, &run_font);
+            if (rc != AO_OK) return rc;
+            if (t.empty) in_run = 0;
+            else in_run = 1;
+            continue;
+        }
+        return AO_E_FORMAT;
     }
-    if (!ao_utf8_valid(m->text, m->text_len)) { ao_model_clear(m); return AO_E_UTF8; }
+
+    if (!seen_root || !root_closed || root_open || in_para || in_run ||
+        para_count == 0 || ao_model_para_count(m) != para_count)
+        return AO_E_FORMAT;
     const char *why = NULL;
-    if (!ao_model_valid(m, &why)) { ao_model_clear(m); return AO_E_FORMAT; }
+    if (!ao_model_valid(m, &why)) return AO_E_FORMAT;
     return AO_OK;
 }
 
@@ -516,7 +490,7 @@ int ao_io_import(ao_model_t *m, const char *xml, size_t len) {
     if (!m || !xml) return AO_E_ARG;
     if (len == 0) len = strlen(xml);
     ao_model_clear(m);
-    int rc = import_into(m, xml, len);
+    int rc = import_xml(m, xml, len);
     if (rc != AO_OK) ao_model_clear(m);
     return rc;
 }
