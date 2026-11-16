@@ -107,6 +107,7 @@ ALL_CASES=(
     test_office_writer
     test_office_container
     test_office_docx
+    test_office_xlsx
     test_office_writer_layout
     test_office_sheet_core
     test_office_sheet_gui

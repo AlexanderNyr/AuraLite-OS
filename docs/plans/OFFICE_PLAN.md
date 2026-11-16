@@ -884,10 +884,20 @@ deliberately: loosening it would hide the number, not fix the cost.
       and `word/numbering.xml` so the style ids and list numbers we emit are
       not dangling. Output is deterministic: fixed part order, fixed
       relationship ids, timestamps pinned by `aozip` at 1980-01-01.
-- [ ] `.xlsx` **import/export**: sheets, cells (number/string/boolean/formula),
-      `sharedStrings.xml`, number formats (subset), column widths, merged cells.
-      Formula export is text-pass-through (`<f>`), values written as
-      `<v>` so a viewer without recalculation still shows numbers.
+- [x] `.xlsx` **import/export**: sheets, cells (number, shared string, inline
+      string, boolean, error value and formula), `sharedStrings.xml`, column
+      widths, and the package parts a validator requires (`[Content_Types].xml`,
+      `_rels/.rels`, `xl/workbook.xml`, `xl/_rels/workbook.xml.rels`,
+      `xl/styles.xml`, `xl/sharedStrings.xml`, one worksheet per sheet).
+      A formula crosses as typed input (`<f>`) with the computed value written
+      as `<v>`, so a viewer without recalculation still shows numbers.
+      **Not done, and each refused with a receipt rather than approximated:**
+      merged cells (`<mergeCells>`) — `ao_book_t` has no span, and inventing
+      one is how a sheet silently changes shape; number formats — the model has
+      nowhere to keep a display format, so a non-General `numFmt` imports as
+      its raw value and export writes General, which is the format the model
+      actually holds; shared formulas, conditional formatting, data validation,
+      drawings and hyperlinks.
 - [ ] `.pptx` **import/export**: slides, text frames, placeholder positions,
       simple shapes, images; notes slide text.
 - [x] **Refusal, not corruption:** an unsupported construct is reported in the
@@ -921,6 +931,24 @@ Measured on `9c2fffd`:
   skipped), reloads it unchanged, and then still saves and reloads a native
   `.aod` (740 bytes) — sniffing did not cost us the format we had.
 
+* `.xlsx`, measured on `cc265ba`:
+
+  * host `tests/unit/test_ao_xlsx.c`: **103 checks, 0 failures** — export →
+    import → export byte-identical (4 748 bytes, 3 shared strings), the same
+    workbook exported twice producing the same bytes, every part well-formed
+    under our own strict reader, a hand-written Excel-shaped workbook (inline
+    strings, a boolean, a shared string, an absolute relationship target)
+    mapped cell by cell, column widths in both directions, refusals, and
+    hostile inputs (not a ZIP, a ZIP with no `xl/workbook.xml`, a truncated
+    archive);
+  * independent host check `tools/office/check_xlsx.py` (new): **PASS, 8
+    parts** — Python's `zipfile` and `xml.etree` verifying content-type
+    coverage, resolving relationship targets, cell references that parse,
+    shared-string indices in range, `<cols>` before `<sheetData>`, and
+    timestamps pinned at 1980-01-01;
+  * the app links: `build/user/aosheet.elf` carries the bridge, and
+    `aosheet --xlsx-test` prints the receipt the guest gate greps for.
+
 - `tests/unit/test_ao_ooxml.c`: parse fixtures (hand-written minimal
   documents, one per feature), assert model contents; export then re-import →
   model equality; and hostile inputs — an XXE-shaped `<!DOCTYPE>` with an
@@ -951,9 +979,12 @@ Measured on `9c2fffd`:
 
 #### Not yet done
 
-`.xlsx` and `.pptx` are untouched. They want the same shape — a part list, a
-translation, a subset table — and the reason to do `.docx` first is that it
-is the one with the most surfaces to get wrong per line of code.
+`.pptx` is untouched.  `.xlsx` is done: it wanted the same shape — a part
+list, a translation, a subset table — and got it, including the two refusals
+(merged cells, number formats) that the model cannot honestly support.
+`.pptx` is last of the three because a slide is the one whose geometry the
+suite does not already model: the Writer has paragraphs, the Sheet has cells,
+and a deck needs positioned frames that neither has.
 
 ---
 
@@ -1137,5 +1168,5 @@ serial receipts — the same standard the rest of the plans hold to.
 | OF5 | ✅ done (aogrid: virtualised viewport, selection, fill handle, copy/paste with formula translation, resize, freeze panes, stable sort, filter; bar/line/pie charts anchored to cells and persisted in the file; unit 37, guest grid gate, perf gate avg 4444 us / worst 20202 us) | `patches/OFFICE_OF5_sheet_gui.patch` |
 | OF6 | ✅ done (aoslide: text boxes, shapes, images, z-order, master slide + sorter; fullscreen show with click/Space advance and Esc exit, chrome suppressed; speaker notes stored; unit 91, guest 11/11, VNC LIVE SLIDE PASS) | `patches/OFFICE_OF6_slide.patch` |
 | OF7 | ✅ done (ZIP reader + writer, strict bounded XML, `.aod` = 3 ordered parts, legacy plain-XML sniffing; host `test_ao_zip` 165/0, `test_ao_xml` 43/0, `test_ao_doc` 121 checks, Python `zipfile` interop; guest `test_office_container.sh` 13/13; full office integration OF0 11/11, OF1 16/16, OF2 19/19, OF3 13/13, OF4 12/12, OF5 7/7, OF6 11/11, OF7 13/13; `make test-unit` rc=0) | — |
-| OF8 | 🟨 partial — `.docx` import + export done (aodox, 486 host checks, Python interop, guest 9/9, subset table gated); `.xlsx` and `.pptx` not started | — |
+| OF8 | 🟨 partial — `.docx` *and* `.xlsx` import + export done (aodox 486 host checks, aoxlsx 103, Python interop on both, docx guest 9/9, subset tables gated in both directions); `.pptx` not started | — |
 | OF9 | ⬜ planned | — |

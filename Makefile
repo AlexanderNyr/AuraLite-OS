@@ -2080,6 +2080,17 @@ $(USER_BUILD)/aodox.o: userspace/office/libaodoc/aodox.c \
                        userspace/office/libaodoc/aomodel.h
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
 
+# OF8: the .xlsx bridge, linked into the Sheet (and covered on the host by
+# tests/unit/test_ao_xlsx.c).  It pulls in the engine too (aocalc.h), because
+# a cell is translated through it: a formula crosses as typed input and the
+# engine is what turns it into the cached value we write.
+$(USER_BUILD)/aoxlsx.o: userspace/office/libaodoc/aoxlsx.c \
+                        userspace/office/libaodoc/aoxlsx.h \
+                        userspace/office/libaodoc/aocalc.h \
+                        userspace/office/libaodoc/aozip.h \
+                        userspace/office/libaodoc/aoxml.h
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I userspace/office/libaodoc -c $< -o $@
+
 $(USER_BUILD)/aocalc.o: userspace/office/libaodoc/aocalc.c \
                       userspace/office/libaodoc/aocalc.h \
                       userspace/office/libaodoc/aodoc.h
@@ -2109,10 +2120,14 @@ $(USER_BUILD)/aoslide.o: userspace/office/office/aoslide.c \
 
 $(USER_BUILD)/aosheet.elf: $(USER_BUILD)/aosheet.o $(USER_BUILD)/aocalc.o \
                            $(USER_BUILD)/aogrid.o $(USER_BUILD)/aodoc.o \
+                           $(USER_BUILD)/aoxlsx.o $(USER_BUILD)/aozip.o \
+                           $(USER_BUILD)/aoxml.o $(USER_BUILD)/aoinflate.o \
                            $(USER_COMMON) $(USER_GUI_OBJ) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/aosheet.o $(USER_BUILD)/aocalc.o \
 	      $(USER_BUILD)/aogrid.o $(USER_BUILD)/aodoc.o \
+	      $(USER_BUILD)/aoxlsx.o $(USER_BUILD)/aozip.o \
+	      $(USER_BUILD)/aoxml.o $(USER_BUILD)/aoinflate.o \
 	      $(USER_COMMON_LNK) $(USER_GUI_OBJ) -o $@
 	@echo "[link] $@"
 
@@ -4139,6 +4154,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_ao_layout $(BUILD_DIR)/test_ao_xml \
                 $(BUILD_DIR)/test_ao_zip \
                 $(BUILD_DIR)/test_ao_ooxml \
+                $(BUILD_DIR)/test_ao_xlsx \
                 $(BUILD_DIR)/test_ao_formula $(BUILD_DIR)/test_ao_sheet \
                 $(BUILD_DIR)/test_ao_grid $(BUILD_DIR)/test_ao_slide \
                 $(BUILD_DIR)/test_apkg \
@@ -4694,6 +4710,10 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # zipfile and xml.etree -- checking the part layout and XML well-formedness of
 # the archive our writer produced.
 	@python3 tools/office/check_docx.py $(BUILD_DIR)/test_ao_ooxml_docx.docx
+# ...and the same for .xlsx: tests/unit/test_ao_xlsx.c writes
+# build/test_ao_xlsx.xlsx, and a reader we did not write grades it.
+	@echo "[unit] running tools/office/check_xlsx.py"
+	@python3 tools/office/check_xlsx.py $(BUILD_DIR)/test_ao_xlsx.xlsx
 # W32A-1: the committed bindreport agrees textually with a fresh one.
 	@echo "[unit] running $(BUILD_DIR)/test_w32_a1 --emit-report"
 	@$(BUILD_DIR)/test_w32_a1 --emit-report $(BUILD_DIR)/user > \
@@ -5914,6 +5934,29 @@ $(BUILD_DIR)/test_ao_ooxml: tests/unit/test_ao_ooxml.c \
 	          userspace/office/libaodoc/aomodel.c \
 	          userspace/office/libaodoc/aoinflate.c \
 	          userspace/office/libaodoc/aodoc.c -o $@
+
+# OF8: the .xlsx bridge.  Links the engine too, because the round trip has to
+# prove a formula came back as typed input and still computes.
+$(BUILD_DIR)/test_ao_xlsx: tests/unit/test_ao_xlsx.c \
+                          userspace/office/libaodoc/aoxlsx.c \
+                          userspace/office/libaodoc/aoxlsx.h \
+                          userspace/office/libaodoc/aocalc.c \
+                          userspace/office/libaodoc/aocalc.h \
+                          userspace/office/libaodoc/aozip.c \
+                          userspace/office/libaodoc/aozip.h \
+                          userspace/office/libaodoc/aoxml.c \
+                          userspace/office/libaodoc/aoxml.h \
+                          userspace/office/libaodoc/aodoc.c \
+                          userspace/office/libaodoc/aoinflate.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_ao_xlsx.c \
+	          userspace/office/libaodoc/aoxlsx.c \
+	          userspace/office/libaodoc/aocalc.c \
+	          userspace/office/libaodoc/aozip.c \
+	          userspace/office/libaodoc/aoxml.c \
+	          userspace/office/libaodoc/aodoc.c \
+	          userspace/office/libaodoc/aoinflate.c -o $@ -lm
 
 $(BUILD_DIR)/test_ao_zip: tests/unit/test_ao_zip.c \
                           userspace/office/libaodoc/aozip.c \

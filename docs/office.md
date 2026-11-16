@@ -435,6 +435,57 @@ is for.
 | tracked changes, comments, fields, headers, footers | — | ❌ |
 <!-- OF8-SUBSET-END -->
 
+### 9. What `.xlsx` keeps
+
+The Sheet reads and writes `.xlsx` through `userspace/office/libaodoc/aoxlsx.c`.
+The same two rules apply: a refusal is a receipt, and the bytes are
+deterministic.  The shape of the table is the same as §8, and it is held to the
+code by `tests/unit/test_ao_xlsx.c` in both directions.
+
+Two entries are worth arguing for, because they are the ones a reader would
+expect to be supported and is not:
+
+**`mergeCells` is refused.**  `ao_book_t` has no span — a cell is a value at a
+position.  Merging A1:B2 in the model would mean either dropping B2's value or
+inventing a structure the engine, the sort, the filter and the fill handle
+would all have to agree about.  A merged range is therefore named and left
+unmerged, exactly as `w:gridSpan` and `w:vMerge` are in §8.
+
+**A number format is a receipt.**  The model stores what the user typed and the
+value the engine computed; it has nowhere to keep "show this as 0.00%".  So a
+cell whose style resolves to a non-General `numFmt` imports as its raw value
+and is named, and export writes General throughout — which is the format the
+model actually holds, not the one a stylesheet claims.
+
+<!-- OF8-XLSX-SUBSET-BEGIN -->
+| SpreadsheetML | what it becomes | supported |
+|---|---|---|
+| `workbook` | the package's sheet list | ✅ |
+| `sheets` | the container the entries below live in | ✅ |
+| `sheet` | one `ao_sheet_t`, addressed by name | ✅ |
+| `worksheet` | one sheet's cells | ✅ |
+| `sheetData` | the container the rows below live in | ✅ |
+| `row` | its cells (`r` honoured; else the previous row plus one) | ✅ |
+| `c` | one cell, its `r` parsed as an A1 reference | ✅ |
+| `v` | the value: number, boolean, error text or shared-string index | ✅ |
+| `f` | the formula, stored as typed input so the engine recomputes it | ✅ |
+| `is` | an inline string's container | ✅ |
+| `t` | the string's text (`xml:space` respected) | ✅ |
+| `sst` | the root of `xl/sharedStrings.xml` | ✅ |
+| `si` | one shared string; rich-text runs are concatenated | ✅ |
+| `cols` | the container the widths below live in | ✅ |
+| `col` | a column width, characters ↔ px at 7.5 px per character | ✅ |
+| `mergeCells` | — the model has no span | ❌ |
+| `numFmt` / `cellXfs` | a display format the model cannot store | ❌ |
+| `shared formula` (`<f t="shared">`) | — | ❌ |
+| `conditionalFormatting` | — | ❌ |
+| `dataValidation` | — | ❌ |
+| `drawing` (images, charts) | — | ❌ |
+| `hyperlink` | — | ❌ |
+| `extLst` | — | ❌ |
+| pivot tables, comments, `tableParts` | — | ❌ |
+<!-- OF8-XLSX-SUBSET-END -->
+
 Three things about that table are deliberate:
 
 **A ❌ is a receipt, not a shrug.**  Everything unsupported is named in the

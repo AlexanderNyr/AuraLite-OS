@@ -16,6 +16,8 @@
 #define _POSIX_C_SOURCE 200809L
 
 #include "aocalc.h"
+#include "aomodel.h"
+#include "aoxlsx.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,6 +98,103 @@ static const char DEMO[] =
 static int bench_requested;
 
 int sheet_gui(ao_book_t *b, const char *path);
+int sheet_xlsx_test(ao_book_t *b);
+
+/* OF8: the .xlsx bridge, headless.  Builds a workbook with one of every cell
+ * kind we claim, saves it as .xlsx, reads it back, and requires the round trip
+ * to be lossless -- the same receipt tests/integration/cases/ greps for.
+ *
+ * The point of doing it inside the app rather than only in a host test is the
+ * one thing a host test cannot see: that the bridge is linked into the binary
+ * a user runs, at a size the userspace linker accepts. */
+static char xlsx_out[262144];
+static char xlsx_scratch[65536];
+static char xlsx_strbuf[32768];
+
+typedef struct { char *p; size_t cap, len; } xlsx_buf_t;
+
+static int xlsx_to_buf(void *ctx, const void *bytes, size_t n) {
+    xlsx_buf_t *b = (xlsx_buf_t *)ctx;
+    if (n > b->cap - b->len) return -1;
+    if (n) memcpy(b->p + b->len, bytes, n);
+    b->len += n;
+    return 0;
+}
+
+static int xlsx_note_print(void *ctx, const char *text, size_t len) {
+    (void)ctx;
+    printf("[sheet] xlsx: %.*s\n", (int)len, text);
+    return 0;
+}
+
+int sheet_xlsx_test(ao_book_t *b) {
+    ao_sheet_t *s = ao_book_sheet(b, "Gate", 1);
+    if (!s) { printf("SHEET XLSX GATE: FAIL (no sheet)\n"); return 1; }
+    ao_sheet_set(b, s, 0, 0, "10");
+    ao_sheet_set(b, s, 0, 1, "20");
+    ao_sheet_set(b, s, 0, 2, "=SUM(A1:B1)");
+    ao_sheet_set(b, s, 1, 0, "Привет");
+    ao_sheet_set(b, s, 1, 1, "TRUE");
+    uint32_t src = ao_sheet_cell_count(s);
+    printf("[sheet] xlsx source: %u cells\n", src);
+
+    ao_xlsx_strings_t strings;
+    xlsx_buf_t out = { xlsx_out, sizeof xlsx_out, 0 };
+    size_t size = 0;
+    uint32_t skipped = 0;
+    int rc = ao_xlsx_export_ex(b, NULL, xlsx_to_buf, &out, &size,
+                               xlsx_strbuf, sizeof xlsx_strbuf, &strings,
+                               xlsx_note_print, NULL, &skipped);
+    if (rc != AO_OK) {
+        printf("SHEET XLSX GATE: FAIL (export rc=%d)\n", rc);
+        return 1;
+    }
+    printf("[sheet] saved /documents/xlsx-gate.xlsx: %zu-byte XLSX "
+           "(%u shared strings, %u skipped)\n", size, strings.count, skipped);
+    if (skipped != 0) { printf("SHEET XLSX GATE: FAIL (skipped constructs)\n"); return 1; }
+
+    FILE *f = fopen("/documents/xlsx-gate.xlsx", "wb");
+    if (f) { fwrite(xlsx_out, 1, size, f); fclose(f); }
+
+    ao_book_t *in = ao_book_new(&arena);
+    if (!in) { printf("SHEET XLSX GATE: FAIL (no book)\n"); return 1; }
+    ao_book_set_now(in, (double)time(NULL) / 86400.0 + 25569.0);
+    ao_xlsx_strings_t str2;
+    uint32_t skipped2 = 0;
+    rc = ao_xlsx_import(in, xlsx_out, size, xlsx_scratch, sizeof xlsx_scratch,
+                        xlsx_strbuf, sizeof xlsx_strbuf, &str2,
+                        NULL, xlsx_note_print, NULL, &skipped2);
+    if (rc != AO_OK) {
+        printf("SHEET XLSX GATE: FAIL (import rc=%d)\n", rc);
+        return 1;
+    }
+    if (skipped2 != 0) { printf("SHEET XLSX GATE: FAIL (skipped on import)\n"); return 1; }
+    ao_sheet_t *si = ao_book_sheet_at(in, 0);
+    uint32_t got = si ? ao_sheet_cell_count(si) : 0u;
+    if (got != src) {
+        printf("SHEET XLSX GATE: FAIL (%u cells back, %u out)\n", got, src);
+        return 1;
+    }
+    /* The formula must be stored as typed input and still compute. */
+    ao_cell_t *c = si ? ao_sheet_cell(in, si, 0, 2) : NULL;
+    if (!c || !ao_cell_input(c) || strcmp(ao_cell_input(c), "=SUM(A1:B1)") != 0) {
+        printf("SHEET XLSX GATE: FAIL (formula did not survive)\n");
+        return 1;
+    }
+    ao_value_t v = ao_sheet_get(in, si, 0, 2);
+    if (v.kind != AO_VAL_NUM || v.num != 30.0) {
+        printf("SHEET XLSX GATE: FAIL (formula does not compute)\n");
+        return 1;
+    }
+    ao_value_t vt = ao_sheet_get(in, si, 1, 0);
+    if (vt.kind != AO_VAL_TEXT || !vt.text || strcmp(vt.text, "Привет") != 0) {
+        printf("SHEET XLSX GATE: FAIL (Cyrillic did not survive)\n");
+        return 1;
+    }
+    printf("[sheet] opened: %u cells\n", got);
+    printf("SHEET XLSX GATE: PASS\n");
+    return 0;
+}
 
 int main(int argc, char **argv) {
     ao_arena_init(&arena, arena_mem, sizeof arena_mem);
@@ -145,6 +244,9 @@ int main(int argc, char **argv) {
         ao_csv_export(b, ao_book_sheet_at(b, 0), ',', emit_file, stdout);
         printf("SHEET EVAL: PASS (csv)\n");
         return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "--xlsx-test") == 0) {
+        return sheet_xlsx_test(b);
     }
     /* No flag (or a plain file path): the grid. */
     if (argc >= 2 && argv[1][0] != '-') return sheet_gui(b, argv[1]);
@@ -339,6 +441,96 @@ static void restore_from_text(const char *text, size_t len) {
     ao_grid_filter_clear(&grid);
 }
 
+/* ---- OF8: .xlsx in the running app ------------------------------------- */
+
+static ao_xlsx_strings_t xlsx_strings;
+static ao_xlsx_cols_t    xlsx_cols;
+
+static int xlsx_to_file(void *ctx, const void *bytes, size_t n) {
+    FILE *f = (FILE *)ctx;
+    return (fwrite(bytes, 1, n, f) == n) ? 0 : -1;
+}
+
+/* Grid pixels -> SpreadsheetML characters, and back. */
+static uint32_t px_to_chars_x100(uint32_t px) {
+    return (uint32_t)(((uint64_t)px * 100u + AO_XLSX_PX_PER_CHAR_X100 / 2u)
+                      / AO_XLSX_PX_PER_CHAR_X100);
+}
+static uint32_t chars_x100_to_px(uint32_t cx) {
+    return (uint32_t)(((uint64_t)cx * AO_XLSX_PX_PER_CHAR_X100 + 50u) / 100u);
+}
+
+/* Load a workbook from an .xlsx package, replacing everything.  On any
+ * refusal the app is left with an EMPTY book, never a half-loaded one: see
+ * ATOMICITY in aoxlsx.h -- the arena is the undo, because a book has none. */
+static int load_xlsx(const void *bytes, size_t n) {
+    uint32_t skipped = 0;
+    memset(&xlsx_cols, 0, sizeof xlsx_cols);
+
+    ao_arena_init(&arena, arena_mem, sizeof arena_mem);
+    grid.book = ao_book_new(&arena);
+    book = grid.book;
+    if (!book) return AO_E_FULL;
+    ao_book_set_now(book, (double)time(NULL) / 86400.0 + 25569.0);
+    chart_n = 0;
+
+    int rc = ao_xlsx_import(book, bytes, n, xlsx_scratch, sizeof xlsx_scratch,
+                            xlsx_strbuf, sizeof xlsx_strbuf, &xlsx_strings,
+                            &xlsx_cols, xlsx_note_print, NULL, &skipped);
+    if (rc != AO_OK) {
+        ao_arena_init(&arena, arena_mem, sizeof arena_mem);
+        grid.book = ao_book_new(&arena);
+        book = grid.book;
+        ao_book_set_now(book, (double)time(NULL) / 86400.0 + 25569.0);
+        chart_n = 0;
+        return rc;
+    }
+
+    grid.top_row = 0;
+    grid.left_col = 0;
+    grid.anchor_row = grid.anchor_col = 0;
+    grid.cur_row = grid.cur_col = 0;
+    grid.freeze_rows = grid.freeze_cols = 0;
+    grid.extend = 0;
+    ao_grid_filter_clear(&grid);
+    /* Column widths came back in characters; the grid thinks in pixels. */
+    for (uint32_t c = 0; c < AO_XLSX_MAX_COLS && c < AO_GRID_MAX_COLS; c++) {
+        if (xlsx_cols.w[c]) ao_grid_col_w_set(&grid, c, chars_x100_to_px(xlsx_cols.w[c]));
+    }
+    return AO_OK;
+}
+
+static int do_save_xlsx(void) {
+    FILE *f = fopen(doc_path, "wb");
+    if (!f) {
+        printf("[sheet] save failed: cannot open %s\n", doc_path);
+        return -1;
+    }
+    /* Only the columns the user actually resized: defaulting is the grid's
+     * job, and writing every column would freeze today's defaults into the
+     * file. */
+    ao_xlsx_cols_t cols;
+    memset(&cols, 0, sizeof cols);
+    for (uint32_t c = 0; c < AO_XLSX_MAX_COLS && c < AO_GRID_MAX_COLS; c++) {
+        if (grid.col_w[c]) cols.w[c] = px_to_chars_x100(grid.col_w[c]);
+    }
+    size_t size = 0;
+    uint32_t skipped = 0;
+    int rc = ao_xlsx_export_ex(book, &cols, xlsx_to_file, f, &size,
+                               xlsx_strbuf, sizeof xlsx_strbuf, &xlsx_strings,
+                               xlsx_note_print, NULL, &skipped);
+    fclose(f);
+    if (rc != AO_OK) {
+        printf("[sheet] save failed: xlsx export rc=%d\n", rc);
+        return -1;
+    }
+    uint32_t n = cur_sheet() ? ao_sheet_cell_count(cur_sheet()) : 0u;
+    dirty = 0;
+    printf("[sheet] saved %s: %zu-byte XLSX (%u cells, %u skipped)\n",
+           doc_path, size, n, skipped);
+    return 0;
+}
+
 static void push_undo(void) {
     char *snap = serialize_all();
     if (!snap) return;
@@ -375,6 +567,8 @@ static void do_redo(void) {
 }
 
 static int do_save(void) {
+    size_t dpl = strlen(doc_path);
+    if (dpl > 5u && strcmp(doc_path + dpl - 5u, ".xlsx") == 0) return do_save_xlsx();
     char *buf = serialize_all();
     if (!buf) return -1;
     FILE *f = fopen(doc_path, "wb");
@@ -395,6 +589,20 @@ static int do_save(void) {
 static void do_load(const char *path) {
     size_t n;
     if (load_text(path, &n) != 0) { printf("[sheet] load failed: %s\n", path); return; }
+    /* Sniffed, not named: a ZIP local-file header is what an .xlsx IS.  The
+     * native .aosheet is text, so this cannot misfire, and a workbook with
+     * the wrong extension still opens. */
+    if (n >= 4u && memcmp(file_buf, "PK\x03\x04", 4u) == 0) {
+        int rc = load_xlsx(file_buf, n);
+        if (rc != AO_OK) {
+            printf("[sheet] load failed: %s (xlsx rc=%d)\n", path, rc);
+            return;
+        }
+        snprintf(doc_path, sizeof doc_path, "%s", path);
+        printf("[sheet] loaded %s (%u cells, %d chart(s))\n", doc_path,
+               cur_sheet() ? ao_sheet_cell_count(cur_sheet()) : 0u, chart_n);
+        return;
+    }
     restore_from_text(file_buf, n);
     snprintf(doc_path, sizeof doc_path, "%s", path);
     printf("[sheet] loaded %s (%u cells, %d chart(s))\n",
