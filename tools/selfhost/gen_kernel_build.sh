@@ -62,11 +62,18 @@ ASM_COUNT=${#ASM_SRCS[@]}
 # tree has.
 #
 # 150 -> 151 (GUI shell extraction, PR #8): kernel/gui/gui_shell.c -- the
-# start-menu, desktop-icon and shell-launch logic lifted out of gui.c -- is
-# the 151st translation unit.  Found by tools/check_build_hygiene.py, not by
-# a local build: the pin only fires when the self-host closure is staged.
-if [ "$C_COUNT" -ne 151 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 151 / 9)" >&2
+# start-menu, desktop-icon and shell-launch logic lifted out of gui.c -- was
+# the 151st translation unit.
+# 151 -> 150 (Rust desktop shell, PR #13): gui_shell.c is gone; the start
+# menu, taskbar, desktop icons and notifications now live in
+# kernel/gui/desktop/*.rs and are compiled by rustc, not by this C closure,
+# so the C count returns to 150 while the shell gains no C unit.  Found by
+# tools/check_build_hygiene.py, not by a local build: the pin only fires
+# when the self-host closure is staged.  The count is C + asm only --
+# a migration to another language moves a file out of this number, it does
+# not mean the file stopped being built.
+if [ "$C_COUNT" -ne 150 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 150 / 9)" >&2
     exit 2
 fi
 

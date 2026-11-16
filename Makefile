@@ -4132,6 +4132,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_mathulp \
                 $(BUILD_DIR)/test_progpath \
                 $(BUILD_DIR)/test_taskbar_layout \
+                $(BUILD_DIR)/test_taskbar_layout_rs \
                 $(BUILD_DIR)/test_aodoc_canvas \
                 $(BUILD_DIR)/test_ao_utf8 $(BUILD_DIR)/test_ao_glyph \
                 $(BUILD_DIR)/test_ao_doc $(BUILD_DIR)/test_ao_undo \
@@ -5839,6 +5840,17 @@ $(BUILD_DIR)/test_taskbar_layout: tests/unit/test_taskbar_layout.c \
                                   kernel/gui/taskbar_layout.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# The same gate against the geometry that actually ships.  PR #13 moved the
+# taskbar and start menu to Rust; the C test above kept asserting P1..P5
+# against kernel/gui/taskbar_layout.h, which the kernel no longer compiles,
+# while kernel/gui/desktop/taskbar_layout.rs had no test at all.  This target
+# compiles the real module on the host (it is pure u32 arithmetic, no imports),
+# so the properties are graded against the code the user's clicks hit.
+$(BUILD_DIR)/test_taskbar_layout_rs: tests/unit/test_taskbar_layout_rs.rs \
+                                     kernel/gui/desktop/taskbar_layout.rs
+	@mkdir -p $(BUILD_DIR)
+	$(RUSTC) --test --edition=2021 -O -o $@ $<
 
 # OF0: libaodoc's arena and dirty-rect canvas -- decision D5 in code.  The
 # shipping source is compiled into the test, so the rules that keep a keystroke
