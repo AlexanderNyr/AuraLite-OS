@@ -3,11 +3,12 @@
 mod arch;
 #[path = "common/mod.rs"]
 pub mod common;
-mod syscall;
+pub mod syscall;
 pub mod io;
 pub mod process;
 pub mod time;
 pub mod gui;
+pub mod fs;
 mod runtime;
 
 pub use common::error::{Error, Result};
@@ -36,6 +37,11 @@ pub mod prelude {
         EVT_CLOSE_REQ, EVT_KEY_DOWN, EVT_MOUSE_DOWN, EVT_MOUSE_UP,
         FLAG_HAS_TITLE, FLAG_HAS_CLOSE, FLAG_RESIZABLE, FLAG_ALWAYS_TOP,
     };
+    pub use crate::fs::{
+           create_dir, metadata, read_dir, read_link, remove_dir, remove_file,
+           rename, symlink, symlink_metadata, truncate, DirEntry, File,
+           FileType, Metadata, SeekFrom,
+       };
 }
 
 /// Writes formatted text to stdout.

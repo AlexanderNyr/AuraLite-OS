@@ -1,0 +1,594 @@
+# RSBR — Rust Bridge for AuraLite-OS
+
+> **RSBR** is the low-level Rust userspace library for interacting with AuraLite-OS. It provides a Rust-facing API over the operating system's system-call interface and keeps architecture-specific calling conventions behind a shared interface.
+
+This document is the central RSBR reference. Each subsystem is documented in its own section so that new modules can be added here without splitting the documentation across multiple files.
+
+---
+
+## Contents
+
+- [1. Overview](#1-overview)
+- [2. Design goals](#2-design-goals)
+- [3. Architecture](#3-architecture)
+- [4. Crate layout](#4-crate-layout)
+- [5. Common API conventions](#5-common-api-conventions)
+- [6. Platform support](#6-platform-support)
+- [7. Modules](#7-modules)
+  - [7.1. `process`](#71-process)
+  - [7.2. `io`](#72-io)
+  - [7.3. `time`](#73-time)
+  - [7.4. `gui`](#74-gui)
+  - [7.5. `fs`](#75-fs)
+- [8. Runtime](#8-runtime)
+- [9. System-call layer](#9-system-call-layer)
+- [10. Adding a new module](#10-adding-a-new-module)
+- [11. Current limitations and development status](#11-current-limitations-and-development-status)
+
+---
+
+## 1. Overview
+
+RSBR (Rust Bridge) is a `no_std` library intended for Rust programs running directly on AuraLite-OS. It exposes operating-system services without requiring a hosted Rust environment or a C standard library.
+
+The library sits between an application and the kernel:
+
+```text
+Rust application
+       |
+       v
+RSBR public API
+       |
+       v
+Shared syscall interface
+       |
+       v
+Architecture-specific syscall backend
+       |
+       v
+AuraLite-OS kernel
+```
+
+Applications should normally use the public modules (`process`, `io`, `time`, `gui`, and `fs`) instead of issuing raw system calls. The lower-level syscall and architecture layers exist to implement those modules and should be treated as implementation details unless an application has a specific low-level requirement.
+
+### Core properties
+
+- **`no_std`:** RSBR is designed for a freestanding userspace environment.
+- **No mandatory allocator:** the core APIs use caller-provided buffers and fixed-size data structures where practical.
+- **Rust API over native syscalls:** safe wrappers hide register conventions, syscall dispatch, and common ABI details.
+- **Architecture-aware:** the syscall backend selects the implementation for the target architecture.
+- **Explicit limitations:** an operation that is not available on a target should report an unsupported-operation error rather than silently pretending to provide equivalent behavior.
+
+---
+
+## 2. Design goals
+
+RSBR is intended to provide a small and predictable userspace foundation for native AuraLite applications.
+
+The main design goals are:
+
+1. **A consistent Rust interface.** Applications should not need to know which registers carry syscall arguments on a particular CPU architecture.
+2. **A small runtime footprint.** The library should remain suitable for freestanding programs and resource-constrained systems.
+3. **Clear ownership.** Resources such as file descriptors and GUI windows should have explicit lifetimes and deterministic cleanup where possible.
+4. **ABI correctness.** Structures passed to the kernel must use the exact layout expected by the relevant syscall ABI.
+5. **Honest portability.** A shared function name does not imply that every kernel port currently implements the same operation or semantics.
+6. **Incremental growth.** New APIs should build on existing kernel interfaces rather than inventing unsupported system calls.
+
+RSBR is not intended to be a replacement for a full POSIX libc. Its API reflects the current AuraLite-OS kernel contract, including native interfaces and platform-specific bring-up subsets.
+
+---
+
+## 3. Architecture
+
+RSBR is divided into several layers.
+
+### 3.1. Public subsystem APIs
+
+The public modules provide the interfaces used by applications:
+
+- `process` — process-related operations.
+- `io` — basic file-descriptor input and output.
+- `time` — clocks, sleeping, and interval timers.
+- `gui` — native window and application/event-loop interfaces.
+- `fs` — filesystem and file-descriptor operations.
+
+Each subsystem should keep its public API independent from raw architecture-specific syscall details whenever the underlying kernel interfaces allow it.
+
+### 3.2. Common support
+
+`common` contains types and helpers shared across the library, including the common error representation. This is where APIs obtain the crate-wide `Result` and represent syscall failures.
+
+### 3.3. System-call abstraction
+
+`syscall` provides the common syscall entry points and error decoding. Public modules use this layer instead of embedding architecture-specific assembly in every operation.
+
+### 3.4. Architecture backends
+
+`arch` contains the syscall implementation for each supported architecture:
+
+- `x86_64`
+- `aarch64`
+- `riscv64`
+
+The backend is selected at compile time. It is responsible for placing syscall numbers and arguments in the correct registers, executing the architecture's syscall instruction, and returning the raw result to the shared syscall layer.
+
+### 3.5. Runtime support
+
+`runtime` provides the freestanding entry-point and compiler/runtime support required by standalone programs. It includes startup, panic handling, and memory intrinsics that a hosted environment would normally provide.
+
+---
+
+## 4. Crate layout
+
+The main source tree is organized by responsibility:
+
+```text
+lib/rsbr/
+├── lib.rs
+├── arch/
+│   ├── mod.rs
+│   ├── x86_64.rs
+│   ├── aarch64.rs
+│   └── riscv64.rs
+├── common/
+│   ├── mod.rs
+│   └── error.rs
+├── syscall/
+│   ├── mod.rs
+│   └── numbers.rs
+├── runtime/
+│   ├── mod.rs
+│   ├── entry.rs
+│   ├── panic.rs
+│   └── mem_intrinsics.rs
+├── process/
+│   └── mod.rs
+├── io/
+│   └── mod.rs
+├── time/
+│   ├── mod.rs
+│   ├── abi.rs
+│   ├── clock.rs
+│   ├── sleep.rs
+│   └── itimer.rs
+├── gui/
+│   ├── mod.rs
+│   ├── abi.rs
+│   ├── app.rs
+│   └── window.rs
+└── fs/
+    ├── mod.rs
+    ├── abi.rs
+    ├── file.rs
+    ├── directory.rs
+    ├── flags.rs
+    ├── metadata.rs
+    └── path.rs
+```
+
+The `fs/` tree describes the initial filesystem module layout. If a module is not yet present in a particular checkout, treat its section below as the documented implementation target rather than proof that it has already been merged.
+
+---
+
+## 5. Common API conventions
+
+### 5.1. `no_std`
+
+RSBR is designed to be used from a freestanding Rust program. It uses `core` and does not require `std`. APIs that accept or return variable-length data generally use caller-provided slices instead of allocating memory internally.
+
+### 5.2. Results and errors
+
+Fallible public operations use the shared `Result<T>` type. Syscall failures are represented by the common error type, with the originating errno retained for syscall errors.
+
+The syscall layer decodes the conventional negative errno return range. Subsystem APIs should propagate errors instead of converting every failure into a generic error.
+
+An operation unavailable on the current architecture should return `ENOSYS` (or the corresponding common syscall error). Callers can therefore distinguish an unsupported operation from an invalid path, a missing file, or a permission failure.
+
+### 5.3. Ownership and cleanup
+
+Resource-owning types should document who owns the underlying kernel resource and when it is released. Where a type implements RAII, dropping the value performs best-effort cleanup. An explicit close method may be provided when callers need to observe close errors.
+
+### 5.4. ABI structures
+
+Any structure passed directly to a syscall must match the kernel's layout exactly. Use `#[repr(C)]` for ABI structures and add compile-time size checks where the layout is fixed. Do not assume that two architectures share a structure merely because the conceptual data is the same.
+
+### 5.5. String and buffer handling
+
+Rust strings are not automatically C strings. Before passing a path to a syscall, the wrapper must validate it, ensure that it contains no embedded NUL byte, check the platform's maximum supported length, and provide a NUL-terminated buffer for the duration of the syscall.
+
+---
+
+## 6. Platform support
+
+RSBR currently contains architecture backends for the following targets:
+
+| Target | Backend | Notes |
+|---|---|---|
+| `x86_64` | `arch/x86_64.rs` | Native AuraLite syscall interface; the filesystem interface is the most complete on this target. |
+| `aarch64` | `arch/aarch64.rs` | Uses the AArch64 syscall convention and the current portable kernel userspace ABI. |
+| `riscv64` | `arch/riscv64.rs` | Uses the RISC-V syscall convention and the current portable kernel userspace ABI. |
+
+The architecture backend being present means that RSBR has a syscall entry implementation for that target. It does **not** mean that every kernel subsystem exposes identical functionality on all three targets.
+
+Each public module must document meaningful differences in behavior, data availability, limits, and unsupported operations. The filesystem module below is an example of this rule.
+
+---
+
+## 7. Modules
+
+### 7.1. `process`
+
+**Source:** `lib/rsbr/process/mod.rs`
+
+The `process` module provides process-level operations exposed by the kernel. It is the public place for functionality such as obtaining process information and terminating the current process.
+
+The module should remain a thin Rust-facing layer over the process-related syscalls. Process creation, waiting, signals, and other lifecycle operations should only be documented as supported after their corresponding user ABI is confirmed for the target.
+
+**Status:** implemented; detailed API reference to be expanded.
+
+### 7.2. `io`
+
+**Source:** `lib/rsbr/io/mod.rs`
+
+The `io` module provides basic input and output through file descriptors. It is the low-level byte-stream interface used by standard streams and by higher-level facilities such as the filesystem module.
+
+Its current API includes buffer-based reading and writing, with helpers for completing writes and formatting output through `core::fmt::Write`.
+
+The I/O layer does not own arbitrary descriptors unless an owning wrapper explicitly takes responsibility for them. Descriptor ownership should remain clear when passing raw descriptor numbers between modules.
+
+**Status:** implemented; detailed API reference to be expanded.
+
+### 7.3. `time`
+
+**Source:** `lib/rsbr/time/`
+
+The `time` module provides clock and sleep functionality through the kernel time syscalls.
+
+Its implementation is separated into:
+
+- `clock.rs` — clock queries and clock-related types.
+- `sleep.rs` — sleep and nanosleep operations.
+- `itimer.rs` — interval-timer operations.
+- `abi.rs` — syscall ABI structures.
+
+Clock identifiers and returned values must be interpreted according to the semantics actually implemented by the kernel. A clock identifier being accepted by a wrapper does not necessarily mean that the kernel provides a distinct hardware or accounting source for it.
+
+**Status:** implemented; detailed API reference to be expanded.
+
+### 7.4. `gui`
+
+**Source:** `lib/rsbr/gui/`
+
+The `gui` module exposes AuraLite's native GUI syscall interface. It contains the GUI ABI definitions, application/event-loop support, and window management:
+
+- `abi.rs` — structures and constants shared with the kernel GUI ABI.
+- `app.rs` — application lifecycle, event dispatch, and the `Flow` control type.
+- `window.rs` — window creation and window-level operations.
+
+The window wrapper owns its native window resource and is intentionally not `Send` or `Sync`. This prevents a window handle from being moved across threads when the underlying GUI subsystem does not guarantee that behavior.
+
+GUI event structures must remain synchronized with the kernel ABI. Changes to event values, structure sizes, or window operations should be updated on both sides and validated together.
+
+**Status:** implemented; detailed API reference to be expanded.
+
+### 7.5. `fs`
+
+**Source:** `lib/rsbr/fs/`
+
+The `fs` module is the Rust-facing filesystem API for AuraLite applications. It wraps the kernel's file-descriptor and path-based filesystem interfaces and provides an owned `File` type, metadata structures, directory enumeration, and path operations.
+
+The module is allocator-free: callers provide the buffers used for file contents and directory entries.
+
+#### 7.5.1. Design
+
+The module uses two groups of operations:
+
+- **Descriptor-based operations:** open, close, read, write, seek, and descriptor metadata.
+- **Path-based operations:** metadata lookup, directory creation/removal, unlink, rename, truncate, and symbolic-link operations where available.
+
+`File` owns an open file descriptor. It closes that descriptor when dropped. The explicit `close(self)` method closes it immediately and returns any close error; after that, `Drop` does not close it again.
+
+The module does not expose kernel-internal VFS objects such as `vnode`, `ofd`, or `fdtab`. Those remain kernel implementation details. RSBR interacts with the kernel through syscalls only.
+
+#### 7.5.2. Source files
+
+| File | Responsibility |
+|---|---|
+| `mod.rs` | Module declarations, public exports, and the common unsupported-operation helper. |
+| `abi.rs` | Private ABI structures, path limits, directory limits, and VFS type constants. |
+| `file.rs` | `File`, `SeekFrom`, descriptor ownership, and file I/O. |
+| `directory.rs` | `DirEntry` and `read_dir`. |
+| `flags.rs` | Open flags and seek constants. |
+| `metadata.rs` | `Metadata`, `FileType`, `metadata`, and `symlink_metadata`. |
+| `path.rs` | Path-based filesystem operations and bounded C-path conversion. |
+
+#### 7.5.3. Public API
+
+**File handling**
+
+| API | Description |
+|---|---|
+| `File::open(path)` | Open an existing file using the default read-only mode. |
+| `File::create_new(path, mode)` | Create a new file and open it for reading and writing. |
+| `File::open_with(path, flags, mode)` | Open using native VFS flags. Currently available on `x86_64`. |
+| `File::read(buffer)` | Read one chunk into a caller-provided buffer. |
+| `File::write(buffer)` | Write one chunk from a caller-provided buffer. |
+| `File::write_all(buffer)` | Continue writing until all bytes are written or an error occurs. |
+| `File::seek(from)` | Change the shared file offset. |
+| `File::position()` | Query the current file offset. |
+| `File::read_at(offset, buffer)` | Read at an explicit offset without changing the shared offset. `x86_64` only. |
+| `File::write_at(offset, buffer)` | Write at an explicit offset without changing the shared offset. `x86_64` only. |
+| `File::try_clone()` | Duplicate the descriptor. The duplicate shares the underlying open-file-description offset. `x86_64` only. |
+| `File::metadata()` | Query metadata through an open descriptor. `x86_64` only. |
+| `File::sync()` | Request file and filesystem writeback. `x86_64` only. |
+| `File::close()` | Close explicitly and return the close result. |
+| `File::as_raw_fd()` | Borrow the raw descriptor number without transferring ownership. |
+| `File::into_raw_fd()` | Transfer descriptor ownership to the caller. |
+| `File::from_raw_fd(fd)` | Construct an owning wrapper from a raw descriptor. `unsafe`; the caller must uphold the ownership contract. |
+
+**Directory and metadata operations**
+
+| API | Description |
+|---|---|
+| `read_dir(path, entries)` | Read immediate directory entries into a caller-provided slice. |
+| `metadata(path)` | Get metadata for a path. |
+| `symlink_metadata(path)` | Get metadata without following the final symbolic link where supported. |
+| `DirEntry::name_bytes()` | Get the entry name as bytes, excluding its first NUL byte. |
+| `DirEntry::name_str()` | Interpret the entry name as UTF-8; returns `None` if it is not valid UTF-8. |
+| `DirEntry::is_dir()` | Test whether the entry is a directory. |
+| `DirEntry::is_file()` | Test whether the entry is a regular file. |
+
+**Path operations**
+
+| API | Description |
+|---|---|
+| `create_dir(path, mode)` | Create a directory. |
+| `remove_dir(path)` | Remove an empty directory. |
+| `remove_file(path)` | Remove a file or symbolic link. |
+| `rename(from, to)` | Rename a file or directory. |
+| `truncate(path, length)` | Change a file's length by path. |
+| `symlink(target, link_path)` | Create a symbolic link. |
+| `read_link(path, buffer)` | Read the link target into a caller-provided byte buffer. |
+
+Path operations not supported by the current AArch64/RV64 userspace ABI return `ENOSYS` on those targets.
+
+#### 7.5.4. Basic usage
+
+Open and read a file:
+
+```rust
+use rsbr::fs::File;
+
+fn read_header() -> rsbr::Result<usize> {
+    let mut file = File::open("/etc/hostname")?;
+    let mut buffer = [0u8; 64];
+    let count = file.read(&mut buffer)?;
+
+    // `file` is closed automatically when it goes out of scope.
+    Ok(count)
+}
+```
+
+Create a file and write all bytes:
+
+```rust
+use rsbr::fs::File;
+
+fn write_message() -> rsbr::Result<()> {
+    let mut file = File::create_new("/tmp/message.txt", 0o644)?;
+    file.write_all(b"Hello from RSBR!\n")?;
+    Ok(())
+}
+```
+
+Seek within a file:
+
+```rust
+use rsbr::fs::{File, SeekFrom};
+
+fn read_from_start() -> rsbr::Result<usize> {
+    let mut file = File::open("/tmp/message.txt")?;
+    file.seek(SeekFrom::Start(0))?;
+
+    let mut buffer = [0u8; 32];
+    file.read(&mut buffer)
+}
+```
+
+Read directory entries without allocating:
+
+```rust
+use rsbr::fs::{read_dir, DirEntry};
+
+fn list_root() -> rsbr::Result<usize> {
+    let mut entries = [DirEntry::empty(); 16];
+    let count = read_dir("/", &mut entries)?;
+
+    for entry in &entries[..count] {
+        if let Some(name) = entry.name_str() {
+            // Process `name` here.
+            let _ = name;
+        }
+    }
+
+    Ok(count)
+}
+```
+
+The examples use `rsbr::Result`, matching the crate's shared result type. They do not require heap allocation.
+
+#### 7.5.5. Open flags
+
+The `flags` module exposes the native VFS flag values:
+
+| Flag | Value | Meaning |
+|---|---:|---|
+| `O_RDONLY` | `0x0000` | Read-only access. This is zero, not a bit to test. |
+| `O_WRONLY` | `0x0001` | Write-only access. |
+| `O_RDWR` | `0x0002` | Read/write access. |
+| `O_ACCMODE` | `0x0003` | Access-mode mask. |
+| `O_CREAT` | `0x0040` | Create if the path does not exist. |
+| `O_EXCL` | `0x0080` | With `O_CREAT`, fail if the path already exists. |
+| `O_TRUNC` | `0x0200` | Truncate an existing regular file when opened. |
+| `O_APPEND` | `0x0400` | Append writes at the end of the file. |
+| `O_NONBLOCK` | `0x0800` | Non-blocking I/O status flag. |
+| `O_DIRECTORY` | `0x10000` | Require a directory. |
+| `O_CLOEXEC` | `0x80000` | Set close-on-exec for the new descriptor. |
+
+These values match the native VFS definitions in `kernel/fs/vfs.h`. The full flag contract is currently provided by the `x86_64` syscall implementation. The current AArch64/RV64 bring-up ABI does **not** interpret this mask as POSIX open flags; it recognises only a limited create hint.
+
+`SEEK_SET`, `SEEK_CUR`, and `SEEK_END` are exposed for the corresponding seek origins. Application code should generally use the `SeekFrom` enum instead of passing raw values.
+
+#### 7.5.6. Platform behavior and limits
+
+The three supported targets currently expose different filesystem syscall surfaces.
+
+| Capability | `x86_64` | `aarch64` | `riscv64` |
+|---|---|---|---|
+| Open/read/write/close | Yes | Yes | Yes |
+| Seek | Yes | Yes | Yes |
+| Full native `O_*` flags | Yes | No | No |
+| Create-new with atomic exclusive flag | Yes, via `O_CREAT\|O_EXCL` | No; existence check followed by create | No; existence check followed by create |
+| Path metadata | Full native `vfs_stat` payload | Size and directory flag only | Size and directory flag only |
+| No-follow path metadata | Yes, via `lstat` | Not exposed; falls back to `metadata` | Not exposed; falls back to `metadata` |
+| Metadata by open descriptor | Yes, via `fstat` | Not exposed | Not exposed |
+| Directory enumeration | Path-based list operation | Descriptor/index-based operation | Descriptor/index-based operation |
+| File duplication | Yes | Not exposed | Not exposed |
+| Positional read/write | Yes | Not exposed | Not exposed |
+| File sync | Yes | Not exposed | Not exposed |
+| mkdir/rmdir/unlink/rename | Yes | Not exposed by current bring-up ABI | Not exposed by current bring-up ABI |
+| Path truncate | Yes | Not exposed by current bring-up ABI | Not exposed by current bring-up ABI |
+| Symbolic-link operations | Yes | Not exposed by current bring-up ABI | Not exposed by current bring-up ABI |
+
+Additional limits of the current portable AArch64/RV64 filesystem ABI:
+
+- The user file-descriptor table has eight slots, currently numbered 3 through 10.
+- A single read or write syscall processes at most 4096 bytes. RSBR limits each individual operation accordingly; callers can repeat operations for larger transfers.
+- Directory enumeration returns at most 32 entries per call.
+- Portable directory names are limited to 59 bytes plus a terminating NUL in the current ABI.
+- Portable metadata includes only the file size and a directory indicator. Other metadata fields are zero because the kernel ABI does not provide them there.
+- Relative paths are resolved from the root by the current bring-up path, not from a per-process current working directory.
+- The portable open implementation does not enforce the full read/write access-mode contract.
+- Portable `create_new` checks whether the path exists before requesting creation. Because the check and creation are separate syscalls, this is not an atomic exclusive-create operation.
+
+The `x86_64` directory path uses the native path-based list operation and can return up to 256 entries per call. It uses the AuraLite VFS directory-entry layout, not Linux `getdents64` records. Linux compatibility syscalls are a separate kernel interface and must not be confused with the native RSBR ABI.
+
+#### 7.5.7. ABI and syscall mapping
+
+The filesystem module keeps its ABI definitions private in `abi.rs`. The layouts are target-specific:
+
+- On `x86_64`, metadata uses the native `vfs_stat` layout (64 bytes), and directory entries use the native VFS directory-entry layout (280 bytes).
+- On `aarch64` and `riscv64`, metadata uses the compact `AuraStat` layout (16 bytes), and directory entries use the compact `AuraDirent` layout (64 bytes). RSBR converts these records into the common public `Metadata` and `DirEntry` types.
+
+The current module uses these native syscall paths:
+
+| Operation | `x86_64` native interface | AArch64/RV64 bring-up interface |
+|---|---|---|
+| Open | `open` (2) | `open` (2) |
+| Close | `close` (3) | `close` (3) |
+| Read / write | `read` (0) / `write` (1) | `read` (0) / `write` (1) |
+| Seek | `lseek` (8) | `lseek` (8) |
+| Path metadata | `stat` (105) | `stat` (4) |
+| Descriptor metadata | `fstat` (5) | Not exposed |
+| No-follow metadata | `lstat` (6) | Not exposed |
+| Directory entries | `listdir` (80) | `readdir` (78) |
+| Create directory | `mkdir` (100) | Not exposed |
+| Remove directory | `rmdir` (101) | Not exposed |
+| Remove file | `unlink` (102) | Not exposed |
+| Rename | `rename` (103) | Not exposed |
+| Path truncate | `truncate` (104) | Not exposed |
+| Positional I/O | `pread64` (17) / `pwrite64` (18) | Not exposed |
+| Duplicate descriptor | `dup` (32) | Not exposed |
+| Synchronize file | `fsync` (74) | Not exposed |
+| Create/read symbolic link | `symlink` (88) / `readlink` (89) | Not exposed |
+
+The numbers above are the syscall numbers used by the current native AuraLite interfaces. They are not a promise that the same number has identical semantics in a Linux ABI or on another kernel personality.
+
+#### 7.5.8. Operations intentionally not exposed yet
+
+The current first cut does not provide wrappers for every operation present in the kernel's internal VFS. In particular:
+
+- `ftruncate` is not exposed because the kernel defines a number for it but has no active dispatcher arm in the current `x86_64` syscall handler.
+- Hard-link creation is not exposed because the native `SYS_LINK` path is not implemented in the current dispatcher.
+- `chmod`, `chown`, `access`, `fcntl`, `ioctl`, `readv`, `writev`, pipes, and current-working-directory operations are not part of this first public filesystem API.
+- A feature must not be added merely because a similarly named `vfs_*` function exists inside the kernel. RSBR needs a real user-accessible syscall with a verified argument and data-layout contract.
+
+#### 7.5.9. Integration notes
+
+To add the initial filesystem module to an RSBR checkout:
+
+1. Place the source directory at `lib/rsbr/fs/`.
+2. Declare it from `lib.rs` with `pub mod fs;`.
+3. Export the intended public types and functions through the crate prelude without removing existing exports.
+4. Add the target-appropriate syscall numbers to `syscall/numbers.rs`.
+5. Add any missing errno constants to `common/error.rs`.
+6. Build and test all three targets. A successful `x86_64` build does not validate the AArch64 or RISC-V ABI layouts.
+
+This module's initial implementation should be treated as **under integration and validation** until it has been built against the current RSBR checkout and exercised against the matching kernel on all supported targets.
+
+---
+
+## 8. Runtime
+
+**Source:** `lib/rsbr/runtime/`
+
+The runtime provides the minimal support needed by freestanding Rust applications:
+
+- `entry.rs` — process entry-point glue. The current entry path invokes the application's `main() -> i32` and exits through the process API.
+- `panic.rs` — panic handling for a `no_std` executable.
+- `mem_intrinsics.rs` — low-level memory routines expected by compiler-generated code in a freestanding environment.
+
+The runtime is not a hosted Rust standard library. It supplies only the startup and low-level facilities required by the RSBR execution model.
+
+---
+
+## 9. System-call layer
+
+**Source:** `lib/rsbr/syscall/`
+
+The syscall layer centralizes the low-level system-call interface. It provides helpers for invoking syscalls with different argument counts and converts kernel return values into the common RSBR result model.
+
+`numbers.rs` stores the syscall identifiers used by the library. Numbers must be checked against the actual kernel dispatcher for each target before they are added or changed.
+
+Subsystem modules should prefer the shared syscall helpers over writing inline assembly. Architecture-specific assembly belongs in `arch/`, not in individual filesystem, time, or GUI functions.
+
+A syscall should be added to the RSBR public API only after the following have been verified:
+
+1. The kernel has a live dispatcher arm for the syscall.
+2. The argument order and widths are known.
+3. Every pointer argument has a documented input/output direction and structure layout.
+4. The kernel's return and errno behavior is understood.
+5. The implementation is available on the target(s) claimed by the wrapper.
+
+---
+
+## 10. Adding a new module
+
+New RSBR modules should follow the same general pattern:
+
+1. **Inspect the kernel ABI first.** Find the syscall dispatcher, syscall number, argument order, pointer-copy logic, and related ABI structures.
+2. **Define private ABI types.** Keep kernel-facing structures separate from the public Rust types unless the public type is intentionally the ABI type.
+3. **Implement the shared API.** Put architecture-specific branches behind `#[cfg(target_arch = ...)]` where the underlying syscall contracts differ.
+4. **Report missing functionality honestly.** Return `ENOSYS` for operations that the current kernel port does not expose. Do not emulate semantics that cannot be preserved.
+5. **Add compile-time layout checks.** Assert the sizes of fixed ABI structures and, where useful, their alignment.
+6. **Document platform differences.** Include behavior, limits, and unavailable operations in this file.
+7. **Validate every target.** Build all supported architectures and run the relevant kernel/userland tests.
+
+A module should not expose kernel internals as if they were stable userspace interfaces. For example, the filesystem API wraps VFS syscalls; it does not expose the kernel's `vnode`, `ofd`, or `fdtab` structures.
+
+---
+
+## 11. Current limitations and development status
+
+RSBR is being developed alongside AuraLite-OS, so its API and the kernel ABI evolve together. The documentation should distinguish between:
+
+- **Implemented:** source code exists in RSBR and has a corresponding kernel interface.
+- **Integrated:** the module is declared and exported from the active RSBR crate.
+- **Build-verified:** the crate compiles for the target architecture.
+- **Runtime-verified:** the operation has been exercised against the matching kernel.
+
+These are separate milestones. A function existing in source code does not, by itself, prove that the corresponding syscall is active or that the ABI works on every architecture.
+
+The filesystem module's first cut has a broader interface on `x86_64` and a deliberately smaller one on `aarch64` and `riscv64`. Its integration and cross-target validation should be completed before describing the full filesystem API as production-stable.
+
+As RSBR grows, this document should remain the single entry point for the library. Add a dedicated subsection under [Modules](#7-modules) for every new public subsystem, and update the platform support and development-status tables whenever the kernel ABI changes.
