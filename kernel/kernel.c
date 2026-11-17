@@ -27,6 +27,7 @@
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/mm/aspace.h"
 #include "kernel/lib/abi_probe.h"
+#include "kernel/lib/atomic_compat.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/fs/execpolicy.h"   /* RESIDUE2 T4: policy resolves via VFS */
 #include "kernel/net/netdev.h"      /* RESIDUE2 T5: the idle RX drain */
@@ -103,6 +104,265 @@ void kernel_halt(void) {
         __asm__ volatile ("cli");
         __asm__ volatile ("hlt");
     }
+} 
+
+/* ---- AuraLite graphical boot splash ---------------------------------- */
+
+#define BOOT_SPLASH_BG          0x00000000u
+#define BOOT_SPLASH_INTERVAL_MS 20u
+
+#define BOOT_SPLASH_RADIUS          26
+#define BOOT_SPLASH_STROKE_RADIUS   2
+
+#define BOOT_SPLASH_ARC_MIN_STEPS   16u
+#define BOOT_SPLASH_ARC_MAX_STEPS   128u
+
+#define BOOT_SPLASH_Q16_COS         65516LL
+#define BOOT_SPLASH_Q16_SIN         1608LL
+
+static int boot_splash_available;
+static int boot_splash_started;
+
+static volatile int boot_splash_active;
+static volatile int boot_splash_paused;
+static volatile int boot_splash_stop_requested;
+static volatile int boot_splash_done;
+
+static void boot_splash_draw_background(void) {
+    gfx_clear(BOOT_SPLASH_BG);
+    gfx_flip();
+}
+
+static void boot_splash_prepare(void) {
+    gfx_init();
+
+    if (gfx_get_width() == 0 || gfx_get_height() == 0) {
+        return;
+    }
+
+    boot_splash_draw_background();
+
+    /* The framebuffer is now owned by the graphical boot splash. */
+    fb_set_console_enabled(0);
+    boot_splash_available = 1;
+}
+
+static void boot_splash_rotate_q16(int64_t *x, int64_t *y);
+static int32_t boot_splash_round_q16(int64_t value);
+
+
+static void boot_splash_draw_frame(uint32_t phase) {
+    int32_t width = (int32_t)gfx_get_width();
+    int32_t height = (int32_t)gfx_get_height();
+
+    if (width <= 0 || height <= 0) {
+        return;
+    }
+
+    int32_t cx = width / 2;
+    int32_t cy = height / 2;
+
+    /* Clear the previous spinner frame. */
+    int32_t extent =
+        BOOT_SPLASH_RADIUS + BOOT_SPLASH_STROKE_RADIUS + 4;
+
+    int32_t x0 = cx - extent;
+    int32_t y0 = cy - extent;
+    int32_t x1 = cx + extent + 1;
+    int32_t y1 = cy + extent + 1;
+
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > width) x1 = width;
+    if (y1 > height) y1 = height;
+
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+
+    gfx_fill_rect(
+        (uint32_t)x0,
+        (uint32_t)y0,
+        (uint32_t)(x1 - x0),
+        (uint32_t)(y1 - y0),
+        BOOT_SPLASH_BG
+    );
+
+    /*
+     * Smooth triangular pulse:
+     * short -> long -> short.
+     *
+     * One complete length cycle takes 128 frames.
+     */
+    uint32_t pulse_phase = phase & 127u;
+
+    uint32_t pulse = pulse_phase <= 64u
+        ? pulse_phase
+        : 128u - pulse_phase;
+
+    /*
+     * Smoothstep interpolation in fixed-point integer arithmetic.
+     * Produces a smooth transition without abrupt length changes.
+     */
+    uint32_t smooth =
+        (pulse * pulse * (192u - 2u * pulse) * 255u) / 262144u;
+
+    uint32_t sweep_steps =
+        BOOT_SPLASH_ARC_MIN_STEPS +
+        ((BOOT_SPLASH_ARC_MAX_STEPS -
+          BOOT_SPLASH_ARC_MIN_STEPS) * smooth) / 255u;
+
+    /*
+     * Rotation is independent of the length animation.
+     * Each step rotates by approximately 1.40625 degrees.
+     */
+    uint32_t rotation_steps = (phase * 3u) & 255u;
+
+    int64_t px = (int64_t)BOOT_SPLASH_RADIUS << 16;
+    int64_t py = 0;
+
+    /* Calculate the initial rotation. */
+    for (uint32_t i = 0; i < rotation_steps; i++) {
+        boot_splash_rotate_q16(&px, &py);
+    }
+
+    /*
+     * Draw a circular arc using overlapping filled circles.
+     *
+     * Their overlap creates a continuous stroke, while the first
+     * and last circles naturally produce rounded endpoints.
+     */
+    for (uint32_t i = 0; i <= sweep_steps; i++) {
+        int32_t offset_x = boot_splash_round_q16(px);
+        int32_t offset_y = boot_splash_round_q16(py);
+
+        int32_t dot_x = cx + offset_x;
+        int32_t dot_y = cy + offset_y;
+
+        if (dot_x >= 0 && dot_x < width &&
+            dot_y >= 0 && dot_y < height) {
+            gfx_fill_circle(
+                (uint32_t)dot_x,
+                (uint32_t)dot_y,
+                BOOT_SPLASH_STROKE_RADIUS,
+                GFX_WHITE
+            );
+        }
+
+        boot_splash_rotate_q16(&px, &py);
+    }
+
+    gfx_flip_rect(
+        x0,
+        y0,
+        (uint32_t)(x1 - x0),
+        (uint32_t)(y1 - y0)
+    );
+}
+
+static void boot_splash_rotate_q16(int64_t *x, int64_t *y) {
+    int64_t old_x = *x;
+    int64_t old_y = *y;
+
+    *x = (old_x * BOOT_SPLASH_Q16_COS -
+          old_y * BOOT_SPLASH_Q16_SIN) >> 16;
+
+    *y = (old_x * BOOT_SPLASH_Q16_SIN +
+          old_y * BOOT_SPLASH_Q16_COS) >> 16;
+}
+
+static int32_t boot_splash_round_q16(int64_t value) {
+    if (value >= 0) {
+        return (int32_t)((value + 32768) >> 16);
+    }
+
+    return -(int32_t)((-value + 32768) >> 16);
+}
+
+static void boot_splash_thread(void *arg) {
+    (void)arg;
+
+    uint32_t phase = 0;
+
+    for (;;) {
+        if (__sync_fetch_and_add(&boot_splash_stop_requested, 0)) {
+            break;
+        }
+
+        if (!__sync_fetch_and_add(&boot_splash_active, 0)) {
+            __sync_lock_test_and_set(&boot_splash_paused, 1);
+            timer_sleep_ms(BOOT_SPLASH_INTERVAL_MS);
+            continue;
+        }
+
+        __sync_lock_test_and_set(&boot_splash_paused, 0);
+
+        boot_splash_draw_frame(phase++);
+        timer_sleep_ms(BOOT_SPLASH_INTERVAL_MS);
+    }
+
+    __sync_lock_test_and_set(&boot_splash_paused, 1);
+    __sync_lock_test_and_set(&boot_splash_done, 1);
+
+    thread_exit();
+}
+
+static void boot_splash_start(void) {
+    if (!boot_splash_available || boot_splash_started) {
+        return;
+    }
+
+    __sync_lock_test_and_set(&boot_splash_active, 1);
+    __sync_lock_test_and_set(&boot_splash_paused, 0);
+    __sync_lock_test_and_set(&boot_splash_stop_requested, 0);
+    __sync_lock_test_and_set(&boot_splash_done, 0);
+
+    if (!kthread_create(boot_splash_thread, NULL, "boot-splash")) {
+        __sync_lock_test_and_set(&boot_splash_active, 0);
+        kprintf("[boot-splash] worker creation failed\n");
+        return;
+    }
+
+    boot_splash_started = 1;
+    kprintf("[boot-splash] animation started\n");
+}
+
+static void boot_splash_pause(void) {
+    if (!boot_splash_started) {
+        return;
+    }
+
+    __sync_lock_test_and_set(&boot_splash_active, 0);
+
+    while (!__sync_fetch_and_add(&boot_splash_paused, 0)) {
+        timer_sleep_ms(10);
+    }
+}
+
+static void boot_splash_resume(void) {
+    if (!boot_splash_started ||
+        __sync_fetch_and_add(&boot_splash_stop_requested, 0)) {
+        return;
+    }
+
+    __sync_lock_test_and_set(&boot_splash_paused, 0);
+    __sync_lock_test_and_set(&boot_splash_active, 1);
+}
+
+static void boot_splash_stop(void) {
+    if (!boot_splash_started) {
+        return;
+    }
+
+    boot_splash_pause();
+
+    __sync_lock_test_and_set(&boot_splash_stop_requested, 1);
+
+    while (!__sync_fetch_and_add(&boot_splash_done, 0)) {
+        timer_sleep_ms(10);
+    }
+
+    boot_splash_started = 0;
 }
 
 /* ============================================================================
@@ -197,15 +457,18 @@ void kmain(boot_info_t *boot_info) {
     /* Latch the bootloader handoff pointer BEFORE any other subsystem
      * touches it -- stack_protector_init(), uart_init(), etc. all read
      * from boot_info via boot_get_*() accessors. */
-    boot_info_init(boot_info);
+    boot_info_init(boot_info); 
+
+    fb_set_console_enabled(0);
 
     /* Order matters for diagnosability: each subsystem prints its own status,
        so if the boot stalls or triple-faults we can see exactly how far it got. */
     uart_init();
     stack_protector_init();
-    kprintf("[boot] UART (COM1) initialised @ 115200 baud\n");
 
     fb_init();
+    
+    kprintf("[boot] UART (COM1) initialised @ 115200 baud\n");
     kprintf("[boot] framebuffer console initialised\n");
     /* CI FIX (2026-11-07): a pixel console costs ~3.5x the boot under TCG
      * (9.5 s -> 33.9 s wall to the shell) because every scroll copies the
@@ -350,6 +613,9 @@ void kmain(boot_info_t *boot_info) {
 
     slab_init();
 
+    /* Prepare the graphical boot screen while memory is available. */
+    boot_splash_prepare();
+
     tss_init();
     kprintf("[boot] TSS loaded (RSP0 + IST1 for #DF)\n");
 
@@ -383,6 +649,9 @@ void kmain(boot_info_t *boot_info) {
 
     kprintf("[boot] initialising scheduler...\n");
     sched_init();
+
+    boot_splash_start();
+
     scheduler_self_test();
 
     kprintf("[boot] probing virtual machine hardware catalog...\n");
@@ -716,6 +985,10 @@ void kmain(boot_info_t *boot_info) {
 
     /* ---- Phase 14+: GUI + Mouse + Window Manager ---- */
     kprintf("[boot] initialising graphics + keyboard + mouse (PS/2 + USB HID full)...\n");
+
+    /* Stop drawing while the graphics backend is being initialised. */
+    boot_splash_pause();
+
     gfx_init();
     if (virtio_gpu_init() == 0) {
         const virtio_gpu_info_t *vg = virtio_gpu_get_info();
@@ -727,34 +1000,17 @@ void kmain(boot_info_t *boot_info) {
     usb_hid_init();
     usb_hid_self_test();
     usb_hotplug_start();
+    boot_splash_resume();
 
-    /* Boot screen. */
-    gfx_clear(GFX_DARKBLUE);
-    gfx_fill_rect(0, 0, gfx_get_width(), 40, GFX_BLUE);
-    /* OTA O2: same overridable identity as every other version print. */
-    {
-        static char gfx_banner[64];
-        ksnprintf(gfx_banner, sizeof(gfx_banner),
-                  "AuraLite OS v%s — Graphics Mode", AURALITE_VERSION);
-        gfx_draw_string(16, 16, gfx_banner, GFX_WHITE);
-    }
-    uint32_t box_w = 80, box_h = 60, gap = 16;
-    color_t colours[] = {GFX_RED, GFX_GREEN, GFX_YELLOW, GFX_CYAN, GFX_MAGENTA};
-    for (int i = 0; i < 5; i++) {
-        gfx_fill_rect(16 + i * (box_w + gap), 80, box_w, box_h, colours[i]);
-    }
-    gfx_draw_line(16, 180, 400, 320, GFX_WHITE);
-    gfx_draw_string(16, 360, "GUI + Mouse + Window Manager active", GFX_GREEN);
-    gfx_flip();
+    /*
+     * The graphical boot splash owns the framebuffer.
+     * Legacy framebuffer and 3D demos are intentionally skipped here:
+     * they would overwrite the animation and cause visible flickering.
+     */
+    boot_splash_stop();
+    boot_splash_draw_background();
 
-    /* Legacy WM banner — kept so older tests still see the marker line. */
-    wm_demo();
-    kprintf("[gfx] framebuffer GUI + window manager rendered\n");
-
-    /* 3D renderer demo. */
-    kprintf("[3d] rendering 3D demo...\n");
-    r3d_demo(30);
-    kprintf("[3d] demo complete\n");
+    kprintf("[gfx] framebuffer ready; handing display to GUI\n");
 
     /* New full GUI: init subsystem, run self-test, then kick off compositor
      * thread that pumps mouse/keyboard events into windows and re-renders
