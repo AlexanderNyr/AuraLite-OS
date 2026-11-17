@@ -38,7 +38,13 @@ cat > "$SDK/auralite.mk" <<'MKEOF'
 # Where this SDK lives.  Set AURALITE_SDK before including, or rely on this.
 AURALITE_SDK ?= $(dir $(lastword $(MAKEFILE_LIST)))
 
+# MSYS2's default cc targets Windows; AuraLite applications require ELF.
+# Keep the SDK overrideable for callers with their own cross toolchain.
+ifneq ($(filter MSYS% MINGW% UCRT% CLANG%,$(shell uname -s)),)
+AURALITE_CC  ?= clang --target=x86_64-elf
+else
 AURALITE_CC  ?= cc
+endif
 AURALITE_LD  ?= ld.lld
 
 # -ffreestanding: there is no host libc here.
@@ -52,7 +58,7 @@ AURALITE_CFLAGS := -ffreestanding -fno-stack-protector -fno-pie -fno-pic \
                    -O2 -Wall -Wextra \
                    -I $(AURALITE_SDK)/include
 
-AURALITE_LDFLAGS := -nostdlib -static -T $(AURALITE_SDK)/user.ld \
+AURALITE_LDFLAGS := -m elf_x86_64 -nostdlib -static -T $(AURALITE_SDK)/user.ld \
                     -z max-page-size=4096
 
 # The C runtime.  crt0.o is named explicitly and is NOT inside libaurac.a: it

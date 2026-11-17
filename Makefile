@@ -25,6 +25,17 @@ ISO_IMAGE   := $(BUILD_DIR)/auralite.iso
 
 RUSTC := rustc
 
+# MSYS2 rustc may print Windows paths (e.g. C:\Users\...); GNU make needs
+# POSIX paths for wildcard/prerequisite handling.  Paths containing spaces
+# remain unsupported by this Makefile; place RUSTUP_HOME and the tree in paths
+# without spaces.
+AURALITE_MSYS ?= $(if $(filter MSYS% MINGW% UCRT% CLANG%,$(shell uname -s)),1,0)
+ifeq ($(AURALITE_MSYS),1)
+rust_libdir = $(shell p="$$($(RUSTC) --print target-libdir --target=$(1))"; test -z "$$p" || cygpath -u "$$p")
+else
+rust_libdir = $(shell $(RUSTC) --print target-libdir --target=$(1))
+endif
+
 # -mcmodel=kernel: code lives in the top 2 GiB (negative addresses); required so
 #   clang emits relocations valid for the higher-half link address.
 # -mno-red-zone: the 128-byte red zone is unsafe under interrupts.
@@ -97,7 +108,7 @@ endif
 ASFLAGS     := -f elf64 -I $(BUILD_DIR)/
 
 # The linker script fixes the higher-half address; no --image-base needed.
-LDFLAGS     := -nostdlib -static -T kernel.ld -z max-page-size=4096 --gc-sections
+LDFLAGS     := -m elf_x86_64 -nostdlib -static -T kernel.ld -z max-page-size=4096 --gc-sections
 
 # A1 (ARM64_PLAN): kernel/dt/ is excluded too -- the shared DTB walker
 # belongs to the DTB-consuming kernels (riscv64, aarch64), which list
@@ -123,7 +134,7 @@ KERNEL_ASMS := $(shell find kernel drivers -name '*.asm' -not -path 'kernel/arch
 # foo_stubs.asm). ISR stubs live in isr_stubs.asm for this reason.
 
 ### RUST: x86-64 core libraries
-RUST_TARGET_LIBDIR := $(shell $(RUSTC) --print target-libdir --target=x86_64-unknown-none)
+RUST_TARGET_LIBDIR := $(call rust_libdir,x86_64-unknown-none)
 
 RUST_CORE_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcore-*.rlib))
 RUST_COMPILER_BUILTINS_RLIB := $(firstword $(wildcard $(RUST_TARGET_LIBDIR)/libcompiler_builtins-*.rlib))
@@ -512,7 +523,7 @@ RSBRRV_LIB  := $(RSBRRV_DIR)/lib.rs
 RSBRRV_RLIB := $(BUILD_DIR)/librsbr_rv.rlib
 
 ### RUST: RV64 core libraries
-RUST_LIBDIR_RV := $(shell $(RUSTC) --print target-libdir --target=$(RUST_TARGET_RV))
+RUST_LIBDIR_RV := $(call rust_libdir,$(RUST_TARGET_RV))
 
 RUST_CORE_RLIB_RV := $(firstword $(wildcard $(RUST_LIBDIR_RV)/libcore-*.rlib))
 RUST_BUILTINS_RLIB_RV := $(firstword $(wildcard $(RUST_LIBDIR_RV)/libcompiler_builtins-*.rlib))
@@ -623,7 +634,7 @@ RSBRA64_DIR  := lib/rsbr
 RSBRA64_LIB  := $(RSBRA64_DIR)/lib.rs
 RSBRA64_RLIB := $(BUILD_DIR)/librsbr_a64.rlib
 
-RUST_LIBDIR_A64 := $(shell $(RUSTC) --print target-libdir --target=$(RUST_TARGET_A64))
+RUST_LIBDIR_A64 := $(call rust_libdir,$(RUST_TARGET_A64))
 RUST_CORE_RLIB_A64 := $(firstword $(wildcard $(RUST_LIBDIR_A64)/libcore-*.rlib))
 RUST_BUILTINS_RLIB_A64 := $(firstword $(wildcard $(RUST_LIBDIR_A64)/libcompiler_builtins-*.rlib))
 
@@ -873,6 +884,16 @@ $(BUILD_DIR)/%.o: %.asm
 
 # Auto-generated nasm struct-offset include (keeps hand-written asm in sync
 # with tcb_t).  Built by a tiny host program using offsetof().
+ifeq ($(AURALITE_MSYS),1)
+# Use the kernel ABI, not the Windows LLP64 ABI, for TCB/CPU field offsets.
+# The compiled assembly is inspected on the host; target code is never run.
+$(BUILD_DIR)/asm_offsets_target.s: tools/gen_asm_offsets_cross.c $(shell find kernel -name '*.h')
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -S $< -o $@
+
+$(BUILD_DIR)/asm_offsets.inc: $(BUILD_DIR)/asm_offsets_target.s tools/gen_asm_offsets_cross.py
+	python3 tools/gen_asm_offsets_cross.py $< $@
+else
 $(BUILD_DIR)/gen_asm_offsets: tools/gen_asm_offsets.c kernel/proc/thread.h \
                                 kernel/arch/x86_64/cpu_local.h
 	@mkdir -p $(dir $@)
@@ -881,6 +902,7 @@ $(BUILD_DIR)/gen_asm_offsets: tools/gen_asm_offsets.c kernel/proc/thread.h \
 $(BUILD_DIR)/asm_offsets.inc: $(BUILD_DIR)/gen_asm_offsets
 	@mkdir -p $(dir $@)
 	$< $@
+endif
 
 # context.asm %includes asm_offsets.inc for TCB field offsets;
 # syscall_entry.asm %includes it for the per-CPU struct cpu_local slots.
@@ -924,6 +946,15 @@ $(KERNEL_ELF): $(KERNEL_OBJS) kernel.ld $(USER_BIN_H)
 #   init.elf  — the interactive shell, embedded in the kernel AND in the initrd
 #   hello.elf — a simple test program, in the initrd only
 USER_BUILD   := $(BUILD_DIR)/user
+
+# MSYS2's host cc produces Windows/COFF objects and pulls in UCRT headers.
+# AuraLite user programs need the freestanding ELF ABI instead.  Keep HOST_CC
+# unchanged for build-time generators, and select the cross compiler only for
+# user object recipes.  `private` prevents this setting leaking to prerequisites.
+ifeq ($(AURALITE_MSYS),1)
+$(USER_BUILD)/%.o: private HOST_CC := $(CC) --target=x86_64-elf
+$(USER_BUILD)/%.o: private USER_CFLAGS += -Wno-self-assign -Wno-c23-extensions -Wno-unused-but-set-variable
+endif
 INIT_ELF     := $(USER_BUILD)/init.elf
 HELLO_ELF    := $(USER_BUILD)/hello.elf
 USER_BIN_H   := $(BUILD_DIR)/init_bin.h
@@ -941,7 +972,7 @@ USER_CFLAGS  += $(VERSION_DEFINE)
 # lld roots SHT_INIT_ARRAY sections by built-in rule -- the plan's
 # negative control proved the KEEP in user.ld is belt-and-braces, not
 # load-bearing (recorded there).
-USER_LDFLAGS := -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections
+USER_LDFLAGS := -m elf_x86_64 -nostdlib -static -T lib/libc/user.ld -z max-page-size=4096 --gc-sections
 
 ### RUST: compiler and flags for Rust
 RUST_TARGET := x86_64-unknown-none
@@ -2675,11 +2706,12 @@ INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \
 # imports nothing, because imports are W32-4 and this gate is about the loader.
 PETEST_EXE := $(BUILD_DIR)/user/petest.exe
 
-$(PETEST_EXE): w32/tests/petest.asm
+# Both PE variants share one object.  Assemble it once as a proper
+# prerequisite so parallel makes cannot overwrite it while lld-link reads it.
+$(PETEST_EXE): $(BUILD_DIR)/user/petest.obj
 	@mkdir -p $(dir $@)
-	$(AS) -f win64 $< -o $(BUILD_DIR)/user/petest.obj
 	lld-link -subsystem:console -entry:start -nodefaultlib \
-	         $(BUILD_DIR)/user/petest.obj -out:$@
+	         $< -out:$@
 	@echo "  [pe] $@"
 
 # WIN32_PLAN.md W32-4: a .exe that imports KERNEL32 through a real PE import
@@ -3059,12 +3091,12 @@ $(BUILD_DIR)/user/%.lib: w32/tests/%.def
 	         -out:$(BUILD_DIR)/user/$*.implib-stub.dll -implib:$@ >/dev/null
 	@echo "  [pe] $@ (import library)"
 
-# .rc -> .res via llvm-rc (MS rc syntax: /fo names the output).  The
+# .rc -> .res via llvm-rc (-fo avoids MSYS2 rewriting /fo as a path).  The
 # .manifest rides as a second prerequisite so an edited manifest
 # rebuilds the .res; llvm-rc resolves it relative to the .rc's dir.
 $(BUILD_DIR)/user/%.res: w32/tests/%.rc w32/tests/%.manifest
 	@mkdir -p $(dir $@)
-	llvm-rc /fo$@ $<
+	llvm-rc -fo $@ $<
 	@echo "  [pe] $@ (compiled resources)"
 
 # W32A-1 DLL: delaytarget.  no imports; the delay-load target.
@@ -3261,6 +3293,12 @@ $(BUILD_DIR)/user/mantest_bad.exe:  $(BUILD_DIR)/user/mantest.obj $(K32_IMPLIB) 
 # genuinely compiler-emitted Win32 binary rather than only hand-written asm.
 MINGW_CC := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 MINGW_CXX := $(shell command -v x86_64-w64-mingw32-g++ 2>/dev/null)
+# The UCRT64 libstdc++ requires Windows CRT/TLS/stack-protector support which
+# the freestanding W32A-4 fixture deliberately cannot import.  Do not ship a
+# misleading/broken fixture; other MinGW C fixtures are unaffected.
+ifeq ($(AURALITE_MSYS),1)
+MINGW_CXX :=
+endif
 MINGW_OBJDUMP := $(shell command -v x86_64-w64-mingw32-objdump 2>/dev/null)
 W32_EXAMPLE_EXE := $(BUILD_DIR)/user/w32hello.exe
 W32_UNSUP_EXE   := $(BUILD_DIR)/user/w32unsup.exe
@@ -3385,12 +3423,21 @@ endif
 # GDI32/COMCTL32/SHELL32/ADVAPI32 surface real 7zFM.exe drives BY NAME, plus an
 # embedded RT_BITMAP (a 4bpp packed DIB, 7-Zip's toolbar-strip format) so
 # LoadBitmapW walks the real PE resource path.  windres compiles the .rc/.bmp.
-MINGW_WINDRES := $(patsubst %gcc,%windres,$(MINGW_CC))
+# Debian cross tools use the prefixed name.  MSYS2 UCRT64 also installs the
+# matching native windres as $(MSYSTEM_PREFIX)/bin/windres; it need not have
+# an x86_64-w64-mingw32- prefix next to gcc.
+MINGW_WINDRES := $(shell command -v $(patsubst %gcc,%windres,$(MINGW_CC)) 2>/dev/null)
+ifeq ($(AURALITE_MSYS),1)
+ifeq ($(MINGW_WINDRES),)
+MINGW_WINDRES := $(shell command -v $(MSYSTEM_PREFIX)/bin/windres 2>/dev/null)
+endif
+endif
 W32A15_RES := $(BUILD_DIR)/user/w32a15_7zip.res
 W32A15_EXE := $(BUILD_DIR)/user/w32a15_7zip.exe
 ifneq ($(MINGW_CC),)
 $(W32A15_RES): w32/tests/w32a15_7zip.rc w32/tests/w32a15_glyph.bmp $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
+	@test -n "$(MINGW_WINDRES)" || { echo "[deps] missing matching MinGW windres (MSYS2: pacman -S mingw-w64-ucrt-x86_64-binutils)" >&2; exit 1; }
 	$(MINGW_WINDRES) $< -O coff -o $@
 $(W32A15_EXE): w32/tests/w32a15_7zip.c $(W32A15_RES) $(W32_MINGW_STAMP)
 	@mkdir -p $(dir $@)
@@ -3529,9 +3576,9 @@ $(W32A4_CXX_EXE): w32/tests/w32a4_cxx.cpp $(W32_MINGW_STAMP)
 	    -lstdc++ -lgcc_eh -lgcc -lkernel32
 	@echo "  [pe] $@ (W32A-4 C++ guest fixture)"
 else
-$(W32A4_CXX_EXE): $(W32_MINGW_STAMP)
+$(W32A4_CXX_EXE): $(W32_MINGW_STAMP) Makefile
 	@mkdir -p $(dir $@)
-	@echo "  [pe] skipping the W32A-4 C++ fixture (no x86_64-w64-mingw32-g++)"
+	@echo "  [pe] skipping the W32A-4 C++ fixture (no compatible freestanding MinGW C++ toolchain)"
 	@: > $@
 endif
 
@@ -3544,6 +3591,10 @@ endif
 # skip, and CI asserts the payload's presence the same way it does for
 # w32hello.exe rather than discovering a vacuous gate later.
 LX_HOST_CC := $(shell command -v gcc 2>/dev/null)
+ifeq ($(AURALITE_MSYS),1)
+# MSYS/UCRT gcc emits PE, not Linux ELF/glibc binaries.
+LX_HOST_CC :=
+endif
 LX_HELLO_BIN := $(BUILD_DIR)/user/lx_hello
 LX_HOST_STAMP := $(BUILD_DIR)/user/.lxhost-$(if $(LX_HOST_CC),present,absent)
 
@@ -3605,6 +3656,15 @@ LX_LUA_SRC  := $(LX_LUA_DIR)/lua-$(LX_LUA_VER)
 LX_LUA_BIN  := $(BUILD_DIR)/user/lx_lua
 LX_LUA_STAMP := $(BUILD_DIR)/user/.lx_lua-ok
 
+ifeq ($(AURALITE_MSYS),1)
+# Lua's `make linux` is a Linux-host build.  Do not package a Windows executable
+# or fail the whole image build when this optional guest fixture cannot be made.
+$(LX_LUA_STAMP): Makefile
+	@mkdir -p $(dir $@)
+	@echo "  [lx] skipping Lua Linux fixture on MSYS2 (Linux build host required)"
+	@: > $(LX_LUA_BIN)
+	@touch $@
+else
 $(LX_LUA_STAMP): Makefile
 	@mkdir -p $(dir $@) $(LX_LUA_DIR)
 # CI FIX (b80abca run, 2026-11-07): the fetch below is best-effort BY DESIGN --
@@ -3636,6 +3696,7 @@ $(LX_LUA_STAMP): Makefile
 	    : > $(LX_LUA_BIN); \
 	fi
 	@touch $@
+endif
 
 $(LX_LUA_BIN): $(LX_LUA_STAMP)
 	@if [ -s $@ ]; then \
@@ -3989,8 +4050,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # LX_COMPAT L1: the /linux subtree is the personality's namespace --
 # stage the host-built static hello under it so the prefix rule and the
 # gate case exercise a real Linux binary.
+	@mkdir -p $(INITRD_DIR)/linux/tests
 	@if [ -s "$(LX_HELLO_BIN)" ]; then \
-	    mkdir -p $(INITRD_DIR)/linux/tests; \
 	    cp "$(LX_HELLO_BIN)" "$(INITRD_DIR)"/linux/tests/hello; fi
 # LX_COMPAT L2: the /linux userland — upstream's static busybox under
 # /linux/bin (applet dispatch is argv[1], so one binary is ls, cat and

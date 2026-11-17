@@ -491,7 +491,7 @@ int mkiso_build(const struct mk_opts *o) {
                 unsigned char sec[MK_SECT];
                 long off = (long)n * MK_SECT;
                 long rem = files[i].f->size - off;
-                size_t cnt = rem >= MK_SECT ? MK_SECT : (size_t)rem;
+                size_t cnt = rem >= (long)MK_SECT ? MK_SECT : (size_t)rem;
                 memset(sec, 0, MK_SECT);
                 if (cnt > 0)
                     memcpy(sec, files[i].f->data + off, cnt);
@@ -541,7 +541,7 @@ int mkiso_build(const struct mk_opts *o) {
             unsigned char sec[MK_SECT];
             long off = s * MK_SECT;
             long rem = st2.size - off;
-            size_t cnt = rem >= MK_SECT ? MK_SECT : (size_t)rem;
+            size_t cnt = rem >= (long)MK_SECT ? MK_SECT : (size_t)rem;
             memset(sec, 0, MK_SECT);
             if (cnt > 0) memcpy(sec, st2.data + off, cnt);
             if (mk_wr_sect(img, MK_STAGE2_LBA + (uint64_t)s, sec) != 0) goto done;
