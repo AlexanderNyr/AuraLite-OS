@@ -522,6 +522,7 @@ RUSTESRV_ELF := $(USERRV_BUILD)/rustes
 $(RSBRRV_RLIB): $(shell find $(RSBRRV_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
 	$(RUSTC) $(RUSTFLAGSRV) \
+		--edition=2021 \
 		--crate-name rsbr \
 		--crate-type rlib \
 		-o $@ \
@@ -1983,8 +1984,27 @@ $(USER_BUILD)/gedit.o:   userspace/apps/gui-edit/gedit.c     lib/libauragui/incl
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gfiles.o:  userspace/apps/gui-files/gfiles.c   lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gterm.o:   userspace/apps/gui-term/gterm.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
-	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+### RUST: compile gterm.rs with RSBR
+$(USER_BUILD)/gterm.o: userspace/apps/gui-term/gterm.rs $(RSBR_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGS) \
+		--edition=2021 \
+		--crate-type lib \
+		--emit obj \
+		--extern rsbr=$(RSBR_RLIB) \
+		-o $@ $<
+	@echo "[rustc] $@"
+
+$(USER_BUILD)/gterm.elf: $(USER_BUILD)/gterm.o $(RSBR_RLIB) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) \
+		$(USER_BUILD)/gterm.o \
+		$(RSBR_RLIB) \
+		$(RUST_CORE_RLIB) \
+		$(RUST_COMPILER_BUILTINS_RLIB) \
+		-o $@
+	@echo "[link] $@"
+
 $(USER_BUILD)/gsysmon.o: userspace/apps/gui-sysmon/gsysmon.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gabout.o:  userspace/apps/gui-about/gabout.c   lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)

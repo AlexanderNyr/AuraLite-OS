@@ -20,6 +20,10 @@ pub const EBADF:  i32 = 9;
 pub const EPERM:  i32 = 1;
 pub const ENOMEM: i32 = 12;
 pub const ENOSYS: i32 = 38;
+pub const ENOENT: i32 = 2;
+pub const EEXIST: i32 = 17;
+pub const ENOTDIR: i32 = 20;
+pub const ENAMETOOLONG: i32 = 36;
 
 impl Error {
     /// Returns the positive errno for syscall errors.
