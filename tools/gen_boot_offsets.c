@@ -52,6 +52,12 @@ static const struct offset_entry offsets[] = {
     ENTRY("BOOT_CPUS_OFF", cpus),
     ENTRY("BOOT_RSDP_OFF", rsdp_phys),
     ENTRY("BOOT_UEFI_OFF", boot_from_uefi),
+    /* RBFI (issue #16): the firmware/rbfi stage is the only loader whose
+     * memory map is synthesized rather than read from the platform, and
+     * these two let it say so.  Both are needed by the assembler: the stage
+     * writes loader_flags to distinguish its map from E820, and the kernel
+     * side reads it in pmm_init() to pick the conservative path. */
+    ENTRY("BOOT_LOADER_FLAGS_OFF", loader_flags),
 };
 
 static void emit_asm(void) {

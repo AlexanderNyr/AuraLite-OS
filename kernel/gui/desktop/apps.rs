@@ -17,7 +17,7 @@ struct AppEntry {
     group: AppGroup,
 }
 
-const APPS: [AppEntry; 11] = [
+const APPS: [AppEntry; 12] = [
     AppEntry { name: "Calculator",     path: b"/apps/gcalc\0",    icon_id: 4,  group: AppGroup::Applications },
     AppEntry { name: "Text Editor",    path: b"/apps/gedit\0",    icon_id: 3,  group: AppGroup::Applications },
     AppEntry { name: "File Manager",   path: b"/apps/gfiles\0",   icon_id: 2,  group: AppGroup::Applications },
@@ -29,6 +29,11 @@ const APPS: [AppEntry; 11] = [
     AppEntry { name: "Task Manager",   path: b"/apps/gtaskmgr\0", icon_id: 7,  group: AppGroup::System },
     AppEntry { name: "USB Manager",    path: b"/apps/gusb\0",     icon_id: 10, group: AppGroup::System },
     AppEntry { name: "About",          path: b"/apps/gabout\0",   icon_id: 6,  group: AppGroup::System },
+    // issue #16.  Opt-in by construction: nothing in the boot path can
+    // start this, and the app only OFFERS the RBFI path -- it cannot
+    // perform the handoff, because that is firmware (see
+    // firmware/rbfi/rbfi_stage2.asm and docs/rbfi.md).
+    AppEntry { name: "RBFI Firmware",  path: b"/apps/grbfi\0",  icon_id: 12, group: AppGroup::System },
 ];
 
 const GROUPS: [(AppGroup, &str); 3] = [

@@ -1092,6 +1092,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
              $(USER_BUILD)/gcalc.elf $(USER_BUILD)/gedit.elf \
              $(USER_BUILD)/gfiles.elf $(USER_BUILD)/gterm.elf \
              $(USER_BUILD)/gsysmon.elf $(USER_BUILD)/gabout.elf \
+             $(USER_BUILD)/grbfi.elf \
              $(USER_BUILD)/gweather.elf \
              $(USER_BUILD)/gtaskmgr.elf $(USER_BUILD)/gtheme.elf \
              $(USER_BUILD)/glaunch.elf \
@@ -2063,6 +2064,10 @@ $(USER_BUILD)/gsysmon.o: userspace/apps/gui-sysmon/gsysmon.c lib/libauragui/incl
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gabout.o:  userspace/apps/gui-about/gabout.c   lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+# issue #16: the RBFI panel.  It is a normal GUI app on purpose -- see
+# firmware/rbfi/README.md for why the handoff itself cannot be an app.
+$(USER_BUILD)/grbfi.o:   userspace/apps/gui-rbfi/grbfi.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gweather.o: userspace/apps/gui-weather/gweather.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 $(USER_BUILD)/gtaskmgr.o: userspace/apps/gui-taskmgr/gtaskmgr.c lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
@@ -2464,6 +2469,62 @@ iso-dual: deps-check kernel kernel32 $(BUILD_DIR)/initrd.tar $(MBR_DUAL_BIN) $(S
 	    --initrd $(BUILD_DIR)/initrd.tar --kernel32 $(BUILD_DIR)/kernel32.elf \
 	    $(DUAL_ISO_IMAGE)
 
+# ---- RBFI (issue #16): the optional raw-firmware boot path ---------------
+# RBFI replaces the platform BIOS entirely: it does chipset bring-up, builds
+# a 2 MiB identity page and runs the first 192 KiB of a USB image at 1 MiB.
+# firmware/rbfi/rbfi_stage2.asm is the adapter that turns that into the
+# boot_info_t contract kernel/arch/x86_64/boot.asm documents.
+#
+# This path is OPT-IN in three ways, all of them deliberate:
+#   * make iso does NOT build it -- `iso` is unchanged;
+#   * there is no QEMU target, because RBFI cannot run under QEMU (it drives
+#     a real LGA-1150/1155 PCH; measured, see docs/rbfi.md);
+#   * the only way to reach it is `make rbfi-image` plus a board told to
+#     boot the stick.
+RBFI_DIR        := $(BUILD_DIR)/rbfi
+RBFI_ROM        := firmware/rbfi/RBFI_x86.nas
+RBFI_STAGE_SRC  := firmware/rbfi/rbfi_stage2.asm
+RBFI_STAGE_BIN  := $(RBFI_DIR)/rbfi_stage2.bin
+RBFI_ROM_BIN    := $(RBFI_DIR)/RBFI.bin
+RBFI_IMAGE      := $(BUILD_DIR)/auralite.rbfi
+
+.PHONY: rbfi-rom rbfi-stage rbfi-image rbfi-check
+
+# The vendored ROM does not assemble upstream (three defects, patched in the
+# vendored copy and re-derived by tools/check_rbfi.py); this target is what
+# proves the vendored copy is still coherent.
+rbfi-rom: $(RBFI_ROM_BIN)
+
+$(RBFI_ROM_BIN): $(RBFI_ROM)
+	@mkdir -p $(dir $@)
+	@nasm -f bin $< -o $@
+	@printf "  [rbfi] %-38s %d bytes\n" $@ $$(stat -c%s $@)
+
+rbfi-stage: $(RBFI_STAGE_BIN)
+
+$(RBFI_STAGE_BIN): $(RBFI_STAGE_SRC) $(BOOT_OFFSETS_INC)
+	@mkdir -p $(dir $@)
+	@nasm -f bin -i $(BUILD_DIR)/ $< -o $@
+	@sz=$$(stat -c%s $@); \
+	 if [ "$$sz" -ne 196608 ]; then \
+	   echo "[rbfi] FATAL: $@ is $$sz bytes, RBFI copies exactly 196608"; \
+	   exit 1; \
+	 fi
+	@printf "  [rbfi] %-38s %d bytes\n" $@ 196608
+
+# The image a USB stick gets: stage at LBA 0 (RBFI copies 192 KiB from there
+# to 1 MiB), then the header + kernel ELF + initrd that the stage reads.
+rbfi-image: $(RBFI_STAGE_BIN) kernel $(BUILD_DIR)/initrd.tar tools/mkrbfi.py
+	@python3 tools/mkrbfi.py --kernel $(KERNEL_ELF) \
+	    --initrd $(BUILD_DIR)/initrd.tar --stage $(RBFI_STAGE_BIN) \
+	    --embed-stage --out $(RBFI_IMAGE)
+	@echo "[rbfi] write this to a USB stick, then select it at reset:"
+	@echo "[rbfi]   sudo dd if=$(RBFI_IMAGE) of=/dev/sdX bs=1M conv=fsync"
+
+# The machine-checkable half of the integration (see tools/check_rbfi.py).
+rbfi-check:
+	@python3 tools/check_rbfi.py --check
+
 # ---- BL8: `make iso` uses the custom dual-boot loader ---------------------
 .PHONY: iso
 iso: iso-dual
@@ -2734,7 +2795,7 @@ INITRD_DIR := $(USER_BUILD)/initrd_root
 INITRD_BIN   := init hello apm play sysinfo
 INITRD_APPS  := calc editor http weather trustinfo clock browser w32run dlltest filesize gcalc gedit gfiles gterm \
                 aosheet aoslide \
-                gsysmon gabout gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser ota \
+                gsysmon gabout grbfi gweather gtaskmgr gtheme glaunch gaudio gusb gclip gbrowser ota \
                 aoffice
 INITRD_DEMOS := guess snake glcube glshade glgears glrunner
 INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \

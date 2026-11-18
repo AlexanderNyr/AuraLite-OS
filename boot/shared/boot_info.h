@@ -108,7 +108,26 @@ typedef struct {
 
     /* Boot path indicator. */
     uint8_t           boot_from_uefi;   /* 1 = UEFI, 0 = legacy BIOS */
-    uint8_t           _pad[7];
+
+    /* ---- RBFI (issue #16) ----------------------------------------------
+     * The firmware/rbfi stage is the only loader whose memory map is not
+     * read from the platform: RBFI publishes no E820, so the stage
+     * synthesizes one from the RAM size RBFI reports.  These flags let the
+     * kernel know that, instead of having to trust a map that *looks* like
+     * E820.  Every other loader leaves flags == 0.
+     *
+     * BOOT_FLAG_RBFI_SYNTH is the load-bearing one: pmm_init() takes the
+     * conservative path when it is set (see kernel/mm/pmm.c), because a
+     * map derived from a single RAM-size figure cannot describe holes.
+     *
+     * LAYOUT NOTE: this replaces the old `_pad[7]` and keeps every offset
+     * after it byte-identical (the pair occupies the same 8 bytes), so no
+     * generated offset from tools/gen_boot_offsets.c moves.
+     */
+    uint8_t           loader_flags;     /* BOOT_FLAG_* below, 0 elsewhere */
+    uint8_t           _pad[3];
+#define BOOT_FLAG_RBFI_SYNTH   0x01  /* memory map synthesized, not E820 */
+#define BOOT_FLAG_NO_FRAMEBUF  0x02  /* loader set no video mode */
 } boot_info_t;
 /* NOTE: this struct is intentionally NOT __attribute__((packed)).
  * Every field is naturally aligned thanks to explicit _pad members, so
