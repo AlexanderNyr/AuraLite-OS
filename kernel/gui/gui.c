@@ -11,7 +11,7 @@
  *   - gui_dirty.rs: bounded dirty-rectangle tracking and snapshots.
  *   - gui_render.rs: staged window surface, content, and chrome rendering.
  *   - sdf/gui_sdf.rs: Inter MSDF rendering to window buffers and screen.
- *   - desktop/*.rs: desktop icons, taskbar, start menu, notifications,
+ *   - desktop Rust modules: icons, taskbar, start menu, notifications,
  *     application catalogue, interaction handlers, and taskbar layout.
  *
  * C-side responsibilities:
@@ -220,18 +220,6 @@ static int key_focus = -1;
  * mouse event until it releases.  Cleared when the owner dies (see
  * gui_cleanup_process). */
 static int captured = -1;
-static gui_cursor_t cursor = GUI_CURSOR_ARROW;
-
-/* Software cursor is a normal final compositor layer.  It remains in the
- * back buffer; repainting the old cursor rectangle removes the previous
- * image before the new position is drawn.
- * The bounds cover every cursor shape: x=[mx-8, mx+11], y=[my-8, my+15]. */
-#define CURSOR_DIRTY_LEFT   8
-#define CURSOR_DIRTY_TOP    8
-#define CURSOR_DIRTY_W      20
-#define CURSOR_DIRTY_H      24
-static int last_drawn_mx = -1, last_drawn_my = -1;
-static int last_drawn_valid = 0;
 
 /* Rust dirty-rect tracker (kernel/gui/gui_dirty.rs).  Rects are kept disjoint
  * and rendered individually, so a diagonal cursor move no longer damages
@@ -360,6 +348,30 @@ extern int gui_rust_blit_alpha(uint32_t *buffer, uint32_t width, uint32_t height
                                uint32_t stride, int32_t x, int32_t y,
                                uint32_t w, uint32_t h, const uint32_t *src,
                                uint32_t src_stride);
+
+extern void desktop_wallpaper_render(void);
+
+extern void gui_cursor_track_position(
+    int have_cursor, int32_t x, int32_t y
+);
+
+extern void gui_cursor_update_from_input(
+    int hit_part, int drag_mode, int drag_edge
+);
+
+extern int gui_cursor_intersects_rect(
+    int32_t mx, int32_t my,
+    int32_t x, int32_t y,
+    uint32_t w, uint32_t h
+);
+
+extern void gui_cursor_draw(int32_t mx, int32_t my);
+
+extern void gui_cursor_commit_presented(
+    int have_cursor, int32_t mx, int32_t my
+);
+
+extern void gui_cursor_init(void);
 
 /* Keep the existing C call sites stable for allocation, resize, and frames. */
 static void gui_fill32(uint32_t *dst, uint32_t value, size_t count) {
@@ -632,15 +644,6 @@ void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     }
 }
 
-/* Damage the complete cursor footprint.  The same rectangle is used for
- * old and new positions, so shape changes and edge clipping are safe. */
-static void gui_mark_cursor_dirty(int32_t x, int32_t y) {
-    gui_mark_dirty(x - CURSOR_DIRTY_LEFT,
-                   y - CURSOR_DIRTY_TOP,
-                   CURSOR_DIRTY_W,
-                   CURSOR_DIRTY_H);
-}
-
 static void mark_window_dirty(const gui_win_t *w) {
     gui_mark_dirty(win_abs_x(w), win_abs_y(w), w->w, w->h);
 }
@@ -660,9 +663,6 @@ void gui_init(void) {
         }
     }
     memset(windows, 0, (size_t)GUI_MAX_WINDOWS * sizeof(gui_win_t));
-    last_drawn_mx = -1;
-    last_drawn_my = -1;
-    last_drawn_valid = 0;
     memset(drop_epoch, 0, sizeof(drop_epoch));
     memset(window_epoch, 0, sizeof(window_epoch));
     spinlock_init(&gui_lock);
@@ -673,13 +673,13 @@ void gui_init(void) {
     gui_wq_ready = 1;
     focused = -1;
     key_focus = -1;
-    cursor  = GUI_CURSOR_ARROW;
     active_theme = default_theme;
     gui_clock_base_ticks = timer_get_ticks();
     gui_clock_last_second = (uint64_t)-1;
     full_dirty = 1;
+    
     gui_dirty_reset();
-
+    gui_cursor_init();
     gui_shell_init();
 }
 
@@ -1424,23 +1424,6 @@ void gui_request_redraw(void) {
     gui_dirty_reset();
 }
 
-void gui_set_cursor(gui_cursor_t c) {
-    if (cursor == c) return;
-
-    cursor = c;
-
-    /* A cursor shape can change without pointer movement.  Invalidate its
-     * current footprint so the new shape is composed immediately. */
-    int mx = -1, my = -1;
-    if (mouse_get_position(&mx, &my) == 1) {
-        gui_mark_cursor_dirty(mx, my);
-    } else if (last_drawn_valid) {
-        gui_mark_cursor_dirty(last_drawn_mx, last_drawn_my);
-    }
-
-    gui_poke();
-}
-
 /* ===================================================================
  * C API compatibility wrappers for the Rust drawing core
  *
@@ -1799,20 +1782,6 @@ int gui_wait_event(int wid, uint64_t owner_pid, gui_event_t *out) {
  * Compositor rendering
  * =================================================================== */
 
-/* ---- Desktop rendering ---- */
-
-static void draw_desktop(void) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t w = gfx_get_width();
-    uint32_t h = gfx_get_height();
-    /* Vertical gradient. */
-    gfx_gradient_v(0, 0, w, h, t->desktop_top, t->desktop_bot);
-    /* Subtle horizontal stripes for texture. */
-    for (uint32_t y = 0; y < h; y += 48) {
-        gfx_draw_line(0, y, w, y, 0x00000018);
-    }
-}
-
 /* ---- Snap preview overlay ---- */
 
 static void draw_snap_preview(void) {
@@ -1839,158 +1808,6 @@ static void draw_snap_preview(void) {
             break;
         default: break;
     }
-}
-
-/* ---- Cursor rendering ---- */
-
-static void draw_cursor(int mx, int my) {
-    switch (cursor) {
-        case GUI_CURSOR_ARROW:
-        default: {
-            /* Classic 11x16 arrow.  Each row is [black | white... | black]; the
-            * tail narrows at rows 11..15 to leave the notch.  White cannot leak
-            * outside the outline because the fill is computed from the row
-            * width, not from a fixed triangle. */
-            static const uint8_t arrow_w[16] = {
-                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 6, 5, 4, 3, 2
-            };
-            for (int i = 0; i < 16; i++) {
-                int w = arrow_w[i];
-                if (w > 2) {
-                    gfx_fill_rect((uint32_t)(mx + 1), (uint32_t)(my + i),
-                                (uint32_t)(w - 2), 1, 0x00FFFFFF);
-                }
-                gfx_fill_rect((uint32_t)mx, (uint32_t)(my + i), 1, 1, 0x00000000);
-                if (w > 1) {
-                    gfx_fill_rect((uint32_t)(mx + w - 1), (uint32_t)(my + i),
-                                1, 1, 0x00000000);
-                }
-            }
-            break;
-        }
-        case GUI_CURSOR_IBEAM:
-            for (int i = -8; i <= 8; i++)
-                gfx_putpixel((uint32_t)mx, (uint32_t)(my + i), 0x00000000);
-            gfx_draw_line((uint32_t)(mx - 3), (uint32_t)(my - 8),
-                          (uint32_t)(mx + 3), (uint32_t)(my - 8), 0x00000000);
-            gfx_draw_line((uint32_t)(mx - 3), (uint32_t)(my + 8),
-                          (uint32_t)(mx + 3), (uint32_t)(my + 8), 0x00000000);
-            break;
-        case GUI_CURSOR_HAND:
-            gfx_fill_rect((uint32_t)(mx - 4), (uint32_t)(my - 1), 8, 12, 0x00FFFFFF);
-            gfx_draw_rect((uint32_t)(mx - 4), (uint32_t)(my - 1), 8, 12, 0x00000000);
-            break;
-        case GUI_CURSOR_HRESIZE:
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)my,
-                          (uint32_t)(mx + 8), (uint32_t)my, 0x00FFFFFF);
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)(my - 1),
-                          (uint32_t)(mx + 8), (uint32_t)(my - 1), 0x00000000);
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)(my + 1),
-                          (uint32_t)(mx + 8), (uint32_t)(my + 1), 0x00000000);
-            /* Arrowheads. */
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)my,
-                          (uint32_t)(mx - 5), (uint32_t)(my - 3), 0x00FFFFFF);
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)my,
-                          (uint32_t)(mx - 5), (uint32_t)(my + 3), 0x00FFFFFF);
-            gfx_draw_line((uint32_t)(mx + 8), (uint32_t)my,
-                          (uint32_t)(mx + 5), (uint32_t)(my - 3), 0x00FFFFFF);
-            gfx_draw_line((uint32_t)(mx + 8), (uint32_t)my,
-                          (uint32_t)(mx + 5), (uint32_t)(my + 3), 0x00FFFFFF);
-            break;
-        case GUI_CURSOR_VRESIZE:
-            gfx_draw_line((uint32_t)mx, (uint32_t)(my - 8),
-                          (uint32_t)mx, (uint32_t)(my + 8), 0x00FFFFFF);
-            gfx_draw_line((uint32_t)(mx - 1), (uint32_t)(my - 8),
-                          (uint32_t)(mx - 1), (uint32_t)(my + 8), 0x00000000);
-            gfx_draw_line((uint32_t)(mx + 1), (uint32_t)(my - 8),
-                          (uint32_t)(mx + 1), (uint32_t)(my + 8), 0x00000000);
-            break;
-        case GUI_CURSOR_DRESIZE:
-            for (int i = -7; i <= 7; i++)
-                gfx_putpixel((uint32_t)(mx + i), (uint32_t)(my + i), 0x00FFFFFF);
-            gfx_draw_line((uint32_t)(mx - 7), (uint32_t)(my - 7),
-                          (uint32_t)(mx + 7), (uint32_t)(my + 7), 0x00000000);
-            break;
-        case GUI_CURSOR_WAIT:
-            gfx_fill_circle((uint32_t)mx, (uint32_t)my, 6, 0x00FFFFFF);
-            gfx_draw_circle((uint32_t)mx, (uint32_t)my, 7, 0x00000000);
-            break;
-        case GUI_CURSOR_MOVE: {
-            /* Four-arrow cross. */
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)my,
-                          (uint32_t)(mx + 8), (uint32_t)my, 0x00FFFFFF);
-            gfx_draw_line((uint32_t)mx, (uint32_t)(my - 8),
-                          (uint32_t)mx, (uint32_t)(my + 8), 0x00FFFFFF);
-            break;
-        }
-        case GUI_CURSOR_CROSSHAIR: {
-            gfx_draw_line((uint32_t)(mx - 8), (uint32_t)my,
-                          (uint32_t)(mx - 2), (uint32_t)my, 0x00000000);
-            gfx_draw_line((uint32_t)(mx + 2), (uint32_t)my,
-                          (uint32_t)(mx + 8), (uint32_t)my, 0x00000000);
-            gfx_draw_line((uint32_t)mx, (uint32_t)(my - 8),
-                          (uint32_t)mx, (uint32_t)(my - 2), 0x00000000);
-            gfx_draw_line((uint32_t)mx, (uint32_t)(my + 2),
-                          (uint32_t)mx, (uint32_t)(my + 8), 0x00000000);
-            break;
-        }
-        case GUI_CURSOR_NOT_ALLOWED: {
-            gfx_draw_circle((uint32_t)mx, (uint32_t)my, 7, 0x00C04040);
-            gfx_draw_line((uint32_t)(mx - 5), (uint32_t)(my + 5),
-                          (uint32_t)(mx + 5), (uint32_t)(my - 5), 0x00C04040);
-            break;
-        }
-    }
-}
-
-static void cursor_commit_presented(int have_cursor, int mx, int my) {
-    last_drawn_valid = have_cursor;
-    last_drawn_mx = have_cursor ? mx : -1;
-    last_drawn_my = have_cursor ? my : -1;
-}
-
-/* Cursor coordinates are sampled once by the compositor tick and passed
- * through the complete render.  Never re-read mouse state between damage
- * calculation and drawing: doing so can stamp outside the flipped rectangle. */
-static void cursor_draw_and_flip_full(int have_cursor, int mx, int my) {
-    if (have_cursor) draw_cursor(mx, my);
-    gfx_flip();
-    cursor_commit_presented(have_cursor, mx, my);
-}
-
-static int cursor_intersects_rect(
-    int mx,
-    int my,
-    int32_t x,
-    int32_t y,
-    uint32_t w,
-    uint32_t h
-) {
-    int32_t cx0 = mx - CURSOR_DIRTY_LEFT;
-    int32_t cy0 = my - CURSOR_DIRTY_TOP;
-    int32_t cx1 = cx0 + CURSOR_DIRTY_W;
-    int32_t cy1 = cy0 + CURSOR_DIRTY_H;
-    int32_t rx1 = x + (int32_t)w;
-    int32_t ry1 = y + (int32_t)h;
-
-    return cx0 < rx1 && cy0 < ry1 && cx1 > x && cy1 > y;
-}
-
-static void cursor_draw_and_flip_rect(
-    int32_t ux,
-    int32_t uy,
-    uint32_t uw,
-    uint32_t uh,
-    int have_cursor,
-    int mx,
-    int my
-) {
-    /* Avoid issuing cursor primitives for dirty regions nowhere near it. */
-    if (have_cursor && cursor_intersects_rect(mx, my, ux, uy, uw, uh))
-        draw_cursor(mx, my);
-
-    gfx_flip_rect(ux, uy, uw, uh);
-    cursor_commit_presented(have_cursor, mx, my);
 }
 
 /* ---- Full compositor render ---- */
@@ -2097,7 +1914,7 @@ static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
         uint32_t rh = (uint32_t)(y1 - y0);
 
         gfx_clip_set(x0, y0, rw, rh);
-        draw_desktop();
+        desktop_wallpaper_render();
         shell_draw_icons();
 
         int order[GUI_MAX_WINDOWS], n_ord = 0;
@@ -2133,8 +1950,8 @@ static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
         }
 
         if (have_cursor &&
-            cursor_intersects_rect(cursor_x, cursor_y, x0, y0, rw, rh)) {
-            draw_cursor(cursor_x, cursor_y);
+            gui_cursor_intersects_rect(cursor_x, cursor_y, x0, y0, rw, rh)) {
+            gui_cursor_draw(cursor_x, cursor_y);
         }
 
         gfx_flip_rect(x0, y0, rw, rh);
@@ -2142,7 +1959,7 @@ static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
         total_px += (uint64_t)rw * rh;
     }
 
-    cursor_commit_presented(have_cursor, cursor_x, cursor_y);
+    gui_cursor_commit_presented(have_cursor, cursor_x, cursor_y);
 
     perfstat_add(PERF_COMPOSITOR_FRAMES_PARTIAL, 1);
     perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, gfx_take_px_counter());
@@ -2150,7 +1967,7 @@ static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
 }
 
 static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
-    draw_desktop();
+    desktop_wallpaper_render();
 
     /* Draw desktop icons. */
     shell_draw_icons();
@@ -2192,8 +2009,13 @@ static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
     /* Desktop chrome yields completely to a presentation surface. */
     if (!gui_presentation_active()) { draw_snap_preview(); shell_draw_taskbar(); shell_draw_notifications(); }
 
-    /* Cursor is composited last and remains in the back buffer. */
-    cursor_draw_and_flip_full(have_cursor, cursor_x, cursor_y);
+    if (have_cursor) {
+    gui_cursor_draw(cursor_x, cursor_y);
+    }
+
+    gfx_flip();
+
+    gui_cursor_commit_presented(have_cursor, cursor_x, cursor_y);
 
     /* OPT_PLAN.md O0/O4: full path — the pixel count is the gfx layer's
      * real post-clip store count now (clip is full-screen here). */
@@ -2418,10 +2240,11 @@ static void update_button_hover(void) {
 }
 
 static void route_mouse_event(const mouse_event_t *ev) {
+    gui_cursor_t target_cursor = GUI_CURSOR_ARROW;
+
     int32_t mx = ev->abs_x, my = ev->abs_y;
     update_button_hover();     /* NEW */
     int wid = hit_window(mx, my);
-    gui_cursor_t target_cursor = GUI_CURSOR_ARROW;
 
     /* W32A-5: a live capture redirects every mouse event to the capturing
      * window's client area, whatever is under the cursor.  Release is
@@ -2790,6 +2613,7 @@ static void route_key_event(const kb_event_t *ke) {
  * Compositor tick
  * =================================================================== */
 
+
 void gui_compositor_tick(void) {
     /* Pump mouse events. */
     mouse_event_t me;
@@ -2799,38 +2623,38 @@ void gui_compositor_tick(void) {
     kb_event_t ke;
     while (keyboard_get_event(&ke)) route_key_event(&ke);
 
-    /* Capture the pointer once.  The exact same snapshot drives both damage
-     * calculation and cursor drawing/flip, preventing cursor/frame divergence. */
+    /* Capture the pointer once. The same snapshot is used for damage
+     * calculation and cursor rendering, preventing frame divergence. */
     int cursor_x = -1;
     int cursor_y = -1;
     int have_cursor = (mouse_get_position(&cursor_x, &cursor_y) == 1);
 
-    if (have_cursor) {
-        if (!last_drawn_valid ||
-            last_drawn_mx != cursor_x || last_drawn_my != cursor_y) {
-            if (last_drawn_valid)
-                gui_mark_cursor_dirty(last_drawn_mx, last_drawn_my);
-            gui_mark_cursor_dirty(cursor_x, cursor_y);
-        }
-    } else if (last_drawn_valid) {
-        /* Mouse device disappeared or became unavailable: erase its old stamp. */
-        gui_mark_cursor_dirty(last_drawn_mx, last_drawn_my);
-    }
+    /* Update cursor damage tracking.
+     * The Rust desktop cursor module owns the previous position and marks
+     * both the old and new cursor regions dirty when necessary.
+     * If the mouse becomes unavailable, its previous stamp is invalidated. */
+    gui_cursor_track_position(have_cursor, cursor_x, cursor_y);
 
-    /* Clock tick: mark taskbar dirty once per second for the clock. */
+    /* Clock tick: mark the taskbar dirty once per second for the clock. */
     uint32_t hz = timer_get_frequency();
     if (hz == 0) hz = 100;
+
     uint64_t ticks = timer_get_ticks();
     uint64_t elapsed_ticks = (ticks >= gui_clock_base_ticks) ?
         (ticks - gui_clock_base_ticks) : ticks;
     uint64_t now_sec = elapsed_ticks / hz;
+
     if (now_sec != gui_clock_last_second) {
         gui_clock_last_second = now_sec;
-        gui_mark_dirty(0, (int32_t)(gfx_get_height() - active_theme.taskbar_h),
-                       gfx_get_width(), active_theme.taskbar_h);
+        gui_mark_dirty(
+            0,
+            (int32_t)(gfx_get_height() - active_theme.taskbar_h),
+            gfx_get_width(),
+            active_theme.taskbar_h
+        );
     }
 
-    /* Check for any window content that was dirtied. */
+    /* Check for window content that was dirtied. */
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         if (windows[i].in_use && windows[i].visible && windows[i].content_dirty) {
             windows[i].content_dirty = 0;
@@ -2841,9 +2665,9 @@ void gui_compositor_tick(void) {
     /* Expire notifications. */
     shell_expire_notifications();
 
-    /* The dirty list lives in Rust (gui_dirty_snapshot).  It is drained by
-    * gui_dirty_snapshot() before the render, so a concurrent gui_mark_dirty()
-    * from a syscall thread lands in the NEXT tick, not in this frame. */
+    /* The dirty list is maintained in Rust (gui_dirty_snapshot).
+     * It is drained before rendering, so concurrent damage requests
+     * from syscall threads are deferred to the next frame. */
     if (full_dirty) {
         full_dirty = 0;
         gui_dirty_reset();
@@ -2851,10 +2675,19 @@ void gui_compositor_tick(void) {
     } else {
         gui_dirty_rect_t rects[GUI_MAX_DIRTY_RECTS];
         size_t n = gui_dirty_snapshot(rects, GUI_MAX_DIRTY_RECTS);
-        if (n > 0)
-            compositor_render_dirty(rects, n, have_cursor, cursor_x, cursor_y);
+
+        if (n > 0) {
+            compositor_render_dirty(
+                rects,
+                n,
+                have_cursor,
+                cursor_x,
+                cursor_y
+            );
+        }
     }
 }
+
 
 void gui_render_now(void) {
     int cursor_x = -1, cursor_y = -1;

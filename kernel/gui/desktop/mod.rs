@@ -1,7 +1,9 @@
 //! AuraLite desktop shell.
 //! kernel/gui/desktop/mod.rs
-//! The desktop owns taskbar, start-menu, desktop-icon and notification state.
-//! Window management, input dispatch and compositing remain in gui.c for now.
+//! The desktop owns taskbar, start-menu, desktop-icon, notification,
+//! wallpaper and cursor state.
+//! Window management, input routing and compositor orchestration
+//! remain in gui.c for now.
 
 pub mod apps;
 pub mod icons;
@@ -9,6 +11,8 @@ pub mod notifications;
 pub mod start_menu;
 pub mod taskbar;
 pub mod taskbar_layout;
+pub mod cursor;
+pub mod wallpaper;
 
 use core::ffi::c_char;
 
@@ -247,6 +251,7 @@ pub(crate) fn center_text_y(top: u32, height: u32, px_size: u32) -> i32 {
 /// Initialise all desktop-owned state. The C entry point is retained.
 #[no_mangle]
 pub extern "C" fn gui_shell_init() {
+    cursor::init();
     icons::init();
     notifications::init();
     taskbar::init();
