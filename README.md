@@ -119,6 +119,16 @@ sudo apt install clang lld nasm qemu-system-x86 mtools git make gcc python3
 # Rust is REQUIRED, not optional: rustc is in the Makefile's REQUIRED_TOOLS
 # and `make deps-check` stops the build without it.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+# PIN THE TOOLCHAIN to 1.98.0.  This is not cosmetic: from rustc 1.99 the
+# lint `x86_softfloat_sse` is a hard error (rust-lang/rust#117938), and
+# kernel/gui/drawing.rs enables SSE2 with `#[target_feature(enable = "sse2")]`
+# on the soft-float x86_64-unknown-none target.  Suppressing the lint is not
+# enough -- the LLVM backend then aborts with "Do not know how to split the
+# result of this operator!".  A `stable` that happens to be 1.100 (as on the
+# GitHub runners, 2026-11) fails at build/gui_core.o and takes every CI shard
+# with it.  1.98.0 is the newest release measured to build the tree.
+rustup toolchain install 1.98.0 --profile minimal
+rustup default 1.98.0
 # `make iso` also builds the Rust tenant programs for the riscv64 and
 # aarch64 kernels, so all three bare-metal targets are required:
 rustup target add x86_64-unknown-none
@@ -609,12 +619,18 @@ make test-integration       # full QEMU integration suite
 bash tests/integration/run_all.sh --group w32-core  # one Win32 CI shard (the others are w32-gui and w32-apps)
 ```
 
-The full suite currently registers 214 black-box QEMU cases in 15 thematic CI
+The full suite currently registers 238 black-box QEMU cases in 15 thematic CI
 shards (Win32 runs in three shards: `w32-core`, `w32-gui` and `w32-apps`). Cases cover AHCI, FAT32 persistence,
 ext2 cross-OS round-trips, the ext4/f2fs/btrfs/exFAT/NTFS interop lanes,
 USB MSC/HID/hub/xHCI rings,
 networking (DNS failover, TCP x5, TLS/HTTPS, IPv6), SMP, selfhost closures,
 graphics and GUI/VNC checks.
+
+The case list is hand-maintained and `tools/check_test_registry.py` fails the
+build when it and `tests/integration/cases/` disagree in either direction; the
+same partition is checked at every `run_all.sh` invocation (`--check-groups`),
+because a case that belongs to no shard never runs and a case that belongs to
+two runs twice.
 
 ---
 
@@ -828,7 +844,8 @@ Start here:
 - [`docs/build_and_run.md`](docs/build_and_run.md) — build/run/troubleshooting.
 - [`docs/status.md`](docs/status.md) — current feature and limitation matrix.
 - [`docs/residue_ledger.md`](docs/residue_ledger.md) — the machine-checked
-  debt ledger (59 rows; the RESIDUE series' terminal state, RESIDUE2 open).
+  debt ledger (62 rows, W 36 · M 8 · N 4 · S 14; the RESIDUE series' terminal
+  state, RESIDUE2 open).
 - [`TODO.md`](TODO.md) — fine-grained known limitations, annotated against the
   ledger.
 - [`docs/architecture.md`](docs/architecture.md) — kernel architecture.

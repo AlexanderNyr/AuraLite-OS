@@ -2,6 +2,52 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [CI — the toolchain pin and the documentation re-sync] 2026-11-18
+
+The 2026-11-17 workflow run failed **all twenty jobs at the same object
+file**, and the documentation still described the tree as it was before the
+Rust/GUI migration and the office suite. Both are corrected here; the code
+fixes stay in `TODO.md` with receipts, because this change is documentation
+and CI only.
+
+- **Root cause, measured from the run's artifacts:**
+  `rustc-LLVM ERROR: Do not know how to split the result of this operator!`
+  → `make: *** [Makefile:856: build/gui_core.o] Error 101` in every shard.
+  Two stacked events: from rustc 1.99 the `x86_softfloat_sse` lint is a hard
+  error (rust-lang#117938) because `kernel/gui/drawing.rs` enables SSE2 via
+  `#[target_feature(enable = "sse2")]` on the soft-float
+  `x86_64-unknown-none`; suppressing the lint exposes an LLVM backend abort
+  in the same functions. The workflow installed a floating rustup `stable`
+  (1.100 at run time). **Fix:** every job now pins
+  `rustup toolchain install 1.98.0 --profile minimal` + `rustup default
+  1.98.0` before adding the three bare-metal targets — 1.98.0 is the newest
+  release measured to build the tree (`make iso` green, three boots green).
+  The durable fix (cfg-gate the SSE2 module) is `TODO.md`'s.
+- **A second CI break was found while reading the same logs and is fixed in
+  the same workflow:** `run_all.sh --check-groups` exits 2 because
+  `test_office_xlsx` (registered in `ALL_CASES`, present on disk) matches no
+  shard regex. `qemu-integration` runs `--check-groups` as its own step, so
+  the build would have stayed red after the Rust fix alone. The case now
+  lives in the `gui` shard with its ten `test_office_*` siblings.
+- **Documentation re-synced to the tree as measured, not as remembered:**
+  the registered case count is 238 (not 214) in README, `run_all.sh`'s
+  partition comment and the workflow; the residue ledger has 62 rows
+  W 36 · M 8 · N 4 · S 14 (README and `docs/README.md` still said 59);
+  `docs/build_and_run.md` gained "The rustc ceiling (1.98.0)" section with
+  the verbatim compiler output so the next person recognises the failure in
+  one look instead of bisecting it.
+- **`test_sh5b_layout.sh` is documented as version-sensitive rather than
+  silently repaired.** The gate compares `.data`/`.bss` 1:1 between `ld.lld`
+  and aulink. Measured today: LLD 18 places `.got` between `.data` and
+  `.bss`, LLD 19 after `.bss`, aulink inside the data segment; `.bss` size is
+  `0x38a510` under both LLDs and `0x38a508` under aulink. The gate also
+  disagrees with itself: aulink's `__bss_end` lands 8 bytes before its own
+  `.bss` end. Both facts are now in `TODO.md` with the addresses, and the
+  test file's own header records the environment it was calibrated on. The
+  fix is a lenient tolerance for `.bss` plus aulink's `__bss_end`/`sh_size`
+  arithmetic during `got_setup()`'s relayout — a selfhost-plan item, not a
+  documentation one.
+
 ## [Office suite OF2 — the Writer's document core] 2026-11-10
 
 `docs/plans/OFFICE_PLAN.md` phase OF2, delivered as part of the cumulative patch

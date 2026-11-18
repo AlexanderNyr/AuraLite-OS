@@ -11,7 +11,7 @@ jobs:
     # (actions/runner-images#14748).  This suite was green on 24.04 (b7ffdd5) and red
     # on 26.04 with unchanged commit contents.
     runs-on: ubuntu-24.04
-    # 4 hours.  The suite registers 214 cases across separate parallel CI
+    # 4 hours.  The suite registers 238 cases across separate parallel CI
     # shards; this job runs boot smoke tests and host unit checks.  QEMU
     # guests wait on serial output, so wall-clock time scales with
     # runner contention rather than with the size of the change being tested.
@@ -67,10 +67,33 @@ jobs:
 
       - name: Install Rust bare-metal target
         run: |
+          # PINNED (2026-11-18): see docs/build_and_run.md "The rustc ceiling".
+          # rustc 1.99 made `#[target_feature(enable = "sse2")]` on the
+          # soft-float x86_64-unknown-none target a hard error
+          # (x86_softfloat_sse, rust-lang/rust#117938) and kernel/gui/
+          # drawing.rs needs it; suppressing the lint then reaches an LLVM
+          # backend abort ("Do not know how to split the result of this
+          # operator!").  A floating `stable` was 1.100 on the 2026-11-17
+          # run and every one of the twenty jobs died at build/gui_core.o.
+          # 1.98.0 is the newest release measured to build the tree.
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
           rustup target add x86_64-unknown-none
           rustup target add riscv64gc-unknown-none-elf
           rustup target add aarch64-unknown-none
           rustc --target=x86_64-unknown-none --print target-libdir
+
+      - name: Assert the pinned rustc (the tree does not build past 1.98.0)
+        # docs/build_and_run.md "The rustc ceiling": rustc >= 1.99 rejects
+        # kernel/gui/drawing.rs's `#[target_feature(enable = "sse2")]` on the
+        # soft-float x86_64-unknown-none target, and -A x86_softfloat_sse
+        # only moves the failure into the LLVM backend.  A silent fallback to
+        # `stable` would reproduce the 2026-11-17 run's twenty red shards at
+        # build/gui_core.o, so the version is asserted rather than assumed.
+        run: |
+          rustc --version
+          rustc --version | grep -q '^rustc 1\.98\.' || {
+            echo "::error::rustc is not 1.98.x -- see docs/build_and_run.md"; exit 1; }
 
       - name: Check build dependencies
         run: make deps-check
@@ -266,7 +289,7 @@ jobs:
             build/bl*.mem
           if-no-files-found: ignore
 
-  # The 214 QEMU integration cases, split into 15 THEMATIC SHARDS
+  # The 238 QEMU integration cases, split into 15 THEMATIC SHARDS
   # running in parallel; the user-visible win: ~2 h of
   # wall clock becomes the slowest shard rather than the sum.  The partition
   # lives in run_all.sh next to the case list and is self-checked on
@@ -327,6 +350,17 @@ jobs:
 
       - name: Install Rust bare-metal target
         run: |
+          # PINNED (2026-11-18): see docs/build_and_run.md "The rustc ceiling".
+          # rustc 1.99 made `#[target_feature(enable = "sse2")]` on the
+          # soft-float x86_64-unknown-none target a hard error
+          # (x86_softfloat_sse, rust-lang/rust#117938) and kernel/gui/
+          # drawing.rs needs it; suppressing the lint then reaches an LLVM
+          # backend abort ("Do not know how to split the result of this
+          # operator!").  A floating `stable` was 1.100 on the 2026-11-17
+          # run and every one of the twenty jobs died at build/gui_core.o.
+          # 1.98.0 is the newest release measured to build the tree.
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
           rustup target add x86_64-unknown-none
           rustup target add riscv64gc-unknown-none-elf
           rustup target add aarch64-unknown-none
@@ -549,6 +583,17 @@ jobs:
 
       - name: Install Rust bare-metal target
         run: |
+          # PINNED (2026-11-18): see docs/build_and_run.md "The rustc ceiling".
+          # rustc 1.99 made `#[target_feature(enable = "sse2")]` on the
+          # soft-float x86_64-unknown-none target a hard error
+          # (x86_softfloat_sse, rust-lang/rust#117938) and kernel/gui/
+          # drawing.rs needs it; suppressing the lint then reaches an LLVM
+          # backend abort ("Do not know how to split the result of this
+          # operator!").  A floating `stable` was 1.100 on the 2026-11-17
+          # run and every one of the twenty jobs died at build/gui_core.o.
+          # 1.98.0 is the newest release measured to build the tree.
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
           rustup target add x86_64-unknown-none
           rustup target add riscv64gc-unknown-none-elf
           rustup target add aarch64-unknown-none
@@ -602,6 +647,17 @@ jobs:
 
       - name: Install Rust bare-metal target
         run: |
+          # PINNED (2026-11-18): see docs/build_and_run.md "The rustc ceiling".
+          # rustc 1.99 made `#[target_feature(enable = "sse2")]` on the
+          # soft-float x86_64-unknown-none target a hard error
+          # (x86_softfloat_sse, rust-lang/rust#117938) and kernel/gui/
+          # drawing.rs needs it; suppressing the lint then reaches an LLVM
+          # backend abort ("Do not know how to split the result of this
+          # operator!").  A floating `stable` was 1.100 on the 2026-11-17
+          # run and every one of the twenty jobs died at build/gui_core.o.
+          # 1.98.0 is the newest release measured to build the tree.
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
           rustup target add x86_64-unknown-none
           rustup target add riscv64gc-unknown-none-elf
           rustup target add aarch64-unknown-none
@@ -707,6 +763,17 @@ jobs:
 
       - name: Install Rust bare-metal targets
         run: |
+          # PINNED (2026-11-18): see docs/build_and_run.md "The rustc ceiling".
+          # rustc 1.99 made `#[target_feature(enable = "sse2")]` on the
+          # soft-float x86_64-unknown-none target a hard error
+          # (x86_softfloat_sse, rust-lang/rust#117938) and kernel/gui/
+          # drawing.rs needs it; suppressing the lint then reaches an LLVM
+          # backend abort ("Do not know how to split the result of this
+          # operator!").  A floating `stable` was 1.100 on the 2026-11-17
+          # run and every one of the twenty jobs died at build/gui_core.o.
+          # 1.98.0 is the newest release measured to build the tree.
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
           rustup target add x86_64-unknown-none
           rustup target add riscv64gc-unknown-none-elf
           rustup target add aarch64-unknown-none
@@ -801,6 +868,17 @@ jobs:
 
       - name: Install Rust bare-metal targets
         run: |
+          # PINNED (2026-11-18): see docs/build_and_run.md "The rustc ceiling".
+          # rustc 1.99 made `#[target_feature(enable = "sse2")]` on the
+          # soft-float x86_64-unknown-none target a hard error
+          # (x86_softfloat_sse, rust-lang/rust#117938) and kernel/gui/
+          # drawing.rs needs it; suppressing the lint then reaches an LLVM
+          # backend abort ("Do not know how to split the result of this
+          # operator!").  A floating `stable` was 1.100 on the 2026-11-17
+          # run and every one of the twenty jobs died at build/gui_core.o.
+          # 1.98.0 is the newest release measured to build the tree.
+          rustup toolchain install 1.98.0 --profile minimal
+          rustup default 1.98.0
           rustup target add x86_64-unknown-none
           rustup target add riscv64gc-unknown-none-elf
           rustup target add aarch64-unknown-none

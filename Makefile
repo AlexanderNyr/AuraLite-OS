@@ -188,6 +188,29 @@ deps-check:
 		echo "[deps] install it with: rustup target add $(RUST_TARGET)"; \
 		exit 127; \
 	fi
+	@# The rustc ceiling (docs/build_and_run.md, "The rustc ceiling").  From
+	@# rustc 1.99 the `x86_softfloat_sse` lint is a hard error
+	@# (rust-lang/rust#117938): kernel/gui/drawing.rs enables SSE2 with
+	@# `#[target_feature(enable = "sse2")]` on the soft-float
+	@# x86_64-unknown-none target, so `make iso` dies at build/gui_core.o.
+	@# Suppressing the lint is not a workaround -- the LLVM backend then
+	@# aborts on the same functions ("Do not know how to split the result of
+	@# this operator!").  Refusing HERE names the cause at minute zero
+	@# instead of letting the compiler say it in the middle of a build.
+	@# This is a WARNING, not an error: 1.99+ may well build some other
+	@# part of the tree, and a future drawing.rs fix legitimately lifts the
+	@# ceiling -- but today it fails, so say so loudly.
+	@rv=$$($(RUSTC) --version 2>/dev/null | sed -n 's/^rustc 1\.\([0-9]*\)\..*/\1/p'); \
+	if [ -n "$$rv" ] && [ "$$rv" -ge 99 ]; then \
+		echo "[deps] WARNING: rustc 1.$$rv is past the measured ceiling 1.98.0"; \
+		echo "[deps]   kernel/gui/drawing.rs needs #[target_feature(enable = \"sse2\")] and"; \
+		echo "[deps]   rustc >= 1.99 rejects it on x86_64-unknown-none (hard error since"; \
+		echo "[deps]   rust-lang/rust#117938; -A x86_softfloat_sse reaches an LLVM abort)."; \
+		echo "[deps]   build/gui_core.o -- and therefore make iso -- is expected to fail."; \
+		echo "[deps]   Fix: rustup toolchain install 1.98.0 --profile minimal && rustup default 1.98.0"; \
+		echo "[deps]   (then re-add the three bare-metal targets), or land the cfg-gate fix"; \
+		echo "[deps]   recorded in TODO.md under Infrastructure and docs."; \
+	fi
 	@# RISCV_PLAN V0: qemu-system-riscv64 is OPTIONAL, the mingw pattern --
 	@# absent means the rv64 smoke test skips loudly, not that the build
 	@# fails.  clang/lld already cross-compile to riscv64, so building

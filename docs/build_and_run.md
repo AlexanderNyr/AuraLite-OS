@@ -14,7 +14,12 @@ sudo apt install clang lld nasm qemu-system-x86 mtools git make gcc python3
 # REQUIRED_TOOLS and the build stops without it (lib/rsbr is a no_std Rust
 # static library linked into the `rustes` userspace program).  The kernel
 # ports each need their own bare-metal target.
+#
+# PIN 1.98.0 -- see "The rustc ceiling" below.  `stable` on a 2026-11 runner
+# is 1.100, which cannot compile kernel/gui/drawing.rs at all.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup toolchain install 1.98.0 --profile minimal
+rustup default 1.98.0
 rustup target add x86_64-unknown-none riscv64gc-unknown-none-elf aarch64-unknown-none
 
 # Optional: `llvm-objcopy` (from the `llvm` package) packages the aarch64
@@ -388,8 +393,47 @@ bare-metal targets:
 
 ```bash
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup toolchain install 1.98.0 --profile minimal
+rustup default 1.98.0
 rustup target add x86_64-unknown-none riscv64gc-unknown-none-elf aarch64-unknown-none
 ```
+
+### The rustc ceiling (1.98.0) — `build/gui_core.o` fails on newer stables
+
+`make iso` can fail here on a brand-new rustc even though nothing in the tree
+changed:
+
+```text
+error: enabling the `sse` target feature on the current target is unsupported
+       due to LLVM backend issues
+  --> kernel/gui/drawing.rs:43:18  #[target_feature(enable = "sse2")]
+   = note: `#[deny(x86_softfloat_sse)]` (part of `#[deny(future_incompatible)]`)
+...
+rustc-LLVM ERROR: Do not know how to split the result of this operator!
+make: *** [Makefile:856: build/gui_core.o] Error 101
+```
+
+Two separate events, both caused by the target rather than by this tree:
+
+1. `x86_64-unknown-none` is **soft-float** (`rustc --target x86_64-unknown-none
+   --print cfg` lists `fxsr` and no `sse2`), and `drawing.rs` opts four SSE2
+   kernels into the module with `#[target_feature(enable = "sse2")]`.  From
+   rustc 1.99 the `x86_softfloat_sse` lint became a hard error
+   (rust-lang/rust#117938).
+2. Passing `-A x86_softfloat_sse` gets past the lint and into the backend,
+   which then aborts on the same functions (`Do not know how to split the
+   result of this operator!`).
+
+`rustc 1.98.0` builds the crate and the whole ISO.  The CI runners install
+`stable` implicitly via rustup, so a `stable` bump silently breaks all twenty
+shards at this one object file — which is exactly what the 2026-11-17 run
+recorded.  The workflow now pins 1.98.0 explicitly; do the same locally.
+
+The durable fix belongs in `kernel/gui/drawing.rs` — e.g. gate the SSE2
+module behind `#[cfg(target_feature = "sse2")]` with the scalar path as the
+`else` arm, so the crate builds on a soft-float target without
+`target_feature` — and is tracked in `TODO.md` under "Infrastructure and
+docs" rather than being silently papered over here.
 
 ### `lld-link: command not found`
 

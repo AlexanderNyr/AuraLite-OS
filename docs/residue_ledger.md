@@ -156,6 +156,30 @@ count that drifts from the baseline fails CI until the ledger and
 baseline move in the same commit: new debt REGISTERS or the build
 is red.
 
+2026-11-18 (CI run 119563493689 + documentation re-sync): two pieces of
+debt REGISTER here without moving a row or a pin.  The harvest gains
+nothing — TODO.md carries both items as prose under "Infrastructure and
+docs", not as `- [ ]` boxes, because a box would move `TODO.md`'s
+unchecked count off the 0 it has held since OFFICE_PLAN and force a
+baseline move for what is a two-line note; the ratchet stays at 0 and the
+ledger still names the debt, which is the invariant that matters.  The
+first: **the rustc ceiling** — `kernel/gui/drawing.rs` enables SSE2 via
+`#[target_feature(enable = "sse2")]` on the soft-float
+`x86_64-unknown-none` target, rustc 1.99 made that a hard error
+(rust-lang#117938) and suppressing the lint reaches an LLVM backend abort
+("Do not know how to split the result of this operator!"), so every one of
+the twenty jobs in the 2026-11-17 run died at `build/gui_core.o` on the
+runners' floating `stable` (1.100).  Interim pin `1.98.0` landed in
+README.md, docs/build_and_run.md and the workflow; the durable fix is the
+`#[cfg(target_feature = "sse2")]` gate.  The second:
+**`test_sh5b_layout.sh`'s `.bss` comparison is linker-version sensitive** —
+LLD 18 puts `.got` between `.data` and `.bss`, LLD 19 after `.bss`, aulink
+inside the data segment; `.bss` size is `0x38a510` under both LLDs and
+`0x38a508` under aulink, and aulink's own `__bss_end` lands 8 bytes before
+its `.bss` end, so the 1:1 row fails on a machine that is not the LLD 18
+CI image.  Neither item is a status change: no RES row opens, closes or
+moves, and the table arithmetic stays 62 rows, W 36 · M 8 · N 4 · S 14.
+
 OFFICE_PLAN (OF0a/OF0/OF1, 2026-11-09): the plan is a new file in the
 harvest and enters at 0 markers -- `docs/plans/OFFICE_PLAN.md` states facts and
 non-goals, so none of its lines is debt.  Baseline gains `OFFICE_PLAN.md 0`

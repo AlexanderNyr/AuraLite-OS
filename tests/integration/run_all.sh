@@ -373,7 +373,14 @@ group_re() {
         lx)    echo '^test_lx_[a-z0-9_]+$' ;;
         usb)   echo '^test_(usb_[a-z0-9_]+|usbfs|usbfs_fat32|usb_fat32_write|usb_ext2_automount|xhci_[a-z]+|bt_hci_transport)$' ;;
         net)   echo '^test_(networking|dns_cache|dns_tcp|ip_frag|e1000_irq|e1000_idle_drain|udp_blocking|virtio_net|rtl8139|udp_sockets|http_get|http_x6|tcp_server|tcp_x5|tcp_ordering|vmxnet3|e1000e|wifi_virtual_ap|realweb_rustlang|tcp_options|ipv6_ping6|tcp6|https6|x25519mlkem|trust_store|rng|crypto|tls|x2_https|x509|gbrowser_net|tcp_wscale)$' ;;
-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui|office_shell|office_font|office_writer|office_container|office_docx|office_writer_layout|office_sheet_core|office_sheet_gui|office_sheet_perf|office_slide)$' ;;
+        # OFFICE OF8: test_office_xlsx lives HERE with its ten office
+        # siblings.  It was registered in ALL_CASES and present on disk but
+        # matched NO group -- so `--check-groups` refused to run the suite
+        # (the qemu-integration job's "Integration shard partition check"
+        # step exits 2), independently of any Rust build break.  The
+        # partition is self-checked precisely so an orphan case cannot be
+        # silent; this line is that check doing its job.
+        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui|office_shell|office_font|office_writer|office_container|office_docx|office_xlsx|office_writer_layout|office_sheet_core|office_sheet_gui|office_sheet_perf|office_slide)$' ;;
         # ---- the Win32 personality: THREE shards (2026-09-30) ----
         #
         # It used to be one `w32` group and it had become the critical path
@@ -443,7 +450,7 @@ check_groups() {
     return "$bad"
 }
 
-# The partition is checked on EVERY run (214 cases, 15 groups);
+# The partition is checked on EVERY run (238 cases, 15 groups);
 # --check-groups checks and exits, for the CI step and the curious.
 if ! check_groups; then
     exit 2

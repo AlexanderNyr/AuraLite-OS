@@ -41,7 +41,8 @@ This directory contains the technical documentation for AuraLite OS.
 ## Specialised references in this directory
 
 - [`residue_ledger.md`](residue_ledger.md) — the machine-checked debt ledger
-  (59 rows, checker-enforced arithmetic; the RESIDUE series' terminal state, RESIDUE2 open).
+  (62 rows, W 36 · M 8 · N 4 · S 14; checker-enforced arithmetic; the RESIDUE
+  series' terminal state, RESIDUE2 open).
 - [`metal_receipts.md`](metal_receipts.md) — the real-hardware receipt
   package (RESIDUE R11): nine paste-back slots, the WHPX PCID block.
 - [`seams.md`](seams.md) — seam decision notes for the pinned driver

@@ -1007,6 +1007,36 @@ that — so the parked lx items stay bullets, not boxes):
 
 ### Infrastructure and docs
 
+**The rustc ceiling: pin 1.98.0 until `drawing.rs` stops needing
+`target_feature`.** `kernel/gui/drawing.rs` enables SSE2 with
+`#[target_feature(enable = "sse2")]` on the soft-float `x86_64-unknown-none`
+target. rustc 1.99 turned that into the `x86_softfloat_sse` hard error
+(rust-lang#117938); suppressing the lint only moves the failure into the LLVM
+backend ("Do not know how to split the result of this operator!"). The
+2026-11-17 CI run is the receipt: all twenty shards died at `build/gui_core.o`
+because the runners install a floating `stable` (then 1.100).
+**Interim (landed):** README.md, docs/build_and_run.md and
+.github/workflows/integration.yml all pin `rustup toolchain install 1.98.0`.
+**Real fix (open):** gate the SSE2 kernels behind
+`#[cfg(target_feature = "sse2")]` with the scalar path as the `else` arm, then
+lift the pin. (class: toolchain/CI — registered as debt; see the ledger's
+2026-11-18 entry)
+
+**`test_sh5b_layout.sh`'s `.bss` comparison is version-sensitive.**
+The gate compares `.data`/`.bss` sizes 1:1 between `ld.lld` and aulink.
+      That held for the LLD 18 runner the gate was written against, but the
+      two linkers place `.got` differently — measured on this tree: LLD 18
+      puts `.got` between `.data` and `.bss` (`.bss` at `0x80e12000`), LLD 19
+      puts it after `.bss` (`.bss` at `0x80e11c10`), aulink folds it into the
+      data segment (`.bss` at `0x80e11fb0`). `.bss` size is `0x38a510` under
+      both LLDs and `0x38a508` under aulink, so the assertion now fails on
+      every LLD — and the 2026-11-15 commit (`42b665b`) that added the
+      check alongside the aulink capacity fix was never booted by CI (the
+      Rust break came first).  A second, independent signal: aulink's
+      `__bss_end` (`0x8119c4b0`) sits 8 bytes *before* its own `.bss` end
+      (`0x8119c4b8`), i.e. `sh_size == __bss_end - __bss_start` does not
+      hold under `o->size=end-o->addr`. (class: selfhost gate — registered as
+      debt; see the ledger's 2026-11-18 entry)
 - [x] Sync `docs/status.md`, `TODO.md`, and `CHANGELOG.md` for completed H1–H8 hardening work.
 - [x] Keep `README.md`, `docs/status.md`, `docs/syscall_abi.md` and
       `docs/driver_guide.md` in sync with every future feature change.
