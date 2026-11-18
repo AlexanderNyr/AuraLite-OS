@@ -36,7 +36,6 @@ extern "C" {
     ) -> i32;
 }
 
-const HOVER_NONE: u32 = 0;
 const HOVER_CLOSE: u32 = 1;
 const HOVER_MAXIMIZE: u32 = 2;
 const HOVER_MINIMIZE: u32 = 3;
