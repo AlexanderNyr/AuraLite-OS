@@ -1782,20 +1782,6 @@ int gui_wait_event(int wid, uint64_t owner_pid, gui_event_t *out) {
  * Compositor rendering
  * =================================================================== */
 
-/* ---- Desktop rendering ---- */
-
-static void draw_desktop(void) {
-    const gui_theme_t *t = &active_theme;
-    uint32_t w = gfx_get_width();
-    uint32_t h = gfx_get_height();
-    /* Vertical gradient. */
-    gfx_gradient_v(0, 0, w, h, t->desktop_top, t->desktop_bot);
-    /* Subtle horizontal stripes for texture. */
-    for (uint32_t y = 0; y < h; y += 48) {
-        gfx_draw_line(0, y, w, y, 0x00000018);
-    }
-}
-
 /* ---- Snap preview overlay ---- */
 
 static void draw_snap_preview(void) {
@@ -1981,7 +1967,7 @@ static void compositor_render_dirty(const gui_dirty_rect_t *rects, size_t n,
 }
 
 static void compositor_render(int have_cursor, int cursor_x, int cursor_y) {
-    draw_desktop();
+    desktop_wallpaper_render();
 
     /* Draw desktop icons. */
     shell_draw_icons();
