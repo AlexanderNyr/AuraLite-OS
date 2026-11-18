@@ -391,34 +391,221 @@ fn echo_once() -> rsbr::Result<usize> {
 
 **Source:** `lib/rsbr/time/`
 
-The `time` module provides clock and sleep functionality through the kernel time syscalls.
+The `time` module provides wall-clock and monotonic time queries, high-resolution sleeping, and per-task interval timers over AuraLite-OS's time syscalls.
 
-Its implementation is separated into:
+The module is allocator-free and targets 64-bit architectures (`x86_64`, `aarch64`, `riscv64`), enforcing exact C ABI struct sizes at compile time.
 
-- `clock.rs` — clock queries and clock-related types.
-- `sleep.rs` — sleep and nanosleep operations.
-- `itimer.rs` — interval-timer operations.
-- `abi.rs` — syscall ABI structures.
+#### 7.3.1. Design
 
-Clock identifiers and returned values must be interpreted according to the semantics actually implemented by the kernel. A clock identifier being accepted by a wrapper does not necessarily mean that the kernel provides a distinct hardware or accounting source for it.
+- **Compile-time ABI layout pins:** `TimeSpec`, `TimeVal`, and `ItimerState` are `#[repr(C)]` structs using 64-bit fields (`i64`/`u64`) to match the 64-bit kernel `long` layout (`16` bytes each, zero padding), verified via compile-time `assert!(size_of::<...>() == ...)`.
+- **Signal-aware vs. retry-loop sleeping:** `nanosleep` directly exposes POSIX `-EINTR` interruptions by returning `Ok(Some(rem))` with the remaining duration. Convenience wrappers `sleep_ms` and `usleep` automatically retry with the remaining interval until the full duration elapses.
+- **Native tick-based interval timers:** Unlike POSIX `itimerval`, AuraLite's `ItimerState` stores raw kernel tick counters (`interval_ticks` and `deadline_ticks`). Setting `interval_ticks == 0` configures a one-shot timer; a non-zero value re-arms the timer periodically.
+- **Client-side `which` validation:** `getitimer` and `setitimer` validate the timer selector (`ITIMER_REAL`, `ITIMER_VIRTUAL`, `ITIMER_PROF`) in userspace and return `Error::Syscall(EINVAL)` before issuing a syscall.
 
-**Status:** implemented; detailed API reference to be expanded.
+#### 7.3.2. Source files
+
+| File | Responsibility |
+|---|---|
+| `mod.rs` | Module declarations and public re-exports. |
+| `abi.rs` | `TimeSpec`, `TimeVal`, `ItimerState`, `TimeT`, clock/timer constants, unit multipliers (`NANOS_PER_*`, `USEC_PER_SEC`), and layout assertions. |
+| `clock.rs` | `clock_gettime`, `clock_getres`, `gettimeofday`, `time`, and `realtime`. |
+| `sleep.rs` | `nanosleep`, `sleep_ms`, and `usleep`. |
+| `itimer.rs` | `getitimer` and `setitimer`. |
+
+#### 7.3.3. Public API
+
+**Clocks & wall time (`clock.rs`)**
+
+| API | Description |
+|---|---|
+| `clock_gettime(clock)` | Read `TimeSpec` (`tv_sec`, `tv_nsec`) for `CLOCK_REALTIME` (`0`) or monotonic clocks (`1..=3`). |
+| `realtime()` | Shorthand for `clock_gettime(CLOCK_REALTIME)`. |
+| `clock_getres(clock)` | Query timer resolution as `TimeSpec` (`1e9 / timer_hz`, e.g., `10 ms` at `100 Hz`). |
+| `gettimeofday()` | Read wall time as `TimeVal` (`tv_sec`, `tv_usec`); timezone argument is omitted (`NULL`). |
+| `time()` | Read seconds since the Unix epoch as `TimeT` (`i64`). |
+
+**Sleeping (`sleep.rs`)**
+
+| API | Description |
+|---|---|
+| `nanosleep(req)` | Sleep for at least `req`; returns `Ok(None)` on completion or `Ok(Some(rem))` if interrupted by `EINTR`. |
+| `sleep_ms(ms)` | Sleep for at least `ms` milliseconds, automatically retrying on `EINTR`. |
+| `usleep(us)` | Sleep for at least `us` microseconds, automatically retrying on `EINTR`. |
+
+**Interval timers (`itimer.rs`)**
+
+| API | Description |
+|---|---|
+| `getitimer(which)` | Query current `ItimerState` (`interval_ticks`, `deadline_ticks`) for `ITIMER_REAL`, `ITIMER_VIRTUAL`, or `ITIMER_PROF`. |
+| `setitimer(which, new)` | Install a new `ItimerState` and return the previous `ItimerState`. |
+
+#### 7.3.4. Basic usage
+
+Measure elapsed monotonic time around a millisecond sleep:
+
+```rust
+use rsbr::time::{self, clock_gettime, CLOCK_MONOTONIC};
+
+fn measure_sleep() -> rsbr::Result<i64> {
+    let start = clock_gettime(CLOCK_MONOTONIC)?;
+    time::sleep_ms(50)?;
+    let end = clock_gettime(CLOCK_MONOTONIC)?;
+
+    let elapsed_ns = (end.tv_sec - start.tv_sec) * time::NANOS_PER_SEC
+        + (end.tv_nsec - start.tv_nsec);
+    Ok(elapsed_ns)
+}
+```
+
+#### 7.3.5. Limits and syscall mapping
+
+- **Tick round-up:** The kernel PIT scheduler rounds non-zero sleep requests *up* to whole ticks. At the default `100 Hz` timer frequency, sub-10 ms requests such as `sleep_ms(1)` or `usleep(500)` sleep for approximately `10 ms` (`1` tick).
+- **Clock ID aliasing:** `CLOCK_REALTIME` (`0`) returns epoch time derived from the CMOS RTC plus PIT ticks (falling back to monotonic boot seconds if the RTC reading is invalid). `CLOCK_MONOTONIC` (`1`), `CLOCK_PROCESS_CPUTIME_ID` (`2`), and `CLOCK_THREAD_CPUTIME_ID` (`3`) all resolve to the same monotonic tick source in the kernel, and `clock_getres` ignores `clock`.
+- **Non-Linux `SYS_TIME` number:** AuraLite exposes `time` at syscall number `520` (whereas Linux uses `201`).
+
+| Operation | Native syscall | Number |
+|---|---|---:|
+| Read clock | `clock_gettime` | `228` |
+| Query clock resolution | `clock_getres` | `229` |
+| Sleep with remainder | `nanosleep` | `35` |
+| Get time of day | `gettimeofday` | `96` |
+| Get epoch seconds | `time` | `520` |
+| Get interval timer | `getitimer` | `36` |
+| Set interval timer | `setitimer` | `38` |
+
+**Status:** implemented and runtime-verified on `x86_64`.
+
 
 ### 7.4. `gui`
 
 **Source:** `lib/rsbr/gui/`
 
-The `gui` module exposes AuraLite's native GUI syscall interface. It contains the GUI ABI definitions, application/event-loop support, and window management:
+The `gui` module exposes AuraLite's native compositor and windowing system. It provides compile-time-verified ABI definitions, an RAII `Window` handle with 2D drawing primitives, global compositor queries, and a dirty-flag-driven application event loop (`App` / `Flow`).
 
-- `abi.rs` — structures and constants shared with the kernel GUI ABI.
-- `app.rs` — application lifecycle, event dispatch, and the `Flow` control type.
-- `window.rs` — window creation and window-level operations.
+The module is allocator-free: strings are copied into bounded 256-byte stack buffers (`with_cstr`) during syscalls, and bulk pixel blits read directly from caller-provided `&[u32]` slices.
 
-The window wrapper owns its native window resource and is intentionally not `Send` or `Sync`. This prevents a window handle from being moved across threads when the underlying GUI subsystem does not guarantee that behavior.
+#### 7.4.1. Design
 
-GUI event structures must remain synchronized with the kernel ABI. Changes to event values, structure sizes, or window operations should be updated on both sides and validated together.
+- **RAII window ownership & thread affinity:** `Window` owns a compositor window ID (`wid`) and issues `OP_DESTROY` automatically on `Drop`. It is `!Send + !Sync` (`PhantomData<*mut ()>`) so a window handle cannot be moved across threads. Ownership can be transferred manually via `into_raw` and `unsafe { Window::from_raw(wid) }`.
+- **Compile-time ABI assertions:** Wire structures in `abi.rs` use `#[repr(C)]` and compile-time `assert!(size_of::<...>() == ...)` checks (`Event` is padded to `32` bytes; `Theme` is `33 * 4` bytes) to catch kernel ABI drift at build time.
+- **Explicit dirty-flag event loop:** `gui::run` drives an `App` implementation by separating state mutation (`update(&mut self, ev) -> Flow`) from rendering (`render(&self, w) -> Result<()>`). Frames are bracketed with `frame_begin` / `frame_end` / `invalidate` only on initial startup, `EVT_RESIZE`, or when `update` explicitly returns `Flow::Changed` or `Flow::Quit`.
+- **Single-syscall drawing fast path:** Each primitive (`fill_rect`, `draw_text`, `draw_line`, etc.) maps to a single `SYS_GUI_CALL`, packing coordinate pairs into register-sized arguments via `pack2(lo, hi)`. For software-rendered buffers, `Window::blit` and `Window::blit_alpha` upload an entire rectangle in one syscall.
 
-**Status:** implemented; detailed API reference to be expanded.
+#### 7.4.2. Source files
+
+| File | Responsibility |
+|---|---|
+| `mod.rs` | Syscall wrappers (`SYS_GUI_CALL`, `SYS_GUI_EVENT`, `SYS_GUI_THEME`), global compositor queries/actions, and `with_cstr`. |
+| `abi.rs` | `Color`, `rgb`, `pack2`, op-codes (`OP_*`), window flags (`FLAG_*`), event constants (`EVT_*`, `KEY_*`, `MOD_*`), `Event`, `Cursor`, `Snap`, `FontMetrics`, and `Theme`. |
+| `window.rs` | `Window` lifecycle, geometry, properties, pointer capture, 2D drawing, blitting, invalidation, event polling/waiting, and clipboard helpers. |
+| `app.rs` | `App` trait, `Flow` control enum (`Ignore`, `Changed`, `Quit`), and the `run` event loop. |
+
+#### 7.4.3. Public API
+
+**Global compositor queries & actions (`gui::*`)**
+
+| API | Description |
+|---|---|
+| `screen_size()` | Query desktop resolution `(width, height)` (`OP_GET_SCREEN`). |
+| `mouse_position()` | Query global cursor coordinates `Option<(i32, i32)>` (`OP_GET_MOUSE`). |
+| `focused_window()` / `top_window()` | Query the currently focused or top-most window ID (`OP_GET_FOCUSED`, `OP_TOP_WINDOW`). |
+| `set_cursor(cursor)` | Change the active cursor shape (`Cursor::Arrow`, `IBeam`, `Hand`, etc.). |
+| `render_now()` | Force the compositor to present a frame immediately (`OP_RENDER`). |
+| `theme()` / `set_theme(theme)` | Read or apply the global `Theme` (`SYS_GUI_THEME`). `set_theme` requires the calling process to own at least one window. |
+| `font_metrics()` | Query built-in bitmap font dimensions (`width`, `height`, `ascent`, `descent`, `num_glyphs`). |
+| `notify(text, color, duration_ms)` | Display a desktop notification banner (`OP_NOTIFY`). |
+| `add_icon(x, y, label, icon_id)` / `remove_icon(idx)` | Register or remove a desktop shortcut icon (`OP_ADD_ICON`, `OP_REMOVE_ICON`). |
+
+**Window lifecycle, geometry & state (`Window`)**
+
+| API | Description |
+|---|---|
+| `Window::create(x, y, w, h, title, flags)` | Create a hidden window with outer geometry and `FLAG_*` capabilities. |
+| `show()` / `hide()` / `focus()` / `lower()` | Control window visibility and Z-order stacking. |
+| `minimize()` / `maximize()` / `restore()` / `snap(s)` | Change window state or snap to a screen edge (`Snap::Left`, `Right`, `Top`, `Bottom`, `Maximized`). |
+| `move_to(x, y)` / `resize(w, h)` | Update window position or outer size. |
+| `size()` / `pos()` / `rect()` | Query current dimensions `(w, h)`, position `(x, y)`, or full rect `(x, y, w, h)`. |
+| `set_title(title)` / `flags()` / `set_flags(flags)` / `z()` | Inspect or update window title, flags, and Z-index. |
+| `set_parent(parent)` / `set_hole(l, t, r, b)` | Attach a child window to a parent or punch a transparent hit/render cutout. |
+| `set_capture()` / `Window::get_capture()` | Capture all pointer events to this window or query the current capture owner. |
+| `wid()` / `into_raw()` / `Window::from_raw(wid)` | Access the underlying integer ID or transfer RAII ownership manually. |
+
+**Drawing, blitting & invalidation (`Window`)**
+
+| API | Description |
+|---|---|
+| `frame_begin()` / `frame_end()` | Bracket batched drawing commands for flicker-free presentation. |
+| `clear(color)` | Fill the entire window client buffer with `color` (`0x00RRGGBB`). |
+| `fill_rect(x, y, w, h, color)` / `draw_rect(...)` | Draw a filled or outlined rectangle. |
+| `draw_line(x0, y0, x1, y1, color)` / `draw_pixel(x, y, color)` | Draw a line segment or single pixel. |
+| `draw_text(x, y, text, color)` | Render bitmap font text at `(x, y)`. |
+| `get_pixel(x, y)` | Read a client pixel as `0x00RRGGBB` (alpha stripped). |
+| `blit(x, y, w, h, src, stride)` / `blit_alpha(...)` | Copy a `u32` pixel buffer into the window (`stride = 0` means tightly packed). |
+| `invalidate()` / `invalidate_rect(x, y, w, h)` | Mark the full window or a dirty sub-rectangle for compositor presentation. |
+
+**Events, clipboard & application loop (`Window`, `App`, `Flow`)**
+
+| API | Description |
+|---|---|
+| `Window::poll()` | Non-blocking event poll (`Ok(None)` when queue is empty). |
+| `Window::wait()` | Blocking wait until an event arrives or the window is destroyed. |
+| `set_clipboard(text)` / `get_clipboard(buf)` | Write or read the system-wide text clipboard. |
+| `App::update(&mut self, ev)` | Handle one `Event` and return `Flow::Ignore`, `Flow::Changed`, or `Flow::Quit`. |
+| `App::render(&self, w)` | Render the window state (enforced read-only `&self`). |
+| `gui::run(app, window)` | Run the managed event/repaint loop until `Flow::Quit` or window destruction. |
+
+#### 7.4.4. Basic usage
+
+Managed event loop using `App` and `Flow`:
+
+```rust
+use rsbr::gui::{
+    self, App, Event, Flow, Window, rgb,
+    EVT_CLOSE_REQ, EVT_KEY_DOWN, FLAG_HAS_CLOSE, FLAG_HAS_TITLE,
+};
+
+struct DemoApp;
+
+impl App for DemoApp {
+    fn update(&mut self, ev: &Event) -> Flow {
+        match ev.kind {
+            EVT_CLOSE_REQ => Flow::Quit,
+            EVT_KEY_DOWN if ev.key == 0x1B => Flow::Quit, // Esc
+            _ => Flow::Ignore,
+        }
+    }
+
+    fn render(&self, w: &Window) -> rsbr::Result<()> {
+        w.clear(rgb(24, 32, 44))?;
+        w.draw_text(20, 20, "Hello, AuraLite!", rgb(232, 232, 240))?;
+        Ok(())
+    }
+}
+
+fn run_demo() -> rsbr::Result<()> {
+    let win = Window::create(
+        100, 100, 480, 320,
+        Some("Demo"),
+        FLAG_HAS_TITLE | FLAG_HAS_CLOSE,
+    )?;
+    win.show()?;
+    gui::run(DemoApp, win)
+}
+```
+
+#### 7.4.5. Limits and syscall mapping
+
+- **String truncation:** `with_cstr` copies at most `255` bytes plus a terminating NUL into a stack buffer; longer window titles, labels, notifications, or `draw_text` strings are silently truncated to 255 bytes.
+- **Close-button semantics:** Clicking the window `[X]` decoration hides the window in the compositor and enqueues `EVT_CLOSE_REQ`; applications using `gui::run` must explicitly match `EVT_CLOSE_REQ => Flow::Quit` if they want the process to exit on close.
+- **Theme ACL:** `gui::set_theme` fails unless the calling PID owns at least one active window (`gui_pid_has_windows`).
+
+| Operation | Native syscall | Number |
+|---|---|---:|
+| Window & drawing commands (`OP_*`) | `gui_call` | `200` |
+| Poll / wait window events | `gui_event` | `201` |
+| Get / set compositor theme | `gui_theme` | `202` |
+
+**Status:** implemented and runtime-verified on `x86_64`.
 
 ### 7.5. `fs`
 
