@@ -16,6 +16,7 @@ use rsbr::gui::{
 };
 use rsbr::{Error, Result};
 use rsbr::time;
+use rsbr::process::{self, StdioRedirect};
 use rsbr::syscall as syscalls;
 
 const WINDOW_X: i32 = 140;
@@ -184,16 +185,6 @@ fn sys_pipe(fds: &mut [i32; 2]) -> Result<()> {
 
 fn sys_close(fd: i32) -> Result<()> {
     syscalls::call1(syscalls::SYS_CLOSE, fd as usize)?;
-    Ok(())
-}
-
-fn sys_dup2(old_fd: i32, new_fd: i32) -> Result<()> {
-    syscalls::call2(
-        syscalls::SYS_DUP2,
-        old_fd as usize,
-        new_fd as usize,
-    )?;
-
     Ok(())
 }
 
@@ -820,78 +811,6 @@ impl TerminalApp {
 
         self.run_external(resolved.as_str(), &args[..argc])
     }
-    fn execute_child(
-        path: &str,
-        argv: &[&str],
-        read_fd: i32,
-        write_fd: i32,
-    ) -> ! {
-        let _ = sys_close(read_fd);
-
-        if sys_dup2(write_fd, 1).is_err()
-            || sys_dup2(write_fd, 2).is_err()
-        {
-            Self::child_fail(b"[!] dup2 failed\n");
-        }
-
-        let _ = sys_close(write_fd);
-
-        let mut path_buffer = [0u8; 256];
-
-        if write_c_string(path, &mut path_buffer).is_err() {
-            Self::child_fail(b"[!] invalid executable path\n");
-        }
-
-        if argv.len() > MAX_ARGS {
-            Self::child_fail(b"[!] too many arguments\n");
-        }
-
-        let mut argument_storage = [[0u8; INPUT_CAP]; MAX_ARGS];
-        let mut argument_pointers = [0usize; MAX_ARGS + 1];
-
-        argument_pointers[0] = path_buffer.as_ptr() as usize;
-
-        for index in 1..argv.len() {
-            if write_c_string(
-                argv[index],
-                &mut argument_storage[index],
-            ).is_err() {
-                Self::child_fail(b"[!] invalid argument\n");
-            }
-
-            argument_pointers[index] =
-                argument_storage[index].as_ptr() as usize;
-        }
-
-        let environment: [usize; 1] = [0];
-
-        let _ = syscalls::call3(
-            syscalls::SYS_EXECVE,
-            path_buffer.as_ptr() as usize,
-            argument_pointers.as_ptr() as usize,
-            environment.as_ptr() as usize,
-        );
-
-        Self::child_fail(b"[!] execve failed\n");
-    }
-
-    fn child_fail(message: &[u8]) -> ! {
-        let _ = syscalls::call3(
-            syscalls::SYS_WRITE,
-            2,
-            message.as_ptr() as usize,
-            message.len(),
-        );
-
-        let _ = syscalls::call1(
-            syscalls::SYS_EXIT,
-            127,
-        );
-
-        loop {
-            core::hint::spin_loop();
-        }
-    }
 
     fn run_external(&mut self, path: &str, argv: &[&str]) -> Result<()> {
         let mut pipe_fds = [-1i32; 2];
@@ -922,24 +841,22 @@ impl TerminalApp {
             return Ok(());
         }
 
-        let pid = match sys_fork() {
+        let stdio = StdioRedirect {
+            stdin_fd: None,
+            stdout_fd: Some(pipe_fds[1]),
+            stderr_fd: Some(pipe_fds[1]),
+            extra_close_fd: Some(pipe_fds[0]),
+        };
+
+        let pid = match process::spawn_with_stdio(path, &argv[1..], stdio) {
             Ok(value) => value,
             Err(_) => {
                 let _ = sys_close(pipe_fds[0]);
                 let _ = sys_close(pipe_fds[1]);
-                self.term_push("[!] fork() failed");
+                self.term_push("[!] spawn() failed");
                 return Ok(());
             }
         };
-
-        if pid == 0 {
-            Self::execute_child(
-                path,
-                argv,
-                pipe_fds[0],
-                pipe_fds[1],
-            );
-        }
 
         let _ = sys_close(pipe_fds[1]);
 

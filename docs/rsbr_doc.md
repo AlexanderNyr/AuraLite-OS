@@ -143,6 +143,7 @@ lib/rsbr/
 │   └── mem_intrinsics.rs
 ├── process/
 │   └── mod.rs
+│   └── spawn.rs
 ├── io/
 │   └── mod.rs
 ├── time/
@@ -218,25 +219,173 @@ Each public module must document meaningful differences in behavior, data availa
 
 ### 7.1. `process`
 
-**Source:** `lib/rsbr/process/mod.rs`
+**Source:** `lib/rsbr/process/`
 
-The `process` module provides process-level operations exposed by the kernel. It is the public place for functionality such as obtaining process information and terminating the current process.
+The `process` module provides process-lifecycle operations exposed by the AuraLite-OS kernel. It wraps process identification, termination, and child-process spawning with arguments and optional standard-stream redirection.
 
-The module should remain a thin Rust-facing layer over the process-related syscalls. Process creation, waiting, signals, and other lifecycle operations should only be documented as supported after their corresponding user ABI is confirmed for the target.
+The module is allocator-free: path strings, argument strings, and C-compatible `argv`/`envp` pointer arrays are prepared in bounded stack buffers before issuing system calls.
 
-**Status:** implemented; detailed API reference to be expanded.
+#### 7.1.1. Design
+
+Process creation uses the `fork` + `execve` execution model:
+
+1. The parent validates `path` and `args`, ensures no embedded NUL bytes are present, and packs NUL-terminated C strings alongside a NULL-terminated `argv` pointer table on the stack.
+2. `SYS_FORK` creates the child process with pre-populated argument buffers already in place, minimizing work inside the child before `execve`.
+3. If `StdioRedirect` descriptors are supplied, the child duplicates them onto standard file descriptors (`0`, `1`, `2`) via `SYS_DUP2` and closes any redundant source descriptors before replacing its image via `SYS_EXECVE`.
+4. If `execve` fails, the child terminates immediately with exit code `127` (`126` if descriptor redirection fails) rather than returning into parent application code.
+
+#### 7.1.2. Source files
+
+| File | Responsibility |
+|---|---|
+| `mod.rs` | Module declarations, public re-exports, `getpid`, and `exit`. |
+| `spawn.rs` | `spawn`, `spawn_with_stdio`, `StdioRedirect`, stack buffer limits, and C-string packing. |
+
+#### 7.1.3. Public API
+
+**Process identity and termination**
+
+| API | Description |
+|---|---|
+| `getpid()` | Query the current process identifier (`SYS_GETPID`). |
+| `exit(code)` | Terminate the current process immediately with `code` (`SYS_EXIT`). Never returns. |
+
+**Process spawning**
+
+| API | Description |
+|---|---|
+| `spawn(path, args)` | Fork and execute `path` in a new background process with the given `args`. |
+| `spawn_with_stdio(path, args, stdio)` | Fork and execute `path` with optional `stdin`, `stdout`, and `stderr` descriptor redirection. |
+| `StdioRedirect` | Configuration struct specifying optional `stdin_fd`, `stdout_fd`, `stderr_fd`, and `extra_close_fd`. |
+| `MAX_SPAWN_ARGS` | Maximum total argument count supported by `spawn` (`16`, including `argv[0]`). |
+| `MAX_ARG_LEN` | Maximum byte length of a single path or argument string (`256`, including the trailing NUL). |
+
+#### 7.1.4. Basic usage
+
+Spawn a background GUI application with a file argument:
+
+```rust
+use rsbr::process;
+
+fn open_in_editor(file_path: &str) -> rsbr::Result<i32> {
+    // `argv[0]` is automatically populated with "/bin/gedit".
+    let child_pid = process::spawn("/bin/gedit", &[file_path])?;
+    Ok(child_pid)
+}
+```
+
+Spawn a command and capture its `stdout` and `stderr` through a pipe:
+
+```rust
+use rsbr::process::{spawn_with_stdio, StdioRedirect};
+
+fn run_captured(path: &str, args: &[&str], pipe_read: i32, pipe_write: i32) -> rsbr::Result<i32> {
+    let stdio = StdioRedirect {
+        stdin_fd: None,
+        stdout_fd: Some(pipe_write),
+        stderr_fd: Some(pipe_write),
+        extra_close_fd: Some(pipe_read),
+    };
+
+    spawn_with_stdio(path, args, stdio)
+}
+```
+
+#### 7.1.5. Limits and syscall mapping
+
+- **`argv[0]` convention:** Callers pass only the arguments *after* the program name in `args`. `spawn` automatically sets `argv[0]` to `path`.
+- **Bounded stack buffers:** Up to `MAX_SPAWN_ARGS` (`16`) total arguments (so up to `15` user arguments in `args`) and `MAX_ARG_LEN` (`256`) bytes per string are supported. Exceeding these bounds or passing embedded NUL bytes fails with `EINVAL` (`22`).
+- **Empty environment:** `envp` is currently passed as a NULL-terminated empty list (`[NULL]`).
+- **Child reaping:** Spawned processes run independently in the background. Callers that spawn short-lived or GUI processes should periodically reap exited children via `SYS_WAIT4` (`WNOHANG`) to avoid zombie entries in the kernel process table.
+
+| Operation | Native syscall | Number |
+|---|---|---:|
+| Get process ID | `getpid` | `39` |
+| Exit process | `exit` | `60` |
+| Fork process | `fork` | `57` |
+| Execute image | `execve` | `59` |
+| Duplicate descriptor (stdio) | `dup2` | `33` |
+| Close redundant descriptor | `close` | `3` |
+
+**Status:** implemented and runtime-verified on `x86_64`; child-waiting helpers (`wait.rs`) planned next.
+
 
 ### 7.2. `io`
 
 **Source:** `lib/rsbr/io/mod.rs`
 
-The `io` module provides basic input and output through file descriptors. It is the low-level byte-stream interface used by standard streams and by higher-level facilities such as the filesystem module.
+The `io` module provides unbuffered, descriptor-based byte input and output alongside formatted printing helpers built on `core::fmt::Write`. It serves as the foundational byte-stream layer for standard streams (`stdin`, `stdout`, `stderr`) and higher-level subsystems.
 
-Its current API includes buffer-based reading and writing, with helpers for completing writes and formatting output through `core::fmt::Write`.
+The module is allocator-free: read and write operations operate directly on caller-provided slices (`&[u8]` and `&mut [u8]`), and formatted output streams chunks directly to the target file descriptor without intermediate heap buffers.
 
-The I/O layer does not own arbitrary descriptors unless an owning wrapper explicitly takes responsibility for them. Descriptor ownership should remain clear when passing raw descriptor numbers between modules.
+#### 7.2.1. Design
 
-**Status:** implemented; detailed API reference to be expanded.
+- **Non-owning descriptor model:** Functions in `io` accept raw descriptor numbers (`usize`) and do not take ownership of them or close them automatically. When RAII cleanup is desired, wrap descriptors in an owning type such as `rsbr::fs::File`.
+- **Short-write resilience:** `write` maps directly to a single `SYS_WRITE` call and may perform a partial write. `write_all` loops until the entire slice is transmitted, returning `Error::WriteZero` if the kernel reports `0` bytes written or `Error::InvalidSyscallResult` if the returned byte count exceeds the input slice length.
+- **Zero-length fast paths:** Passing an empty slice to `read` or `write` returns `Ok(0)` immediately without issuing a system call.
+- **Error-preserving formatting:** `write_fmt` adapts any raw file descriptor to `core::fmt::Write` via an internal `FdWriter`. If an underlying `write_all` call fails during formatting, the original syscall `Error` is preserved and returned rather than being discarded as a generic formatting failure.
+
+#### 7.2.2. Public API
+
+**Standard stream constants**
+
+| Constant | Value | Description |
+|---|---:|---|
+| `STDIN` | `0` | Standard input file descriptor. |
+| `STDOUT` | `1` | Standard output file descriptor. |
+| `STDERR` | `2` | Standard error file descriptor. |
+
+**Raw descriptor I/O**
+
+| API | Description |
+|---|---|
+| `read(fd, buffer)` | Read up to `buffer.len()` bytes from `fd` into `buffer` (`SYS_READ`). |
+| `write(fd, buffer)` | Perform a single write of `buffer` to `fd` (`SYS_WRITE`), returning the number of bytes written. |
+| `write_all(fd, buffer)` | Repeatedly call `write` until all bytes in `buffer` are written or an error occurs. |
+
+**Standard output and formatting helpers**
+
+| API | Description |
+|---|---|
+| `print(message)` | Write a `&str` to `STDOUT`. |
+| `println(message)` | Write a `&str` followed by `"\n"` to `STDOUT`. |
+| `eprint(message)` | Write a `&str` to `STDERR`. |
+| `eprintln(message)` | Write a `&str` followed by `"\n"` to `STDERR`. |
+| `write_fmt(fd, arguments)` | Write `core::fmt::Arguments` to an arbitrary file descriptor `fd`. |
+| `print_fmt(arguments)` | Write `core::fmt::Arguments` to `STDOUT`. |
+| `println_fmt(arguments)` | Write `core::fmt::Arguments` followed by `"\n"` to `STDOUT`. |
+| `eprint_fmt(arguments)` | Write `core::fmt::Arguments` to `STDERR`. |
+| `eprintln_fmt(arguments)` | Write `core::fmt::Arguments` followed by `"\n"` to `STDERR`. |
+
+#### 7.2.3. Basic usage
+
+Write formatted diagnostics and read from a descriptor:
+
+```rust
+use rsbr::io::{self, STDIN, STDERR};
+
+fn echo_once() -> rsbr::Result<usize> {
+    io::println("Enter input:")?;
+
+    let mut buf = [0u8; 128];
+    let count = io::read(STDIN, &mut buf)?;
+
+    io::eprintln_fmt(format_args!("Read {} bytes from stdin", count))?;
+    Ok(count)
+}
+```
+
+#### 7.2.4. Limits and syscall mapping
+
+- **Single-call transfer size:** On `aarch64` and `riscv64`, the current bring-up kernel ABI processes at most `4096` bytes per `read` or `write` syscall. Callers transferring larger buffers directly through `io::read` or `io::write` should loop until all expected bytes are processed.
+- **Non-atomic `println` / `eprintln`:** Line-printing helpers issue two separate `write_all` calls (one for the message payload and one for `b"\n"`). Concurrent writers sharing a descriptor may interleave output between the message and the newline.
+
+| Operation | Native syscall | Number |
+|---|---|---:|
+| Read from descriptor | `read` | `0` |
+| Write to descriptor | `write` | `1` |
+
+**Status:** implemented and runtime-verified across `x86_64`, `aarch64`, and `riscv64`.
 
 ### 7.3. `time`
 

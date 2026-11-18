@@ -2,7 +2,7 @@
 
 use rsbr::gui::{
     Window, Event, App, Flow,
-    EVT_KEY_DOWN, EVT_MOUSE_DOWN, EVT_MOUSE_MOVE, EVT_MOUSE_UP,
+    EVT_CLOSE_REQ, EVT_KEY_DOWN, EVT_MOUSE_DOWN, EVT_MOUSE_MOVE, EVT_MOUSE_UP,
     FLAG_HAS_TITLE, FLAG_HAS_CLOSE, FLAG_RESIZABLE,
 };
 
@@ -139,6 +139,7 @@ impl App for RustesApp {
                 Flow::Changed
             }
             _ => Flow::Ignore,
+            EVT_CLOSE_REQ => Flow::Quit,
         }
     }
 
