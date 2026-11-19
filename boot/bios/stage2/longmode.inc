@@ -53,8 +53,11 @@ enter_long_mode:
     lgdt [gdt64_ptr]
 
     ; Load CR3 with the PML4 physical address built by
-    ; build_page_tables (paging.inc).
-    mov  eax, PML4_ADDR
+    ; build_page_tables (paging.inc).  The base is a runtime value: the
+    ; tables are placed above the kernel and the initrd, not at a constant
+    ; (see the PT_BASE note in paging.inc -- the constant used to sit
+    ; inside the kernel's .bss once the kernel grew past 23 MiB).
+    mov  eax, [pt_base]
     mov  cr3, eax
 
     ; Enable PAE (CR4.PAE = bit 5).  Required for long mode.

@@ -18,7 +18,13 @@ trap il_dump_on_error EXIT
 # No input — we just want to observe the boot banner reaching the shell.
 il_send_delay 6
 il_send "exit"
-il_run_qemu "$LOG" 12
+# 12 s was enough back when the kernel was 2 MiB and the initrd a handful of
+# files.  A full TCG boot now spends ~15 s just getting kernel.elf (25 MiB)
+# and initrd.tar (13 MiB) off the emulated IDE disk, and the shell prompt
+# lands at ~23 s on an idle host -- so the old budget cut the log off at
+# "[BL4] initrd placed at ...", which reads exactly like a kernel that dies
+# at _start.  Give the boot the same 60 s the other full-boot cases use.
+il_run_qemu "$LOG" 60
 
 # Core boot milestones.
 il_assert_grep "$LOG" "Hello from AuraLite OS kernel!"                    "Limine → kmain banner"

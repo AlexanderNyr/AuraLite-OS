@@ -30,6 +30,14 @@
 
 ; Persistent state.
 elf_entry_addr:      dq 0                  ; kernel _start virtual address
+; Highest flat physical address the kernel occupies: for each PT_LOAD,
+; (p_paddr - KERNEL_VMA) + p_memsz, maxed over all segments.  Boot path planning needs it: the kernel's physical
+; extent grows with the kernel, and initrd must be placed AFTER it.  Before
+; 2026-11-18 Stage 2 assumed the kernel fit below 0x01800000; it no longer
+; does (the .data/.bss PT_LOAD ends at 0x0193f470) and the initrd copy was
+; landing inside the kernel's own .bss -- the guest then died at _start with
+; no output at all.  See boot/bios/stage2/stage2_start.asm's initrd block.
+elf_kernel_end:      dd 0                  ; flat (phys) end of the kernel
 _elf_image_base:     dd 0
 _elf_phdr_off:       dd 0                  ; low 32 bits of e_phoff
 _elf_phnum:          dd 0
@@ -64,6 +72,7 @@ elf_load:
     push ebp
 
     mov  [_elf_image_base], eax
+    mov  dword [elf_kernel_end], 0        ; recomputed below, per PT_LOAD
     mov  esi, eax                         ; ESI = flat ptr to Ehdr
 
     ; Magic: bytes 0..3 == { 0x7F, 'E', 'L', 'F' }.
@@ -194,6 +203,17 @@ _elf_copy_segment:
 
     ; memsz = low 32 bits of p_memsz.
     mov  edx, [fs:edi + 40]
+
+    ; Track the highest physical byte the kernel occupies.  EBP is the
+    ; destination (flat), EDX is p_memsz, so dst + memsz is where this
+    ; segment ends.  The maximum over all PT_LOADs is the kernel's extent, and the
+    ; initrd placement in stage2_start.asm depends on it.
+    mov  ecx, ebp
+    add  ecx, edx                         ; ECX = this segment's end
+    cmp  ecx, [elf_kernel_end]
+    jbe  .end_ok
+    mov  [elf_kernel_end], ecx
+.end_ok:
 
     ; Copy [ESI..ESI+EBX) to [EBP..EBP+EBX) in dword steps, then a
     ; byte tail.  Cuts the load time for a 300 KiB .text from ~2 s

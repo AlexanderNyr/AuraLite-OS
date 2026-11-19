@@ -49,8 +49,34 @@ jobs:
 
       - name: Install build & QEMU dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry update
+          apt_retry install -y --no-install-recommends \
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
             mtools ovmf socat dosfstools e2fsprogs \
             autoconf automake libtool git \
@@ -303,9 +329,26 @@ jobs:
   # toolchain and never skip on a plain `make iso`.
   # fail-fast is off: one shard's failure must not cancel the others,
   # or a bad net case would hide a good usb run's evidence.
+  #
+  # 180 min, not 90 (raised 2026-11-18, run 120066423839).  The shard budget
+  # is not slack for a slow machine -- it is a seatbelt on a hang, and 90 was
+  # cutting the seatbelt, not the hang:
+  #   * the core shard registers 41 cases.  Run 120066423839 spent 1m34s on
+  #     the build and 86.3 min inside 39 cases, and was killed at case 40
+  #     (test_uaccess) with the clock at 90.2 -- that shard needed roughly
+  #     5-15 more minutes, not 45.
+  #   * the w32-gui shard never left its FIRST case: test_w32_user32 started
+  #     at 17:07:55 and the job was cancelled at 18:34:03, 86 minutes later.
+  #     That one is a guest hang and 180 min will not fix it -- but 90 min
+  #     was turning it into "the job died", which hides which case hung.
+  # The honest shape is 180: a case that finishes gets its time, and a case
+  # that genuinely hangs is still bounded, in half the 240 the other jobs use.
+  # A single case running 86 minutes is a bug in the case, not a budget
+  # problem -- that is TODO.md material, and the larger budget makes it
+  # visible as "test_w32_user32 took 86 min" instead of "the job vanished".
   integration-cases:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -315,8 +358,34 @@ jobs:
 
       - name: Install build & QEMU dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry update
+          apt_retry install -y --no-install-recommends \
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
             mtools ovmf socat dosfstools e2fsprogs \
             autoconf automake libtool git python3-pil
@@ -332,7 +401,33 @@ jobs:
       - name: Install mingw-w64 (w32 only)
         if: startsWith(matrix.group, 'w32-')
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry install -y --no-install-recommends \
             mingw-w64 mingw-w64-tools
           x86_64-w64-mingw32-gcc --version | head -1
 
@@ -345,7 +440,33 @@ jobs:
       - name: Install filesystem interop tools (fsfull only)
         if: matrix.group == 'fsfull'
         run: |
-          sudo apt-get install -y --no-install-recommends \
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry install -y --no-install-recommends \
             exfatprogs ntfs-3g
 
       - name: Install Rust bare-metal target
@@ -576,8 +697,34 @@ jobs:
 
       - name: Install build & QEMU dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry update
+          apt_retry install -y --no-install-recommends \
             clang lld nasm xorriso qemu-system-x86 python3 make gcc llvm \
             mtools ovmf dosfstools e2fsprogs git curl unzip
 
@@ -637,8 +784,34 @@ jobs:
 
       - name: Install build & QEMU dependencies (i386 target included)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry update
+          apt_retry install -y --no-install-recommends \
             clang lld nasm qemu-system-x86 python3 make gcc llvm e2fsprogs \
             mtools dosfstools gcc-multilib git
           # qemu-system-x86 ships qemu-system-i386 on Debian/Ubuntu;
@@ -731,14 +904,40 @@ jobs:
 
       - name: Install build & QEMU dependencies (riscv64 target included)
         run: |
-          sudo apt-get update
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry update
           # NO gcc-multilib here: gcc-N-riscv64-linux-gnu declares
           # Conflicts: gcc-multilib (measured -- the first local run of
           # this job's package list failed the apt solver).  The -m32
           # crypto gate lives in the i386-parity job, which installs
           # multilib and NOT the cross gcc; each width gets its own
           # toolchain in its own job and the conflict never meets.
-          sudo apt-get install -y --no-install-recommends \
+          apt_retry install -y --no-install-recommends \
             clang lld nasm qemu-system-x86 qemu-system-misc qemu-user e2fsprogs \
             gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
             python3 make gcc llvm \
@@ -841,7 +1040,33 @@ jobs:
 
       - name: Install build & QEMU dependencies (aarch64 target included)
         run: |
-          sudo apt-get update
+          # The GitHub-hosted runner's apt mirror (us-east-2.ec2.archive /
+          # security.ubuntu.com) answers 503 Service Unavailable in bursts, and
+          # a bare `apt-get install` then dies with exit code 100 -- which is
+          # how 14 of 20 jobs in run 120521436787 ended before they compiled a
+          # single file.  Retry with backoff, then let --fix-missing finish
+          # whatever the mirror dropped.
+          apt_retry() {
+            local n i
+            for i in 1 2 3 4 5; do
+              if sudo apt-get "$@"; then return 0; fi
+              n=$(( i * 15 ))
+              echo "::warning::apt-get $* failed (attempt $i/5); retrying in ${n}s"
+              sleep "$n"
+            done
+            # Last resort: --fix-missing resolves the individual .deb files a
+            # flaky mirror dropped.  Only meaningful for `install`; an `update`
+            # that still fails is a real outage and should stay red.
+            if [ "$1" = install ]; then
+              echo "::warning::apt-get $* still failing; last try with --fix-missing"
+              shift 3                      # drop "install -y --no-install-recommends"
+              sudo apt-get install -y --no-install-recommends --fix-missing "$@"
+            else
+              echo "::error::apt-get $* failed after 5 attempts"
+              return 1
+            fi
+          }
+          apt_retry update
           # NO gcc-multilib here and NO riscv cross-gcc either: the
           # riscv job measured the Conflicts field the hard way, and
           # the same job-separation rule applies -- each width gets
@@ -849,7 +1074,7 @@ jobs:
           # meets.  libc6-dev-arm64-cross is named EXPLICITLY: the
           # cross gcc alone does not pull the target libc (ARM64_PLAN
           # Fact 1 -- the static crypto gate would die at <string.h>).
-          sudo apt-get install -y --no-install-recommends \
+          apt_retry install -y --no-install-recommends \
             clang lld nasm qemu-system-x86 qemu-system-arm qemu-user e2fsprogs \
             gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
             python3 make gcc llvm \
