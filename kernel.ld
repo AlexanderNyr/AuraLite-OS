@@ -70,9 +70,10 @@ SECTIONS
         *(.data .data.*)
     } :data
 
-    /* ---- Zero-initialised data (incl. the boot stack) ---- */
-    .bss : {
-        . = ALIGN(16);
+    /* Align the section itself before evaluating its symbols. Otherwise
+     * aulink can count leading alignment bytes in sh_size when .data ends
+     * on an 8-byte boundary, unlike LLD. */
+    .bss ALIGN(16) : {
         __bss_start = .;
         *(.bss .bss.*)
         *(COMMON)
