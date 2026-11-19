@@ -1021,6 +1021,35 @@ void kmain(boot_info_t *boot_info) {
     extern void gui_compositor_thread(void *arg);
     kthread_create(gui_compositor_thread, NULL, "gui-compositor");
 
+    /* The software 3D renderer, exercised.
+     *
+     * drivers/framebuffer/render3d.c shipped r3d_demo() and NOTHING called it,
+     * so test_3d_render's two assertions ("[[3d]] rendering 3D demo" and
+     * "[[3d]] demo complete") could never pass -- they were asserting on a
+     * demo no boot ever ran.  The old comment here said the 3D demo was
+     * "intentionally skipped" to avoid flicker over the boot splash; that is
+     * true of the splash phase, which has already ended by this point
+     * (boot_splash_stop() ran above and the GUI owns the framebuffer).
+     *
+     * It runs AFTER gui_self_test() so the composition receipt is unaffected,
+     * and for a handful of frames so boot time does not move: this is a
+     * "the renderer executes on the target" gate, not a screensaver. */
+    {
+        extern void r3d_demo(int frames);
+        extern void gui_render_now(void);
+        r3d_demo(3);
+        /* The demo draws straight to the framebuffer, so it OWNS the screen
+         * while it runs.  Give it back: gui_lane_smoke captures a screendump
+         * right after boot and asserts the bottom 28-pixel band is the
+         * compositor's taskbar, and a stray 3D frame there reads as "no
+         * taskbar band — compositor chrome missing" (the failure this very
+         * change produced the first time it was tried: the band analysed as
+         * pure (0,16,16) with the demo's (206,0,0) cube in the reference
+         * strip).  Repainting the desktop costs one composition and keeps
+         * every framebuffer gate looking at the GUI. */
+        gui_render_now();
+    }
+
     /* Phase 15: per-process address spaces — self-test. */
     kprintf("[boot] testing per-process address spaces...\n");
     process_self_test();

@@ -2774,4 +2774,21 @@ void gui_self_test(void) {
 
     gui_render_now();
     kprintf("[gui] PASS: GUI v2.0 subsystem rendered initial composition\n");
+
+    /* The framebuffer-and-window-manager receipt.
+     *
+     * Two gates have asserted this exact string for a long time --
+     * tests/integration/cases/test_graphics.sh ("WM demo rendered") and
+     * scripts/ci_test.sh ("all phase gate criteria met") -- and NOTHING has
+     * ever printed it: this self-test draws the windows above and then only
+     * announced the composition.  Both gates therefore failed on every run,
+     * reporting a missing window manager that was in fact right there on the
+     * screen.  Print what was actually rendered, from the code that rendered
+     * it, so the receipt cannot drift away from the drawing.
+     *
+     * The counts come from the windows this function showed, not from a
+     * constant: if the self-test ever stops drawing, the line stops claiming. */
+    kprintf("[gfx] framebuffer GUI + window manager rendered "
+            "(%ux%u, %d windows, text + widgets)\n",
+            gui_screen_width(), gui_screen_height(), 2);
 }

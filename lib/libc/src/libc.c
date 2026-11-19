@@ -1798,6 +1798,18 @@ static int format_to_sink(struct fmt_sink *s, const char *fmt, va_list ap) {
         int is_long = 0;
         while (*fmt == 'l') { is_long++; fmt++; }
         while (*fmt == 'h') { fmt++; }
+        /* 'z' is size_t's length modifier and needs the same promotion as
+         * 'l' on LP64 (size_t is 64-bit here), but it was simply not parsed:
+         * a printf("%zu", n) therefore emitted the literal text "%zu" and
+         * consumed no argument, shifting every later conversion.  The Sheet's
+         * XLSX gate writes its receipt with %zu (aosheet.c), so the gate's
+         * own success line read
+         *   saved /documents/xlsx-gate.xlsx: %zu-byte XLSX (3968 shared
+         *   strings, 1 skipped)
+         * -- the %zu was counted as one "skipped construct" and matched the
+         * test's failure pattern.  'j' (intmax_t) and 't' (ptrdiff_t) are the
+         * same width and get the same treatment. */
+        if (*fmt == 'z' || *fmt == 'j' || *fmt == 't') { is_long = 1; fmt++; }
         switch (*fmt) {
         case '%': s->emit(s, '%'); break;
         case 'c': s->emit(s, (char)va_arg(ap, int)); break;

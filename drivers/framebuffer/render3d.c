@@ -565,6 +565,13 @@ const mesh mesh_pyramid = {
 /* ---- Demo ---- */
 
 void r3d_demo(int frames) {
+    /* The demo had no receipts at all: it was written, never called, and the
+     * integration case test_3d_render asserts "[3d] rendering 3D demo" and
+     * "[3d] demo complete", neither of which any code printed.  The case has
+     * been failing on two assertions since it was written -- not because the
+     * renderer is broken, but because nothing ran it and nothing said so.
+     * Announce both ends, and call this from boot. */
+    kprintf("[3d] rendering 3D demo (%d frames)\n", frames);
     r3d_accel_init();
     if (r3d_accel.flags & R3D_ACCEL_HW3D) {
         if (virgl_demo_submit_triangle() != 0) {
@@ -608,4 +615,6 @@ void r3d_demo(int frames) {
         /* Small delay between frames. */
         timer_sleep_ms(50);
     }
+
+    kprintf("[3d] demo complete\n");
 }
