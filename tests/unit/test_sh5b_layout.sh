@@ -22,32 +22,9 @@
 # no gc).  A clang kernel without gc does not boot -- both linkers' outputs
 # are equally affected, which is why the boot gate is SH5d's, not this one.
 #
-# ---------------------------------------------------------------------------
-# CALIBRATION NOTE (2026-11-18) -- read before treating a .data/.bss FAIL as
-# a regression.  The "must match 1:1" rows for .data/.bss were calibrated
-# against LLD 18.x on the ubuntu-24.04 CI runner.  .bss placement depends on
-# where the linker puts .got, and the three participants disagree:
-#
-#   linker   .data              .got                .bss
-#   LLD 18   0xffffffff80e10770 0x80e11c08         0xffffffff80e12000  (after .got)
-#   LLD 19   0xffffffff80e10770 0xffffffff8119c120 0xffffffff80e11c10  (after .bss)
-#   aulink   0xffffffff80e10750 0xffffffff80e11be8 0xffffffff80e11fb0  (in .data)
-#
-# (measured on this tree; `readelf -SW build/sh5b/{lld,au}.elf | grep -E
-# '\.data|\.got|\.bss'` reproduces it).  .bss SIZE is 0x38a510 under both
-# LLDs and 0x38a508 under aulink, so on a developer machine with LLD 19 the
-# loop below reports "FAIL: .bss size ... (got '38a508', want '38a510')" --
-# a linker-placement difference, not a kernel regression.  There is a second,
-# INDEPENDENT signal that aulink's own .bss arithmetic deserves a look before
-# this gate is relaxed: its __bss_end (0xffffffff8119c4b0) sits 8 bytes
-# BEFORE its .bss end (0xffffffff8119c4b8), i.e. sh_size != __bss_end -
-# __bss_start even though o->size was set to `end - o->addr`.  Both facts are
-# recorded in TODO.md ("test_sh5b_layout.sh's .bss comparison is
-# version-sensitive") with the fix directions; until that lands, run this gate
-# on the CI image (LLD 18) or read a .bss-only FAIL as the NOTE above, not as
-# red code.  Every other row (entry, PHDRs, .text 1:1, symbols, .rodata
-# deltas) is linker-version independent and must stay exact.
-# ---------------------------------------------------------------------------
+# LLD versions can place .got on different sides of .bss, so we compare
+# .bss sizes, not absolute addresses. kernel.ld aligns the output section
+# before evaluating __bss_start, keeping leading padding out of sh_size.
 set -u
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 cd "$ROOT"
@@ -182,14 +159,23 @@ if [ -n "$i_l" ] && [ -n "$i_a" ]; then
     else echo "FAIL: isr_table delta 0x$(printf %x $idl) > 0x40"; FAILED=1; fi
 else echo "FAIL: isr_table missing (lld='$i_l' au='$i_a')"; FAILED=1; fi
 
-# 5) __bss_start/__bss_end ordering (bss is shifted by the .rodata delta)
-b1=$(readelf -sW "$BUILD/au.elf" 2>/dev/null | awk '$8=="__bss_start" {print $2; exit}')
-b2=$(readelf -sW "$BUILD/au.elf" 2>/dev/null | awk '$8=="__bss_end" {print $2; exit}')
-if [ -n "$b1" ] && [ -n "$b2" ]; then
-    s1=$((16#$b1)); s2=$((16#$b2))
-    if [ $s2 -gt $s1 ]; then echo "PASS: __bss_start=$b1 < __bss_end=$b2 (ordered)";
-    else echo "FAIL: __bss ordering ($b1 >= $b2)"; FAILED=1; fi
-else echo "FAIL: __bss_start/__bss_end missing (got '$b1' '$b2')"; FAILED=1; fi
+# 5) The boot code must clear exactly the bytes covered by .bss in each ELF.
+for linker in lld au; do
+    elf="$BUILD/$linker.elf"
+    bounds=$(sec "$elf" ".bss")
+    addr=${bounds%% *}; size=${bounds##* }
+    b1=$(readelf -sW "$elf" 2>/dev/null | awk '$8=="__bss_start" {print $2; exit}')
+    b2=$(readelf -sW "$elf" 2>/dev/null | awk '$8=="__bss_end" {print $2; exit}')
+    if [[ $addr =~ ^[[:xdigit:]]+$ && $size =~ ^[[:xdigit:]]+$ &&
+          $b1 =~ ^[[:xdigit:]]+$ && $b2 =~ ^[[:xdigit:]]+$ ]] &&
+       (( 16#$b1 == 16#$addr && 16#$b2 > 16#$b1 &&
+          16#$b2 - 16#$b1 == 16#$size )); then
+        echo "PASS: $linker .bss matches __bss_start..__bss_end ($b1..$b2)"
+    else
+        echo "FAIL: $linker .bss ($addr + $size) does not match symbols ($b1..$b2)"
+        FAILED=1
+    fi
+done
 
 echo
 if [ "$FAILED" -eq 0 ]; then

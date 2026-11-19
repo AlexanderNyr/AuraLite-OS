@@ -3984,6 +3984,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # and a writable /tmp/sh5d/build overlay.  The complete stage is intentional:
 # the guest, not a host compiler, turns every x86_64 kernel source into the
 # final /fat/KERNEL.ELF.
+# The SDF atlas is a rustc input only. The guest TinyCC C/asm closure never
+# reads it; duplicating it here consumes 12 MiB of the 32 MiB BIOS initrd slot.
 	@set -e; if [ -f "$(SELFHOST_TCC)" ]; then \
 	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
 	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \
@@ -4011,6 +4013,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
     cp lib/libc/user.ld $(INITRD_DIR)/src/libc/user.ld; \
     cp tools/mini-asm/mini-asm.c $(INITRD_DIR)/src/mini-asm.c; \
     cp -a kernel drivers boot w32 $(INITRD_DIR)/src/; \
+    rm -f $(INITRD_DIR)/src/$(GUI_ATLAS); \
     cp kernel.ld $(INITRD_DIR)/src/kernel.ld; \
     cp $(INIT_ELF) $(INITRD_DIR)/src/selfhost/init.elf; \
     cp tools/gen_asm_offsets.c tools/gen_user_binary.c \
@@ -4329,7 +4332,6 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_readline \
                 $(BUILD_DIR)/test_mathulp \
                 $(BUILD_DIR)/test_progpath \
-                $(BUILD_DIR)/test_taskbar_layout \
                 $(BUILD_DIR)/test_taskbar_layout_rs \
                 $(BUILD_DIR)/test_aodoc_canvas \
                 $(BUILD_DIR)/test_ao_utf8 $(BUILD_DIR)/test_ao_glyph \
@@ -5005,7 +5007,7 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 # OFFICE_PLAN OF0: the shell around the suite.  Every menu entry must name a
 # binary the image ships (a stale /apps path is a row that silently does
 # nothing), every entry must have a group, and the taskbar renderer and hit
-# test must both go through kernel/gui/taskbar_layout.h.  The self-test injects
+# test must both use kernel/gui/desktop/taskbar_layout.rs. The self-test injects
 # each of those defects -- including the exact shape of the 2026-11-08 bug.
 	@echo "[unit] running tools/check_start_menu.py --check"
 	@python3 tools/check_start_menu.py --check || exit 1
@@ -6035,21 +6037,9 @@ $(BUILD_DIR)/test_execpolicy: tests/unit/test_execpolicy.c \
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_execpolicy.c kernel/fs/execpolicy.c -o $@
 
-# OFFICE_PLAN OF0: the taskbar strip geometry.  The header is pure arithmetic
-# with no kernel dependencies, which is the point -- the renderer, the hit test
-# and this test all run the same function, so a button cannot be drawn in one
-# place and clickable in another (the 2026-11-08 "10 windows, 6 buttons" bug).
-$(BUILD_DIR)/test_taskbar_layout: tests/unit/test_taskbar_layout.c \
-                                  kernel/gui/taskbar_layout.h
-	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
-
-# The same gate against the geometry that actually ships.  PR #13 moved the
-# taskbar and start menu to Rust; the C test above kept asserting P1..P5
-# against kernel/gui/taskbar_layout.h, which the kernel no longer compiles,
-# while kernel/gui/desktop/taskbar_layout.rs had no test at all.  This target
-# compiles the real module on the host (it is pure u32 arithmetic, no imports),
-# so the properties are graded against the code the user's clicks hit.
+# OFFICE_PLAN OF0: exercise the shipping taskbar geometry. The Rust port
+# shares these functions between rendering and hit testing; the host test
+# compiles the same module rather than a copy of the arithmetic.
 $(BUILD_DIR)/test_taskbar_layout_rs: tests/unit/test_taskbar_layout_rs.rs \
                                      kernel/gui/desktop/taskbar_layout.rs
 	@mkdir -p $(BUILD_DIR)
