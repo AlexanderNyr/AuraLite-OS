@@ -1,3 +1,4 @@
+
 #![no_std]
 #![no_main]
 
@@ -10,55 +11,172 @@ use rsbr::gui::{
     self, App, Cursor, Event, Flow, Window,
     EVT_CLOSE_REQ, EVT_CONTEXT_MENU, EVT_KEY_DOWN, EVT_MOUSE_DOWN,
     EVT_MOUSE_DBLCLICK, EVT_MOUSE_MOVE, EVT_MOUSE_WHEEL, EVT_RESIZE,
-    FLAG_HAS_CLOSE, FLAG_HAS_TITLE, FLAG_HAS_MINMAX, FLAG_RESIZABLE,
+    FLAG_HAS_CLOSE, FLAG_HAS_TITLE, FLAG_HAS_MINMAX, FLAG_MOVABLE,
+    FLAG_RESIZABLE,
     KEY_DOWN, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KEY_UP,
 };
 use rsbr::process;
+
+// =============================================================================
+// Application configuration
+// =============================================================================
 
 const WINDOW_X: i32 = 72;
 const WINDOW_Y: i32 = 54;
 const WINDOW_WIDTH: i32 = 1120;
 const WINDOW_HEIGHT: i32 = 760;
 
-const SIDEBAR_WIDTH: i32 = 192;
-const HEADER_HEIGHT: i32 = 88;
-const GRID_ORIGIN_Y: i32 = 108;
-const FOOTER_HEIGHT: i32 = 30;
-const CARD_WIDTH: i32 = 108;
-const CARD_HEIGHT: i32 = 106;
-const CARD_GAP: i32 = 10;
-
-const TOOLBAR_X: i32 = SIDEBAR_WIDTH + 16;
-const TOOLBAR_Y: i32 = 48;
-const TOOLBAR_H: i32 = 28;
-
-const BTN_PARENT: Rect = Rect::new(TOOLBAR_X, TOOLBAR_Y, 84, TOOLBAR_H);
-const BTN_REFRESH: Rect = Rect::new(TOOLBAR_X + 84, TOOLBAR_Y, 88, TOOLBAR_H);
-
-// The portable AArch64/RV64 directory ABI returns at most 32 entries per call.
-// Keeping the same bound also makes this application architecture-independent.
 const MAX_ITEMS: usize = 32;
-const MAX_NAME_BYTES: usize = 60; // 59 bytes plus room for a local NUL terminator.
-const MAX_PATH_BYTES: usize = 256; // RSBR C-string wrappers accept 255 bytes + NUL.
+const MAX_NAME_BYTES: usize = 60;
+const MAX_PATH_BYTES: usize = 256;
 
 const GEDIT_PATH: &str = "/bin/gedit";
 
-const COLOR_BACKGROUND: u32 = 0x00F5F7FA;
-const COLOR_SIDEBAR: u32 = 0x00EDF1F6;
-const COLOR_HEADER: u32 = 0x00FFFFFF;
-const COLOR_CARD: u32 = 0x00FFFFFF;
-const COLOR_CARD_HOVER: u32 = 0x00EAF2FF;
-const COLOR_CARD_SELECTED: u32 = 0x00DCEAFF;
-const COLOR_CARD_BORDER: u32 = 0x00D7DEE8;
-const COLOR_DIVIDER: u32 = 0x00D7DEE8;
-const COLOR_TEXT: u32 = 0x00212B3A;
-const COLOR_MUTED: u32 = 0x006B7788;
-const COLOR_ACCENT: u32 = 0x003D78D8;
-const COLOR_ACCENT_SOFT: u32 = 0x00DCEAFF;
-const COLOR_FOLDER: u32 = 0x00E9B84C;
-const COLOR_FOLDER_DARK: u32 = 0x00C89127;
-const COLOR_FILE: u32 = 0x00FFFFFF;
-const COLOR_FILE_LINE: u32 = 0x0096A2B2;
+const ROOTS: [(&str, &str); 6] = [
+    ("/", "/"),
+    ("bin/", "/bin"),
+    ("lib/", "/lib"),
+    ("rv64/", "/rv64"),
+    ("apps/", "/apps"),
+    ("demos/", "/demos"),
+];
+
+// =============================================================================
+// Theme
+// =============================================================================
+
+#[derive(Clone, Copy)]
+struct Theme {
+    background: u32,
+    sidebar: u32,
+    header: u32,
+
+    card: u32,
+    card_hover: u32,
+    card_selected: u32,
+    card_border: u32,
+
+    divider: u32,
+
+    text: u32,
+    muted: u32,
+
+    accent: u32,
+    accent_soft: u32,
+
+    folder: u32,
+    folder_dark: u32,
+    folder_highlight: u32,
+
+    file: u32,
+    file_line: u32,
+}
+
+impl Theme {
+    const LIGHT: Self = Self {
+        background: 0x00F5F7FA,
+        sidebar: 0x00EDF1F6,
+        header: 0x00FFFFFF,
+
+        card: 0x00FFFFFF,
+        card_hover: 0x00EAF2FF,
+        card_selected: 0x00DCEAFF,
+        card_border: 0x00D7DEE8,
+
+        divider: 0x00D7DEE8,
+
+        text: 0x00212B3A,
+        muted: 0x006B7788,
+
+        accent: 0x003D78D8,
+        accent_soft: 0x00DCEAFF,
+
+        folder: 0x00E9B84C,
+        folder_dark: 0x00C89127,
+        folder_highlight: 0x00F7D98C,
+
+        file: 0x00FFFFFF,
+        file_line: 0x0096A2B2,
+    };
+}
+
+const THEME: Theme = Theme::LIGHT;
+
+// =============================================================================
+// Layout configuration
+//
+// Edit these values to customize the interface.
+// All coordinates are calculated by Layout.
+// =============================================================================
+
+#[derive(Clone, Copy)]
+struct LayoutConfig {
+    sidebar_width: i32,
+    header_height: i32,
+    footer_height: i32,
+
+    toolbar_left_margin: i32,
+    toolbar_right_margin: i32,
+    toolbar_top: i32,
+    toolbar_height: i32,
+
+    parent_button_width: i32,
+    refresh_button_width: i32,
+
+    grid_left_padding: i32,
+    grid_right_padding: i32,
+    grid_top_padding: i32,
+
+    card_width: i32,
+    card_height: i32,
+    card_gap: i32,
+
+    sidebar_heading_x: i32,
+    sidebar_heading_y: i32,
+
+    sidebar_root_top: i32,
+    sidebar_root_step: i32,
+    sidebar_root_height: i32,
+    sidebar_root_inset: i32,
+}
+
+impl LayoutConfig {
+    const DEFAULT: Self = Self {
+        sidebar_width: 192,
+        header_height: 88,
+        footer_height: 30,
+
+        toolbar_left_margin: 16,
+        toolbar_right_margin: 16,
+        toolbar_top: 48,
+        toolbar_height: 28,
+
+        parent_button_width: 36,
+        refresh_button_width: 36,
+
+        grid_left_padding: 20,
+        grid_right_padding: 12,
+        grid_top_padding: 20,
+
+        card_width: 108,
+        card_height: 106,
+        card_gap: 10,
+
+        sidebar_heading_x: 22,
+        sidebar_heading_y: 28,
+
+        sidebar_root_top: 106,
+        sidebar_root_step: 40,
+        sidebar_root_height: 34,
+        sidebar_root_inset: 10,
+    };
+}
+
+const LAYOUT_CONFIG: LayoutConfig = LayoutConfig::DEFAULT;
+
+// =============================================================================
+// Geometry
+// =============================================================================
 
 #[derive(Clone, Copy)]
 struct Rect {
@@ -73,20 +191,313 @@ impl Rect {
         Self { x, y, w, h }
     }
 
-    const fn contains(&self, px: i32, py: i32) -> bool {
-        px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
+    fn right(&self) -> i32 {
+        self.x.saturating_add(self.w)
+    }
+
+    fn bottom(&self) -> i32 {
+        self.y.saturating_add(self.h)
+    }
+
+    fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x
+            && px < self.right()
+            && py >= self.y
+            && py < self.bottom()
+    }
+
+    fn is_visible(&self) -> bool {
+        self.w > 0 && self.h > 0
     }
 }
 
+#[derive(Clone, Copy)]
+struct GridLayout {
+    bounds: Rect,
 
-const ROOTS: [(&str, &str); 6] = [
-    ("/", "/"),
-    ("bin/", "/bin"),
-    ("lib/", "/lib"),
-    ("rv64/", "/rv64"),
-    ("apps/", "/apps"),
-    ("demos/", "/demos"),
-];
+    cell_width: i32,
+    cell_height: i32,
+
+    gap_x: i32,
+    gap_y: i32,
+
+    columns: usize,
+    visible_rows: usize,
+}
+
+impl GridLayout {
+    fn new(bounds: Rect, config: LayoutConfig) -> Self {
+        let cell_width = config.card_width.max(1);
+        let cell_height = config.card_height.max(1);
+        let gap_x = config.card_gap.max(0);
+        let gap_y = config.card_gap.max(0);
+
+        let stride_x = cell_width.saturating_add(gap_x).max(1);
+        let stride_y = cell_height.saturating_add(gap_y).max(1);
+
+        let columns = ((bounds.w.saturating_add(gap_x)) / stride_x)
+            .max(1) as usize;
+
+        let visible_rows = if bounds.h < cell_height {
+            1
+        } else {
+            ((bounds.h.saturating_add(gap_y)) / stride_y)
+                .max(1) as usize
+        };
+
+        Self {
+            bounds,
+            cell_width,
+            cell_height,
+            gap_x,
+            gap_y,
+            columns,
+            visible_rows,
+        }
+    }
+
+    fn total_rows(&self, item_count: usize) -> usize {
+        if item_count == 0 {
+            return 0;
+        }
+
+        (item_count + self.columns - 1) / self.columns
+    }
+
+    fn max_scroll_row(&self, item_count: usize) -> usize {
+        self.total_rows(item_count)
+            .saturating_sub(self.visible_rows)
+    }
+
+    fn card_rect(&self, index: usize, scroll_row: usize) -> Option<Rect> {
+        let column = index % self.columns;
+        let row = index / self.columns;
+
+        if row < scroll_row || row >= scroll_row + self.visible_rows {
+            return None;
+        }
+
+        let visible_row = row - scroll_row;
+
+        let x = self.bounds.x + column as i32 * (self.cell_width + self.gap_x);
+        let y = self.bounds.y + visible_row as i32 * (self.cell_height + self.gap_y);
+
+        let rect = Rect::new(x, y, self.cell_width, self.cell_height);
+
+        if rect.x < self.bounds.x
+            || rect.right() > self.bounds.right()
+            || rect.y < self.bounds.y
+            || rect.bottom() > self.bounds.bottom()
+        {
+            return None;
+        }
+
+        Some(rect)
+    }
+
+    fn item_at(
+        &self,
+        x: i32,
+        y: i32,
+        scroll_row: usize,
+        item_count: usize,
+    ) -> Option<usize> {
+        if !self.bounds.contains(x, y) {
+            return None;
+        }
+
+        let relative_x = x - self.bounds.x;
+        let relative_y = y - self.bounds.y;
+
+        let stride_x = self.cell_width + self.gap_x;
+        let stride_y = self.cell_height + self.gap_y;
+
+        let column = (relative_x / stride_x) as usize;
+        let visible_row = (relative_y / stride_y) as usize;
+
+        if column >= self.columns
+            || visible_row >= self.visible_rows
+            || relative_x % stride_x >= self.cell_width
+            || relative_y % stride_y >= self.cell_height
+        {
+            return None;
+        }
+
+        let row = scroll_row + visible_row;
+        let index = row * self.columns + column;
+
+        if index >= item_count {
+            return None;
+        }
+
+        self.card_rect(index, scroll_row)
+            .filter(|rect| rect.contains(x, y))
+            .map(|_| index)
+    }
+}
+
+// =============================================================================
+// Complete window layout
+// =============================================================================
+
+#[derive(Clone, Copy)]
+struct Layout {
+    window: Rect,
+
+    sidebar: Rect,
+    header: Rect,
+    toolbar: Rect,
+
+    parent_button: Rect,
+    refresh_button: Rect,
+    path_area: Rect,
+
+    grid: GridLayout,
+    footer: Rect,
+
+    config: LayoutConfig,
+}
+
+impl Layout {
+    fn calculate(width: i32, height: i32, config: LayoutConfig) -> Self {
+        let width = width.max(1);
+        let height = height.max(1);
+
+        let window = Rect::new(0, 0, width, height);
+
+        let sidebar_width = config.sidebar_width.max(0).min(width);
+        let header_height = config.header_height.max(0).min(height);
+        let footer_height = config.footer_height.max(0).min(height);
+
+        let sidebar = Rect::new(
+            0,
+            0,
+            sidebar_width,
+            height,
+        );
+
+        let main_x = sidebar_width;
+        let main_width = width - sidebar_width;
+
+        let header = Rect::new(
+            main_x,
+            0,
+            main_width,
+            header_height,
+        );
+
+        let toolbar_height = config.toolbar_height.max(0).min(header_height);
+
+        let toolbar_y = config.toolbar_top
+            .min(header_height.saturating_sub(toolbar_height).max(0));
+
+        let toolbar_x = main_x + config.toolbar_left_margin.max(0);
+
+        let toolbar_width = (
+            main_width
+                - config.toolbar_left_margin.max(0)
+                - config.toolbar_right_margin.max(0)
+        ).max(0);
+
+        let toolbar = Rect::new(
+            toolbar_x,
+            toolbar_y,
+            toolbar_width,
+            toolbar_height,
+        );
+
+        let parent_width = config.parent_button_width
+            .max(0)
+            .min(toolbar_width);
+
+        let refresh_width = config.refresh_button_width
+            .max(0)
+            .min(toolbar_width - parent_width);
+
+        let refresh_button = Rect::new(
+            toolbar.right() - refresh_width,
+            toolbar.y,
+            refresh_width,
+            toolbar.h,
+        );
+
+        let parent_button = Rect::new(
+            refresh_button.x - parent_width,
+            toolbar.y,
+            parent_width,
+            toolbar.h,
+        );
+
+        let path_area = Rect::new(
+            toolbar.x,
+            toolbar.y,
+            (parent_button.x - toolbar.x).max(0),
+            toolbar.h,
+        );
+
+        let footer_y = height - footer_height;
+
+        let footer = Rect::new(
+            main_x,
+            footer_y,
+            main_width,
+            footer_height,
+        );
+
+        let grid_x = main_x + config.grid_left_padding.max(0);
+        let grid_y = header.bottom() + config.grid_top_padding.max(0);
+
+        let grid_width = (
+            width
+                - grid_x
+                - config.grid_right_padding.max(0)
+        ).max(0);
+
+        let grid_height = (footer_y - grid_y).max(0);
+
+        let grid_bounds = Rect::new(
+            grid_x,
+            grid_y,
+            grid_width,
+            grid_height,
+        );
+
+        let grid = GridLayout::new(grid_bounds, config);
+
+        Self {
+            window,
+            sidebar,
+            header,
+            toolbar,
+            parent_button,
+            refresh_button,
+            path_area,
+            grid,
+            footer,
+            config,
+        }
+    }
+
+    fn root_item_rect(&self, index: usize) -> Rect {
+        let config = self.config;
+
+        let inset = config.sidebar_root_inset.max(0);
+
+        let width = (self.sidebar.w - inset * 2).max(0);
+
+        Rect::new(
+            self.sidebar.x + inset,
+            config.sidebar_root_top
+                + index as i32 * config.sidebar_root_step,
+            width,
+            config.sidebar_root_height.max(0),
+        )
+    }
+}
+
+// =============================================================================
+// Paths
+// =============================================================================
 
 #[derive(Clone, Copy)]
 struct PathBuffer {
@@ -104,42 +515,60 @@ impl PathBuffer {
 
     fn set(&mut self, path: &str) -> bool {
         let bytes = path.as_bytes();
-        if bytes.is_empty() || bytes[0] != b'/' || bytes.len() >= MAX_PATH_BYTES {
+
+        if bytes.is_empty()
+            || bytes[0] != b'/'
+            || bytes.len() >= MAX_PATH_BYTES
+        {
             return false;
         }
 
         self.bytes = [0; MAX_PATH_BYTES];
         self.bytes[..bytes.len()].copy_from_slice(bytes);
+
         self.len = bytes.len();
+
         true
     }
 
     fn as_str(&self) -> &str {
-        // Paths are copied from validated UTF-8 strings or assembled from
-        // validated directory-entry names.
-        str::from_utf8(&self.bytes[..self.len]).unwrap_or("/")
+        str::from_utf8(&self.bytes[..self.len])
+            .unwrap_or("/")
     }
 
     fn push_name(&mut self, name: &str) -> bool {
-        if name.is_empty() || name.as_bytes().contains(&b'/') {
+        if name.is_empty()
+            || name == "."
+            || name == ".."
+            || name.as_bytes().contains(&b'/')
+        {
             return false;
         }
 
-        let needs_slash = self.len > 1 && self.bytes[self.len - 1] != b'/';
+        let needs_slash = self.len > 1
+            && self.bytes[self.len - 1] != b'/';
+
         let slash_len = if needs_slash { 1 } else { 0 };
+
         let required = self.len + slash_len + name.len();
+
         if required >= MAX_PATH_BYTES {
             return false;
         }
 
-        let mut at = self.len;
+        let mut offset = self.len;
+
         if needs_slash {
-            self.bytes[at] = b'/';
-            at += 1;
+            self.bytes[offset] = b'/';
+            offset += 1;
         }
-        self.bytes[at..at + name.len()].copy_from_slice(name.as_bytes());
+
+        self.bytes[offset..offset + name.len()]
+            .copy_from_slice(name.as_bytes());
+
         self.len = required;
         self.bytes[self.len] = 0;
+
         true
     }
 
@@ -149,6 +578,7 @@ impl PathBuffer {
         }
 
         let mut cursor = self.len;
+
         while cursor > 1 && self.bytes[cursor - 1] != b'/' {
             cursor -= 1;
         }
@@ -158,12 +588,19 @@ impl PathBuffer {
         } else {
             self.len = cursor - 1;
         }
+
         self.bytes[self.len] = 0;
+
         true
     }
 }
 
+// =============================================================================
+// Filesystem data
+// =============================================================================
+
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 enum ItemKind {
     Directory,
     File,
@@ -173,7 +610,7 @@ enum ItemKind {
 #[derive(Clone, Copy)]
 struct FileItem {
     name: [u8; MAX_NAME_BYTES],
-    name_len: usize,
+    name_len: u8,
     kind: ItemKind,
 }
 
@@ -187,85 +624,50 @@ impl FileItem {
     }
 
     fn name_str(&self) -> &str {
-        str::from_utf8(&self.name[..self.name_len]).unwrap_or("<invalid name>")
+        str::from_utf8(&self.name[..self.name_len as usize])
+            .unwrap_or("<invalid name>")
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum HoverTarget {
-    None,
-    Root(usize),
-    Parent,
-    Refresh,
-    Item(usize),
-}
-
-struct FileManagerApp {
-    current_path: PathBuffer,
+struct FileList {
     items: [FileItem; MAX_ITEMS],
-    item_count: usize,
-    hovered_target: HoverTarget,
-    selected_item: Option<usize>,
-    scroll_row: usize,
-    client_width: i32,
-    client_height: i32,
-    hand_cursor: bool,
-    ignore_next_double_click: bool,
-    status: &'static str,
+    count: usize,
 }
 
-impl FileManagerApp {
-    fn new() -> Self {
-        let mut app = Self {
-            current_path: PathBuffer::empty(),
+impl FileList {
+    const fn empty() -> Self {
+        Self {
             items: [FileItem::empty(); MAX_ITEMS],
-            item_count: 0,
-            hovered_target: HoverTarget::None,
-            selected_item: None,
-            scroll_row: 0,
-            client_width: WINDOW_WIDTH,
-            client_height: WINDOW_HEIGHT,
-            hand_cursor: false,
-            ignore_next_double_click: false,
-            status: "Ready",
-        };
-
-        let _ = app.load_directory("/");
-        app
+            count: 0,
+        }
     }
 
-    fn load_directory(&mut self, path: &str) -> bool {
-        let mut next_path = PathBuffer::empty();
-        if !next_path.set(path) {
-            self.status = "Path is too long";
-            return false;
-        }
-
+    fn read(path: &str) -> Result<Self, &'static str> {
         let mut raw_entries = [DirEntry::empty(); MAX_ITEMS];
-        let count = match read_dir(path, &mut raw_entries) {
-            Ok(count) => count,
-            Err(_) => {
-                self.status = "Unable to read directory";
-                return false;
-            }
-        };
 
-        let mut next_items = [FileItem::empty(); MAX_ITEMS];
-        let mut next_count = 0usize;
-        let limit = count.min(MAX_ITEMS);
+        let count = read_dir(path, &mut raw_entries)
+            .map_err(|_| "Unable to read directory")?;
 
-        for entry in raw_entries.iter().take(limit) {
+        let mut result = Self::empty();
+
+        for entry in raw_entries.iter().take(count.min(MAX_ITEMS)) {
             let name = match entry.name_str() {
                 Some(name) => name,
                 None => continue,
             };
 
-            if name.is_empty() || name == "." || name == ".." {
+            if name.is_empty()
+                || name == "."
+                || name == ".."
+            {
                 continue;
             }
 
             let name_bytes = name.as_bytes();
-            if name_bytes.len() >= MAX_NAME_BYTES || next_count >= MAX_ITEMS {
+
+            if name_bytes.len() >= MAX_NAME_BYTES
+                || result.count >= MAX_ITEMS
+            {
                 continue;
             }
 
@@ -277,48 +679,222 @@ impl FileManagerApp {
                 ItemKind::Other
             };
 
-            let item = &mut next_items[next_count];
-            item.name[..name_bytes.len()].copy_from_slice(name_bytes);
+            let item = &mut result.items[result.count];
+
+            item.name[..name_bytes.len()]
+                .copy_from_slice(name_bytes);
+
             item.name[name_bytes.len()] = 0;
-            item.name_len = name_bytes.len();
+            item.name_len = name_bytes.len() as u8;
             item.kind = kind;
-            next_count += 1;
+
+            result.count += 1;
         }
 
-        self.current_path = next_path;
-        self.items = next_items;
-        self.item_count = next_count;
-        self.hovered_target = HoverTarget::None;
-        self.selected_item = None;
-        self.scroll_row = 0;
-        self.ignore_next_double_click = false;
-        if self.hand_cursor {
-            self.hand_cursor = false;
-            let _ = gui::set_cursor(Cursor::Arrow);
+        Ok(result)
+    }
+
+    fn get(&self, index: usize) -> Option<&FileItem> {
+        if index < self.count {
+            Some(&self.items[index])
+        } else {
+            None
         }
-        self.status = "Directory loaded";
-        true
+    }
+}
+
+// =============================================================================
+// Filesystem
+// =============================================================================
+
+struct FileSystem {
+    current_path: PathBuffer,
+    files: FileList,
+}
+
+impl FileSystem {
+    const fn empty() -> Self {
+        Self {
+            current_path: PathBuffer::empty(),
+            files: FileList::empty(),
+        }
+    }
+
+    fn load_directory(&mut self, path: &str) -> Result<(), &'static str> {
+        let mut next_path = PathBuffer::empty();
+
+        if !next_path.set(path) {
+            return Err("Path is too long");
+        }
+
+        // Load into temporary storage first.
+        // The current directory remains intact if reading fails.
+        let next_files = FileList::read(path)?;
+
+        self.current_path = next_path;
+        self.files = next_files;
+
+        Ok(())
     }
 
     fn item_path(&self, index: usize) -> Option<PathBuffer> {
-        if index >= self.item_count {
+        let item = self.files.get(index)?;
+
+        let mut path = self.current_path;
+
+        if !path.push_name(item.name_str()) {
             return None;
         }
 
-        let mut path = self.current_path;
-        if !path.push_name(self.items[index].name_str()) {
-            return None;
-        }
         Some(path)
     }
 
-    fn open_item(&mut self, index: usize) {
-        if index >= self.item_count {
-            return;
-        }
+    fn item(&self, index: usize) -> Option<&FileItem> {
+        self.files.get(index)
+    }
 
-        let item = self.items[index];
-        let path = match self.item_path(index) {
+    fn count(&self) -> usize {
+        self.files.count
+    }
+
+    fn path(&self) -> &str {
+        self.current_path.as_str()
+    }
+}
+
+// =============================================================================
+// Navigation
+// =============================================================================
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HoverTarget {
+    None,
+    Root(usize),
+    Parent,
+    Refresh,
+    Item(usize),
+}
+
+#[derive(Clone, Copy)]
+struct NavigationState {
+    selected: Option<usize>,
+    hovered: HoverTarget,
+
+    scroll_row: usize,
+
+    ignore_next_double_click: bool,
+}
+
+impl NavigationState {
+    const fn new() -> Self {
+        Self {
+            selected: None,
+            hovered: HoverTarget::None,
+
+            scroll_row: 0,
+
+            ignore_next_double_click: false,
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
+// =============================================================================
+// Viewport
+// =============================================================================
+
+#[derive(Clone, Copy)]
+struct Viewport {
+    width: i32,
+    height: i32,
+}
+
+impl Viewport {
+    const fn new(width: i32, height: i32) -> Self {
+        Self {
+            width,
+            height,
+        }
+    }
+
+    fn layout(&self) -> Layout {
+        Layout::calculate(
+            self.width,
+            self.height,
+            LAYOUT_CONFIG,
+        )
+    }
+}
+
+// =============================================================================
+// Application
+// =============================================================================
+
+struct FileManagerApp {
+    filesystem: FileSystem,
+    navigation: NavigationState,
+
+    viewport: Viewport,
+
+    hand_cursor: bool,
+
+    status: &'static str,
+}
+
+impl FileManagerApp {
+    fn new() -> Self {
+        let mut app = Self {
+            filesystem: FileSystem::empty(),
+            navigation: NavigationState::new(),
+
+            viewport: Viewport::new(
+                WINDOW_WIDTH,
+                WINDOW_HEIGHT,
+            ),
+
+            hand_cursor: false,
+
+            status: "Ready",
+        };
+
+        let _ = app.navigate_to("/");
+
+        app
+    }
+
+    // -------------------------------------------------------------------------
+    // Navigation and filesystem
+    // -------------------------------------------------------------------------
+
+    fn navigate_to(&mut self, path: &str) -> bool {
+        match self.filesystem.load_directory(path) {
+            Ok(()) => {
+                self.navigation.reset();
+
+                self.set_hand_cursor(false);
+
+                self.status = "Directory loaded";
+
+                true
+            }
+            Err(error) => {
+                self.status = error;
+
+                false
+            }
+        }
+    }
+
+    fn open_item(&mut self, index: usize) {
+        let item = match self.filesystem.item(index) {
+            Some(item) => *item,
+            None => return,
+        };
+
+        let path = match self.filesystem.item_path(index) {
             Some(path) => path,
             None => {
                 self.status = "Selected path is too long";
@@ -328,24 +904,33 @@ impl FileManagerApp {
 
         match item.kind {
             ItemKind::Directory => {
-                let full_path = path.as_str();
-                let _ = self.load_directory(full_path);
+                let _ = self.navigate_to(path.as_str());
             }
+
             ItemKind::File => {
                 let name = item.name_str();
-                let name_bytes = name.as_bytes();
-                if name_bytes.len() >= 4
-                    && name_bytes[name_bytes.len() - 4..].eq_ignore_ascii_case(b".txt")
+                let bytes = name.as_bytes();
+
+                if bytes.len() >= 4
+                    && bytes[bytes.len() - 4..]
+                        .eq_ignore_ascii_case(b".txt")
                 {
-                    let full_path = path.as_str();
-                    match process::spawn(GEDIT_PATH, &[full_path]) {
-                        Ok(_) => self.status = "Opened in gedit",
-                        Err(_) => self.status = "Failed to start gedit",
+                    match process::spawn(
+                        GEDIT_PATH,
+                        &[path.as_str()],
+                    ) {
+                        Ok(_) => {
+                            self.status = "Opened in gedit";
+                        }
+                        Err(_) => {
+                            self.status = "Failed to start gedit";
+                        }
                     }
                 } else {
                     self.status = "Only .txt files are opened with gedit";
                 }
             }
+
             ItemKind::Other => {
                 self.status = "Unsupported filesystem entry";
             }
@@ -353,189 +938,169 @@ impl FileManagerApp {
     }
 
     fn open_parent(&mut self) {
-        let mut parent = self.current_path;
+        let mut parent = self.filesystem.current_path;
+
         if parent.parent() {
-            let _ = self.load_directory(parent.as_str());
+            let _ = self.navigate_to(parent.as_str());
         } else {
             self.status = "Already at filesystem root";
         }
     }
 
+    fn refresh(&mut self) {
+        let path = self.filesystem.current_path;
+
+        let _ = self.navigate_to(path.as_str());
+    }
+
     fn is_root_active(&self, root_path: &str) -> bool {
-        let current = self.current_path.as_str();
+        let current = self.filesystem.path();
+
         if root_path == "/" {
             return current == "/";
         }
+
         current == root_path
             || (current.starts_with(root_path)
                 && current.as_bytes().get(root_path.len()) == Some(&b'/'))
     }
 
-    fn grid_columns(&self, client_width: i32) -> usize {
-        let available = (client_width - SIDEBAR_WIDTH - 32).max(CARD_WIDTH);
-        ((available + CARD_GAP) / (CARD_WIDTH + CARD_GAP)).max(1) as usize
-    }
+    // -------------------------------------------------------------------------
+    // Cursor
+    // -------------------------------------------------------------------------
 
-    fn total_rows(&self) -> usize {
-        if self.item_count == 0 {
-            return 0;
-        }
-        let columns = self.grid_columns(self.client_width).max(1);
-        (self.item_count + columns - 1) / columns
-    }
-
-    fn visible_rows(&self) -> usize {
-        let viewport_height =
-            (self.client_height - FOOTER_HEIGHT - GRID_ORIGIN_Y).max(0);
-        if viewport_height < CARD_HEIGHT {
-            return 1;
-        }
-        ((viewport_height + CARD_GAP) / (CARD_HEIGHT + CARD_GAP)).max(1) as usize
-    }
-
-    fn max_scroll_row(&self) -> usize {
-        self.total_rows().saturating_sub(self.visible_rows())
-    }
-
-    fn clamp_scroll(&mut self) {
-        self.scroll_row = self.scroll_row.min(self.max_scroll_row());
-    }
-
-    fn item_at(&self, x: i32, y: i32) -> Option<usize> {
-        let grid_bottom = self.client_height - FOOTER_HEIGHT;
-        if x < SIDEBAR_WIDTH + 12
-            || y < GRID_ORIGIN_Y
-            || y >= grid_bottom
-        {
-            return None;
+    fn set_hand_cursor(&mut self, enabled: bool) {
+        if self.hand_cursor == enabled {
+            return;
         }
 
-        let columns = self.grid_columns(self.client_width);
-        let relative_x = x - (SIDEBAR_WIDTH + 20);
-        let relative_y = y - GRID_ORIGIN_Y;
-        if relative_x < 0 || relative_y < 0 {
-            return None;
-        }
+        self.hand_cursor = enabled;
 
-        let stride_x = CARD_WIDTH + CARD_GAP;
-        let stride_y = CARD_HEIGHT + CARD_GAP;
-        let column = (relative_x / stride_x) as usize;
-        let visible_row = (relative_y / stride_y) as usize;
-        if column >= columns
-            || relative_x % stride_x >= CARD_WIDTH
-            || relative_y % stride_y >= CARD_HEIGHT
-        {
-            return None;
-        }
-
-        let row = self.scroll_row + visible_row;
-        let index = row * columns + column;
-        if index < self.item_count { Some(index) } else { None }
-    }
-
-    fn root_at(x: i32, y: i32) -> Option<usize> {
-        if x < 0 || x >= SIDEBAR_WIDTH {
-            return None;
-        }
-
-        const ROOT_TOP: i32 = 106;
-        const ROOT_ROW_HEIGHT: i32 = 40;
-        if y < ROOT_TOP {
-            return None;
-        }
-
-        let index = ((y - ROOT_TOP) / ROOT_ROW_HEIGHT) as usize;
-        let row_top = ROOT_TOP + index as i32 * ROOT_ROW_HEIGHT;
-        if index < ROOTS.len() && y < row_top + 34 {
-            Some(index)
+        let cursor = if enabled {
+            Cursor::Hand
         } else {
-            None
-        }
+            Cursor::Arrow
+        };
+
+        let _ = gui::set_cursor(cursor);
     }
 
-    fn toolbar_at(x: i32, y: i32) -> HoverTarget {
-        if BTN_PARENT.contains(x, y) {
-            HoverTarget::Parent
-        } else if BTN_REFRESH.contains(x, y) {
-            HoverTarget::Refresh
-        } else {
-            HoverTarget::None
-        }
+    // -------------------------------------------------------------------------
+    // Layout helpers
+    // -------------------------------------------------------------------------
+
+    fn layout(&self) -> Layout {
+        self.viewport.layout()
     }
 
+    fn root_at(&self, x: i32, y: i32, layout: &Layout) -> Option<usize> {
+        for index in 0..ROOTS.len() {
+            if layout.root_item_rect(index).contains(x, y) {
+                return Some(index);
+            }
+        }
 
-    fn target_at(&self, x: i32, y: i32) -> HoverTarget {
-        if let Some(index) = Self::root_at(x, y) {
+        None
+    }
+
+    fn target_at(&self, x: i32, y: i32, layout: &Layout) -> HoverTarget {
+        if let Some(index) = self.root_at(x, y, layout) {
             return HoverTarget::Root(index);
         }
 
-        let toolbar = Self::toolbar_at(x, y);
-        if toolbar != HoverTarget::None {
-            return toolbar;
+        if layout.parent_button.contains(x, y) {
+            return HoverTarget::Parent;
         }
 
-        match self.item_at(x, y) {
+        if layout.refresh_button.contains(x, y) {
+            return HoverTarget::Refresh;
+        }
+
+        match layout.grid.item_at(
+            x,
+            y,
+            self.navigation.scroll_row,
+            self.filesystem.count(),
+        ) {
             Some(index) => HoverTarget::Item(index),
             None => HoverTarget::None,
         }
     }
 
+    fn clamp_scroll(&mut self, layout: &Layout) {
+        self.navigation.scroll_row = self.navigation.scroll_row
+            .min(layout.grid.max_scroll_row(self.filesystem.count()));
+    }
+
+    // -------------------------------------------------------------------------
+    // Pointer input
+    // -------------------------------------------------------------------------
+
     fn pointer_move(&mut self, x: i32, y: i32) -> Flow {
-        let target = self.target_at(x, y);
-        if target == self.hovered_target {
+        let layout = self.layout();
+
+        let target = self.target_at(x, y, &layout);
+
+        if target == self.navigation.hovered {
             return Flow::Ignore;
         }
 
-        self.hovered_target = target;
-        let wants_hand = target != HoverTarget::None;
-        if wants_hand != self.hand_cursor {
-            self.hand_cursor = wants_hand;
-            let cursor = if wants_hand { Cursor::Hand } else { Cursor::Arrow };
-            let _ = gui::set_cursor(cursor);
-        }
+        self.navigation.hovered = target;
+
+        self.set_hand_cursor(target != HoverTarget::None);
 
         Flow::Changed
     }
 
     fn pointer_click(&mut self, x: i32, y: i32) -> Flow {
-        // A fresh ordinary click starts a new click sequence. A directory
-        // opened by this click may cause the kernel's following double-click
-        // event to land over a different item in the newly loaded directory.
-        self.ignore_next_double_click = false;
+        self.navigation.ignore_next_double_click = false;
 
-        if let Some(index) = Self::root_at(x, y) {
+        let layout = self.layout();
+
+        if let Some(index) = self.root_at(x, y, &layout) {
             let (_, path) = ROOTS[index];
-            let _ = self.load_directory(path);
+
+            let _ = self.navigate_to(path);
+
             return Flow::Changed;
         }
 
-        match Self::toolbar_at(x, y) {
-            HoverTarget::Parent => {
-                self.open_parent();
-                return Flow::Changed;
-            }
-            HoverTarget::Refresh => {
-                let current = self.current_path;
-                let _ = self.load_directory(current.as_str());
-                return Flow::Changed;
-            }
-            _ => {}
+        if layout.parent_button.contains(x, y) {
+            self.open_parent();
+            return Flow::Changed;
         }
 
-        if let Some(index) = self.item_at(x, y) {
-            self.selected_item = Some(index);
-            if self.items[index].kind == ItemKind::Directory {
+        if layout.refresh_button.contains(x, y) {
+            self.refresh();
+            return Flow::Changed;
+        }
+
+        if let Some(index) = layout.grid.item_at(
+            x,
+            y,
+            self.navigation.scroll_row,
+            self.filesystem.count(),
+        ) {
+            self.navigation.selected = Some(index);
+
+            let kind = self.filesystem
+                .item(index)
+                .map(|item| item.kind);
+
+            if kind == Some(ItemKind::Directory) {
                 self.open_item(index);
-                // The kernel sends DBLCLICK instead of DOWN for the second
-                // press. Ignore it after single-click directory navigation.
-                self.ignore_next_double_click = true;
+
+                // The next double-click event may refer to an item
+                // at the same screen position in the newly loaded directory.
+                self.navigation.ignore_next_double_click = true;
             } else {
                 self.status = "Item selected - double-click to open";
             }
+
             return Flow::Changed;
         }
 
-        if self.selected_item.take().is_some() {
+        if self.navigation.selected.take().is_some() {
             Flow::Changed
         } else {
             Flow::Ignore
@@ -543,77 +1108,113 @@ impl FileManagerApp {
     }
 
     fn pointer_double_click(&mut self, x: i32, y: i32) -> Flow {
-        if self.ignore_next_double_click {
-            self.ignore_next_double_click = false;
+        if self.navigation.ignore_next_double_click {
+            self.navigation.ignore_next_double_click = false;
             return Flow::Ignore;
         }
 
-        if let Some(index) = self.item_at(x, y) {
-            self.selected_item = Some(index);
+        let layout = self.layout();
+
+        if let Some(index) = layout.grid.item_at(
+            x,
+            y,
+            self.navigation.scroll_row,
+            self.filesystem.count(),
+        ) {
+            self.navigation.selected = Some(index);
+
             self.open_item(index);
+
             return Flow::Changed;
         }
 
-        // Sidebar and toolbar actions are intentionally single-click actions.
         Flow::Ignore
     }
 
+    // -------------------------------------------------------------------------
+    // Scrolling
+    // -------------------------------------------------------------------------
+
     fn scroll_wheel(&mut self, x: i32, y: i32, delta: i32) -> Flow {
-        if delta == 0
-            || x < SIDEBAR_WIDTH
-            || y < GRID_ORIGIN_Y
-            || y >= self.client_height - FOOTER_HEIGHT
-        {
+        if delta == 0 {
             return Flow::Ignore;
         }
 
-        let previous = self.scroll_row;
-        if delta > 0 {
-            self.scroll_row = self.scroll_row.saturating_sub(1);
-        } else {
-            self.scroll_row = (self.scroll_row + 1).min(self.max_scroll_row());
+        let layout = self.layout();
+
+        if !layout.grid.bounds.contains(x, y) {
+            return Flow::Ignore;
         }
 
-        if self.scroll_row != previous {
+        let previous = self.navigation.scroll_row;
+
+        if delta > 0 {
+            self.navigation.scroll_row =
+                self.navigation.scroll_row.saturating_sub(1);
+        } else {
+            self.navigation.scroll_row = (
+                self.navigation.scroll_row + 1
+            ).min(layout.grid.max_scroll_row(self.filesystem.count()));
+        }
+
+        if previous != self.navigation.scroll_row {
             Flow::Changed
         } else {
             Flow::Ignore
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Keyboard selection
+    // -------------------------------------------------------------------------
+
     fn select_item(&mut self, index: usize) -> Flow {
-        if index >= self.item_count || self.selected_item == Some(index) {
+        if index >= self.filesystem.count()
+            || self.navigation.selected == Some(index)
+        {
             return Flow::Ignore;
         }
 
-        self.selected_item = Some(index);
-        let columns = self.grid_columns(self.client_width).max(1);
-        let row = index / columns;
-        let visible = self.visible_rows();
-        if row < self.scroll_row {
-            self.scroll_row = row;
-        } else if row >= self.scroll_row + visible {
-            self.scroll_row = row + 1 - visible;
+        self.navigation.selected = Some(index);
+
+        let layout = self.layout();
+        let grid = layout.grid;
+
+        let row = index / grid.columns;
+        let visible_rows = grid.visible_rows.max(1);
+
+        if row < self.navigation.scroll_row {
+            self.navigation.scroll_row = row;
+        } else if row >= self.navigation.scroll_row + visible_rows {
+            self.navigation.scroll_row = row + 1 - visible_rows;
         }
-        self.clamp_scroll();
+
+        self.clamp_scroll(&layout);
+
         self.status = "Item selected";
+
         Flow::Changed
     }
 
     fn move_selection(&mut self, key: u32) -> Flow {
-        if self.item_count == 0 {
+        let count = self.filesystem.count();
+
+        if count == 0 {
             return Flow::Ignore;
         }
 
-        let columns = self.grid_columns(self.client_width).max(1);
-        let current = self.selected_item.unwrap_or(0);
+        let columns = self.layout().grid.columns.max(1);
+
+        let current = self.navigation.selected.unwrap_or(0);
+
         let next = match key {
             KEY_LEFT => current.saturating_sub(1),
-            KEY_RIGHT => (current + 1).min(self.item_count - 1),
+            KEY_RIGHT => (current + 1).min(count - 1),
             KEY_UP => current.saturating_sub(columns),
-            KEY_DOWN => (current + columns).min(self.item_count - 1),
+            KEY_DOWN => (current + columns).min(count - 1),
             KEY_HOME => 0,
-            KEY_END => self.item_count - 1,
+            KEY_END => count - 1,
+
             _ => return Flow::Ignore,
         };
 
@@ -621,254 +1222,809 @@ impl FileManagerApp {
     }
 
     fn open_selected(&mut self) -> Flow {
-        match self.selected_item {
-            Some(index) if index < self.item_count => {
+        match self.navigation.selected {
+            Some(index) if index < self.filesystem.count() => {
                 self.open_item(index);
                 Flow::Changed
             }
+
             _ => Flow::Ignore,
         }
     }
 }
+
+// =============================================================================
+// RSBR application interface
+// =============================================================================
 
 impl App for FileManagerApp {
     fn update(&mut self, ev: &Event) -> Flow {
         match ev.kind {
             EVT_CLOSE_REQ => Flow::Quit,
+
             EVT_KEY_DOWN => match ev.key {
                 0x1B => Flow::Quit,
+
                 0x08 => {
                     self.open_parent();
                     Flow::Changed
                 }
+
                 0x0D | 0x0A => self.open_selected(),
-                KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END => {
-                    self.move_selection(ev.key)
-                }
+
+                KEY_LEFT
+                | KEY_RIGHT
+                | KEY_UP
+                | KEY_DOWN
+                | KEY_HOME
+                | KEY_END => self.move_selection(ev.key),
+
                 _ => Flow::Ignore,
             },
-            EVT_MOUSE_MOVE => self.pointer_move(ev.x, ev.y),
-            EVT_MOUSE_DOWN => self.pointer_click(ev.x, ev.y),
-            EVT_MOUSE_DBLCLICK => self.pointer_double_click(ev.x, ev.y),
-            EVT_MOUSE_WHEEL => self.scroll_wheel(ev.x, ev.y, ev.key as i32),
+
+            EVT_MOUSE_MOVE => {
+                self.pointer_move(ev.x, ev.y)
+            }
+
+            EVT_MOUSE_DOWN => {
+                self.pointer_click(ev.x, ev.y)
+            }
+
+            EVT_MOUSE_DBLCLICK => {
+                self.pointer_double_click(ev.x, ev.y)
+            }
+
+            EVT_MOUSE_WHEEL => {
+                self.scroll_wheel(ev.x, ev.y, ev.key as i32)
+            }
+
             EVT_CONTEXT_MENU => {
-                if let Some(index) = self.item_at(ev.x, ev.y) {
-                    self.selected_item = Some(index);
+                let layout = self.layout();
+
+                if let Some(index) = layout.grid.item_at(
+                    ev.x,
+                    ev.y,
+                    self.navigation.scroll_row,
+                    self.filesystem.count(),
+                ) {
+                    self.navigation.selected = Some(index);
                     self.status = "Context menu is not implemented";
+
                     Flow::Changed
                 } else {
                     Flow::Ignore
                 }
             }
+
             EVT_RESIZE => {
-                // gui_resize_window() posts the new client/back-buffer size in x/y.
-                self.client_width = ev.x.max(1);
-                self.client_height = ev.y.max(1);
-                self.clamp_scroll();
-                Flow::Ignore // gui::run always repaints after EVT_RESIZE.
+                self.viewport = Viewport::new(
+                    ev.x.max(1),
+                    ev.y.max(1),
+                );
+
+                let layout = self.layout();
+
+                self.clamp_scroll(&layout);
+
+                // gui::run repaints after EVT_RESIZE.
+                Flow::Ignore
             }
+
             _ => Flow::Ignore,
         }
     }
 
-    fn render(&self, w: &Window) -> rsbr::Result<()> {
-        let (client_width, client_height) = w.size()?;
-        let width = client_width as i32;
-        let height = client_height as i32;
-        let main_width = (width - SIDEBAR_WIDTH).max(0) as u32;
-        let grid_bottom = (height - FOOTER_HEIGHT).max(GRID_ORIGIN_Y);
+    fn render(&self, window: &Window) -> rsbr::Result<()> {
+        let (width, height) = window.size()?;
 
-        w.clear(COLOR_BACKGROUND)?;
+        let layout = Layout::calculate(
+            width as i32,
+            height as i32,
+            LAYOUT_CONFIG,
+        );
 
-        self.render_sidebar(w, height)?;
-        self.render_header(w, main_width)?;
-        self.render_grid(w, width, grid_bottom)?;
-        self.render_footer(w, width, main_width, grid_bottom)?;
-
-        Ok(())
+        Renderer::render(window, self, &layout)
     }
 }
 
-impl FileManagerApp {
-    fn draw_button(
-        &self,
-        w: &Window,
-        rect: Rect,
-        label: &str,
-        hovered: bool,
+// =============================================================================
+// Renderer
+// =============================================================================
+
+struct Renderer;
+
+impl Renderer {
+    // -------------------------------------------------------------------------
+    // Main rendering
+    // -------------------------------------------------------------------------
+
+    fn render(
+        window: &Window,
+        app: &FileManagerApp,
+        layout: &Layout,
     ) -> rsbr::Result<()> {
-        let bg = if hovered { COLOR_ACCENT_SOFT } else { COLOR_SIDEBAR };
-        w.fill_rect(rect.x, rect.y, rect.w as u32, rect.h as u32, bg)?;
-        w.draw_rect(rect.x, rect.y, rect.w as u32, rect.h as u32, COLOR_CARD_BORDER)?;
+        window.clear(THEME.background)?;
 
-        // Text centered (if symbol widht is 8px)
-        let text_w = label.len() as i32 * 8;
-        let text_x = rect.x + ((rect.w - text_w) / 2).max(4);
-        let text_y = rect.y + (rect.h - 10) / 2;
-        w.draw_text(text_x, text_y, label, COLOR_TEXT)
-    }
+        Self::draw_sidebar(window, app, layout)?;
+        Self::draw_header(window, app, layout)?;
+        Self::draw_grid(window, app, layout)?;
+        Self::draw_footer(window, app, layout)?;
 
-        fn draw_toolbar_button(
-        &self,
-        w: &Window,
-        rect: Rect,
-        label: &str,
-        hovered: bool,
-    ) -> rsbr::Result<()> {
-        if hovered {
-            w.fill_rect(
-                rect.x + 1,
-                rect.y + 1,
-                (rect.w - 1) as u32,
-                (rect.h - 2) as u32,
-                COLOR_ACCENT_SOFT,
-            )?;
-        }
-
-        let text_w = label.len() as i32 * 8;
-        let text_x = rect.x + ((rect.w - text_w) / 2).max(4);
-        let text_y = rect.y + (rect.h - 10) / 2;
-        let text_color = if hovered { COLOR_ACCENT } else { COLOR_TEXT };
-        w.draw_text(text_x, text_y, label, text_color)
-    }
-
-
-    fn render_sidebar(&self, w: &Window, height: i32) -> rsbr::Result<()> {
-        w.fill_rect(0, 0, SIDEBAR_WIDTH as u32, height as u32, COLOR_SIDEBAR)?;
-        w.fill_rect(SIDEBAR_WIDTH, 0, 1, height as u32, COLOR_DIVIDER)?;
-        w.draw_text(22, 28, "LOCATIONS", COLOR_MUTED)?;
-
-        for (index, (label, path)) in ROOTS.iter().enumerate() {
-            let top = 106 + index as i32 * 40;
-            let active = self.is_root_active(path);
-            let hovered = self.hovered_target == HoverTarget::Root(index);
-
-            if active || hovered {
-                let bg = if active { COLOR_ACCENT_SOFT } else { COLOR_CARD };
-                w.fill_rect(10, top, (SIDEBAR_WIDTH - 20) as u32, 34, bg)?;
-                if active {
-                    w.fill_rect(10, top + 5, 3, 24, COLOR_ACCENT)?;
-                }
-            }
-
-            let text_color = if active || hovered { COLOR_ACCENT } else { COLOR_TEXT };
-            w.draw_text(28, top + 11, label, text_color)?;
-        }
         Ok(())
     }
 
-    fn render_header(&self, w: &Window, main_width: u32) -> rsbr::Result<()> {
-        w.fill_rect(SIDEBAR_WIDTH, 0, main_width, HEADER_HEIGHT as u32, COLOR_HEADER)?;
-        w.fill_rect(SIDEBAR_WIDTH, HEADER_HEIGHT, main_width, 1, COLOR_DIVIDER)?;
-        w.draw_text(SIDEBAR_WIDTH + 20, 18, "FILES", COLOR_TEXT)?;
+    // -------------------------------------------------------------------------
+    // Primitive drawing
+    // -------------------------------------------------------------------------
 
-        let bar_w = (main_width as i32 - 32).max(220) as u32;
-        w.fill_rect(TOOLBAR_X, TOOLBAR_Y, bar_w, TOOLBAR_H as u32, COLOR_SIDEBAR)?;
-        w.draw_rect(TOOLBAR_X, TOOLBAR_Y, bar_w, TOOLBAR_H as u32, COLOR_CARD_BORDER)?;
-
-        self.draw_toolbar_button(w, BTN_PARENT, "Parent", self.hovered_target == HoverTarget::Parent)?;
-        w.fill_rect(BTN_REFRESH.x, TOOLBAR_Y, 1, TOOLBAR_H as u32, COLOR_CARD_BORDER)?; // Разделитель 1
-
-        self.draw_toolbar_button(w, BTN_REFRESH, "Refresh", self.hovered_target == HoverTarget::Refresh)?;
-        let path_x = BTN_REFRESH.x + BTN_REFRESH.w;
-        w.fill_rect(path_x, TOOLBAR_Y, 1, TOOLBAR_H as u32, COLOR_CARD_BORDER)?; // Разделитель 2
-
-        w.draw_text(path_x + 12, TOOLBAR_Y + 9, self.current_path.as_str(), COLOR_MUTED)
-    }
-
-
-    fn render_card(&self, w: &Window, index: usize, x: i32, y: i32) -> rsbr::Result<()> {
-        let hovered = self.hovered_target == HoverTarget::Item(index);
-        let selected = self.selected_item == Some(index);
-
-        let card_color = if hovered {
-            COLOR_CARD_HOVER
-        } else if selected {
-            COLOR_CARD_SELECTED
-        } else {
-            COLOR_CARD
-        };
-        let border_color = if selected { COLOR_ACCENT } else { COLOR_CARD_BORDER };
-
-        w.fill_rect(x, y, CARD_WIDTH as u32, CARD_HEIGHT as u32, card_color)?;
-        w.draw_rect(x, y, CARD_WIDTH as u32, CARD_HEIGHT as u32, border_color)?;
-
-        match self.items[index].kind {
-            ItemKind::Directory => Self::draw_folder_icon(w, x + 31, y + 13)?,
-            ItemKind::File | ItemKind::Other => Self::draw_file_icon(w, x + 37, y + 11)?,
+    fn fill_rect(
+        window: &Window,
+        rect: Rect,
+        color: u32,
+    ) -> rsbr::Result<()> {
+        if !rect.is_visible() {
+            return Ok(());
         }
 
-        let label = Self::short_label(self.items[index].name_str());
-        let label_width = (label.len() as i32 * 8).min(CARD_WIDTH - 8);
-        let label_x = x + ((CARD_WIDTH - label_width) / 2).max(4);
-        let label_color = if hovered || selected { COLOR_ACCENT } else { COLOR_TEXT };
-
-        w.draw_text(label_x, y + 78, label, label_color)
-    }
-
-    fn render_grid(&self, w: &Window, width: i32, grid_bottom: i32) -> rsbr::Result<()> {
-        let columns = self.grid_columns(width).max(1);
-        let first_row = self.scroll_row;
-        let last_row = (first_row + self.visible_rows()).min(self.total_rows());
-
-        for index in 0..self.item_count {
-            let row = index / columns;
-            if row < first_row || row >= last_row {
-                continue;
-            }
-
-            let column = index % columns;
-            let x = SIDEBAR_WIDTH + 20 + column as i32 * (CARD_WIDTH + CARD_GAP);
-            let y = GRID_ORIGIN_Y + (row - first_row) as i32 * (CARD_HEIGHT + CARD_GAP);
-
-            if y >= GRID_ORIGIN_Y && y + CARD_HEIGHT <= grid_bottom {
-                self.render_card(w, index, x, y)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn render_footer(&self, w: &Window, width: i32, main_width: u32, grid_bottom: i32) -> rsbr::Result<()> {
-        w.fill_rect(SIDEBAR_WIDTH, grid_bottom, main_width, 1, COLOR_DIVIDER)?;
-        w.draw_text(SIDEBAR_WIDTH + 20, grid_bottom + 9, self.status, COLOR_MUTED)?;
-        w.draw_text(
-            (width - 154).max(SIDEBAR_WIDTH + 20),
-            grid_bottom + 9,
-            "Wheel: scroll",
-            COLOR_MUTED,
+        window.fill_rect(
+            rect.x,
+            rect.y,
+            rect.w as u32,
+            rect.h as u32,
+            color,
         )
     }
 
+    fn draw_icon_button(
+        window: &Window,
+        rect: Rect,
+        hovered: bool,
+    ) -> rsbr::Result<()> {
+        if !rect.is_visible() {
+            return Ok(());
+        }
+
+        if hovered {
+            Self::fill_rect(
+                window,
+                Rect::new(
+                    rect.x + 2,
+                    rect.y + 2,
+                    (rect.w - 4).max(0),
+                    (rect.h - 4).max(0),
+                ),
+                THEME.accent_soft,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn draw_parent_icon(
+        window: &Window,
+        rect: Rect,
+        color: u32,
+    ) -> rsbr::Result<()> {
+        let center_x = rect.x + rect.w / 2;
+        let center_y = rect.y + rect.h / 2;
+
+        // Vertical shaft.
+        window.draw_line(
+            center_x,
+            center_y + 7,
+            center_x,
+            center_y - 5,
+            color,
+        )?;
+
+        // Arrow head.
+        window.draw_line(
+            center_x,
+            center_y - 5,
+            center_x - 6,
+            center_y + 1,
+            color,
+        )?;
+
+        window.draw_line(
+            center_x,
+            center_y - 5,
+            center_x + 6,
+            center_y + 1,
+            color,
+        )?;
+
+        Ok(())
+    }
+
+    fn draw_refresh_icon(
+        window: &Window,
+        rect: Rect,
+        color: u32,
+    ) -> rsbr::Result<()> {
+        let cx = rect.x + rect.w / 2;
+        let cy = rect.y + rect.h / 2;
+
+        // Radius is ~35% of the smaller rectangle side.
+        let min_side = if rect.w < rect.h { rect.w } else { rect.h };
+        let r = (min_side * 35) / 100;
+        if r < 3 {
+            return Ok(());
+        }
+
+        // Precomputed (cos * 1000, sin * 1000) values for angles from 45° to 315° in 22.5° steps.
+        // The Y axis points downward, so the arc goes clockwise.
+        const ARC_POINTS: [(i32, i32); 13] = [
+            (707, 707),   // 45° (bottom-right, arc start)
+            (383, 924),   // 67.5°
+            (0, 1000),    // 90° (bottom)
+            (-383, 924),  // 112.5°
+            (-707, 707),  // 135° (bottom-left)
+            (-924, 383),  // 157.5°
+            (-1000, 0),   // 180° (left)
+            (-924, -383), // 202.5°
+            (-707, -707), // 225° (top-left)
+            (-383, -924), // 247.5°
+            (0, -1000),   // 270° (top)
+            (383, -924),  // 292.5°
+            (707, -707),  // 315° (top-right, arc end)
+        ];
+
+        // Helper closure to scale a coordinate with proper integer rounding.
+        let scale = |val: i32| -> i32 {
+            if val >= 0 {
+                (val * r + 500) / 1000
+            } else {
+                (val * r - 500) / 1000
+            }
+        };
+
+        let mut prev_x = cx + scale(ARC_POINTS[0].0);
+        let mut prev_y = cy + scale(ARC_POINTS[0].1);
+
+        // Draw the arc segment by segment.
+        let mut i = 1;
+        while i < ARC_POINTS.len() {
+            let curr_x = cx + scale(ARC_POINTS[i].0);
+            let curr_y = cy + scale(ARC_POINTS[i].1);
+
+            window.draw_line(prev_x, prev_y, curr_x, curr_y, color)?;
+
+            prev_x = curr_x;
+            prev_y = curr_y;
+            i += 1;
+        }
+
+        // Coordinates of the arc tip (315°).
+        let tip_x = prev_x;
+        let tip_y = prev_y;
+
+        // Arrow wing length (~45% of radius, minimum 3 pixels).
+        let arrow_len = if (r * 45) / 100 < 3 { 3 } else { (r * 45) / 100 };
+
+        // Arrow wings angled at ~35° from the tangent (tangent at 315° points toward 45°):
+        // 1) First wing points almost left (190°): cos = -985, sin = -174
+        // 2) Second wing points almost down (260°): cos = -174, sin = 985
+        let scale_arrow = |val: i32| -> i32 {
+            if val >= 0 {
+                (val * arrow_len + 500) / 1000
+            } else {
+                (val * arrow_len - 500) / 1000
+            }
+        };
+
+        let w1_x = tip_x + scale_arrow(-985);
+        let w1_y = tip_y + scale_arrow(-174);
+
+        let w2_x = tip_x + scale_arrow(-174);
+        let w2_y = tip_y + scale_arrow(985);
+
+        // Draw the arrowhead.
+        window.draw_line(tip_x, tip_y, w1_x, w1_y, color)?;
+        window.draw_line(tip_x, tip_y, w2_x, w2_y, color)?;
+
+        Ok(())
+    }
+
+
+
+    // -------------------------------------------------------------------------
+    // Sidebar
+    // -------------------------------------------------------------------------
+
+    fn draw_sidebar(
+        window: &Window,
+        app: &FileManagerApp,
+        layout: &Layout,
+    ) -> rsbr::Result<()> {
+        Self::fill_rect(
+            window,
+            layout.sidebar,
+            THEME.sidebar,
+        )?;
+
+        Self::fill_rect(
+            window,
+            Rect::new(
+                layout.sidebar.right(),
+                0,
+                1,
+                layout.window.h,
+            ),
+            THEME.divider,
+        )?;
+
+        let config = layout.config;
+
+        window.draw_text(
+            config.sidebar_heading_x,
+            config.sidebar_heading_y,
+            "LOCATIONS",
+            THEME.muted,
+        )?;
+
+        for (index, (label, path)) in ROOTS.iter().enumerate() {
+            let rect = layout.root_item_rect(index);
+
+            let active = app.is_root_active(path);
+            let hovered = app.navigation.hovered == HoverTarget::Root(index);
+
+            if active || hovered {
+                let color = if active {
+                    THEME.accent_soft
+                } else {
+                    THEME.card
+                };
+
+                Self::fill_rect(window, rect, color)?;
+
+                if active {
+                    Self::fill_rect(
+                        window,
+                        Rect::new(
+                            rect.x,
+                            rect.y + 5,
+                            3,
+                            (rect.h - 10).max(0),
+                        ),
+                        THEME.accent,
+                    )?;
+                }
+            }
+
+            let text_color = if active || hovered {
+                THEME.accent
+            } else {
+                THEME.text
+            };
+
+            window.draw_text(
+                rect.x + 18,
+                rect.y + 11,
+                label,
+                text_color,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Header and toolbar
+    // -------------------------------------------------------------------------
+
+    fn draw_header(
+        window: &Window,
+        app: &FileManagerApp,
+        layout: &Layout,
+    ) -> rsbr::Result<()> {
+        Self::fill_rect(
+            window,
+            layout.header,
+            THEME.header,
+        )?;
+
+        Self::fill_rect(
+            window,
+            Rect::new(
+                layout.header.x,
+                layout.header.bottom() - 1,
+                layout.header.w,
+                1,
+            ),
+            THEME.divider,
+        )?;
+
+        window.draw_text(
+            layout.header.x + 20,
+            18,
+            "FILES",
+            THEME.text,
+        )?;
+
+        Self::draw_toolbar(window, app, layout)?;
+
+        Ok(())
+    }
+
+    fn draw_toolbar(
+        window: &Window,
+        app: &FileManagerApp,
+        layout: &Layout,
+    ) -> rsbr::Result<()> {
+        Self::fill_rect(
+            window,
+            layout.toolbar,
+            THEME.sidebar,
+        )?;
+
+        if layout.toolbar.is_visible() {
+            window.draw_rect(
+                layout.toolbar.x,
+                layout.toolbar.y,
+                layout.toolbar.w as u32,
+                layout.toolbar.h as u32,
+                THEME.card_border,
+            )?;
+        }
+
+        // Current directory path.
+        if layout.path_area.w >= 8 && layout.path_area.h > 0 {
+            window.draw_text(
+                layout.path_area.x + 12,
+                layout.path_area.y + 9,
+                app.filesystem.path(),
+                THEME.muted,
+            )?;
+        }
+
+        Self::fill_rect(
+            window,
+            Rect::new(
+                layout.path_area.right(),
+                layout.toolbar.y,
+                1,
+                layout.toolbar.h,
+            ),
+            THEME.card_border,
+        )?;
+
+        // Parent button.
+        let parent_hovered =
+            app.navigation.hovered == HoverTarget::Parent;
+
+        Self::draw_icon_button(
+            window,
+            layout.parent_button,
+            parent_hovered,
+        )?;
+
+        let parent_color = if parent_hovered {
+            THEME.accent
+        } else {
+            THEME.text
+        };
+
+        Self::draw_parent_icon(
+            window,
+            layout.parent_button,
+            parent_color,
+        )?;
+
+        // Divider between buttons.
+        Self::fill_rect(
+            window,
+            Rect::new(
+                layout.parent_button.right(),
+                layout.toolbar.y,
+                1,
+                layout.toolbar.h,
+            ),
+            THEME.card_border,
+        )?;
+
+        // Refresh button.
+        let refresh_hovered =
+            app.navigation.hovered == HoverTarget::Refresh;
+
+        Self::draw_icon_button(
+            window,
+            layout.refresh_button,
+            refresh_hovered,
+        )?;
+
+        let refresh_color = if refresh_hovered {
+            THEME.accent
+        } else {
+            THEME.text
+        };
+
+        Self::draw_refresh_icon(
+            window,
+            layout.refresh_button,
+            refresh_color,
+        )?;
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // File grid
+    // -------------------------------------------------------------------------
+
+    fn draw_grid(
+        window: &Window,
+        app: &FileManagerApp,
+        layout: &Layout,
+    ) -> rsbr::Result<()> {
+        let grid = &layout.grid;
+
+        let columns = grid.columns;
+        let first_row = app.navigation.scroll_row;
+
+        let total_rows = grid.total_rows(app.filesystem.count());
+
+        let last_row = (first_row + grid.visible_rows)
+            .min(total_rows);
+
+        for row in first_row..last_row {
+            for column in 0..columns {
+                let index = row * columns + column;
+
+                if index >= app.filesystem.count() {
+                    break;
+                }
+
+                let rect = match grid.card_rect(
+                    index,
+                    app.navigation.scroll_row,
+                ) {
+                    Some(rect) => rect,
+                    None => continue,
+                };
+
+                Self::draw_card(window, app, index, rect)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn draw_card(
+        window: &Window,
+        app: &FileManagerApp,
+        index: usize,
+        rect: Rect,
+    ) -> rsbr::Result<()> {
+        let item = match app.filesystem.item(index) {
+            Some(item) => item,
+            None => return Ok(()),
+        };
+
+        let hovered = app.navigation.hovered == HoverTarget::Item(index);
+        let selected = app.navigation.selected == Some(index);
+
+        let background = if hovered {
+            THEME.card_hover
+        } else if selected {
+            THEME.card_selected
+        } else {
+            THEME.card
+        };
+
+        let border = if selected {
+            THEME.accent
+        } else {
+            THEME.card_border
+        };
+
+        Self::fill_rect(window, rect, background)?;
+
+        window.draw_rect(
+            rect.x,
+            rect.y,
+            rect.w as u32,
+            rect.h as u32,
+            border,
+        )?;
+
+        match item.kind {
+            ItemKind::Directory => {
+                Self::draw_folder_icon(
+                    window,
+                    rect.x + 31,
+                    rect.y + 13,
+                )?;
+            }
+
+            ItemKind::File | ItemKind::Other => {
+                Self::draw_file_icon(
+                    window,
+                    rect.x + 37,
+                    rect.y + 11,
+                )?;
+            }
+        }
+
+        let label = Self::short_label(item.name_str());
+
+        let label_width = (label.len() as i32 * 8)
+            .min(rect.w - 8);
+
+        let label_x = rect.x
+            + ((rect.w - label_width) / 2).max(4);
+
+        let label_color = if hovered || selected {
+            THEME.accent
+        } else {
+            THEME.text
+        };
+
+        window.draw_text(
+            label_x,
+            rect.y + 78,
+            label,
+            label_color,
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // Footer
+    // -------------------------------------------------------------------------
+
+    fn draw_footer(
+        window: &Window,
+        app: &FileManagerApp,
+        layout: &Layout,
+    ) -> rsbr::Result<()> {
+        if !layout.footer.is_visible() {
+            return Ok(());
+        }
+
+        Self::fill_rect(
+            window,
+            Rect::new(
+                layout.footer.x,
+                layout.footer.y,
+                layout.footer.w,
+                1,
+            ),
+            THEME.divider,
+        )?;
+
+        let text_y = layout.footer.y + 9;
+
+        window.draw_text(
+            layout.footer.x + 20,
+            text_y,
+            app.status,
+            THEME.muted,
+        )?;
+
+        window.draw_text(
+            (layout.window.w - 154).max(layout.sidebar.right() + 20),
+            text_y,
+            "Wheel: scroll",
+            THEME.muted,
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // Icons
+    // -------------------------------------------------------------------------
+
+    fn draw_folder_icon(
+        window: &Window,
+        x: i32,
+        y: i32,
+    ) -> rsbr::Result<()> {
+        window.fill_rect(
+            x + 3,
+            y + 4,
+            21,
+            9,
+            THEME.folder_dark,
+        )?;
+
+        window.fill_rect(
+            x,
+            y + 10,
+            46,
+            29,
+            THEME.folder,
+        )?;
+
+        window.draw_rect(
+            x,
+            y + 10,
+            46,
+            29,
+            THEME.folder_dark,
+        )?;
+
+        window.draw_line(
+            x + 3,
+            y + 14,
+            x + 42,
+            y + 14,
+            THEME.folder_highlight,
+        )?;
+
+        Ok(())
+    }
+
+    fn draw_file_icon(
+        window: &Window,
+        x: i32,
+        y: i32,
+    ) -> rsbr::Result<()> {
+        window.fill_rect(
+            x + 2,
+            y + 1,
+            34,
+            42,
+            THEME.file,
+        )?;
+
+        window.draw_rect(
+            x + 2,
+            y + 1,
+            34,
+            42,
+            THEME.card_border,
+        )?;
+
+        window.draw_line(
+            x + 9,
+            y + 14,
+            x + 29,
+            y + 14,
+            THEME.file_line,
+        )?;
+
+        window.draw_line(
+            x + 9,
+            y + 21,
+            x + 29,
+            y + 21,
+            THEME.file_line,
+        )?;
+
+        window.draw_line(
+            x + 9,
+            y + 28,
+            x + 25,
+            y + 28,
+            THEME.file_line,
+        )?;
+
+        Ok(())
+    }
+
+    // -------------------------------------------------------------------------
+    // Text helpers
+    // -------------------------------------------------------------------------
+
     fn short_label(name: &str) -> &str {
         const MAX_LABEL_BYTES: usize = 12;
+
         if name.len() <= MAX_LABEL_BYTES {
             return name;
         }
 
         let mut end = MAX_LABEL_BYTES - 3;
+
         while end > 0 && !name.is_char_boundary(end) {
             end -= 1;
         }
+
         &name[..end]
     }
-
-    fn draw_folder_icon(w: &Window, x: i32, y: i32) -> rsbr::Result<()> {
-        w.fill_rect(x + 3, y + 4, 21, 9, COLOR_FOLDER_DARK)?;
-        w.fill_rect(x, y + 10, 46, 29, COLOR_FOLDER)?;
-        w.draw_rect(x, y + 10, 46, 29, COLOR_FOLDER_DARK)?;
-        w.draw_line(x + 3, y + 14, x + 42, y + 14, 0x00F7D98C)?;
-        Ok(())
-    }
-
-    fn draw_file_icon(w: &Window, x: i32, y: i32) -> rsbr::Result<()> {
-        w.fill_rect(x + 2, y + 1, 34, 42, COLOR_FILE)?;
-        w.draw_rect(x + 2, y + 1, 34, 42, COLOR_CARD_BORDER)?;
-        w.draw_line(x + 9, y + 14, x + 29, y + 14, COLOR_FILE_LINE)?;
-        w.draw_line(x + 9, y + 21, x + 29, y + 21, COLOR_FILE_LINE)?;
-        w.draw_line(x + 9, y + 28, x + 25, y + 28, COLOR_FILE_LINE)?;
-        Ok(())
-    }   
 }
+
+// =============================================================================
+// Entry point
+// =============================================================================
 
 #[no_mangle]
 pub extern "C" fn main() -> i32 {
@@ -878,7 +2034,11 @@ pub extern "C" fn main() -> i32 {
         WINDOW_WIDTH as u32,
         WINDOW_HEIGHT as u32,
         Some("Files"),
-        FLAG_HAS_TITLE | FLAG_HAS_CLOSE | FLAG_HAS_MINMAX | FLAG_RESIZABLE | FLAG_MOVABLE,
+        FLAG_HAS_TITLE
+            | FLAG_HAS_CLOSE
+            | FLAG_HAS_MINMAX
+            | FLAG_RESIZABLE
+            | FLAG_MOVABLE,
     ) {
         Ok(window) => window,
         Err(_) => return 1,
@@ -889,6 +2049,7 @@ pub extern "C" fn main() -> i32 {
     }
 
     let app = FileManagerApp::new();
+
     match gui::run(app, window) {
         Ok(()) => 0,
         Err(_) => 1,
