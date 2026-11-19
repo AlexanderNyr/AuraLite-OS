@@ -26,8 +26,8 @@
 ;
 ;   0x00010000  -- boot_info_t (already there)
 ;   0x00011000  -- Stage 2 scratch (BPB / FAT / dir sector)
-;   0x01700000  PML4
-;   0x01701000  PDPT0    (identity map)
+;   PT_BASE     PML4
+;   PT_BASE+1000 PDPT0   (identity map)
 ;   0x01002000  PDPT256  (HHDM base 0xffff800000000000)
 ;   0x01003000  PDPT511  (kernel higher half 0xFFFFFFFF80000000)
 ;   0x01004000  PD0      (2 MiB large pages for physical 0..1 GiB)
@@ -36,20 +36,39 @@
 ;   0x01007000  PD3      (2 MiB large pages for physical 3..4 GiB)
 ;   0x01008000  PD511    (2 MiB large pages for the kernel image)
 ;
-; Total: 9 pages = 36 KiB.  Sits well above kernel image extents
-; (~2 MiB from 0x100000) with a fat safety margin.
+; Total: 9 pages = 36 KiB.
+;
+; WHY PT_BASE IS LOADED LAST (2026-11-18).  The tables used to sit at a
+; constant 0x01700000 with the comment "well above kernel image extents
+; (~2 MiB)".  That was true when the kernel was 2 MiB; it is not true now:
+; the kernel's .data/.bss PT_LOAD reaches 0x0193f470, so build_page_tables
+; was writing 36 KiB of page tables straight into the middle of the kernel
+; (0x01700000 is inside [0x100000, 0x193f470)), and then loading that
+; clobbered memory into CR3.  The guest died at _start having printed
+; nothing -- the entire symptom of run 120066423839.
+;
+; So the tables are now placed at run time by stage2_start.asm, after
+; elf_load and after the initrd, using the same kernel extent that places
+; the initrd: pt_base = align_2MiB(max(kernel_end, initrd_end)) + 2 MiB.
+; The constant below is only the floor for small kernels, and
+; paging_inc_set_base below is how stage2 moves it.
 ; =============================================================================
 
-PT_BASE        equ 0x01700000
-PML4_ADDR      equ PT_BASE + 0x0000
-PDPT0_ADDR     equ PT_BASE + 0x1000
-PDPT256_ADDR   equ PT_BASE + 0x2000
-PDPT511_ADDR   equ PT_BASE + 0x3000
-PD0_ADDR       equ PT_BASE + 0x4000
-PD1_ADDR       equ PT_BASE + 0x5000
-PD2_ADDR       equ PT_BASE + 0x6000
-PD3_ADDR       equ PT_BASE + 0x7000
-PD511_ADDR     equ PT_BASE + 0x8000
+PT_BASE_DEFAULT equ 0x01700000
+; Runtime base.  stage2_start.asm writes the chosen value here before
+; calling build_page_tables, and longmode.inc reads it for CR3.  It is a
+; memory cell, not an equ, precisely because the right answer depends on
+; how big the kernel turned out to be.
+pt_base:        dd PT_BASE_DEFAULT
+PML4_ADDR_OFF   equ 0x0000
+PDPT0_ADDR_OFF   equ 0x1000
+PDPT256_ADDR_OFF   equ 0x2000
+PDPT511_ADDR_OFF   equ 0x3000
+PD0_ADDR_OFF   equ 0x4000
+PD1_ADDR_OFF   equ 0x5000
+PD2_ADDR_OFF   equ 0x6000
+PD3_ADDR_OFF   equ 0x7000
+PD511_ADDR_OFF   equ 0x8000
 PT_TOTAL_BYTES equ 9 * 4096
 
 ; Page-table entry flags.
@@ -72,9 +91,10 @@ KERNEL_WINDOW_PAGES equ 16
 ; ---------------------------------------------------------------------------
 build_page_tables:
     pushad
+    mov  ebp, [pt_base]                   ; EBP = chosen table base
 
     ; Zero all table memory via FS dword stores.
-    mov  edi, PT_BASE
+    mov  edi, ebp
     mov  ecx, PT_TOTAL_BYTES / 4
     xor  eax, eax
 .zloop:
@@ -87,60 +107,72 @@ build_page_tables:
     ; PML4[0]   -> PDPT0    (identity map)
     ; PML4[256] -> PDPT256  (HHDM,  virt = 0xffff800000000000)
     ; PML4[511] -> PDPT511  (kernel higher half)
-    mov  edi, PML4_ADDR
-    mov  eax, PDPT0_ADDR | (PTE_P | PTE_W)
+    mov  edi, ebp
+    lea  eax, [ebp + PDPT0_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 0*8], eax
     mov  dword [fs:edi + 0*8 + 4], 0        ; upper 32 bits
 
-    mov  eax, PDPT256_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PDPT256_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 256*8], eax
     mov  dword [fs:edi + 256*8 + 4], 0
 
-    mov  eax, PDPT511_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PDPT511_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 511*8], eax
     mov  dword [fs:edi + 511*8 + 4], 0
 
     ; ---- PDPT0[0..3] -> PD0..PD3 (identity map, first 4 GiB) ----------
-    mov  edi, PDPT0_ADDR
-    mov  eax, PD0_ADDR | (PTE_P | PTE_W)
+    lea  edi, [ebp + PDPT0_ADDR_OFF]
+    lea  eax, [ebp + PD0_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 0*8], eax
     mov  dword [fs:edi + 0*8 + 4], 0
-    mov  eax, PD1_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PD1_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 1*8], eax
     mov  dword [fs:edi + 1*8 + 4], 0
-    mov  eax, PD2_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PD2_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 2*8], eax
     mov  dword [fs:edi + 2*8 + 4], 0
-    mov  eax, PD3_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PD3_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 3*8], eax
     mov  dword [fs:edi + 3*8 + 4], 0
 
     ; ---- PDPT256[0..3] -> PD0..PD3 (HHDM shares identity leaves) -------
-    mov  edi, PDPT256_ADDR
-    mov  eax, PD0_ADDR | (PTE_P | PTE_W)
+    lea  edi, [ebp + PDPT256_ADDR_OFF]
+    lea  eax, [ebp + PD0_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 0*8], eax
     mov  dword [fs:edi + 0*8 + 4], 0
-    mov  eax, PD1_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PD1_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 1*8], eax
     mov  dword [fs:edi + 1*8 + 4], 0
-    mov  eax, PD2_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PD2_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 2*8], eax
     mov  dword [fs:edi + 2*8 + 4], 0
-    mov  eax, PD3_ADDR | (PTE_P | PTE_W)
+    lea  eax, [ebp + PD3_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 3*8], eax
     mov  dword [fs:edi + 3*8 + 4], 0
 
     ; ---- PDPT511[510] -> PD511 (kernel virt 0xFFFFFFFF80000000) --------
     ; The kernel higher half sits in PML4[511], PDPT[510], PD[0..].
     ; Compute 510 * 8 = 4080.
-    mov  edi, PDPT511_ADDR + 510*8
-    mov  eax, PD511_ADDR | (PTE_P | PTE_W)
+    lea  edi, [ebp + PDPT511_ADDR_OFF + 510*8]
+    lea  eax, [ebp + PD511_ADDR_OFF]
+    or   eax, (PTE_P | PTE_W)
     mov  [fs:edi + 0], eax
     mov  dword [fs:edi + 4], 0
 
     ; ---- PD0: 512 x 2-MiB large pages covering physical 0..1 GiB -------
     ; Flags: PS | W | P = 0x83.  Each entry increments phys by 2 MiB.
-    mov  edi, PD0_ADDR
+    lea  edi, [ebp + PD0_ADDR_OFF]
     mov  ebx, 0x00000000                    ; running phys address (32-bit)
     mov  ecx, 512
 .pd0:
@@ -154,7 +186,7 @@ build_page_tables:
     jnz  .pd0
 
     ; ---- PD1: 512 x 2-MiB large pages covering physical 1..2 GiB -------
-    mov  edi, PD1_ADDR
+    lea  edi, [ebp + PD1_ADDR_OFF]
     mov  ebx, 0x40000000
     mov  ecx, 512
 .pd1:
@@ -168,7 +200,7 @@ build_page_tables:
     jnz  .pd1
 
     ; ---- PD2: 512 x 2-MiB large pages covering physical 2..3 GiB -------
-    mov  edi, PD2_ADDR
+    lea  edi, [ebp + PD2_ADDR_OFF]
     mov  ebx, 0x80000000
     mov  ecx, 512
 .pd2:
@@ -182,7 +214,7 @@ build_page_tables:
     jnz  .pd2
 
     ; ---- PD3: 512 x 2-MiB large pages covering physical 3..4 GiB -------
-    mov  edi, PD3_ADDR
+    lea  edi, [ebp + PD3_ADDR_OFF]
     mov  ebx, 0xC0000000
     mov  ecx, 512
 .pd3:
@@ -210,7 +242,7 @@ build_page_tables:
     ;                   mirrors the UEFI loader (efi_paging.c maps the same
     ;                   16 entries); the PMM keeps the low 56 MiB out of
     ;                   the allocator, so the wider window costs nothing.
-    mov  edi, PD511_ADDR
+    lea  edi, [ebp + PD511_ADDR_OFF]
     mov  ebx, 0x00000000                    ; running phys address
     mov  ecx, KERNEL_WINDOW_PAGES
 .pd511:

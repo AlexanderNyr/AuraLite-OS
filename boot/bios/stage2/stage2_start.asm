@@ -40,6 +40,13 @@ BOOT_INFO_PHYS       equ 0x00010000
 STAGE2_SCRATCH_PHYS  equ 0x00011000
 INITRD_LOAD_PHYS     equ 0x01800000
 INITRD_MAX_BYTES     equ 0x02000000
+; Ceiling for the auto-chosen initrd address.  The kernel's early-boot PMM
+; reservation covers [0, 56 MiB) (see kernel/mm/pmm.c), and the initrd must
+; sit inside it or the kernel will hand the archive's own pages out to
+; anybody who asks.  56 MiB leaves headroom for an initrd placed above a
+; kernel that reaches past 24 MiB, which is the case this whole block
+; exists for.
+INITRD_MAX_PHYS      equ 0x03800000       ; 56 MiB
 
 ; Segment/offset used to access the boot_info block from 16-bit code.
 ; 0x1000:0000 = physical 0x00010000.  Fields inside the ~9 KiB struct are
@@ -360,7 +367,51 @@ stage2_entry:
     cmp  edx, INITRD_MAX_BYTES
     ja   .initrd_too_large
     mov  eax, [fat_result_cluster]
+    ; ---- initrd placement: AFTER the kernel, not at a fixed address ----
+    ; 0x01800000 was a constant, and it was correct while the kernel's
+    ; physical extent stayed below it.  It did not: the .data/.bss PT_LOAD
+    ; now ends at 0x0193f470, so fat_load wrote the archive 1.25 MiB INSIDE
+    ; the kernel's own .bss.  The observable symptom was the worst kind --
+    ; the loader printed "jumping to kernel _start" and the guest produced
+    ; nothing at all, because _start's first stack push landed in a tar
+    ; header.  elf.inc now reports the real extent in elf_kernel_end, and
+    ; the initrd goes one page above it, rounded to 2 MiB so the address
+    ; stays page-aligned and comfortably clear of the kernel's slack.
+    mov  edi, [elf_kernel_end]
+    add  edi, 0x1FFFFF
+    and  edi, 0xFFE00000                 ; round up to the next 2 MiB
+    ; Never go BELOW the historical floor: keeping it makes the layout
+    ; unchanged for small kernels, and an initrd at 0x01800000 with a
+    ; kernel that ends sooner still leaves the two disjoint.
+    cmp  edi, INITRD_LOAD_PHYS
+    jae  .initrd_place_ok
     mov  edi, INITRD_LOAD_PHYS
+.initrd_place_ok:
+    ; The 32 MiB early-boot reservation the PMM keeps for the initrd ends
+    ; at INITRD_MAX_PHYS; refuse loudly instead of overwriting something.
+    mov  eax, [fat_result_size]
+    add  eax, edi
+    cmp  eax, INITRD_MAX_PHYS
+    ja   .initrd_too_large
+    mov  [initrd_phys_chosen], edi
+    ; Remember where the archive ends; the page tables go above whichever
+    ; of (kernel, initrd) finishes higher.
+    mov  eax, [fat_result_size]
+    add  eax, edi
+    mov  [initrd_end_flat], eax
+    ; Say where it went, in the log, before the fact.  The address is
+    ; computed, not constant, so a silent placement would make the next
+    ; overlap bug exactly as invisible as this one was.
+    mov  si, msg_initrd_at
+    call log16_puts
+    mov  eax, edi
+    shr  eax, 16
+    call uart16_puthex16
+    mov  eax, [initrd_phys_chosen]
+    call uart16_puthex16
+    mov  si, msg_crlf
+    call log16_puts
+    mov  eax, [fat_result_cluster]
     call fat_load
     jc   .initrd_load_fail
 
@@ -369,7 +420,8 @@ stage2_entry:
     push es
     mov  ax, BOOT_INFO_SEG
     mov  es, ax
-    mov  dword [es:BOOT_INITRD_P_OFF + 0], INITRD_LOAD_PHYS
+    mov  eax, [initrd_phys_chosen]
+    mov  dword [es:BOOT_INITRD_P_OFF + 0], eax
     mov  dword [es:BOOT_INITRD_P_OFF + 4], 0
     mov  eax, [fat_result_size]
     mov  dword [es:BOOT_INITRD_S_OFF + 0], eax
@@ -422,6 +474,38 @@ stage2_entry:
     jne  .go_prot32
 
     ; Build the 4-level page tables at PT_BASE.  Uses FS (unreal flat).
+    ; ---- Page-table placement ------------------------------------------
+    ; PT_BASE used to be a constant 0x01700000 with the comment "well above
+    ; kernel image extents (~2 MiB)".  The kernel is now ~25 MiB, so that
+    ; constant sat INSIDE its .data/.bss: build_page_tables overwrote the
+    ; kernel, and longmode.inc then loaded the clobbered page into CR3.
+    ; The guest therefore died at _start with no output whatsoever.
+    ; Place the tables above both the kernel and the initrd, rounded to
+    ; 2 MiB, and never below the old constant (so a small kernel keeps the
+    ; historical layout).
+    mov  eax, [elf_kernel_end]
+    mov  ebx, [initrd_end_flat]
+    cmp  ebx, eax
+    jbe  .pt_have_top
+    mov  eax, ebx
+.pt_have_top:
+    add  eax, 0x1FFFFF
+    and  eax, 0xFFE00000                 ; round up to 2 MiB
+    cmp  eax, PT_BASE_DEFAULT
+    jae  .pt_clamped
+    mov  eax, PT_BASE_DEFAULT
+.pt_clamped:
+    mov  [pt_base], eax
+    mov  si, msg_pt_at
+    call log16_puts
+    mov  eax, [pt_base]
+    shr  eax, 16
+    call uart16_puthex16
+    mov  eax, [pt_base]
+    call uart16_puthex16
+    mov  si, msg_crlf
+    call log16_puts
+
     call build_page_tables
     mov  si, msg_pt_ok
     call log16_puts
@@ -548,11 +632,14 @@ msg_fat_found:   db "[BL4] kernel.elf located", 0x0D, 0x0A, 0
 msg_fat_load_ok: db "[BL4] kernel.elf loaded to 0x00200000", 0x0D, 0x0A, 0
 msg_elf_ok:      db "[BL4] ELF PT_LOAD segments copied to phys", 0x0D, 0x0A, 0
 msg_elf_fail:    db "[BL4] ELF parse FAILED", 0x0D, 0x0A, 0
-msg_initrd_ok:   db "[BL4] initrd.tar loaded to 0x01800000", 0x0D, 0x0A, 0
+msg_initrd_at:   db "[BL4] initrd placed at 0x", 0
+msg_crlf:        db 0x0D, 0x0A, 0
+msg_initrd_ok:   db "[BL4] initrd.tar loaded", 0x0D, 0x0A, 0
 msg_initrd_missing: db "[BL4] initrd.tar not found; continuing", 0x0D, 0x0A, 0
 msg_initrd_too_large: db "[BL4] initrd.tar exceeds 32 MiB; continuing", 0x0D, 0x0A, 0
 msg_initrd_load_fail: db "[BL4] initrd.tar load FAILED; continuing", 0x0D, 0x0A, 0
-msg_pt_ok:       db "[BL4] page tables built at 0x01700000", 0x0D, 0x0A, 0
+msg_pt_at:       db "[BL4] page tables placed at 0x", 0
+msg_pt_ok:       db "[BL4] page tables built", 0x0D, 0x0A, 0
 msg_lm_go:       db "[BL4] entering long mode; jumping to kernel _start", 0x0D, 0x0A, 0
 msg_fat_no_kernel: db "[BL4] kernel.elf NOT FOUND", 0x0D, 0x0A, 0
 msg_fat_load_fail: db "[BL4] kernel.elf load FAILED", 0x0D, 0x0A, 0
@@ -564,6 +651,15 @@ msg_k_old_found:    db "[BL4] kernel.old located", 0x0D, 0x0A, 0
 msg_k_old_load_ok:  db "[BL4] kernel.old loaded to 0x00200000", 0x0D, 0x0A, 0
 msg_k_old_gone:     db "[BL4] KERNEL.OLD missing or unloadable; halting", 0x0D, 0x0A, 0
 msg_bl3_done:    db "[BL3] real-mode services complete; halting", 0x0D, 0x0A, 0
+
+; --------------------------------------------------------------------------
+; Mutable cells.  These MUST live here, after the code: stage2 is a flat
+; binary loaded at org 0x8000 and the MBR jumps straight to that address, so
+; anything placed above stage2_entry shifts the entry point and the CPU
+; executes data (that is exactly what an earlier revision of this fix did).
+; --------------------------------------------------------------------------
+initrd_phys_chosen:  dd INITRD_LOAD_PHYS   ; set by the initrd placement block
+initrd_end_flat:     dd 0                  ; initrd end (<= 56 MiB ceiling)
 ; RES-12: the VBE receipts.  The first four go to BOTH consoles (printed
 ; before the mode switch, while text mode is still live); msg_vbe_ready is
 ; printed by vbe_commit AFTER the switch and therefore on the UART only.

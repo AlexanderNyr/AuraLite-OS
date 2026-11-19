@@ -303,9 +303,26 @@ jobs:
   # toolchain and never skip on a plain `make iso`.
   # fail-fast is off: one shard's failure must not cancel the others,
   # or a bad net case would hide a good usb run's evidence.
+  #
+  # 180 min, not 90 (raised 2026-11-18, run 120066423839).  The shard budget
+  # is not slack for a slow machine -- it is a seatbelt on a hang, and 90 was
+  # cutting the seatbelt, not the hang:
+  #   * the core shard registers 41 cases.  Run 120066423839 spent 1m34s on
+  #     the build and 86.3 min inside 39 cases, and was killed at case 40
+  #     (test_uaccess) with the clock at 90.2 -- that shard needed roughly
+  #     5-15 more minutes, not 45.
+  #   * the w32-gui shard never left its FIRST case: test_w32_user32 started
+  #     at 17:07:55 and the job was cancelled at 18:34:03, 86 minutes later.
+  #     That one is a guest hang and 180 min will not fix it -- but 90 min
+  #     was turning it into "the job died", which hides which case hung.
+  # The honest shape is 180: a case that finishes gets its time, and a case
+  # that genuinely hangs is still bounded, in half the 240 the other jobs use.
+  # A single case running 86 minutes is a bug in the case, not a budget
+  # problem -- that is TODO.md material, and the larger budget makes it
+  # visible as "test_w32_user32 took 86 min" instead of "the job vanished".
   integration-cases:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
