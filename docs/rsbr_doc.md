@@ -480,83 +480,452 @@ fn measure_sleep() -> rsbr::Result<i64> {
 
 **Source:** `lib/rsbr/gui/`
 
-The `gui` module exposes AuraLite's native compositor and windowing system. It provides compile-time-verified ABI definitions, an RAII `Window` handle with 2D drawing primitives, global compositor queries, and a dirty-flag-driven application event loop (`App` / `Flow`).
+The `gui` module is RSBR's low-level Rust interface to the AuraLite-OS compositor. It exposes window creation and management, drawing into window client buffers, pointer and keyboard event delivery, desktop-level compositor queries, theme access, clipboard operations, and a small application event-loop abstraction.
 
-The module is allocator-free: strings are copied into bounded 256-byte stack buffers (`with_cstr`) during syscalls, and bulk pixel blits read directly from caller-provided `&[u32]` slices.
+The module is intentionally a thin wrapper over the native GUI syscalls. It does not provide a widget toolkit, layout engine, controls, or automatic hit-testing. Applications implement those policies themselves using `Window` drawing methods and the `Event` stream.
 
-#### 7.4.1. Design
+The public API is allocator-free. Text arguments are copied into bounded stack buffers for the duration of a syscall; pixel uploads use caller-owned slices; event and theme structures are fixed-size ABI types.
 
-- **RAII window ownership & thread affinity:** `Window` owns a compositor window ID (`wid`) and issues `OP_DESTROY` automatically on `Drop`. It is `!Send + !Sync` (`PhantomData<*mut ()>`) so a window handle cannot be moved across threads. Ownership can be transferred manually via `into_raw` and `unsafe { Window::from_raw(wid) }`.
-- **Compile-time ABI assertions:** Wire structures in `abi.rs` use `#[repr(C)]` and compile-time `assert!(size_of::<...>() == ...)` checks (`Event` is padded to `32` bytes; `Theme` is `33 * 4` bytes) to catch kernel ABI drift at build time.
-- **Explicit dirty-flag event loop:** `gui::run` drives an `App` implementation by separating state mutation (`update(&mut self, ev) -> Flow`) from rendering (`render(&self, w) -> Result<()>`). Frames are bracketed with `frame_begin` / `frame_end` / `invalidate` only on initial startup, `EVT_RESIZE`, or when `update` explicitly returns `Flow::Changed` or `Flow::Quit`.
-- **Single-syscall drawing fast path:** Each primitive (`fill_rect`, `draw_text`, `draw_line`, etc.) maps to a single `SYS_GUI_CALL`, packing coordinate pairs into register-sized arguments via `pack2(lo, hi)`. For software-rendered buffers, `Window::blit` and `Window::blit_alpha` upload an entire rectangle in one syscall.
+#### 7.4.1. Design and execution model
+
+The GUI API is split into three levels:
+
+1. **Compositor operations** — global queries and actions such as screen size, mouse position, active theme, cursor selection, notifications, and desktop icons.
+2. **Window operations** — creation, lifetime, geometry, state, drawing, invalidation, pointer capture, event polling, and clipboard access through `Window`.
+3. **Application loop** — the `App` trait and `Flow` enum separate event-driven state changes from rendering. `gui::run` owns the blocking event loop and decides when a frame is rendered.
+
+Important design properties:
+
+- **RAII ownership.** A `Window` owns one kernel window ID. Dropping it issues `OP_DESTROY`. The destructor ignores a destroy error because `Drop` cannot return one.
+- **Thread affinity.** `Window` contains `PhantomData<*mut ()>` and is therefore neither `Send` nor `Sync`. A window handle must remain on the thread that created it unless ownership is deliberately transferred through the raw-handle API.
+- **Explicit raw ownership transfer.** `into_raw()` prevents the wrapper's destructor from running and returns the ID. `unsafe Window::from_raw(wid)` recreates an owning wrapper. The caller must guarantee that exactly one live owner is responsible for destroying that window.
+- **Thin syscall wrappers.** GUI calls are dispatched through `SYS_GUI_CALL` (200), event reads through `SYS_GUI_EVENT` (201), and theme reads/writes through `SYS_GUI_THEME` (202). The public methods do not implement a second userspace window manager.
+- **Dirty-driven rendering.** `App::update` reports whether visible state changed. `gui::run` does not redraw after every event; it redraws after an initial frame, a resize, or a `Flow` value that reports a visual change.
+- **No built-in widget/input layer.** The application is responsible for hit-testing, selection, hover state, scroll models, focus within controls, keyboard navigation, and rendering those controls.
 
 #### 7.4.2. Source files
 
 | File | Responsibility |
 |---|---|
-| `mod.rs` | Syscall wrappers (`SYS_GUI_CALL`, `SYS_GUI_EVENT`, `SYS_GUI_THEME`), global compositor queries/actions, and `with_cstr`. |
-| `abi.rs` | `Color`, `rgb`, `pack2`, op-codes (`OP_*`), window flags (`FLAG_*`), event constants (`EVT_*`, `KEY_*`, `MOD_*`), `Event`, `Cursor`, `Snap`, `FontMetrics`, and `Theme`. |
-| `window.rs` | `Window` lifecycle, geometry, properties, pointer capture, 2D drawing, blitting, invalidation, event polling/waiting, and clipboard helpers. |
-| `app.rs` | `App` trait, `Flow` control enum (`Ignore`, `Changed`, `Quit`), and the `run` event loop. |
+| `mod.rs` | Public module exports, syscall numbers and wrappers, global compositor functions, and bounded C-string conversion. |
+| `abi.rs` | ABI constants and types: colors, operation codes, window flags, event kinds, key/modifier constants, `Event`, `Cursor`, `Snap`, `FontMetrics`, and `Theme`. |
+| `window.rs` | `Window` ownership, lifecycle, geometry, state, capture, drawing, blitting, invalidation, event polling/waiting, and clipboard operations. |
+| `app.rs` | `App`, `Flow`, `gui::run`, and the internal frame-rendering function. |
 
-#### 7.4.3. Public API
+#### 7.4.3. ABI types and constants
 
-**Global compositor queries & actions (`gui::*`)**
+##### Colors and packed arguments
 
-| API | Description |
+`Color` is a `u32` containing a 24-bit RGB value in `0x00RRGGBB` format. The high byte is reserved by the drawing API.
+
+```rust
+pub type Color = u32;
+
+pub const fn rgb(r: u8, g: u8, b: u8) -> Color {
+    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+```
+
+`pack2(lo, hi)` packs two signed 32-bit values into one register-sized argument: `lo` occupies the lower 32 bits and `hi` occupies the upper 32 bits. It is used by window syscalls to pass coordinate pairs and dimension pairs without allocating an argument structure.
+
+Predefined colors are `BLACK`, `WHITE`, `RED`, `GREEN`, `BLUE`, `YELLOW`, `GRAY`, `DARK`, and `LIGHT`.
+
+##### `Event`
+
+`Event` is the Rust representation passed to `SYS_GUI_EVENT`. Its currently declared fields are:
+
+| Field | Rust type | Current role in the wrapper |
+|---|---|---|
+| `kind` | `u16` | Event kind, compared with the `EVT_*` constants. |
+| `button` | `u16` | Button-related payload for pointer events. Numeric button values are not defined in the supplied RSBR ABI declarations. |
+| `x` | `i32` | X coordinate carried by the event. Coordinate origin and whether it is client-relative or screen-relative must be confirmed against the kernel event producer. |
+| `y` | `i32` | Y coordinate carried by the event. Coordinate origin and whether it is client-relative or screen-relative must be confirmed against the kernel event producer. |
+| `key` | `u32` | Key code for keyboard events. |
+| `mods` | `u16` | Modifier bitmask; `MOD_SHIFT`, `MOD_CTRL`, and `MOD_ALT` are defined. |
+| `data` | `u16` | Additional event payload. Its per-event meaning is not specified by the current public ABI declarations. |
+| `_reserved` | `[u32; 3]` | Reserved padding in the Rust representation. |
+
+The structure is `#[repr(C)]` and currently has a compile-time size assertion of 32 bytes. **This size assertion verifies the Rust structure only; it does not independently verify that its field order, field meanings, or total size match the kernel's current `gui_event_t`.** The source comment in `abi.rs` explicitly identifies the seven-field kernel layout as an assumption. Until it is checked against `kernel/gui/gui.h` and the event syscall implementation, the `Event` layout must be treated as a kernel-ABI item requiring verification, not as a fully proven cross-version contract.
+
+The `Event` helper methods have deliberately narrow definitions:
+
+- `is_mouse()` returns `true` only for `EVT_MOUSE_DOWN`, `EVT_MOUSE_UP`, `EVT_MOUSE_MOVE`, and `EVT_MOUSE_DBLCLICK`.
+- `is_key()` returns `true` for `EVT_KEY_DOWN` and `EVT_KEY_UP`.
+
+Consequently, `is_mouse()` currently does **not** include mouse wheel, right-button, or middle-button event kinds. Applications that need those events must match their `kind` explicitly or use their own helper.
+
+##### Event kinds
+
+The following values are declared in `abi.rs` and must remain numerically synchronized with `kernel/gui/gui.h`:
+
+| Constant | Value | Declared event category |
+|---|---:|---|
+| `EVT_NONE` | 0 | No event / empty kind. |
+| `EVT_MOUSE_MOVE` | 1 | Pointer movement. |
+| `EVT_MOUSE_DOWN` | 2 | Mouse-button press event (right and middle buttons have separate event kinds). |
+| `EVT_MOUSE_UP` | 3 | Mouse-button release event (right and middle buttons have separate event kinds). |
+| `EVT_MOUSE_DBLCLICK` | 4 | Double-click event. |
+| `EVT_MOUSE_WHEEL` | 5 | Wheel event. |
+| `EVT_MOUSE_RIGHT_DOWN` | 6 | Right-button press event. |
+| `EVT_MOUSE_RIGHT_UP` | 7 | Right-button release event. |
+| `EVT_MOUSE_MIDDLE_DOWN` | 8 | Middle-button press event. |
+| `EVT_MOUSE_MIDDLE_UP` | 9 | Middle-button release event. |
+| `EVT_KEY_DOWN` | 10 | Key press event. |
+| `EVT_KEY_UP` | 11 | Key release event. |
+| `EVT_FOCUS` | 12 | Window receives focus. |
+| `EVT_BLUR` | 13 | Window loses focus. |
+| `EVT_RESIZE` | 14 | Window resize notification. |
+| `EVT_CLOSE_REQ` | 15 | Close request from the window decoration or compositor. |
+| `EVT_TIMER` | 16 | Timer-related event kind. |
+| `EVT_PAINT` | 17 | Paint-related event kind. |
+| `EVT_CONTEXT_MENU` | 18 | Context-menu-related event kind. |
+| `EVT_SNAP_CHANGED` | 19 | Window snap-state change. |
+| `EVT_DROP` | 20 | Drop-related event kind. |
+| `EVT_ICON_CLICK` | 21 | Desktop-icon click event kind. |
+
+The names and numeric values above are what RSBR currently declares. They do not, by themselves, define every payload field for each event. For example, the public ABI declarations do not currently specify the wheel delta encoding, drag/drop payload format, timer identifier, or context-menu payload.
+
+##### Keyboard constants and modifiers
+
+`Event::key` is a `u32`. The constants currently exported for special keys are:
+
+| Constant | Value |
+|---|---:|
+| `KEY_LEFT` | `0x100` |
+| `KEY_RIGHT` | `0x101` |
+| `KEY_UP` | `0x102` |
+| `KEY_DOWN` | `0x103` |
+| `KEY_HOME` | `0x104` |
+| `KEY_END` | `0x105` |
+| `KEY_DELETE` | `0x109` |
+
+The existing `App` example also compares `ev.key` with `0x1B` to detect Escape. The constants above are only the special-key constants present in the current `abi.rs`; they are not a complete keyboard map. The exact encoding of printable keys, function keys, keypad keys, and key-repeat events must be documented from the kernel input/event implementation.
+
+Modifier flags are bit values in `Event::mods`:
+
+| Constant | Bit/value | Meaning |
+|---|---:|---|
+| `MOD_SHIFT` | `1 << 0` (`0x0001`) | Shift modifier. |
+| `MOD_CTRL` | `1 << 1` (`0x0002`) | Control modifier. |
+| `MOD_ALT` | `1 << 2` (`0x0004`) | Alt modifier. |
+
+Applications should test modifier bits with a bitwise operation, for example `ev.mods & MOD_CTRL != 0`, rather than compare the entire field to one modifier value. Combined modifiers can therefore be represented in the same mask.
+
+##### Cursor and snap state
+
+`Cursor` is a `#[repr(u32)]` enum used by `gui::set_cursor`:
+
+| Variant | Value | Intended appearance |
+|---|---:|---|
+| `Arrow` | 0 | Default pointer. |
+| `IBeam` | 1 | Text insertion pointer. |
+| `Hand` | 2 | Link/interactive pointer. |
+| `HResize` | 3 | Horizontal resize pointer. |
+| `VResize` | 4 | Vertical resize pointer. |
+| `DResize` | 5 | Diagonal resize pointer. |
+| `Wait` | 6 | Busy pointer. |
+| `Move` | 7 | Move pointer. |
+| `Crosshair` | 8 | Crosshair pointer. |
+| `NotAllowed` | 9 | Operation-not-allowed pointer. |
+
+`Snap` is a `#[repr(u32)]` enum used by `Window::snap`:
+
+| Variant | Value |
+|---|---:|
+| `None` | 0 |
+| `Left` | 1 |
+| `Right` | 2 |
+| `Top` | 3 |
+| `Bottom` | 4 |
+| `Maximized` | 5 |
+
+##### Font metrics and theme structure
+
+`FontMetrics` contains five `u32` values returned by `font_metrics()`:
+
+- `width` and `height` — reported bitmap-font dimensions.
+- `ascent` and `descent` — reported vertical font metrics.
+- `num_glyphs` — number of glyphs reported by the built-in font implementation.
+
+`Theme` mirrors `gui_theme_t` and contains 33 `u32` fields (132 bytes). Color-like fields describe desktop, window, title bar, border, taskbar, start button, control, icon, and notification colors. Dimension/behavior fields include `shadow_offset`, `taskbar_h`, `titlebar_h`, `border_w`, `resize_grip`, `icon_size`, `icon_pad`, `win_round`, and `dpi`.
+
+The exact field order is part of the ABI and is preserved in `abi.rs`:
+
+```rust
+#[repr(C)]
+pub struct Theme {
+    pub desktop_top: u32,
+    pub desktop_bot: u32,
+    pub win_bg: u32,
+    pub win_content: u32,
+    pub title_active: u32,
+    pub title_inactive: u32,
+    pub title_text: u32,
+    pub border: u32,
+    pub border_active: u32,
+    pub taskbar_bg: u32,
+    pub taskbar_border: u32,
+    pub taskbar_text: u32,
+    pub start_btn_bg: u32,
+    pub start_btn_text: u32,
+    pub close_bg: u32,
+    pub close_bg_hover: u32,
+    pub max_bg: u32,
+    pub min_bg: u32,
+    pub icon_text: u32,
+    pub icon_selected: u32,
+    pub notif_bg: u32,
+    pub notif_border: u32,
+    pub notif_text: u32,
+    pub shadow_color: u32,
+    pub shadow_offset: u32,
+    pub taskbar_h: u32,
+    pub titlebar_h: u32,
+    pub border_w: u32,
+    pub resize_grip: u32,
+    pub icon_size: u32,
+    pub icon_pad: u32,
+    pub win_round: u32,
+    pub dpi: u32,
+}
+```
+
+The compile-time assertion checks `size_of::<Theme>() == 33 * 4`. `theme()` initializes a zeroed/default structure, asks the kernel to fill it, and returns the populated value. `set_theme()` passes the supplied structure to the kernel; it is a global compositor operation rather than a per-window style setter.
+
+#### 7.4.4. Window creation, flags, ownership, and lifecycle
+
+##### Creating a window
+
+```rust
+let window = Window::create(
+    100, 100,
+    640, 480,
+    Some("My application"),
+    FLAG_HAS_TITLE | FLAG_HAS_CLOSE | FLAG_RESIZABLE,
+)?;
+window.show()?;
+```
+
+`Window::create(x, y, w, h, title, flags)` creates a window and returns its RAII wrapper. The new window starts hidden; `show()` makes it visible. `title` is optional: `None` passes a null pointer to the kernel. `x` and `y` are the requested window position, while `w` and `h` are the requested dimensions passed to the create operation.
+
+The flags currently defined in `abi.rs` are:
+
+| Flag | Value | Meaning indicated by the flag name |
+|---|---:|---|
+| `FLAG_RESIZABLE` | `0x001` | Window can be resized. |
+| `FLAG_MOVABLE` | `0x002` | Window can be moved. |
+| `FLAG_HAS_TITLE` | `0x004` | Show a title bar. |
+| `FLAG_HAS_CLOSE` | `0x008` | Show a close control. |
+| `FLAG_HAS_MINMAX` | `0x010` | Show minimize/maximize controls. |
+| `FLAG_MODAL` | `0x020` | Modal window flag. |
+| `FLAG_NO_DECOR` | `0x040` | Suppress standard decorations. |
+| `FLAG_ALWAYS_TOP` | `0x080` | Keep the window above ordinary windows. |
+| `FLAG_TOOL_WINDOW` | `0x100` | Tool-window style flag. |
+| `FLAG_BORDERLESS` | `0x200` | Borderless window flag. |
+| `FLAG_PRESENTATION` | `0x800` | Presentation-mode flag. |
+
+The numeric values must match `AG_WIN_*` / `GUI_WIN_*` definitions in `kernel/gui/gui.h`. Flags may be combined with bitwise OR. The precise interactions between combinations (for example, `FLAG_NO_DECOR` and `FLAG_HAS_TITLE`) are determined by the kernel window implementation.
+
+##### Window lifetime and ownership
+
+| API | Behavior |
 |---|---|
-| `screen_size()` | Query desktop resolution `(width, height)` (`OP_GET_SCREEN`). |
-| `mouse_position()` | Query global cursor coordinates `Option<(i32, i32)>` (`OP_GET_MOUSE`). |
-| `focused_window()` / `top_window()` | Query the currently focused or top-most window ID (`OP_GET_FOCUSED`, `OP_TOP_WINDOW`). |
-| `set_cursor(cursor)` | Change the active cursor shape (`Cursor::Arrow`, `IBeam`, `Hand`, etc.). |
-| `render_now()` | Force the compositor to present a frame immediately (`OP_RENDER`). |
-| `theme()` / `set_theme(theme)` | Read or apply the global `Theme` (`SYS_GUI_THEME`). `set_theme` requires the calling process to own at least one window. |
-| `font_metrics()` | Query built-in bitmap font dimensions (`width`, `height`, `ascent`, `descent`, `num_glyphs`). |
-| `notify(text, color, duration_ms)` | Display a desktop notification banner (`OP_NOTIFY`). |
-| `add_icon(x, y, label, icon_id)` / `remove_icon(idx)` | Register or remove a desktop shortcut icon (`OP_ADD_ICON`, `OP_REMOVE_ICON`). |
+| `Window::wid()` | Returns the kernel window ID without transferring ownership. |
+| `Window::into_raw(self)` | Consumes the wrapper, suppresses its destructor, and returns the raw ID. The caller becomes responsible for eventual destruction. |
+| `unsafe Window::from_raw(wid)` | Creates an owning wrapper for an existing live window. The caller must ensure the ID belongs to the process and has no other RAII owner. |
+| `Drop for Window` | Issues `OP_DESTROY` on a best-effort basis. Any destroy error is ignored. |
 
-**Window lifecycle, geometry & state (`Window`)**
+Do not create two owning `Window` wrappers for the same ID. Doing so can cause one wrapper to destroy the window while the other still appears valid.
 
-| API | Description |
+##### Window state and geometry
+
+| API | Behavior |
 |---|---|
-| `Window::create(x, y, w, h, title, flags)` | Create a hidden window with outer geometry and `FLAG_*` capabilities. |
-| `show()` / `hide()` / `focus()` / `lower()` | Control window visibility and Z-order stacking. |
-| `minimize()` / `maximize()` / `restore()` / `snap(s)` | Change window state or snap to a screen edge (`Snap::Left`, `Right`, `Top`, `Bottom`, `Maximized`). |
-| `move_to(x, y)` / `resize(w, h)` | Update window position or outer size. |
-| `size()` / `pos()` / `rect()` | Query current dimensions `(w, h)`, position `(x, y)`, or full rect `(x, y, w, h)`. |
-| `set_title(title)` / `flags()` / `set_flags(flags)` / `z()` | Inspect or update window title, flags, and Z-index. |
-| `set_parent(parent)` / `set_hole(l, t, r, b)` | Attach a child window to a parent or punch a transparent hit/render cutout. |
-| `set_capture()` / `Window::get_capture()` | Capture all pointer events to this window or query the current capture owner. |
-| `wid()` / `into_raw()` / `Window::from_raw(wid)` | Access the underlying integer ID or transfer RAII ownership manually. |
+| `show()` / `hide()` | Show or hide the window. |
+| `focus()` | Request keyboard/window focus for this window. |
+| `lower()` | Lower the window in the Z-order. |
+| `minimize()` / `maximize()` / `restore()` | Request the corresponding window-state transition. |
+| `snap(Snap)` | Request a snap state (`Left`, `Right`, `Top`, `Bottom`, or `Maximized`). |
+| `move_to(x, y)` | Request a new window position. |
+| `resize(w, h)` | Request a new window size. |
+| `size()` | Return the current dimensions reported by the compositor. |
+| `pos()` | Return the current position reported by the compositor. |
+| `rect()` | Return `(x, y, w, h)` from the compositor. |
+| `set_title(title)` | Change the title; `None` passes a null pointer. |
+| `flags()` / `set_flags(flags)` | Read or replace the window flag mask. |
+| `z()` | Read the current Z-order value. |
+| `set_parent(Some(parent))` | Set another window as parent. |
+| `set_parent(None)` | Pass `-1` as the parent ID to the kernel. |
+| `set_hole(l, t, r, b)` | Pass a rectangular hole/cutout to the compositor. The exact coordinate and hit-testing semantics are kernel-defined. |
 
-**Drawing, blitting & invalidation (`Window`)**
+The geometry methods forward their arguments to the compositor. The public Rust wrapper does not clamp coordinates or dimensions before issuing the syscall. Applications should query `size()` after a resize event when they need the current dimensions rather than relying only on the original create arguments.
 
-| API | Description |
+#### 7.4.5. Pointer and keyboard input
+
+The GUI input interface is event-based. Applications receive an `Event` from the window event queue and inspect `kind`, `button`, `x`, `y`, `key`, `mods`, and `data` as appropriate for that event kind.
+
+The RSBR layer declares event kinds and basic key/modifier constants, but it does not translate raw events into higher-level widgets or control actions. A file manager, for example, must implement its own item hit-testing, selection, double-click behavior, hover tracking, scrolling, and keyboard navigation.
+
+##### Pointer events
+
+The public event kinds include:
+
+- `EVT_MOUSE_MOVE` — pointer movement.
+- `EVT_MOUSE_DOWN` and `EVT_MOUSE_UP` — primary-button press/release.
+- `EVT_MOUSE_DBLCLICK` — double-click notification.
+- `EVT_MOUSE_WHEEL` — wheel input.
+- `EVT_MOUSE_RIGHT_DOWN` / `EVT_MOUSE_RIGHT_UP` — right-button press/release.
+- `EVT_MOUSE_MIDDLE_DOWN` / `EVT_MOUSE_MIDDLE_UP` — middle-button press/release.
+
+For pointer events, `x` and `y` carry coordinates and `button` carries a button-related value according to the declared structure. The current RSBR ABI file does not define the numeric button mapping, wheel delta encoding, or whether event coordinates are client-relative or screen-relative. These details must be taken from the kernel's event producer and documented here once verified. Do not hard-code assumptions about them in reusable widgets before that verification.
+
+A `EVT_MOUSE_MOVE` stream can be frequent. In an `App::update` implementation, compare the new pointer position/hover target with the previous state and return `Flow::Changed` only when the visible hover state actually changes. Returning `Flow::Changed` for every movement causes a full application repaint for every move event.
+
+##### Pointer capture
+
+`Window::set_capture()` asks the compositor to route pointer events to this window. It returns the ID of the window that previously owned capture, or `-1` if no previous capturing window was reported. `Window::get_capture()` returns the current capture owner ID.
+
+Capture is useful for interactions that continue after the pointer leaves a control or window area, such as dragging a selection rectangle or moving a custom slider. The current safe wrapper exposes capture acquisition and querying, but no dedicated `release_capture()` method. The release operation and whether capture is automatically relinquished on button release, focus loss, or window destruction must be verified against the kernel implementation before being described as a guaranteed behavior.
+
+##### Global pointer position and cursor
+
+`gui::mouse_position()` queries the global pointer position and returns `Option<(i32, i32)>`:
+
+- `Some((x, y))` when the wrapper considers a pointer position available.
+- `None` when no pointer is reported.
+
+The current implementation accepts a syscall return value of `1` as present. It also accepts a return value of `0` when at least one output coordinate is non-zero. This compatibility heuristic means that the `(0, 0)` position combined with a zero syscall return is ambiguous and can be reported as `None`.
+
+`gui::set_cursor(cursor)` changes the active cursor shape using the `Cursor` enum. It is a global GUI operation; the current wrapper does not provide a per-window cursor property.
+
+##### Keyboard events
+
+`EVT_KEY_DOWN` and `EVT_KEY_UP` report key transitions. `Event::key` contains the key code and `Event::mods` contains the modifier mask. Applications should generally handle both transitions when they need to track held keys; a one-shot command can normally be triggered on key-down.
+
+The current `abi.rs` provides only a small set of special-key constants plus the Escape value used in the example. It does not define a complete key-code table, text-input/Unicode event, keyboard layout translation, or key-repeat contract. Those behaviors must not be inferred from the presence of `EVT_KEY_DOWN` alone.
+
+`EVT_FOCUS` and `EVT_BLUR` allow an application to react to focus changes. A robust input handler should clear any locally tracked pressed-key state on blur if the kernel does not guarantee matching key-up events after focus is lost; that guarantee requires kernel-side verification.
+
+##### Event queue access
+
+| API | Behavior |
 |---|---|
-| `frame_begin()` / `frame_end()` | Bracket batched drawing commands for flicker-free presentation. |
-| `clear(color)` | Fill the entire window client buffer with `color` (`0x00RRGGBB`). |
-| `fill_rect(x, y, w, h, color)` / `draw_rect(...)` | Draw a filled or outlined rectangle. |
-| `draw_line(x0, y0, x1, y1, color)` / `draw_pixel(x, y, color)` | Draw a line segment or single pixel. |
-| `draw_text(x, y, text, color)` | Render bitmap font text at `(x, y)`. |
-| `get_pixel(x, y)` | Read a client pixel as `0x00RRGGBB` (alpha stripped). |
-| `blit(x, y, w, h, src, stride)` / `blit_alpha(...)` | Copy a `u32` pixel buffer into the window (`stride = 0` means tightly packed). |
-| `invalidate()` / `invalidate_rect(x, y, w, h)` | Mark the full window or a dirty sub-rectangle for compositor presentation. |
+| `Window::poll()` | Non-blocking read. Returns `Ok(Some(event))` when an event is available and `Ok(None)` when the event ring is empty. |
+| `Window::wait()` | Blocking read. Waits until an event is delivered or the window/event syscall returns an error. |
 
-**Events, clipboard & application loop (`Window`, `App`, `Flow`)**
+`poll()` is appropriate for an application that owns its own loop or wants to drain currently pending events. `wait()` is appropriate for an event-driven application that should sleep while idle. The wrapper does not document the kernel queue capacity, overflow policy, event coalescing rules, or ordering guarantees beyond the one-event-per-call interface.
 
-| API | Description |
+#### 7.4.6. Drawing, pixel buffers, and invalidation
+
+Window drawing methods operate on the window's client drawing buffer. Each public drawing primitive issues one GUI call; the wrapper does not construct a higher-level display list.
+
+The color format for ordinary drawing methods is `0x00RRGGBB`.
+
+| API | Behavior |
 |---|---|
-| `Window::poll()` | Non-blocking event poll (`Ok(None)` when queue is empty). |
-| `Window::wait()` | Blocking wait until an event arrives or the window is destroyed. |
-| `set_clipboard(text)` / `get_clipboard(buf)` | Write or read the system-wide text clipboard. |
-| `App::update(&mut self, ev)` | Handle one `Event` and return `Flow::Ignore`, `Flow::Changed`, or `Flow::Quit`. |
-| `App::render(&self, w)` | Render the window state (enforced read-only `&self`). |
-| `gui::run(app, window)` | Run the managed event/repaint loop until `Flow::Quit` or window destruction. |
+| `clear(color)` | Clear the entire window client buffer to one color. |
+| `fill_rect(x, y, w, h, color)` | Fill a rectangle. |
+| `draw_rect(x, y, w, h, color)` | Draw a rectangle outline. |
+| `draw_line(x0, y0, x1, y1, color)` | Draw a line segment. |
+| `draw_pixel(x, y, color)` | Draw one pixel. |
+| `draw_text(x, y, text, color)` | Draw text using the compositor's built-in bitmap font. |
+| `get_pixel(x, y)` | Read one pixel and return its lower 24 RGB bits; alpha is stripped. |
 
-#### 7.4.4. Basic usage
+The Rust wrapper forwards drawing coordinates to the kernel. The exact origin, clipping behavior, treatment of negative coordinates, text baseline convention, and DPI scaling are kernel-side rendering contracts and are not fully specified by the current Rust declarations.
 
-Managed event loop using `App` and `Flow`:
+##### Bulk pixel upload
+
+`blit` and `blit_alpha` copy a caller-owned `&[u32]` pixel buffer into a rectangular destination area:
+
+```rust
+window.blit(x, y, width, height, &pixels, stride_pixels)?;
+window.blit_alpha(x, y, width, height, &pixels, stride_pixels)?;
+```
+
+Arguments:
+
+- `x`, `y` — destination position passed to the kernel.
+- `w`, `h` — destination width and height in pixels.
+- `src` — source pixels in `u32` format.
+- `stride` — source row stride in pixels, not bytes. A value of `0` is converted to `w` (tightly packed rows).
+
+Before issuing the syscall, the wrapper computes `h * stride` with checked arithmetic and rejects a source slice shorter than that number of pixels. The caller must provide a valid row layout; in ordinary images, use a stride at least as large as the copied row width. The entire rectangle is transferred through one GUI syscall.
+
+`blit_alpha` interprets the high byte of each source pixel as alpha (`0` transparent, `255` opaque). `blit` is the non-alpha variant. The source slice must remain valid for the duration of the synchronous syscall; the wrapper does not retain the pointer.
+
+##### Frame brackets and dirty regions
+
+`frame_begin()` and `frame_end()` bracket a drawing frame. They are used by `gui::run` to group the app's drawing calls before invalidation/presentation.
+
+`invalidate()` marks the whole window for presentation. `invalidate_rect(x, y, w, h)` marks a rectangular region. Invalidation is separate from drawing: drawing changes the window buffer, while invalidation tells the compositor that the changed area should be presented.
+
+`gui::render_now()` is a global immediate-present request. It is not a substitute for updating the window buffer or marking the correct dirty area.
+
+#### 7.4.7. Clipboard and desktop integration
+
+##### Clipboard
+
+- `Window::set_clipboard(text)` writes text to the system clipboard.
+- `Window::get_clipboard(buf)` asks the kernel to copy clipboard data into a caller-provided byte buffer.
+
+`get_clipboard` returns `Result<()>`, not the number of bytes copied. The current wrapper therefore does not expose an explicit copied-length value or a truncation indicator. The exact NUL-termination and truncation contract must be checked against the kernel clipboard implementation before callers rely on a particular string-decoding strategy.
+
+##### Notifications and desktop icons
+
+- `gui::notify(text, color, duration_ms)` requests a desktop notification.
+- `gui::add_icon(x, y, label, icon_id)` registers a desktop shortcut and returns the resulting integer index/ID reported by the kernel.
+- `gui::remove_icon(idx)` requests removal of a previously registered desktop icon.
+
+The Rust wrapper passes `icon_id` through unchanged. The available icon-resource mapping and the notification duration/time-unit behavior are kernel/UI contracts; this section does not define additional icon IDs or resource formats.
+
+##### Theme and font queries
+
+- `gui::theme()` reads the current global theme.
+- `gui::set_theme(&theme)` applies a global theme. The kernel-side access check requires the calling process to own at least one active window (`gui_pid_has_windows`).
+- `gui::font_metrics()` reads the built-in font metrics into a fixed five-element output buffer.
+
+#### 7.4.8. Application interface and managed event loop
+
+##### `App`
+
+An application implementing `App` provides two methods:
+
+```rust
+pub trait App {
+    fn update(&mut self, ev: &Event) -> Flow;
+    fn render(&self, w: &Window) -> crate::Result<()>;
+}
+```
+
+`update` receives one event and may mutate application state. `render` receives an immutable reference to the application and draws the current state. The immutable `&self` is intentional: rendering should observe state prepared by event handling rather than mutate application behavior as a side effect of painting.
+
+##### `Flow`
+
+| Variant | Meaning | Repaint requested? | Stop loop? |
+|---|---|---:|---:|
+| `Flow::Ignore` | Event handled or intentionally ignored; no visible state change. | No | No |
+| `Flow::Changed` | Visible application state changed. | Yes | No |
+| `Flow::Quit` | Visible state changed and the app requests termination. | Yes | Yes |
+
+`Flow::changed()` returns `true` for `Changed` and `Quit`. `Flow::quit()` returns `true` only for `Quit`.
+
+**Important:** `EVT_MOUSE_MOVE` should normally return `Flow::Ignore` unless the hover target, drag state, selection, or another visible value actually changed. A repaint on every mouse movement defeats the dirty-driven loop and can create unnecessary CPU/GPU work.
+
+##### Behavior of `gui::run`
+
+The managed loop performs the following steps:
+
+1. Render the initial frame before waiting for input.
+2. Block in `Window::wait()` for one event.
+3. Call `App::update(&event)`.
+4. Render a new frame if the event is `EVT_RESIZE` or the returned `Flow` is `Changed`/`Quit`.
+5. Stop after processing a `Flow::Quit` event.
+
+A resize always schedules a repaint even if the app returns `Flow::Ignore`, because the framework knows the client-area geometry changed. The resize event is still passed to `update`, so the app can update layout state or query `Window::size()`.
+
+For each rendered frame, the framework calls `frame_begin()`, invokes `App::render()`, calls `frame_end()`, and then calls `invalidate()`. Drawing errors are propagated by `gui::run`. In the current implementation, any error returned by `Window::wait()` ends the loop; the loop then returns `Ok(())` rather than propagating that wait error. This behavior should be reconsidered if callers need to distinguish window destruction from other event-syscall failures.
+
+##### Basic application example
 
 ```rust
 use rsbr::gui::{
@@ -570,7 +939,7 @@ impl App for DemoApp {
     fn update(&mut self, ev: &Event) -> Flow {
         match ev.kind {
             EVT_CLOSE_REQ => Flow::Quit,
-            EVT_KEY_DOWN if ev.key == 0x1B => Flow::Quit, // Esc
+            EVT_KEY_DOWN if ev.key == 0x1B => Flow::Quit,
             _ => Flow::Ignore,
         }
     }
@@ -593,19 +962,108 @@ fn run_demo() -> rsbr::Result<()> {
 }
 ```
 
-#### 7.4.5. Limits and syscall mapping
+##### Manual event loop
 
-- **String truncation:** `with_cstr` copies at most `255` bytes plus a terminating NUL into a stack buffer; longer window titles, labels, notifications, or `draw_text` strings are silently truncated to 255 bytes.
-- **Close-button semantics:** Clicking the window `[X]` decoration hides the window in the compositor and enqueues `EVT_CLOSE_REQ`; applications using `gui::run` must explicitly match `EVT_CLOSE_REQ => Flow::Quit` if they want the process to exit on close.
-- **Theme ACL:** `gui::set_theme` fails unless the calling PID owns at least one active window (`gui_pid_has_windows`).
+Applications do not have to use `App` or `gui::run`. They can call `poll()` or `wait()` directly and manage rendering themselves. A manual loop must still define its own redraw policy and should avoid continuously repainting when no visible state has changed.
 
-| Operation | Native syscall | Number |
+#### 7.4.9. Global compositor API reference
+
+| API | Description |
+|---|---|
+| `screen_size()` | Returns desktop resolution as `(width, height)`. |
+| `mouse_position()` | Returns the wrapper's optional global pointer position. |
+| `focused_window()` | Returns the focused window ID. |
+| `top_window()` | Returns the top-most window ID. |
+| `set_cursor(cursor)` | Changes the global pointer cursor. |
+| `render_now()` | Requests immediate compositor presentation. |
+| `theme()` | Reads the current global `Theme`. |
+| `set_theme(theme)` | Applies a global theme; requires the process to own an active window. |
+| `font_metrics()` | Returns built-in font metrics. |
+| `notify(text, color, duration_ms)` | Displays a desktop notification. |
+| `add_icon(x, y, label, icon_id)` | Adds a desktop icon and returns its kernel-reported ID/index. |
+| `remove_icon(idx)` | Removes a desktop icon by ID/index. |
+
+#### 7.4.10. Window API reference
+
+| Area | API | Description |
+|---|---|---|
+| Lifecycle | `Window::create(...)` | Creates a hidden window. |
+| Lifecycle | `show()`, `hide()`, `Drop` | Show, hide, and destroy the window. |
+| Focus/Z-order | `focus()`, `lower()`, `z()` | Focus, lower, and query Z-order. |
+| State | `minimize()`, `maximize()`, `restore()`, `snap(...)` | Request window state transitions. |
+| Geometry | `move_to(...)`, `resize(...)` | Change window geometry. |
+| Geometry | `size()`, `pos()`, `rect()` | Query current geometry. |
+| Properties | `set_title(...)`, `flags()`, `set_flags(...)` | Read or change title and flags. |
+| Parent/cutout | `set_parent(...)`, `set_hole(...)` | Set parent relationship or compositor hole. |
+| Pointer | `set_capture()`, `Window::get_capture()` | Acquire or query pointer capture. |
+| Drawing | `clear(...)`, `fill_rect(...)`, `draw_rect(...)` | Clear or draw rectangles. |
+| Drawing | `draw_line(...)`, `draw_pixel(...)`, `draw_text(...)` | Draw primitives or bitmap text. |
+| Pixel access | `get_pixel(...)` | Read one pixel. |
+| Pixel upload | `blit(...)`, `blit_alpha(...)` | Copy a pixel buffer. |
+| Frame/invalidation | `frame_begin()`, `frame_end()` | Bracket drawing. |
+| Frame/invalidation | `invalidate()`, `invalidate_rect(...)` | Mark content dirty for presentation. |
+| Events | `poll()`, `wait()` | Read one event without blocking or block for one event. |
+| Clipboard | `set_clipboard(...)`, `get_clipboard(...)` | Write or read clipboard bytes. |
+| Raw ownership | `wid()`, `into_raw()`, `Window::from_raw(...)` | Inspect or transfer the raw window ID. |
+
+#### 7.4.11. Limits, ABI verification, and syscall mapping
+
+##### String and buffer limits
+
+- **C-string buffer:** `with_cstr` uses a 256-byte stack buffer. It copies at most 255 input bytes and appends a terminating NUL. Longer values are silently truncated by bytes, not Unicode characters; truncation can split a UTF-8 sequence. The helper does not reject an embedded NUL byte, so a kernel C-string consumer will observe only the prefix before that NUL.
+- **Pixel buffers:** `blit` and `blit_alpha` do not allocate. The source slice must contain at least `height * effective_stride` pixels, where an input stride of zero is treated as the width. The wrapper checks multiplication overflow and slice length before the syscall.
+- **Event ABI:** `Event` is currently declared as 32 bytes, but its source comment marks the kernel field layout as an assumption. Verify it against the matching kernel header and event-copy code before relying on it as a stable binary contract.
+- **Event payload semantics:** button IDs, pointer-coordinate origin, wheel delta, `data` meanings, drag/drop payloads, timer payloads, and key-repeat semantics are not fully defined by the current public RSBR declarations.
+- **Capture release:** the safe API exposes acquisition and owner query but no explicit release method. Verify the kernel's release rules before relying on implicit release behavior.
+- **Clipboard result length:** `get_clipboard` currently returns `Result<()>`; it does not report the number of bytes copied or an explicit truncation status.
+- **Wait errors:** `gui::run` currently treats any `Window::wait()` error as loop termination and returns success after leaving the loop.
+- **Platform verification:** the module status below is the status recorded for the current implementation. A syscall backend existing for another architecture does not itself prove the GUI kernel implementation is available there.
+
+##### Kernel ABI facts that should be added after source verification
+
+The following details should be confirmed from `kernel/gui/gui.h`, `kernel/gui/gui_syscalls.h`, the GUI event producer, and the `SYS_GUI_EVENT` dispatcher before this section makes stronger claims:
+
+1. Exact `gui_event_t` field order, field widths, alignment, and copy size.
+2. Coordinate space for `Event::x` / `Event::y`, including whether capture changes the coordinate space.
+3. Numeric pointer-button values and the exact payload used for wheel events.
+4. Key-code mapping, printable-key behavior, modifiers, and repeat delivery.
+5. Event queue capacity, overflow policy, event coalescing, and ordering guarantees.
+6. Whether pointer capture is automatically released and how an application explicitly releases it.
+7. Payload formats for `EVT_TIMER`, `EVT_PAINT`, `EVT_CONTEXT_MENU`, `EVT_DROP`, `EVT_SNAP_CHANGED`, and `EVT_ICON_CLICK`.
+8. Drawing coordinate origin, clipping rules, text baseline, DPI scaling, and the semantics of `set_hole`.
+9. Clipboard buffer termination, length reporting, and truncation behavior.
+10. Exact time unit and scheduling behavior for `notify(..., duration_ms)`.
+
+##### Syscall mapping
+
+| Operation | Native syscall wrapper | Number |
 |---|---|---:|
-| Window & drawing commands (`OP_*`) | `gui_call` | `200` |
-| Poll / wait window events | `gui_event` | `201` |
-| Get / set compositor theme | `gui_theme` | `202` |
+| Window lifecycle, properties, drawing, capture, and compositor commands (`OP_*`) | `gui_call` | `200` |
+| Window event polling/waiting | `gui_event` | `201` |
+| Get/set global compositor theme | `gui_theme` | `202` |
 
-**Status:** implemented and runtime-verified on `x86_64`.
+The operation constants (`OP_CREATE` through `OP_FRAME_END`) and event/flag constants are low-level ABI values. Application code should normally call the safe public methods rather than invoke `gui_call` directly. These numeric values must be kept synchronized with `kernel/gui/gui_syscalls.h` and `kernel/gui/gui.h` in the same change that updates the kernel ABI.
+
+**Status:** implemented and runtime-verified on `x86_64` according to the current RSBR documentation. The `Event` layout and the input details listed above still require direct verification against the matching kernel sources before they can be considered fully specified.
+
+
+**### 7.5. \`fs\`**
+
+
+
+**Source:*** `lib/rsbr/fs/\
+
+
+
+The `fs` module is the Rust-facing filesystem API for AuraLite applications. It wraps the kernel's file-descriptor and path-based filesystem interfaces and provides an owned `File` type, metadata structures, directory enumeration, and path operations.
+
+
+
+The module is allocator-free: callers provide the buffers used for file contents and directory entries.
+
+
+
+**
 
 ### 7.5. `fs`
 
