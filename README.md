@@ -196,6 +196,21 @@ staged for distribution.
 make run
 ```
 
+To start the graphical desktop with a specific guest resolution (QEMU + OVMF):
+
+```bash
+make run RESOLUTION=1600x900
+# Or use an existing image:
+bash tools/run_qemu.sh build/auralite.iso 1600x900
+```
+
+The loader selects an exact mode exposed by UEFI GOP. If that mode is not
+available, it keeps the firmware mode and explains why on the serial console.
+Plain `make run` retains the original BIOS/serial-only behavior. On systems
+without the Debian/Ubuntu OVMF paths, set `OVMF_CODE` and `OVMF_VARS` to matching
+firmware files. Set `QEMU_DISPLAY=none` for headless UEFI tests; for a manual
+UEFI QEMU command, add `-fw_cfg name=opt/auralite.resolution,string=1600x900`.
+
 Manual equivalent (the `.iso` file is a raw hybrid disk image, so attach it as
 an IDE hard disk rather than with QEMU's `-cdrom` option):
 
@@ -225,6 +240,9 @@ For Windows 10 users running native QEMU without Linux, place `auralite.iso` in 
 ```batch
 @echo off
 title AuraLite OS - QEMU Launcher
+rem Optional guest resolution; leave empty for the firmware default.
+set "AURALITE_RESOLUTION="
+rem set "AURALITE_RESOLUTION=1600x900"
 
 rem ------------------------------------------------------------------
 rem [0] Switch this console to UTF-8 (code page 65001).
@@ -544,6 +562,8 @@ rem ------------------------------------------------------------------
 echo [6/7] Assembling QEMU command line...
 
 set "QEMU_ARGS=%ACCEL_ARGS%"
+if defined AURALITE_RESOLUTION if not defined OVMF_CODE echo [WARN] Resolution override requires OVMF; ignoring it.
+if defined AURALITE_RESOLUTION if defined OVMF_CODE set "QEMU_ARGS=%QEMU_ARGS% -fw_cfg name=opt/auralite.resolution,string=%AURALITE_RESOLUTION%"
 if defined OVMF_CODE set "QEMU_ARGS=%QEMU_ARGS% -drive if=pflash,unit=0,format=raw,readonly=on,file="%OVMF_CODE%" -drive if=pflash,unit=1,format=raw,file="%OVMF_VARS%""
 
 set "QEMU_ARGS=%QEMU_ARGS% -drive file="%ISO_FILE%",format=raw,if=ide -boot order=c -m 256M -smp 4 -vga std -serial stdio -no-reboot -no-shutdown -cpu qemu64 -netdev user,id=net0 -device e1000,netdev=net0 -device piix3-usb-uhci,id=uhci -device usb-tablet,bus=uhci.0"

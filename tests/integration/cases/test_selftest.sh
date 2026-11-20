@@ -22,6 +22,8 @@ il_run_qemu "$LOG" 35
 
 # Gate the stable, currently implemented prefix of /selftest. Later sections
 # still depend on signal semantics that are being completed separately.
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: sscanf /proc/stat 64-bit counters" "SysMon obtains all four CPU counters"
+il_assert_grep_fixed "$LOG" "SELFTEST PASS: sscanf suppressed and signed long long" "long long assignment and suppression work"
 il_assert_grep "$LOG" "SELFTEST PASS: writev 2\+3 bytes"                 "vectored I/O marker"
 il_assert_grep "$LOG" "SELFTEST PASS: readv 2\+3 bytes"                  "vectored I/O read marker"
 il_assert_grep_fixed "$LOG" "SELFTEST PASS: sigaction(SIGUSR1) installs" "signals block reached"

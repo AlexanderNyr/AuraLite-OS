@@ -132,8 +132,9 @@ typedef struct {
 
 typedef struct EFI_GRAPHICS_OUTPUT_PROTOCOL EFI_GRAPHICS_OUTPUT_PROTOCOL;
 struct EFI_GRAPHICS_OUTPUT_PROTOCOL {
-    void                              *QueryMode;
-    void                              *SetMode;
+    EFI_STATUS (*QueryMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL *This, uint32_t ModeNumber,
+                            UINTN *SizeOfInfo, EFI_GRAPHICS_OUTPUT_MODE_INFORMATION **Info);
+    EFI_STATUS (*SetMode)(EFI_GRAPHICS_OUTPUT_PROTOCOL *This, uint32_t ModeNumber);
     void                              *Blt;
     EFI_GRAPHICS_OUTPUT_PROTOCOL_MODE *Mode;
 };

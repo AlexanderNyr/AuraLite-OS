@@ -80,21 +80,30 @@ int vsscanf(const char *str, const char *fmt, va_list ap) {
             break;
         }
         case 'l': {
-            /* %ld / %lu / %lx */
-            char sub = *++fmt;
-            int base = (sub == 'x' || sub == 'X') ? 16 : (sub == 'o' ? 8 : 10);
+            int wide = *++fmt == 'l';
+            if (wide) fmt++;
+            char sub = *fmt;
+            if (!sub || !strchr("diuoxX", sub)) goto done;
+            int base = (sub == 'x' || sub == 'X') ? 16 : (sub == 'o' ? 8 : (sub == 'i' ? 0 : 10));
             char *end = NULL;
-            if (sub == 'u') {
-                unsigned long v = strtoul(s, &end, base);
+            if (sub == 'd' || sub == 'i') {
+                long long v = wide ? strtoll(s, &end, base) : strtol(s, &end, base);
                 if (end == s) goto done;
-                s = end;
-                if (!suppress) { *va_arg(ap, unsigned long *) = v; assigned++; }
+                if (!suppress) {
+                    if (wide) *va_arg(ap, long long *) = v;
+                    else *va_arg(ap, long *) = (long)v;
+                    assigned++;
+                }
             } else {
-                long v = strtol(s, &end, base);
+                unsigned long long v = wide ? strtoull(s, &end, base) : strtoul(s, &end, base);
                 if (end == s) goto done;
-                s = end;
-                if (!suppress) { *va_arg(ap, long *) = v; assigned++; }
+                if (!suppress) {
+                    if (wide) *va_arg(ap, unsigned long long *) = v;
+                    else *va_arg(ap, unsigned long *) = (unsigned long)v;
+                    assigned++;
+                }
             }
+            s = end;
             break;
         }
         case 'f': case 'g': case 'e': case 'F': case 'G': case 'E': {

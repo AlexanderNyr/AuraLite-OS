@@ -95,6 +95,102 @@ static void serial_puts(const char *s) {
     while (*s) serial_putc(*s++);
 }
 
+/* QEMU fw_cfg uses an x86 I/O port selector and a byte-wide data port.
+ * The file directory's count, length and selector fields are big endian. */
+static void fwcfg_select(uint16_t key) {
+    __asm__ volatile ("outw %0, %1" :: "a"(key), "Nd"((uint16_t)0x510));
+}
+
+static uint32_t fwcfg_read_be(unsigned bytes) {
+    uint32_t value = 0;
+    while (bytes--) value = (value << 8) | inb(0x511);
+    return value;
+}
+
+/* Return 0 for no override, -1 for an invalid entry, 1 for a value. */
+static int read_resolution(char value[16]) {
+    static const char key[] = "opt/auralite.resolution";
+    fwcfg_select(0);
+    if (fwcfg_read_be(4) != 0x51454D55u) return 0; /* "QEMU" */
+    fwcfg_select(0x19);
+    uint32_t count = fwcfg_read_be(4);
+    if (count > 4096) return 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        uint32_t size = fwcfg_read_be(4);
+        uint16_t selector = (uint16_t)fwcfg_read_be(2);
+        (void)fwcfg_read_be(2);
+        int match = 1;
+        for (unsigned j = 0; j < 56; ++j) {
+            uint8_t ch = inb(0x511);
+            if (j < sizeof(key) && ch != (uint8_t)key[j]) match = 0;
+        }
+        if (!match) continue;
+        if (!size || size >= 16) return -1;
+        fwcfg_select(selector);
+        for (uint32_t j = 0; j < size; ++j) {
+            value[j] = (char)inb(0x511);
+            if (!value[j] && j + 1 != size) return -1;
+        }
+        value[size] = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static uint32_t parse_dimension(const char **p) {
+    uint32_t n = 0;
+    while (**p >= '0' && **p <= '9') {
+        n = n * 10 + (uint32_t)(*(*p)++ - '0');
+        if (n > 8192) return 0;
+    }
+    return n;
+}
+
+static int matching_mode(const EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi,
+                         uint32_t w, uint32_t h) {
+    return mi && mi->HorizontalResolution == w && mi->VerticalResolution == h &&
+           mi->PixelsPerScanLine >= w && mi->PixelsPerScanLine <= UINT32_MAX / 4 &&
+           (mi->PixelFormat == PixelBlueGreenRedReserved8BitPerColor ||
+            mi->PixelFormat == PixelRedGreenBlueReserved8BitPerColor);
+}
+
+static void select_gop_mode(EFI_BOOT_SERVICES *bs, EFI_GRAPHICS_OUTPUT_PROTOCOL *gop) {
+    char request[16];
+    int have = read_resolution(request);
+    if (!have) return;
+    const char *p = request;
+    uint32_t w = have > 0 ? parse_dimension(&p) : 0;
+    uint32_t h = w && (*p == 'x' || *p == 'X') ? (++p, parse_dimension(&p)) : 0;
+    if (!h || *p) {
+        serial_puts("[BL6] invalid resolution override; keeping firmware mode\r\n");
+        return;
+    }
+    serial_puts("[BL6] requested GOP resolution ");
+    serial_puts(request);
+    serial_puts("\r\n");
+    uint32_t original = gop->Mode->Mode;
+    if (!matching_mode(gop->Mode->Info, w, h)) {
+        for (uint32_t i = 0; i < gop->Mode->MaxMode; ++i) {
+            UINTN size = 0;
+            EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi = 0;
+            if (gop->QueryMode(gop, i, &size, &mi) != EFI_SUCCESS) continue;
+            int match = size >= sizeof(*mi) && matching_mode(mi, w, h);
+            if (mi) bs->FreePool(mi);
+            if (!match) continue;
+            if (gop->SetMode(gop, i) == EFI_SUCCESS &&
+                matching_mode(gop->Mode->Info, w, h) && gop->Mode->FrameBufferBase) break;
+            if (gop->Mode->Mode != original && gop->SetMode(gop, original) != EFI_SUCCESS) {
+                serial_puts("[BL6] GOP could not restore original mode\r\n");
+                return;
+            }
+        }
+    }
+    if (matching_mode(gop->Mode->Info, w, h) && gop->Mode->FrameBufferBase)
+        serial_puts("[BL6] requested GOP resolution active\r\n");
+    else
+        serial_puts("[BL6] requested resolution unavailable; keeping firmware mode\r\n");
+}
+
 /* Local memset -- freestanding builds cannot rely on libc.  We don't
  * need memcpy anywhere in this TU (the ELF loader has its own). */
 static void mymemset(void *d, int v, uint64_t n) {
@@ -239,7 +335,7 @@ static void jump_to_kernel(uint64_t entry, uint64_t boot_info_phys) {
         : [cr3]"r"(pml4_phys),
           [info]"r"(boot_info_phys),
           [entry]"r"(entry)
-        : "memory");
+        : "rdi", "memory");
     __builtin_unreachable();
 }
 
@@ -282,6 +378,7 @@ EFI_STATUS efi_main(EFI_HANDLE image_handle, EFI_SYSTEM_TABLE *st) {
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop = 0;
     status = BS->LocateProtocol(GOP_GUID, 0, (void **)&gop);
     if (status == EFI_SUCCESS && gop && gop->Mode && gop->Mode->Info) {
+        select_gop_mode(BS, gop);
         EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *mi = gop->Mode->Info;
         info->fb.phys_base = gop->Mode->FrameBufferBase;
         info->fb.width     = mi->HorizontalResolution;

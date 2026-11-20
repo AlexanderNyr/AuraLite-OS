@@ -53,6 +53,19 @@ static void check(const char *name, int cond) {
 }
 
 int main(void) {
+    /* The SysMon parser uses counters which can exceed 32 bits. Exercise
+     * AuraLite's own scanf implementation, not a host libc. */
+    {
+        unsigned long long user = 1, nice = 1, busy = 0, idle = 0;
+        int n = sscanf("cpu  0 0 4294967311 8589934592\nintr 0",
+                       "cpu %llu %llu %llu %llu", &user, &nice, &busy, &idle);
+        check("sscanf /proc/stat 64-bit counters", n == 4 && user == 0 && nice == 0 &&
+              busy == 4294967311ULL && idle == 8589934592ULL);
+        long long change = 0;
+        n = sscanf("4294967311 -4294967297", "%*llu %lld", &change);
+        check("sscanf suppressed and signed long long", n == 1 && change == -4294967297LL);
+    }
+
     /* Many regression checks use /tmp paths.  The initrd root may not ship a
      * pre-created /tmp directory, so create it once up front and tolerate an
      * existing directory from a previous run. */

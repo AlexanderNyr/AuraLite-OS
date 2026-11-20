@@ -85,36 +85,24 @@ static void mark_range(uint64_t base, uint64_t len, int used) {
     }
 }
 
-/* Locate a region large enough to hold the bitmap; prefer bootloader-
-   reclaimable memory, fall back to usable memory.  Allocate from the top of the
-   chosen range so PMM metadata does not overwrite the low BIOS kernel image or
-   Stage 2 page tables. */
+/* Keep PMM metadata out of the early reserve, regardless of what the
+ * firmware called it: the UEFI loader places the kernel at a fixed physical
+ * address, so low firmware descriptors can overlap live kernel .bss.
+ * Only use conventional RAM, not loader data (boot_info, initrd, tables). */
 static uint64_t find_bitmap_region(boot_mmap_entry_t *entries,
                                    uint64_t count) {
     uint64_t need = ALIGN_UP(pmm.bitmap_bytes + pmm.refcount_bytes,
                              PMM_PAGE_SIZE);
 
-    for (int pass = 0; pass < 2; pass++) {
-        uint32_t want_type = (pass == 0)
-            ? BOOT_MEM_BOOTLOADER
-            : BOOT_MEM_USABLE;
-        for (uint64_t i = 0; i < count; i++) {
-            if (entries[i].type != want_type) {
-                continue;
-            }
+    for (uint64_t i = 0; i < count; i++) {
+        if (entries[i].type != BOOT_MEM_USABLE) continue;
 
-            uint64_t start = ALIGN_UP(entries[i].base, PMM_PAGE_SIZE);
-            uint64_t end = ALIGN_DOWN(entries[i].base + entries[i].length,
-                                      PMM_PAGE_SIZE);
-            if (end > PMM_EARLY_HHDM_LIMIT) {
-                end = PMM_EARLY_HHDM_LIMIT;
-            }
-            if (end <= start || end - start < need) {
-                continue;
-            }
-
-            return end - need;
-        }
+        uint64_t start = ALIGN_UP(entries[i].base, PMM_PAGE_SIZE);
+        uint64_t end = ALIGN_DOWN(entries[i].base + entries[i].length,
+                                  PMM_PAGE_SIZE);
+        if (start < PMM_EARLY_BOOT_RESERVE) start = PMM_EARLY_BOOT_RESERVE;
+        if (end > PMM_EARLY_HHDM_LIMIT) end = PMM_EARLY_HHDM_LIMIT;
+        if (end > start && end - start >= need) return end - need;
     }
     return 0;
 }
@@ -151,7 +139,7 @@ void pmm_init(void) {
         return;
     }
 
-    /* 2) Place the bitmap in memory (preferring bootloader-reclaimable). */
+    /* 2) Place PMM metadata in usable memory outside the early reserve. */
     pmm.hhdm        = hhdm;
     pmm.bitmap_phys = find_bitmap_region(entries, entry_count);
     if (pmm.bitmap_phys == 0) {

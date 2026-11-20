@@ -30,7 +30,7 @@ The W0 scaffold is still the base of the program:
 - a window and an event loop (close, `q` or Esc to quit);
 - a heap-allocated 800×600 × 32-bit page buffer (the stack must never hold it,
   see §4);
-- the blit benchmark, run at startup (§3);
+- startup smoke tests and the blit benchmark on frame-limited test runs (§3);
 - an optional frame limit read from `/tmp/gbrowser.frames` (same convention as
   `/glcube`), so automated runs cannot hang.
 
@@ -59,7 +59,7 @@ stack by ~30×, so the renderer is 2D and GL appears in exactly one phase —
 W7, `<canvas>` — where the page asks for 3D and there is no 2D alternative.
 
 The number this build commits to is the full-page blit. Measured in-tree at
-startup (`/apps/gbrowser` prints it on every run):
+startup when `/tmp/gbrowser.frames` specifies a nonzero frame limit:
 
 | Environment | Full-page 800×600 blit | Notes |
 |---|---|---|
@@ -118,8 +118,8 @@ blit per frame plus whatever W3/W4 add**, and the W3 gate asserts a
 - Gate: `tests/unit/test_wv_html.c` — 122 host checks including 3000 fuzz
   iterations and a 64 KiB random blob; every token is walked and every
   offset verified against the arena bounds. The tokeniser also runs in-guest
-  at `/apps/gbrowser` startup (`tokeniser smoke`), asserted by
-  `test_webview.sh`.
+  at `/apps/gbrowser` startup in frame-limited test mode (`tokeniser smoke`),
+  asserted by `test_gbrowser.sh`.
 
 ## 7. The DOM (W2)
 

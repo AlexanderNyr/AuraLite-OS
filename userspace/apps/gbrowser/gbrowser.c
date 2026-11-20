@@ -172,7 +172,7 @@ static wv_css_decl_t g_cd[1024];
 static char          g_cp[32768];
 
 /* forward declarations (the navigation block precedes the paint block) */
-static void repaint(void);
+static int repaint(void);
 static void navigate(const char *url_text);
 static void navigate_ex(const char *url_text, int push);
 static void nav_back(void);
@@ -756,9 +756,11 @@ static void scroll_smoke(void) {
 }
 
 /* Present the page buffer into the window, below the chrome bar. */
-static void present(void) {
-    ag_blit(wid, 0, PAGE_OFF_Y, VIEW_W, VIEW_H, page, VIEW_W);
+static int present(void) {
+    if (ag_blit(wid, 0, PAGE_OFF_Y, VIEW_W, VIEW_H, page, VIEW_W) != 0)
+        return -1;
     frames_done++;
+    return 0;
 }
 
 /* The chrome: URL bar + Back/Go buttons + status strip. */
@@ -826,8 +828,30 @@ static const char *link_under(int32_t x, int32_t y) {
     return NULL;
 }
 
+static int publish_chrome(void) {
+    char status[96];
+    if (on_page)
+        snprintf(status, sizeof(status),
+                 "demo page - scroll %d px - frames %u",
+                 scroll_y, frames_done);
+    else if (current_url_str[0])
+        snprintf(status, sizeof(status),
+                 "%s - scroll %d px - frames %u",
+                 current_url_str, scroll_y, frames_done);
+    else
+        snprintf(status, sizeof(status),
+                 "scroll %d px - frames %u", scroll_y, frames_done);
+    /* BLIT publishes the page, but the chrome draws to the back buffer.
+     * Publish it too, then use the window owner's compositor wake-up.
+     * ag_render_now() is privileged and fails for this process. */
+    ag_window_frame_begin(wid);
+    draw_chrome(status);
+    ag_window_frame_end(wid);
+    return ag_window_invalidate(wid);
+}
+
 /* Repaint: full page from the display list, present, chrome + status. */
-static void repaint(void) {
+static int repaint(void) {
     wv_paint_rect(&P, 0, 0, VIEW_W, VIEW_H, 0x00FFFFFFu);   /* paper */
     wv_paint_run(&P, &lay, scroll_y);
     if (cv_valid) {
@@ -842,22 +866,9 @@ static void repaint(void) {
             }
         }
     }
-    present();
+    if (present() != 0) return -1;
 
-    char status[96];
-    if (on_page)
-        snprintf(status, sizeof(status),
-                 "demo page - scroll %d px - frames %u",
-                 scroll_y, frames_done);
-    else if (current_url_str[0])
-        snprintf(status, sizeof(status),
-                 "%s - scroll %d px - frames %u",
-                 current_url_str, scroll_y, frames_done);
-    else
-        snprintf(status, sizeof(status),
-                 "scroll %d px - frames %u", scroll_y, frames_done);
-    draw_chrome(status);
-    ag_render_now();
+    return publish_chrome();
 }
 
 /* Scroll via memmove of the retained buffer + repaint of the exposed band
@@ -869,41 +880,27 @@ static void scroll_to(int new_scroll) {
     int delta = new_scroll - scroll_y;
     if (delta == 0) return;
     scroll_y = new_scroll;
+    /* The canvas is composited separately from the display list. A band
+     * repaint alone cannot reconstruct newly exposed canvas pixels. */
+    if (cv_valid) {
+        repaint();
+        return;
+    }
     int32_t bt, bh;
     wv_paint_scroll(&P, delta, &bt, &bh);
     wv_paint_rect(&P, 0, bt, VIEW_W, bh, 0x00FFFFFFu);      /* paper band */
     wv_paint_band(&P, &lay, scroll_y, bt, bh);
-    present();
+    if (present() == 0) publish_chrome();
 }
 
-int main(void) {
-    printf("[gbrowser] starting W0 scaffold\n");
-
-    /* The page buffer goes on the heap, not the 4 MiB user stack. */
-    page = malloc((size_t)VIEW_W * VIEW_H * sizeof(uint32_t));
-    if (!page) {
-        printf("[gbrowser] FAIL: cannot allocate %d x %d page buffer\n",
-               VIEW_W, VIEW_H);
-        return 1;
-    }
-
-    wid = ag_window_create(40, 40, WIN_W, WIN_H, "Browser", AG_WIN_DEFAULT);
-    if (wid < 0) {
-        printf("[gbrowser] FAIL: window create returned %d\n", wid);
-        free(page);
-        return 1;
-    }
-    ag_window_show(wid);
-    printf("[gbrowser] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
-
-    page_build();
-    on_page = 1;
+static void startup_smoke(void) {
     paint_smoke();
     css_smoke();
     canvas_smoke();
     scroll_smoke();
+    /* Restore the display list and pixels after the smoke cases. */
+    page_build();
     repaint();
-    printf("[gbrowser] page rendered and presented\n");
 
     /* ---- Phase W0 benchmark: the presentation path, measured. ------------
      * The plan (§1) says a full-page blit at 800x600 is ~0.125 ms on the
@@ -913,7 +910,7 @@ int main(void) {
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         for (int i = 0; i < BENCH_FRAMES; i++)
-            ag_blit(wid, 0, 0, VIEW_W, VIEW_H, page, VIEW_W);
+            ag_blit(wid, 0, PAGE_OFF_Y, VIEW_W, VIEW_H, page, VIEW_W);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         long sec = t1.tv_sec - t0.tv_sec;
         long nsec = t1.tv_nsec - t0.tv_nsec;
@@ -1075,6 +1072,41 @@ int main(void) {
             free(doc);
         }
     }
+}
+
+int main(void) {
+    printf("[gbrowser] starting W0 scaffold\n");
+
+    /* The page buffer goes on the heap, not the 4 MiB user stack. */
+    page = malloc((size_t)VIEW_W * VIEW_H * sizeof(uint32_t));
+    if (!page) {
+        printf("[gbrowser] FAIL: cannot allocate %d x %d page buffer\n",
+               VIEW_W, VIEW_H);
+        return 1;
+    }
+
+    wid = ag_window_create(40, 40, WIN_W, WIN_H, "Browser", AG_WIN_DEFAULT);
+    if (wid < 0) {
+        printf("[gbrowser] FAIL: window create returned %d\n", wid);
+        free(page);
+        return 1;
+    }
+    uint32_t limit = frame_limit();
+    printf("[gbrowser] window created (id %d, %dx%d)\n", wid, WIN_W, WIN_H);
+
+    /* Build and publish the first frame before exposing the window; normal
+     * launches do not run the synthetic GL/layout/blit startup workloads. */
+    page_build();
+    on_page = 1;
+    if (repaint() != 0 || ag_window_show(wid) != 0 || ag_window_invalidate(wid) != 0) {
+        printf("[gbrowser] FAIL: could not present first frame\n");
+        ag_window_destroy(wid);
+        free(page);
+        return 1;
+    }
+    printf("[gbrowser] page rendered and presented\n");
+
+    if (limit) startup_smoke();
 
     /* ---- W6: initial URL from /tmp/gbrowser.url (test hook) ---- */
     {
@@ -1132,7 +1164,6 @@ int main(void) {
     }
 
     /* ---- Event loop ---- */
-    uint32_t limit = frame_limit();
     if (limit) printf("[gbrowser] frame limit: %u frames\n", limit);
 
     for (;;) {
@@ -1196,8 +1227,7 @@ int main(void) {
                 }
                 if (strcmp(hover_url, new_hover) != 0) {
                     strncpy(hover_url, new_hover, sizeof(hover_url) - 1);
-                    draw_chrome("");      /* chrome + status only */
-                    ag_render_now();
+                    publish_chrome();  /* chrome + status only */
                 }
                 break;
             }
@@ -1208,6 +1238,7 @@ int main(void) {
                 scroll_to(scroll_y - delta * 24);
                 break;
             }
+            case AG_EVT_RESIZE:
             case AG_EVT_PAINT:
                 repaint();
                 break;
@@ -1257,13 +1288,10 @@ int main(void) {
             goto done;
         }
 
-        /* Pulse: repaint even with no input, so the frame counter is live
-         * and the paint path is exercised continuously (the same cadence
-         * the W4 renderer will use). */
-        repaint();
+        /* Only the frame-limited smoke run needs continuous repaints. */
+        if (limit) repaint();
 
-        /* Yield so the compositor and other threads get CPU time. */
-        struct timespec ts = { 0, 5000000 };   /* 5 ms */
+        struct timespec ts = { 0, limit ? 5000000 : 20000000 };
         nanosleep(&ts, 0);
     }
 

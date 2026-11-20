@@ -1,8 +1,7 @@
 /* gsysmon — graphical system monitor for AuraLite OS.
  *
  * Shows real, live data pulled from /proc instead of placeholder numbers:
- *   - CPU load  : /proc/loadavg (1-min busy% field, backed by the kernel's
- *                 real idle-vs-total PIT tick counters in kernel/proc/scheduler.c)
+ *   - CPU load  : /proc/stat (busy vs idle PIT tick deltas between refreshes)
  *   - Memory    : /proc/meminfo (PMM frame accounting)
  *   - Network   : /proc/netdev  (cumulative bytes on the active NIC, sampled
  *                 twice a refresh apart to derive a rough "activity" gauge)
@@ -42,10 +41,7 @@ static int read_proc_file(const char *path, char *buf, int bufsize) {
     return (int)n;
 }
 
-/* Sample /proc/stat twice (this refresh vs the last) and compute
- * busy-delta / total-delta.  /proc/loadavg is a 1 s kernel window and
- * used to be lifetime busy/total — either way a single read is the
- * boot self-test average (~20%) and never came down. */
+/* Compare /proc/stat to the previous refresh, not to boot-time totals. */
 static unsigned long long last_busy, last_idle;
 static int have_stat;
 

@@ -4323,7 +4323,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
 
 run: iso
-	@bash tools/run_qemu.sh $(ISO_IMAGE)
+	@bash tools/run_qemu.sh "$(ISO_IMAGE)" "$(RESOLUTION)"
 
 run-usb-msc: iso
 	@bash tools/run_qemu_usb_msc.sh $(ISO_IMAGE)

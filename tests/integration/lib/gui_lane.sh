@@ -125,7 +125,7 @@ gl_boot() {
         -serial "unix:$GL_SER,server,nowait" \
         -monitor "unix:$GL_MON,server,nowait" \
         -qmp "unix:$GL_QMP,server,nowait" \
-        >/dev/null 2>&1 &
+        "$@" >/dev/null 2>&1 &
     GL_QEMU_PID=$!
 
     # Wait for the sockets QEMU creates, then for the boot to reach the shell.

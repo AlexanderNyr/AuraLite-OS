@@ -142,6 +142,9 @@ int  ag_window_resize(int wid, uint32_t w, uint32_t h);
  * stacked with the parent); parent_wid < 0 detaches to top-level. */
 int  ag_window_set_parent(int wid, int parent_wid);
 int  ag_window_set_title(int wid, const char *title);
+/* Group drawing calls; end publishes the back buffer, invalidate wakes the compositor. */
+int  ag_window_frame_begin(int wid);
+int  ag_window_frame_end(int wid);
 int  ag_window_invalidate(int wid);
 int  ag_window_get_size(int wid, uint32_t *w, uint32_t *h);
 int  ag_window_get_pos(int wid, int32_t *x, int32_t *y);

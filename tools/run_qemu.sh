@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # run_qemu.sh — launch AuraLite OS in QEMU with the serial console on stdio.
 #
-# Usage: run_qemu.sh <auralite.iso>
+# Usage: run_qemu.sh <auralite.iso> [WIDTHxHEIGHT] (custom mode boots UEFI)
 #
 # Two AHCI disks are attached:
 #   port 0 -> $BUILD/disk.img   (used by /fat = FAT32 + tiny diskfs at /disk)
@@ -14,6 +14,30 @@ ISO="${1:?usage: $0 <auralite.iso>}"
 BUILD="$(dirname "$ISO")"
 DISK0="$BUILD/disk.img"
 DISK1="$BUILD/ext2.img"
+
+RESOLUTION="${2:-}"
+DISPLAY_ARGS=(-display none)
+UEFI_ARGS=()
+if [[ -n "$RESOLUTION" ]]; then
+    if [[ ! "$RESOLUTION" =~ ^[1-9][0-9]{0,3}[xX][1-9][0-9]{0,3}$ ]] ||
+       (( ${RESOLUTION%[xX]*} > 8192 || ${RESOLUTION#*[xX]} > 8192 )); then
+        echo "[qemu] resolution must be WIDTHxHEIGHT (1–8192 per axis)" >&2
+        exit 2
+    fi
+    CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
+    VARS_TEMPLATE="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
+    if [[ ! -r "$CODE" || ! -r "$VARS_TEMPLATE" ]]; then
+        echo "[qemu] install OVMF or set OVMF_CODE and OVMF_VARS to matching firmware files" >&2
+        exit 2
+    fi
+    VARS="$BUILD/qemu-ovmf-vars.fd"
+    if [[ ! -e "$VARS" ]]; then cp "$VARS_TEMPLATE" "$VARS"; fi
+    UEFI_ARGS=(-drive "if=pflash,format=raw,readonly=on,file=$CODE"
+               -drive "if=pflash,format=raw,file=$VARS"
+               -fw_cfg "name=opt/auralite.resolution,string=$RESOLUTION")
+    DISPLAY_ARGS=()
+    if [[ -n "${QEMU_DISPLAY:-}" ]]; then DISPLAY_ARGS=(-display "$QEMU_DISPLAY"); fi
+fi
 
 if [ ! -f "$DISK0" ]; then
     echo "[qemu] creating AHCI test disk: $DISK0" >&2
@@ -49,7 +73,8 @@ exec qemu-system-x86_64 \
     -m 512M \
     -smp 4 \
     -vga std \
-    -display none \
+    "${DISPLAY_ARGS[@]}" \
+    "${UEFI_ARGS[@]}" \
     -serial stdio \
     -no-reboot \
     -no-shutdown \
