@@ -1829,30 +1829,37 @@ static void draw_snap_preview(void) {
     }
 }
 
-/* ---- Rust compositor bridge -------------------------------------- */
+/* ---- Rust compositor bridge: fixed-capacity DOD render pipeline -------- */
 
-/* The snapshot deliberately contains no surface pointers. Window slots can
- * be destroyed and reused between collection and rendering; epoch validation
- * in gui_compositor_render_window() rejects stale entries. */
-typedef struct {
-    int32_t wid;
-    uint32_t epoch;
-    int32_t clip_x, clip_y;
-    uint32_t clip_w, clip_h;
-} gui_compositor_item_t;
+/* Keep this capacity identical to compositor.rs::MAX_RENDER_ITEMS. */
+#define GUI_COMPOSITOR_MAX_RENDER_ITEMS 256
 
 typedef struct {
-    int parent;
+    /* Structure of arrays. Each column has GUI_COMPOSITOR_MAX_RENDER_ITEMS. */
+    int32_t  wid[GUI_COMPOSITOR_MAX_RENDER_ITEMS];
+    uint32_t epoch[GUI_COMPOSITOR_MAX_RENDER_ITEMS];
+    int32_t  clip_x[GUI_COMPOSITOR_MAX_RENDER_ITEMS];
+    int32_t  clip_y[GUI_COMPOSITOR_MAX_RENDER_ITEMS];
+    uint32_t clip_w[GUI_COMPOSITOR_MAX_RENDER_ITEMS];
+    uint32_t clip_h[GUI_COMPOSITOR_MAX_RENDER_ITEMS];
+} gui_compositor_batch_t;
+
+typedef struct {
     int32_t clip_l, clip_t, clip_r, clip_b;
-    int last_z;
-    int last_index;
-    int started;
+    size_t next_child;
+    size_t child_end;
 } gui_compositor_walk_frame_t;
 
-/* One shared DFS stack is enough because gui_lock serializes snapshot
- * construction. Keeping it static avoids consuming kernel thread stack on a
- * deeply nested WS_CHILD hierarchy. */
-static gui_compositor_walk_frame_t gui_compositor_walk_stack[GUI_MAX_WINDOWS];
+/* All scratch storage is bounded and static. gui_lock serializes its use, and
+ * the compositor never allocates memory while building a frame. */
+static gui_compositor_walk_frame_t
+    gui_compositor_walk_stack[GUI_MAX_WINDOWS];
+static int gui_compositor_child_order[GUI_MAX_WINDOWS];
+static int gui_compositor_child_scratch[GUI_MAX_WINDOWS];
+static size_t gui_compositor_child_begin[GUI_MAX_WINDOWS];
+static size_t gui_compositor_child_end[GUI_MAX_WINDOWS];
+static int gui_compositor_roots_normal[GUI_MAX_WINDOWS];
+static int gui_compositor_roots_always_top[GUI_MAX_WINDOWS];
 
 static void gui_sort_window_indices(int *indices, int count) {
     for (int i = 1; i < count; ++i) {
@@ -1866,74 +1873,144 @@ static void gui_sort_window_indices(int *indices, int count) {
     }
 }
 
-/* Return the next child in stable (z, window-index) order without allocating
- * a per-recursion-level 256-entry array. */
-static int gui_compositor_next_child_locked(
-    const gui_compositor_walk_frame_t *frame
-) {
-    int best = -1;
-    int best_z = 0;
+static int gui_compositor_child_less(int a, int b) {
+    int pa = windows[a].parent;
+    int pb = windows[b].parent;
+    if (pa != pb) return pa < pb;
+    if (windows[a].z != windows[b].z)
+        return windows[a].z < windows[b].z;
+    return a < b;
+}
+
+/* Bottom-up mergesort: children become contiguous by parent and ordered by
+ * (z, slot index). The subsequent DFS walks each contiguous range once,
+ * instead of rescanning all GUI_MAX_WINDOWS slots for every sibling. */
+static void gui_compositor_sort_children_locked(size_t count) {
+    int *src = gui_compositor_child_order;
+    int *dst = gui_compositor_child_scratch;
+
+    for (size_t width = 1; width < count; width *= 2) {
+        size_t left = 0;
+        while (left < count) {
+            size_t mid = left + width;
+            if (mid > count) mid = count;
+            size_t right = mid + width;
+            if (right > count) right = count;
+
+            size_t a = left;
+            size_t b = mid;
+            size_t out = left;
+            while (a < mid && b < right) {
+                if (gui_compositor_child_less(src[a], src[b]))
+                    dst[out++] = src[a++];
+                else
+                    dst[out++] = src[b++];
+            }
+            while (a < mid) dst[out++] = src[a++];
+            while (b < right) dst[out++] = src[b++];
+            left = right;
+        }
+
+        int *swap = src;
+        src = dst;
+        dst = swap;
+    }
+
+    if (src != gui_compositor_child_order) {
+        for (size_t i = 0; i < count; ++i)
+            gui_compositor_child_order[i] = src[i];
+    }
+}
+
+/* Build a compact adjacency index. Parents with no visible children simply
+ * receive an empty [begin, end) range. Called with gui_lock held. */
+static size_t gui_compositor_build_child_index_locked(void) {
+    size_t count = 0;
 
     for (int i = 0; i < GUI_MAX_WINDOWS; ++i) {
         gui_win_t *child = &windows[i];
+        int parent = child->parent;
         if (!child->in_use || !child->visible || child->minimized ||
-            child->parent != frame->parent) {
+            parent < 0 || parent >= GUI_MAX_WINDOWS || parent == i ||
+            !windows[parent].in_use) {
             continue;
         }
-
-        int z = child->z;
-        if (frame->started &&
-            (z < frame->last_z || (z == frame->last_z && i <= frame->last_index))) {
-            continue;
-        }
-
-        if (best < 0 || z < best_z || (z == best_z && i < best)) {
-            best = i;
-            best_z = z;
-        }
+        gui_compositor_child_order[count++] = i;
     }
 
-    return best;
+    gui_compositor_sort_children_locked(count);
+
+    size_t cursor = 0;
+    for (int parent = 0; parent < GUI_MAX_WINDOWS; ++parent) {
+        gui_compositor_child_begin[parent] = cursor;
+        while (cursor < count &&
+               windows[gui_compositor_child_order[cursor]].parent == parent) {
+            ++cursor;
+        }
+        gui_compositor_child_end[parent] = cursor;
+    }
+
+    return count;
 }
 
-/* Append all descendants in depth-first paint order. Each child is clipped to
- * its own outer rectangle intersected with the parent's content clip. */
+static size_t gui_compositor_batch_append(
+    gui_compositor_batch_t *out,
+    size_t capacity,
+    size_t count,
+    int32_t wid,
+    uint32_t epoch,
+    int32_t clip_x,
+    int32_t clip_y,
+    uint32_t clip_w,
+    uint32_t clip_h
+) {
+    if (count >= capacity) return capacity + 1;
+    out->wid[count] = wid;
+    out->epoch[count] = epoch;
+    out->clip_x[count] = clip_x;
+    out->clip_y[count] = clip_y;
+    out->clip_w[count] = clip_w;
+    out->clip_h[count] = clip_h;
+    return count + 1;
+}
+
+/* Append descendants in depth-first paint order. Each child is clipped to
+ * its own outer rectangle intersected with its parent's content rectangle. */
 static size_t gui_compositor_collect_descendants_locked(
     int parent,
     int32_t clip_l,
     int32_t clip_t,
     int32_t clip_r,
     int32_t clip_b,
-    gui_compositor_item_t *out,
+    gui_compositor_batch_t *out,
     size_t capacity,
     size_t count
 ) {
-    if (clip_r <= clip_l || clip_b <= clip_t) return count;
+    if (clip_r <= clip_l || clip_b <= clip_t ||
+        parent < 0 || parent >= GUI_MAX_WINDOWS) {
+        return count;
+    }
 
     size_t depth = 0;
     gui_compositor_walk_stack[depth++] = (gui_compositor_walk_frame_t) {
-        .parent = parent,
         .clip_l = clip_l,
         .clip_t = clip_t,
         .clip_r = clip_r,
         .clip_b = clip_b,
-        .last_z = 0,
-        .last_index = -1,
-        .started = 0,
+        .next_child = gui_compositor_child_begin[parent],
+        .child_end = gui_compositor_child_end[parent],
     };
 
     while (depth != 0) {
-        gui_compositor_walk_frame_t *frame = &gui_compositor_walk_stack[depth - 1];
-        int child_id = gui_compositor_next_child_locked(frame);
-        if (child_id < 0) {
+        gui_compositor_walk_frame_t *frame =
+            &gui_compositor_walk_stack[depth - 1];
+        if (frame->next_child >= frame->child_end) {
             --depth;
             continue;
         }
 
+        int child_id = gui_compositor_child_order[frame->next_child++];
         gui_win_t *child = &windows[child_id];
-        frame->started = 1;
-        frame->last_z = child->z;
-        frame->last_index = child_id;
 
         int64_t ax = win_abs_x(child);
         int64_t ay = win_abs_y(child);
@@ -1945,15 +2022,12 @@ static size_t gui_compositor_collect_descendants_locked(
         if (bottom > frame->clip_b) bottom = frame->clip_b;
         if (right <= left || bottom <= top) continue;
 
-        if (count >= capacity) return capacity + 1;
-        out[count++] = (gui_compositor_item_t) {
-            .wid = child_id,
-            .epoch = window_epoch[child_id],
-            .clip_x = (int32_t)left,
-            .clip_y = (int32_t)top,
-            .clip_w = (uint32_t)(right - left),
-            .clip_h = (uint32_t)(bottom - top),
-        };
+        count = gui_compositor_batch_append(
+            out, capacity, count, child_id, window_epoch[child_id],
+            (int32_t)left, (int32_t)top,
+            (uint32_t)(right - left), (uint32_t)(bottom - top)
+        );
+        if (count > capacity) return count;
 
         /* Descendants are clipped to this child's content rectangle. */
         int64_t content_left = content_x(child);
@@ -1968,14 +2042,12 @@ static size_t gui_compositor_collect_descendants_locked(
         if (content_right > content_left && content_bottom > content_top) {
             if (depth >= GUI_MAX_WINDOWS) return capacity + 1;
             gui_compositor_walk_stack[depth++] = (gui_compositor_walk_frame_t) {
-                .parent = child_id,
                 .clip_l = (int32_t)content_left,
                 .clip_t = (int32_t)content_top,
                 .clip_r = (int32_t)content_right,
                 .clip_b = (int32_t)content_bottom,
-                .last_z = 0,
-                .last_index = -1,
-                .started = 0,
+                .next_child = gui_compositor_child_begin[child_id],
+                .child_end = gui_compositor_child_end[child_id],
             };
         }
     }
@@ -1989,7 +2061,7 @@ static size_t gui_compositor_collect_root_locked(
     int32_t clip_t,
     int32_t clip_r,
     int32_t clip_b,
-    gui_compositor_item_t *out,
+    gui_compositor_batch_t *out,
     size_t capacity,
     size_t count
 ) {
@@ -2001,18 +2073,13 @@ static size_t gui_compositor_collect_root_locked(
 
     if (wr <= clip_l || wb <= clip_t || wx >= clip_r || wy >= clip_b)
         return count;
-    if (count >= capacity) return capacity + 1;
 
-    /* Top-level window rendering uses the frame's base clip. The renderer
-     * itself bounds decoration and surface drawing to the window geometry. */
-    out[count++] = (gui_compositor_item_t) {
-        .wid = root_id,
-        .epoch = window_epoch[root_id],
-        .clip_x = clip_l,
-        .clip_y = clip_t,
-        .clip_w = (uint32_t)(clip_r - clip_l),
-        .clip_h = (uint32_t)(clip_b - clip_t),
-    };
+    count = gui_compositor_batch_append(
+        out, capacity, count, root_id, window_epoch[root_id],
+        clip_l, clip_t, (uint32_t)(clip_r - clip_l),
+        (uint32_t)(clip_b - clip_t)
+    );
+    if (count > capacity) return count;
 
     int64_t content_left = content_x(root);
     int64_t content_top = content_y(root);
@@ -2039,18 +2106,21 @@ static size_t gui_compositor_collect_root_locked(
     return count;
 }
 
-/* Rust calls this once per frame or dirty rectangle. Collection is short and
- * protected by gui_lock; drawing occurs later and revalidates each epoch. */
+/* Rust calls this once per full frame or dirty rectangle. Collection is
+ * pointer-free and protected by gui_lock; each window is later revalidated
+ * and rendered under a short per-window gui_lock critical section. */
 size_t gui_compositor_collect_items(
     int32_t base_x,
     int32_t base_y,
     uint32_t base_w,
     uint32_t base_h,
-    gui_compositor_item_t *out,
+    gui_compositor_batch_t *out,
     size_t capacity
 ) {
     if (!out || capacity == 0 || base_w == 0 || base_h == 0 || !windows)
         return 0;
+    if (capacity > GUI_COMPOSITOR_MAX_RENDER_ITEMS)
+        capacity = GUI_COMPOSITOR_MAX_RENDER_ITEMS;
 
     uint64_t flags = spinlock_acquire_irqsave(&gui_lock);
 
@@ -2070,8 +2140,8 @@ size_t gui_compositor_collect_items(
         return 0;
     }
 
-    int normal[GUI_MAX_WINDOWS], normal_count = 0;
-    int always_top[GUI_MAX_WINDOWS], always_top_count = 0;
+    int normal_count = 0;
+    int always_top_count = 0;
     for (int i = 0; i < GUI_MAX_WINDOWS; ++i) {
         gui_win_t *window = &windows[i];
         if (!window->in_use || !window->visible || window->minimized ||
@@ -2079,25 +2149,28 @@ size_t gui_compositor_collect_items(
             continue;
         }
         if (window->flags & GUI_WIN_ALWAYS_TOP)
-            always_top[always_top_count++] = i;
+            gui_compositor_roots_always_top[always_top_count++] = i;
         else
-            normal[normal_count++] = i;
+            gui_compositor_roots_normal[normal_count++] = i;
     }
 
-    gui_sort_window_indices(normal, normal_count);
-    gui_sort_window_indices(always_top, always_top_count);
+    gui_sort_window_indices(gui_compositor_roots_normal, normal_count);
+    gui_sort_window_indices(gui_compositor_roots_always_top, always_top_count);
+    (void)gui_compositor_build_child_index_locked();
 
     size_t count = 0;
     for (int i = 0; i < normal_count && count <= capacity; ++i) {
         count = gui_compositor_collect_root_locked(
-            normal[i], (int32_t)left, (int32_t)top, (int32_t)right,
-            (int32_t)bottom, out, capacity, count
+            gui_compositor_roots_normal[i],
+            (int32_t)left, (int32_t)top, (int32_t)right, (int32_t)bottom,
+            out, capacity, count
         );
     }
     for (int i = 0; i < always_top_count && count <= capacity; ++i) {
         count = gui_compositor_collect_root_locked(
-            always_top[i], (int32_t)left, (int32_t)top, (int32_t)right,
-            (int32_t)bottom, out, capacity, count
+            gui_compositor_roots_always_top[i],
+            (int32_t)left, (int32_t)top, (int32_t)right, (int32_t)bottom,
+            out, capacity, count
         );
     }
 
@@ -2114,11 +2187,11 @@ static int gui_window_tree_renderable_locked(int wid) {
         current = window->parent;
         if (current < 0) return 1;
     }
-    return 0; /* A cyclic or otherwise invalid parent chain is never rendered. */
+    return 0; /* A cyclic or invalid parent chain is never rendered. */
 }
 
-/* Keep a surface stable during the actual render. No surface pointer is
- * exported in the snapshot, and a recycled window slot cannot pass epoch. */
+/* Surface pointers stay inside this lock scope. The SoA render batch stores
+ * only (wid, epoch, clip), never pointers into reclaimable PMM allocations. */
 static void gui_render_window_rust_epoch(int wid, uint32_t expected_epoch) {
     if (wid < 0 || wid >= GUI_MAX_WINDOWS) return;
 
@@ -2199,6 +2272,7 @@ void gui_compositor_perf_partial(uint64_t composited_pixels, uint64_t flipped_pi
     perfstat_add(PERF_COMPOSITOR_PIXELS_COMPOSITED, composited_pixels);
     perfstat_add(PERF_COMPOSITOR_PIXELS_FLIPPED, flipped_pixels);
 }
+
 
 /* ===================================================================
  * Hit-testing

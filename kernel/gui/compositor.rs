@@ -1,8 +1,9 @@
 //! Rust screen compositor.
 //!
-//! Window ownership and window-surface lifetime are still managed by the C
-//! compatibility layer. Rust owns frame orchestration: desktop layers,
-//! ordered window snapshots, clipping, and presentation.
+//! Window ownership and window-surface lifetime remain in the C compatibility
+//! layer. Rust owns frame orchestration and consumes a fixed-capacity SoA render
+//! batch. The batch contains only slot IDs, generations and clip bounds: raw
+//! window-surface pointers never cross the GUI lock boundary.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -12,29 +13,35 @@ use crate::framebuffer::SystemFramebuffer;
 const MAX_RENDER_ITEMS: usize = 256;
 const MAX_DIRTY_RECTS: usize = 64;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct RenderItem {
-    wid: i32,
-    epoch: u32,
-    clip_x: i32,
-    clip_y: i32,
-    clip_w: u32,
-    clip_h: u32,
+/// Fixed-capacity structure-of-arrays command buffer shared with gui.c.
+///
+/// Every column has the same number of entries. The 64-byte-aligned base and
+/// 1024-byte column sizes keep each column cache-line aligned. This is static
+/// storage: composing a frame does not allocate memory.
+#[repr(C, align(64))]
+struct RenderBatch {
+    wid: [i32; MAX_RENDER_ITEMS],
+    epoch: [u32; MAX_RENDER_ITEMS],
+    clip_x: [i32; MAX_RENDER_ITEMS],
+    clip_y: [i32; MAX_RENDER_ITEMS],
+    clip_w: [u32; MAX_RENDER_ITEMS],
+    clip_h: [u32; MAX_RENDER_ITEMS],
 }
 
-const EMPTY_RENDER_ITEM: RenderItem = RenderItem {
-    wid: -1,
-    epoch: 0,
-    clip_x: 0,
-    clip_y: 0,
-    clip_w: 0,
-    clip_h: 0,
+const EMPTY_RENDER_BATCH: RenderBatch = RenderBatch {
+    wid: [-1; MAX_RENDER_ITEMS],
+    epoch: [0; MAX_RENDER_ITEMS],
+    clip_x: [0; MAX_RENDER_ITEMS],
+    clip_y: [0; MAX_RENDER_ITEMS],
+    clip_w: [0; MAX_RENDER_ITEMS],
+    clip_h: [0; MAX_RENDER_ITEMS],
 };
 
-static mut RENDER_ITEMS: [RenderItem; MAX_RENDER_ITEMS] =
-    [EMPTY_RENDER_ITEM; MAX_RENDER_ITEMS];
+// Compile-time ABI/layout guard: six 256-element u32-sized columns.
+const _: [(); MAX_RENDER_ITEMS * 6 * core::mem::size_of::<u32>()] =
+    [(); core::mem::size_of::<RenderBatch>()];
 
+static mut RENDER_BATCH: RenderBatch = EMPTY_RENDER_BATCH;
 static COMPOSITOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 struct ComposeGuard;
@@ -56,19 +63,32 @@ impl Drop for ComposeGuard {
     }
 }
 
+/// A transient AoS value reconstructed from the SoA batch for one draw.
+/// Keeping this short-lived descriptor AoS is intentional: render.rs consumes
+/// all of one window's properties together.
+#[derive(Clone, Copy)]
+struct RenderItem {
+    wid: i32,
+    epoch: u32,
+    clip_x: i32,
+    clip_y: i32,
+    clip_w: u32,
+    clip_h: u32,
+}
+
 extern "C" {
-    /// Build an immutable, pointer-free render list from the C window manager.
+    /// Build an immutable, pointer-free SoA batch from the C window manager.
     fn gui_compositor_collect_items(
         clip_x: i32,
         clip_y: i32,
         clip_w: u32,
         clip_h: u32,
-        out: *mut RenderItem,
+        out: *mut RenderBatch,
         capacity: usize,
     ) -> usize;
 
-    /// Revalidate a window's slot generation and render it while its surface
-    /// pointers are protected by gui_lock.
+    /// Revalidate one slot generation and render it while its surface pointers
+    /// are protected by gui_lock.
     fn gui_compositor_render_window(wid: i32, epoch: u32);
 
     fn gui_compositor_draw_snap_preview();
@@ -77,8 +97,24 @@ extern "C" {
 }
 
 #[inline]
-fn render_items_ptr() -> *mut RenderItem {
-    core::ptr::addr_of_mut!(RENDER_ITEMS).cast::<RenderItem>()
+fn render_batch_ptr() -> *mut RenderBatch {
+    core::ptr::addr_of_mut!(RENDER_BATCH)
+}
+
+#[inline]
+unsafe fn read_render_item(batch: *const RenderBatch, index: usize) -> RenderItem {
+    // Read each SoA column independently. index is bounded by the count
+    // returned from gui_compositor_collect_items().
+    unsafe {
+        RenderItem {
+            wid: core::ptr::addr_of!((*batch).wid).cast::<i32>().add(index).read(),
+            epoch: core::ptr::addr_of!((*batch).epoch).cast::<u32>().add(index).read(),
+            clip_x: core::ptr::addr_of!((*batch).clip_x).cast::<i32>().add(index).read(),
+            clip_y: core::ptr::addr_of!((*batch).clip_y).cast::<i32>().add(index).read(),
+            clip_w: core::ptr::addr_of!((*batch).clip_w).cast::<u32>().add(index).read(),
+            clip_h: core::ptr::addr_of!((*batch).clip_h).cast::<u32>().add(index).read(),
+        }
+    }
 }
 
 #[inline]
@@ -104,18 +140,18 @@ fn clip_to_screen(rect: DirtyRect, width: u32, height: u32) -> Option<DirtyRect>
     })
 }
 
-/// Ask the C window manager for a z-sorted preorder snapshot, then render it.
-/// The snapshot contains IDs, generations and clip rectangles only; it never
-/// carries pointers to PMM-backed window surfaces across the GUI lock boundary.
+/// Ask C for a z-sorted preorder batch, then render it in paint order.
+/// The SoA contains no pointers, so window destruction/reuse between batch
+/// construction and drawing is handled by the per-item epoch revalidation.
 unsafe fn render_windows(fb: SystemFramebuffer, clip: DirtyRect) -> i32 {
-    let items = render_items_ptr();
+    let batch = render_batch_ptr();
     let count = unsafe {
         gui_compositor_collect_items(
             clip.x,
             clip.y,
             clip.w,
             clip.h,
-            items,
+            batch,
             MAX_RENDER_ITEMS,
         )
     };
@@ -125,13 +161,13 @@ unsafe fn render_windows(fb: SystemFramebuffer, clip: DirtyRect) -> i32 {
     }
 
     for index in 0..count {
-        let item = unsafe { items.add(index).read() };
+        let item = unsafe { read_render_item(batch, index) };
         if item.wid < 0 || item.clip_w == 0 || item.clip_h == 0 {
             continue;
         }
 
         fb.set_clip(item.clip_x, item.clip_y, item.clip_w, item.clip_h);
-        gui_compositor_render_window(item.wid, item.epoch);
+        unsafe { gui_compositor_render_window(item.wid, item.epoch) };
     }
 
     fb.set_clip(clip.x, clip.y, clip.w, clip.h);
@@ -213,9 +249,7 @@ pub extern "C" fn gui_rust_compositor_render_full(
     0
 }
 
-/// Recompose and present a list of independent dirty screen rectangles.
-/// Each rectangle is restored and presented separately, so distant updates do
-/// not expand into one large bounding box.
+/// Recompose and present independent dirty screen rectangles.
 #[no_mangle]
 pub unsafe extern "C" fn gui_rust_compositor_render_dirty(
     rects: *const DirtyRect,
@@ -250,7 +284,7 @@ pub unsafe extern "C" fn gui_rust_compositor_render_dirty(
         fb.set_clip(clip.x, clip.y, clip.w, clip.h);
         render_desktop_base();
 
-        if render_windows(fb, clip) != 0 {
+        if unsafe { render_windows(fb, clip) } != 0 {
             fb.clear_clip();
             return -1;
         }
