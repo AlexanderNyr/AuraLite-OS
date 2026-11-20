@@ -307,10 +307,10 @@ for `riscv64gc-unknown-none-elf` and `aarch64-unknown-none` through
 the same one-source recipe (`rustc --emit obj` + the tenant's own
 layout script; `_start` comes from the rlib) and runs from
 `/binrv/rustes` and `/bina64/rustes` in the one four-tenant initrd.
-`lib/rsbr/common.rs` carries `cfg`-gated syscall shims for all three
-ISAs (`syscall`/`ecall a7`/`svc #0 x8` — the same D4 numbers the C
-shims share), and the cycle counter is `rdtsc`/`rdtime`/`cntvct_el0`
-per arch.  The receipt strings are shared text: the benchmark output
-is byte-identical on all three, asserted in the rv_fs/a64_fs smokes.
+The RV64 and AArch64 filesystem smokes run the separate `rsbr_parity`
+fixture from the corresponding `/binrv` or `/bina64` directory, not the
+interactive `rustes` GUI. Both builds use the same fixture source and RSBR
+runtime. The smokes check the computed sum and the completion receipt after
+user-mode counter reads (`rdtime` on RV64, `cntvct_el0` on AArch64).
 Install the targets with
 `rustup target add riscv64gc-unknown-none-elf aarch64-unknown-none`.

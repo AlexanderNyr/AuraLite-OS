@@ -239,8 +239,15 @@ int ag_window_invalidate_rect(int wid, int32_t x, int32_t y,
 }
 int ag_window_get_size(int wid, uint32_t *w, uint32_t *h) {
     if (wid < 1 || wid > FAKE_WINS || !fw[wid-1].in_use) return -1;
-    if (w) *w = fw[wid-1].w;
-    if (h) *h = fw[wid-1].h;
+    fake_win_t *win = &fw[wid-1];
+    uint32_t dw = 0, dh = 0;
+    if (!(win->flags & (AG_WIN_NO_DECOR | AG_WIN_BORDERLESS))) {
+        /* Model the compositor independently of USER32's frame metrics. */
+        dw = 2 * (theme.border_w + 4);
+        dh = dw + theme.titlebar_h;
+    }
+    if (w) *w = win->w > dw ? win->w - dw : 0;
+    if (h) *h = win->h > dh ? win->h - dh : 0;
     return 0;
 }
 int ag_window_get_pos(int wid, int32_t *x, int32_t *y) {
@@ -632,19 +639,19 @@ int main(void) {
     {
         W32_RECT r, cr;
         ok(GetWindowRect(h1, &r) == W32_TRUE && r.left == 100 && r.top == 100 &&
-           r.right == 100 + 400 + 2 * 2 && r.bottom == 100 + 300 + 24 + 2 * 2,
-           "GetWindowRect adds the decoration the theme asks for");
+           r.right == 100 + 400 && r.bottom == 100 + 300,
+           "GetWindowRect preserves the requested outer extent");
         ok(GetClientRect(h1, &cr) == W32_TRUE &&
-           cr.left == 0 && cr.top == 0 && cr.right == 400 && cr.bottom == 300,
+           cr.left == 0 && cr.top == 0 && cr.right == 388 && cr.bottom == 264,
            "GetClientRect is the compositor's content size");
         W32_POINT p = { 0, 0 };
         ClientToScreen(h1, &p);
-        ok(p.x == 102 && p.y == 126, "ClientToScreen adds border + titlebar");
+        ok(p.x == 106 && p.y == 130, "ClientToScreen adds border + titlebar");
         ScreenToClient(h1, &p);
         ok(p.x == 0 && p.y == 0, "ScreenToClient inverts it");
         W32_RECT want = { 0, 0, 400, 300 };
         ok(AdjustWindowRectEx(&want, W32_WS_CAPTION, W32_FALSE, 0) == W32_TRUE &&
-           want.right - want.left == 404 && want.bottom - want.top == 328,
+           want.right - want.left == 412 && want.bottom - want.top == 336,
            "AdjustWindowRectEx uses the same theme deltas");
     }
 
@@ -744,7 +751,7 @@ int main(void) {
         ok(fw[0].invalidated == 1, "the compositor was told to redraw");
         W32_HDC dc = BeginPaint(h1, &ps);
         ok(dc != 0 && ps.rcPaint.left == 0 && ps.rcPaint.top == 0 &&
-           ps.rcPaint.right == 400 && ps.rcPaint.bottom == 300,
+           ps.rcPaint.right == 388 && ps.rcPaint.bottom == 264,
            "BeginPaint reports the whole client when the whole client is dirty");
         ok(ps.fErase == W32_TRUE && fills > 0,
            "BeginPaint erased with the class background and says so");
@@ -860,7 +867,7 @@ int main(void) {
            "SM_CXSCREEN/SM_CYSCREEN come from the framebuffer");
         ok(GetSystemMetrics(W32_SM_CYCAPTION) == 24,
            "SM_CYCAPTION is the theme's titlebar height");
-        ok(GetSystemMetrics(W32_SM_CXFRAME) == 2, "SM_CXFRAME is the theme's border");
+        ok(GetSystemMetrics(W32_SM_CXFRAME) == 6, "SM_CXFRAME includes the theme border and the content inset");
         ok(GetSystemMetrics(W32_SM_CXICON) == 48, "SM_CXICON is the theme's icon size");
         ok(GetSystemMetrics(W32_SM_CMONITORS) == 1, "one monitor, and it says one");
         ok(GetSystemMetrics(0x7FFE) == 0, "an unknown metric answers zero");

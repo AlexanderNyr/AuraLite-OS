@@ -47,7 +47,6 @@
 #include "drivers/mouse/mouse.h"
 #include "drivers/timer/pit.h"
 
-#define GUI_CONTENT_PAD 4u
 
 /* Pixel SIMD implementations are provided by gui_drawing.rs. */
 

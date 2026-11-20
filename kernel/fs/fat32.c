@@ -212,14 +212,9 @@ static uint32_t fat_get(uint32_t cl) {
     return rd32(fat_cache + soff) & 0x0FFFFFFF;
 }
 
-static void vinfo_hints_invalidate(void);
-
 static int fat_set_all(uint32_t cl, uint32_t val) {
     if (cl < 2 || cl >= fs.cluster_count + 2) return -EINVAL;
     fat_cache_invalidate();   /* the cached sector may be the one we write */
-    /* Any chain may have just been extended or freed, so every cursor into
-     * one is suspect.  Cheap: there are at most FAT_MAX_OPEN_VNODES. */
-    vinfo_hints_invalidate();
     uint32_t off  = cl * 4u;
     uint32_t soff = off % 512u;
     /* Write to every FAT mirror. */
@@ -293,6 +288,9 @@ static uint32_t alloc_cluster(uint32_t link_after) {
 }
 
 static void free_chain(uint32_t first) {
+    /* Existing indices remain valid when a tail is extended, but not when
+     * clusters can be freed and reused. Invalidate only on the latter. */
+    vinfo_hints_invalidate();
     uint32_t cl = first;
     while (cl >= 2 && cl < FAT_BAD) {
         uint32_t next = fat_get(cl);
@@ -331,14 +329,15 @@ static uint32_t chain_at_hinted(struct fat_vinfo *v, uint32_t idx) {
 
 /* Extend a chain so it has at least `clusters_needed` clusters.  If first is 0,
  * allocates a new chain and returns its head; on error returns 0. */
-static uint32_t ensure_chain(uint32_t first, uint32_t clusters_needed) {
+static uint32_t ensure_chain_from(uint32_t first, uint32_t clusters_needed,
+                                  uint32_t cursor, uint32_t cursor_idx) {
     if (clusters_needed == 0) return first;
     if (first == 0) {
         first = alloc_cluster(0);
         if (!first) return 0;
     }
-    uint32_t cl = first;
-    uint32_t have = 1;
+    uint32_t cl = cursor ? cursor : first;
+    uint32_t have = cursor ? cursor_idx + 1 : 1;
     while (have < clusters_needed) {
         uint32_t next = fat_get(cl);
         if (next >= FAT_BAD || next == FAT_FREE) {
@@ -351,6 +350,10 @@ static uint32_t ensure_chain(uint32_t first, uint32_t clusters_needed) {
         have++;
     }
     return first;
+}
+
+static uint32_t ensure_chain(uint32_t first, uint32_t clusters_needed) {
+    return ensure_chain_from(first, clusters_needed, 0, 0);
 }
 
 /* Truncate a chain to `keep` clusters; frees everything past it. */
@@ -1312,42 +1315,39 @@ static int64_t fat32_write_impl(struct vnode *vn, uint64_t pos, const void *buf,
     uint64_t end = pos + count;
     if (end < pos) return -1;
     uint32_t clusters = (uint32_t)((end + fs.bytes_per_clus - 1) / fs.bytes_per_clus);
-    uint32_t head = ensure_chain(v->first_cluster, clusters);
+    uint32_t cl_idx = (uint32_t)(pos / fs.bytes_per_clus);
+    /* Seed extension with the last visited cluster, when it is at or
+     * before the write. Rewalking from the head to extend every small
+     * write made streaming writes (OTA, mkiso) quadratic. */
+    uint32_t cursor = v->hint_idx <= cl_idx ? v->hint_cluster : 0;
+    uint32_t head = ensure_chain_from(v->first_cluster, clusters,
+                                      cursor, v->hint_idx);
     if (!head) return -ENOSPC;
     v->first_cluster = head;
 
     const uint8_t *in = (const uint8_t *)buf;
     uint64_t done = 0;
-
-    /* Walk the chain INCREMENTALLY, mirroring fat32_read_impl(), instead of
-     * calling chain_at() for every cluster.  chain_at() restarts from the
-     * chain head each time -- following cl_idx links, each a fat_get() (a
-     * 512-byte disk read) -- so writing N clusters costs N*(N-1)/2 FAT reads
-     * on top of the N data reads: quadratic.  For the ~48 MiB image that
-     * mkiso assembles onto /fat (≈96 k clusters at 512 B/cluster) that is
-     * ~4.6 BILLION extra reads, which is not slow so much as never finishing.
-     * Advancing one link per cluster makes it linear; the chain is walked
-     * once to reach the starting cluster, which matters only for a seek into
-     * the middle of a file (as in fat32_read_impl). */
-    uint32_t cl_idx = (uint32_t)(pos / fs.bytes_per_clus);
     uint32_t cl = chain_at_hinted(v, cl_idx);
     while (done < count) {
-        if (!cl) break;
         uint32_t off = (uint32_t)((pos + done) % fs.bytes_per_clus);
-        if (read_cluster(cl, cluster_buf) != 0) return -EIO;
+        if (!cl) break;
         uint64_t chunk = fs.bytes_per_clus - off;
         if (chunk > count - done) chunk = count - done;
-        memcpy(cluster_buf + off, in + done, (size_t)chunk);
-        if (write_cluster(cl, cluster_buf) != 0) return -EIO;
+        if (chunk == fs.bytes_per_clus) {
+            if (write_cluster(cl, in + done) != 0) return -EIO;
+        } else {
+            if (read_cluster(cl, cluster_buf) != 0) return -EIO;
+            memcpy(cluster_buf + off, in + done, (size_t)chunk);
+            if (write_cluster(cl, cluster_buf) != 0) return -EIO;
+        }
         done += chunk;
-        /* Step to the next cluster only when this one is exhausted. */
-        if ((pos + done) % fs.bytes_per_clus == 0) {
+        /* Retain the last cluster even if the file ends exactly here. */
+        v->hint_idx = cl_idx;
+        v->hint_cluster = cl;
+        if (done < count) {
             uint32_t next = fat_get(cl);
             cl = (next < 2 || next >= FAT_BAD) ? 0 : next;
-            if (cl) {
-                v->hint_idx     = (uint32_t)((pos + done) / fs.bytes_per_clus);
-                v->hint_cluster = cl;
-            }
+            cl_idx++;
         }
     }
     if (done > 0) {

@@ -3,8 +3,7 @@
 #
 # Uses the REAL kernel.elf (built with `make kernel`) as payload so
 # that we exercise elf_load against a genuine higher-half ELF64
-# image, not a synthetic pattern.  We do not yet enter long mode --
-# that lands in the next BL4 sub-commit.  Instead we assert:
+# image, not a synthetic pattern.  We assert:
 #
 #   1. Stage 2 prints "[BL4] ELF PT_LOAD segments copied to phys".
 #   2. Physical memory at 0x00100000 begins with the ELF file's first
@@ -51,32 +50,13 @@ print(f"probe: first PT_LOAD paddr=0x{p_paddr:x} -> phys=0x{phys:x}, saved {n} b
 PY
 
 # 3. Build a bootable image with kernel.elf inside the FAT partition.
-dd if=/dev/zero of="$IMG" bs=1M count=16 status=none
-dd if="$BUILD/boot/mbr.bin"    of="$IMG" bs=512 count=1 conv=notrunc status=none
-dd if="$BUILD/boot/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
-
-FAT_IMG="$BUILD/bl4_elf_part.img"
-dd if=/dev/zero of="$FAT_IMG" bs=1M count=15 status=none
-mformat -i "$FAT_IMG" -F -h 32 -s 32 -t 480 ::
-mcopy -i "$FAT_IMG" "$BUILD/kernel.elf" ::KERNEL.ELF
-dd if="$FAT_IMG" of="$IMG" bs=512 seek=128 conv=notrunc status=none
-
-# MBR partition entry for LBA 128.
-python3 - "$IMG" <<'PY'
-import struct, sys
-img = open(sys.argv[1], 'r+b')
-img.seek(0x1BE)
-img.write(struct.pack('<BBBBBBBBII',
-    0x80, 0, 2, 0,
-    0x0C,
-    0, 0, 0,
-    128, 15*2048))
-img.close()
-PY
+. "$ROOT/tests/integration/lib/bl4_disk.sh"
+bl4_make_kernel_disk "$BUILD" "$IMG"
 
 # 4. Run under QEMU.
-rm -f "$LOG"
-timeout 25 qemu-system-x86_64 \
+rm -f "$LOG" "$BUILD/bl4_elf_monitor.sock"
+BOOT_TIMEOUT="${BL4_BOOT_TIMEOUT:-90}"
+timeout "$((BOOT_TIMEOUT + 10))" qemu-system-x86_64 \
     -drive format=raw,file="$IMG",if=ide \
     -m 128M \
     -display none -serial file:"$LOG" -no-reboot \
@@ -88,7 +68,13 @@ for _ in 1 2 3 4 5 6 7 8; do
     [ -S "$BUILD/bl4_elf_monitor.sock" ] && break
     sleep 0.5
 done
-sleep 12   # ELF copy + 1.5 MiB BSS zero-fill takes a while under TCG
+# Wait for the actual copy receipt, not a fixed sleep tied to the old
+# kernel size. Leave time for the monitor to dump memory before timeout.
+for ((i = 0; i < BOOT_TIMEOUT * 2; i++)); do
+    grep -qF '[BL4] ELF PT_LOAD segments copied to phys' "$LOG" && break
+    kill -0 "$QEMU_PID" 2>/dev/null || break
+    sleep 0.5
+done
 
 rm -f "$KERNEL_DUMP"
 if [ -S "$BUILD/bl4_elf_monitor.sock" ] && command -v socat >/dev/null 2>&1; then
@@ -128,6 +114,9 @@ if [ -s "$KERNEL_DUMP" ]; then
         od -An -tx1 -N32 "$KERNEL_DUMP" | sed 's/^/      /'
         fail=1
     fi
+else
+    echo "  [bl4-elf] memcmp @0x100000 FAIL -- no QEMU memory dump"
+    fail=1
 fi
 
 if [ "$fail" -eq 0 ]; then

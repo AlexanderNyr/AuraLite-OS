@@ -59,7 +59,6 @@ HTTP_PID=$!
 cleanup_http() {
     kill "$HTTP_PID" 2>/dev/null || true
     wait "$HTTP_PID" 2>/dev/null || true
-    pkill -f "http.server $OTA_PORT" 2>/dev/null || true
 }
 trap 'cleanup_http; rm -rf "$DOCD" "$OVBUILD"' EXIT
 sleep 0.7
@@ -86,26 +85,39 @@ LOGA="$IL_LOGDIR/ota_apply_a.log"
 IL_LAST_LOG="$LOGA"
 rm -f "$LOGA"
 
-# Timed pipe (the O2/O3 pattern; a still-empty file would hand QEMU an
-# immediate EOF).  Windows measured on the reference host: boot ~14 s,
-# streamed 2.9 MiB download well inside 90 s, reboot-to-shell ~25 s.
-( { sleep 14; printf 'run ota check http://10.0.2.2:%s/manifest.txt\n' "$OTA_PORT"
-    sleep 8
-    printf 'run ota apply http://10.0.2.2:%s/manifest.txt\n' "$OTA_PORT"
-    sleep 90
-    printf 'reboot\n'; sleep 26
-    printf 'uname\n';  sleep 4
-    printf 'run ota rollback\n'; sleep 8
-    printf 'reboot\n'; sleep 26
-    printf 'uname\n';  sleep 4
-    printf 'exit\n'; } \
-  | timeout 260 qemu-system-x86_64 \
-    -drive "file=$IL_ISO,format=raw,if=none,id=btndisk,snapshot=on" \
-    -device ahci,id=ahci0 -device ide-hd,drive=btndisk,bus=ahci0.0 \
-    -m 512M -smp 2 -display none -serial stdio -cpu qemu64 -boot order=c \
-    -netdev "user,id=net0" -device e1000,netdev=net0 \
-    -fw_cfg "name=opt/auralite.selftest,string=fast" \
-    > "$LOGA" 2>&1 ) || true
+# The UART drops queued input while a foreground command is running. Wait
+# for a fresh shell prompt after each command, including across both reboots.
+# Keep the AHCI disk: OTA must exercise the same ESP write path as before.
+ota_run_queue() {
+    local log=$1 budget=$2; shift 2
+    local queue="$OVBUILD/ota-commands"
+    cat > "$queue"
+    python3 "$IL_ROOT/tests/integration/lib/prompt_qemu.py" \
+        --log "$log" --timeout "$budget" --commands "$queue" "$@" -- \
+        "$IL_QEMU" \
+        -drive "file=$IL_ISO,format=raw,if=none,id=btndisk,snapshot=on" \
+        -device ahci,id=ahci0 -device ide-hd,drive=btndisk,bus=ahci0.0 \
+        -m 512M -smp 2 -display none -serial stdio -cpu qemu64 -boot order=c \
+        -netdev user,id=net0 -device e1000,netdev=net0 \
+        -fw_cfg "name=opt/auralite.selftest,string=fast" \
+        > "${log%.log}-driver.log" 2>&1
+    if [ $? -ne 0 ]; then
+        cat "${log%.log}-driver.log"
+        IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
+        il_fail "serial command queue failed for $(basename "$log")"
+    fi
+}
+
+ota_run_queue "$LOGA" "${OTA_APPLY_TIMEOUT:-480}" <<EOF
+run ota check http://10.0.2.2:$OTA_PORT/manifest.txt
+run ota apply http://10.0.2.2:$OTA_PORT/manifest.txt
+reboot
+uname
+run ota rollback
+reboot
+uname
+exit
+EOF
 
 il_assert_grep "$LOGA" "\[ota\] manifest: version=0.0.2-ota" \
     "ota check reads the manifest over the network"
@@ -154,20 +166,15 @@ LOGB="$IL_LOGDIR/ota_apply_b.log"
 IL_LAST_LOG="$LOGB"
 rm -f "$LOGB"
 
-( { sleep 14; printf 'run ota status\n'; sleep 4
-    printf 'run ota apply http://10.0.2.2:%s/manifest-bad.txt\n' "$OTA_PORT"
-    sleep 55
-    printf 'run ota status\n'; sleep 4
-    printf 'run ota rollback\n'; sleep 4
-    printf 'exit\n'; } \
-  | timeout 140 qemu-system-x86_64 \
-    -drive "file=$IL_ISO,format=raw,if=none,id=btndisk,snapshot=on" \
-    -device ahci,id=ahci0 -device ide-hd,drive=btndisk,bus=ahci0.0 \
-    -m 512M -smp 2 -display none -serial stdio -no-reboot -cpu qemu64 \
-    -boot order=c \
-    -netdev "user,id=net0" -device e1000,netdev=net0 \
-    -fw_cfg "name=opt/auralite.selftest,string=fast" \
-    > "$LOGB" 2>&1 ) || true
+# Apply and rollback deliberately return nonzero here; the exact abort, no
+# swap, and unchanged active digest are asserted below.
+ota_run_queue "$LOGB" "${OTA_NEGATIVE_TIMEOUT:-360}" --no-check-run-exit <<EOF
+run ota status
+run ota apply http://10.0.2.2:$OTA_PORT/manifest-bad.txt
+run ota status
+run ota rollback
+exit
+EOF
 
 il_assert_grep "$LOGB" "\[ota\] sha256 MISMATCH" \
     "the tampered manifest is rejected by the digest check"

@@ -552,6 +552,8 @@ RUST_CORE_RLIB_RV := $(firstword $(wildcard $(RUST_LIBDIR_RV)/libcore-*.rlib))
 RUST_BUILTINS_RLIB_RV := $(firstword $(wildcard $(RUST_LIBDIR_RV)/libcompiler_builtins-*.rlib))
 
 RUSTESRV_ELF := $(USERRV_BUILD)/rustes
+RSBR_PARITY_RV_ELF := $(USERRV_BUILD)/rsbr_parity
+RSBR_PARITY_SRC := userspace/tests/rsbr_parity/rsbr_parity.rs
 
 $(RSBRRV_RLIB): $(shell find $(RSBRRV_DIR) -name '*.rs')
 	@mkdir -p $(dir $@)
@@ -564,24 +566,26 @@ $(RSBRRV_RLIB): $(shell find $(RSBRRV_DIR) -name '*.rs')
 	@echo "[rustc] $@"
 
 
-### RSBR: compile rustes.rs for RV64
-$(USERRV_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBRRV_RLIB)
+### RSBR: compile the demo and parity test for RV64
+$(USERRV_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs
+$(USERRV_BUILD)/rsbr_parity.o: $(RSBR_PARITY_SRC)
+$(USERRV_BUILD)/rustes.o $(USERRV_BUILD)/rsbr_parity.o: $(RSBRRV_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) $(RUSTFLAGSRV) \
 		--edition=2021 \
 		--crate-type lib \
 		--emit obj \
 		--extern rsbr=$(RSBRRV_RLIB) \
-		-o $@ $<
+		-o $@ $(filter %.rs,$^)
 	@echo "[rustc] $@"
 
 
 
-$(RUSTESRV_ELF): $(USERRV_BUILD)/rustes.o $(RSBRRV_RLIB) lib/libcrv/user_rv.ld
+$(RUSTESRV_ELF) $(RSBR_PARITY_RV_ELF): %: %.o $(RSBRRV_RLIB) lib/libcrv/user_rv.ld
 	@mkdir -p $(dir $@)
 	$(LD) -m elf64lriscv -nostdlib -static \
 		-T lib/libcrv/user_rv.ld \
-		$(USERRV_BUILD)/rustes.o \
+		$< \
 		$(RSBRRV_RLIB) \
 		$(RUST_CORE_RLIB_RV) \
 		$(RUST_BUILTINS_RLIB_RV) \
@@ -589,7 +593,7 @@ $(RUSTESRV_ELF): $(USERRV_BUILD)/rustes.o $(RSBRRV_RLIB) lib/libcrv/user_rv.ld
 	@echo "  [userrv] $@"
 
 
-userrv: $(INITRV_ELF) $(SHELLRV_ELF) $(FSIORV_ELF) $(RUSTESRV_ELF)
+userrv: $(INITRV_ELF) $(SHELLRV_ELF) $(FSIORV_ELF) $(RUSTESRV_ELF) $(RSBR_PARITY_RV_ELF)
 
 # =============================================================================
 # ARM64_PLAN A5b: the aarch64 userland (inita64 + smallsh over libca64),
@@ -663,6 +667,7 @@ RUST_CORE_RLIB_A64 := $(firstword $(wildcard $(RUST_LIBDIR_A64)/libcore-*.rlib))
 RUST_BUILTINS_RLIB_A64 := $(firstword $(wildcard $(RUST_LIBDIR_A64)/libcompiler_builtins-*.rlib))
 
 RUSTESA64_ELF := $(USERA64_BUILD)/rustes
+RSBR_PARITY_A64_ELF := $(USERA64_BUILD)/rsbr_parity
 
 
 ### RSBR: build library for AArch64
@@ -677,31 +682,33 @@ $(RSBRA64_RLIB): $(shell find $(RSBRA64_DIR) -name '*.rs')
 	@echo "[rustc] $@"
 
 
-### RSBR: compile rustes.rs for AArch64
-$(USERA64_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs $(RSBRA64_RLIB)
+### RSBR: compile the demo and parity test for AArch64
+$(USERA64_BUILD)/rustes.o: userspace/apps/rustes/rustes.rs
+$(USERA64_BUILD)/rsbr_parity.o: $(RSBR_PARITY_SRC)
+$(USERA64_BUILD)/rustes.o $(USERA64_BUILD)/rsbr_parity.o: $(RSBRA64_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) $(RUSTFLAGSA64) \
 		--edition=2021 \
 		--crate-type lib \
 		--emit obj \
 		--extern rsbr=$(RSBRA64_RLIB) \
-		-o $@ $<
+		-o $@ $(filter %.rs,$^)
 	@echo "[rustc] $@"
 
 
-### RSBR: link rustes for AArch64
-$(RUSTESA64_ELF): $(USERA64_BUILD)/rustes.o $(RSBRA64_RLIB) lib/libca64/user_a64.ld
+### RSBR: link the demo and parity test for AArch64
+$(RUSTESA64_ELF) $(RSBR_PARITY_A64_ELF): %: %.o $(RSBRA64_RLIB) lib/libca64/user_a64.ld
 	@mkdir -p $(dir $@)
 	$(LD) -m aarch64linux -nostdlib -static \
 		-T lib/libca64/user_a64.ld \
-		$(USERA64_BUILD)/rustes.o \
+		$< \
 		$(RSBRA64_RLIB) \
 		$(RUST_CORE_RLIB_A64) \
 		$(RUST_BUILTINS_RLIB_A64) \
 		-o $@
 	@echo "  [usera64] $@"
 
-usera64: $(INITA64_ELF) $(SHELLA64_ELF) $(FSIOA64_ELF) $(RUSTESA64_ELF)
+usera64: $(INITA64_ELF) $(SHELLA64_ELF) $(FSIOA64_ELF) $(RUSTESA64_ELF) $(RSBR_PARITY_A64_ELF)
 
 # =============================================================================
 # I386_PLAN I5: the 32-bit userspace (init32 + libc32).
@@ -3914,6 +3921,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(USER_BUILD)/sha256sum.elf $(USER_BUILD)/mkinitrd.elf \
                          $(USER_BUILD)/bootoffsets.elf $(USER_BUILD)/mkiso.elf \
                          $(SELFHOST_KERNEL_STAGE) \
+                         $(RSBR_PARITY_RV_ELF) $(RSBR_PARITY_A64_ELF) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
                          kernel/arch/x86_64/boot.asm kernel/arch/i386/boot32.asm \
                          $(INIT_ELF) $(HELLO_ELF) $(USER_APPS) $(USER_GL_APPS) $(PETEST_EXE) $(PETEST_RELOC_EXE) $(K32TEST_EXE) $(U32TEST_EXE) $(CRTTEST_EXE) $(TESTDLL) $(W32A1_FIXTURES) $(W32_EXAMPLE_EXE) $(W32_UNSUP_EXE) $(W32A2_EXES) $(W32A12_EXE) $(W32A13_EXE) $(W32A14_EXE) $(W32A15_EXE) $(W32A16_EXE) $(W32SCALE_EXES) $(W32C8_FC_EXE) $(W32C8_SO_EXE) $(W32WR1_EXE) $(W32A3T_EXE) $(W32A3L_EXE) $(W32A4_EXES) $(W32A4_CXX_EXE) $(W32A5_EXE) $(W32A6_EXE) $(W32A7_EXE) $(W32A8_EXE) $(W32A9_EXE) $(W32A10_EXE) $(W32A11_EXE) $(W32A11_PROBE_EXE) $(W32A11_DRAG_EXE) $(W32A11_FILE_EXE) $(W32A11_FILE_SOURCE) $(W32A11_TOKEN_SENDER) $(W32A11_TOKEN_RECEIVER) $(W32A11_THEME_V5) $(W32A11_THEME_V6) w32/tests/w32a11_payload.txt w32/tests/w32a11-é.txt $(LX_HELLO_BIN) $(LX_BUSYBOX_BIN) $(LX_DYN_HELLO_BIN) $(LX_LUA_BIN) lx/tests/dyn_hello.c lx/tests/dyn/sh_cmd.sh lx/tests/lua_script.lua lx/etc/motd lx/etc/zz-ls-probe $(OFFICE_FONTS) $(INIT32_ELF) $(SHELL32_ELF) $(PIE32_ELF) $(INITRV_ELF) $(SHELLRV_ELF) $(INITA64_ELF) $(SHELLA64_ELF) $(FSIORV_ELF) $(FSIOA64_ELF) $(FSIO32_ELF) $(RUSTESRV_ELF) $(RUSTESA64_ELF) $(if $(wildcard $(SELFHOST_SRC)),$(SELFHOST_TCC) $(SELFHOST_LIBTCC1) tools/selfhost/hello.c)
@@ -4274,6 +4282,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	    llvm-strip -s $(FSIORV_ELF) -o $(INITRD_DIR)/binrv/fsio
 	@llvm-strip-19 -s $(RUSTESRV_ELF) -o $(INITRD_DIR)/binrv/rustes 2>/dev/null || \
 	    llvm-strip -s $(RUSTESRV_ELF) -o $(INITRD_DIR)/binrv/rustes
+	@llvm-strip-19 -s $(RSBR_PARITY_RV_ELF) -o $(INITRD_DIR)/binrv/rsbr_parity 2>/dev/null || \
+	    llvm-strip -s $(RSBR_PARITY_RV_ELF) -o $(INITRD_DIR)/binrv/rsbr_parity
 # ARM64_PLAN A5b: the aarch64 userland, FOURTH tenant under /bina64.
 # Same llvm-strip note as /binrv (GNU strip does not speak EM_AARCH64
 # reliably either; llvm-strip ships with clang).
@@ -4286,6 +4296,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	    llvm-strip -s $(FSIOA64_ELF) -o $(INITRD_DIR)/bina64/fsio
 	@llvm-strip-19 -s $(RUSTESA64_ELF) -o $(INITRD_DIR)/bina64/rustes 2>/dev/null || \
 	    llvm-strip -s $(RUSTESA64_ELF) -o $(INITRD_DIR)/bina64/rustes
+	@llvm-strip-19 -s $(RSBR_PARITY_A64_ELF) -o $(INITRD_DIR)/bina64/rsbr_parity 2>/dev/null || \
+	    llvm-strip -s $(RSBR_PARITY_A64_ELF) -o $(INITRD_DIR)/bina64/rsbr_parity
 # Pinned trust store (REALINTERNET_PLAN X2): shipped in the image so the
 # HTTPS client can validate server chains against it.
 	@mkdir -p $(INITRD_DIR)/etc/ssl

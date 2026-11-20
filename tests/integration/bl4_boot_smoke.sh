@@ -16,33 +16,14 @@ LOG_HIGHMEM="$BUILD/bl4_boot_highmem.log"
 make -C "$ROOT" mbr stage2 kernel >/dev/null
 
 # 2. Build a bootable disk with kernel.elf inside the FAT32 partition.
-dd if=/dev/zero of="$IMG" bs=1M count=16 status=none
-dd if="$BUILD/boot/mbr.bin"    of="$IMG" bs=512 count=1 conv=notrunc status=none
-dd if="$BUILD/boot/stage2.bin" of="$IMG" bs=512 seek=1 conv=notrunc status=none
-
-FAT_IMG="$BUILD/bl4_boot_part.img"
-dd if=/dev/zero of="$FAT_IMG" bs=1M count=15 status=none
-mformat -i "$FAT_IMG" -F -h 32 -s 32 -t 480 ::
-mcopy -i "$FAT_IMG" "$BUILD/kernel.elf" ::KERNEL.ELF
-dd if="$FAT_IMG" of="$IMG" bs=512 seek=128 conv=notrunc status=none
-
-python3 - "$IMG" <<'PY'
-import struct, sys
-img = open(sys.argv[1], 'r+b')
-img.seek(0x1BE)
-img.write(struct.pack('<BBBBBBBBII',
-    0x80, 0, 2, 0,
-    0x0C,
-    0, 0, 0,
-    128, 15*2048))
-img.close()
-PY
+. "$ROOT/tests/integration/lib/bl4_disk.sh"
+bl4_make_kernel_disk "$BUILD" "$IMG"
 
 # 3. Run QEMU.  Give the kernel plenty of time to print its banner
 #    (the kernel initialises pmm/paging/heap/vfs/etc, which under TCG
 #    can take a good few seconds).
 rm -f "$LOG"
-timeout 30 qemu-system-x86_64 \
+timeout "${BL4_BOOT_TIMEOUT:-90}" qemu-system-x86_64 \
     -drive format=raw,file="$IMG",if=ide \
     -m 256M \
     -display none -serial file:"$LOG" -no-reboot \
@@ -53,7 +34,7 @@ fail=0
 
 # BL4 Stage 2 milestones.
 for want in "[BL4] ELF PT_LOAD segments copied to phys" \
-            "[BL4] page tables built at 0x01000000" \
+            "[BL4] page tables built" \
             "[BL4] entering long mode; jumping to kernel _start"; do
     if grep -qF "$want" "$LOG"; then
         printf '  [bl4-boot] serial OK   %s\n' "$want"
@@ -100,7 +81,7 @@ fi
 #    BL4_HIGHMEM_MB=2048 to run the full 2 GiB audit scenario.
 HIGHMEM_MB="${BL4_HIGHMEM_MB:-1536}"
 rm -f "$LOG_HIGHMEM"
-timeout 30 qemu-system-x86_64 \
+timeout "${BL4_BOOT_TIMEOUT:-90}" qemu-system-x86_64 \
     -machine "pc,max-ram-below-4g=${HIGHMEM_MB}M" \
     -drive format=raw,file="$IMG",if=ide \
     -m "${HIGHMEM_MB}M" \

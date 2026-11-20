@@ -32,6 +32,8 @@
 #define AG_WIN_ALWAYS_TOP    0x080
 #define AG_WIN_TOOL_WINDOW   0x100
 #define AG_WIN_BORDERLESS    0x200
+/* Matches GUI_CONTENT_PAD: per-side inset inside the theme border. */
+#define AG_CONTENT_PAD 4u
 #define AG_WIN_PRESENTATION  0x800   /* borderless full-screen; hides taskbar */
 #define AG_WIN_DEFAULT       (AG_WIN_RESIZABLE | AG_WIN_MOVABLE | \
                               AG_WIN_HAS_TITLE | AG_WIN_HAS_CLOSE | AG_WIN_HAS_MINMAX)

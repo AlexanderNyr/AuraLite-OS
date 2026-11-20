@@ -122,6 +122,7 @@ typedef ui_event_mirror_t ui_event_t;
 #define AG_WIN_ALWAYS_TOP  0x080
 #define AG_WIN_TOOL_WINDOW 0x100
 #define AG_WIN_BORDERLESS  0x200
+#define AG_CONTENT_PAD     4u
 #define AG_WIN_DEFAULT     (AG_WIN_RESIZABLE | AG_WIN_MOVABLE | \
                             AG_WIN_HAS_TITLE | AG_WIN_HAS_CLOSE | AG_WIN_HAS_MINMAX)
 
@@ -496,7 +497,7 @@ uint32_t w32_win_client_h(int i) {
 /* Re-read the geometry the compositor actually has.  Every geometry answer
  * comes from here rather than from cached fields, which is what keeps a
  * user's title-bar drag visible to GetWindowRect. */
-static void ui_decor(const struct ui_window *w, uint32_t *bw, uint32_t *th);
+static void ui_decor(W32_DWORD style, uint32_t *bw, uint32_t *th);
 static uint32_t ui_menu_h(const struct ui_window *w);
 
 int w32_win_client_dy(int win_index) {
@@ -511,9 +512,8 @@ int w32_win_client_dy(int win_index) {
  * authority for its height, because SM_CYMENU, GetClientRect and the
  * client<->screen conversions all have to agree: if GetClientRect says the
  * client is 20px shorter than the coordinate conversions assume, every
- * layout pass a program makes drifts by 20px per pass.  That is the same
- * class of bug ui_decor's comment describes for the border width, which made
- * 7-Zip FM's panel relayout ping-pong until the process died.
+ * layout pass a program makes drifts by 20px per pass, just as reporting
+ * a non-existent child frame made 7-Zip FM repeatedly resize its panels.
  *
  * The bar sits *inside* the compositor content area, at its top, so the
  * window's outer rect is unchanged and the client shrinks -- which is what
@@ -638,7 +638,7 @@ static void ui_ancestor_screen_offset(int i, int32_t *dx, int32_t *dy) {
         ag_window_get_pos(windows[p].ag_wid, &px, &py);
         if (windows[p].parent < 0) {
             uint32_t bw = 0, th = 0;
-            ui_decor(&windows[p], &bw, &th);
+            ui_decor(windows[p].style, &bw, &th);
             x += px + (int32_t)bw;
             y += py + (int32_t)(th + bw);
         } else {
@@ -667,7 +667,7 @@ static void ui_refresh_geom(struct ui_window *w) {
      * (listview shrinking 4px per cycle, status bar growing) until the
      * process crashed -- the WR-2 live lane's click-hang. */
     uint32_t bw = 0, th = 0;
-    ui_decor(w, &bw, &th);
+    ui_decor(w->style, &bw, &th);
     w->w = cw + 2 * bw;
     w->h = ch + th + 2 * bw;
 }
@@ -1490,16 +1490,15 @@ static const char *w16_dbg(const uint16_t *ws) {
 
 /* F28 (WR-3): the smallest extent gui_create_window() accepts for a window
  * carrying `flags`.  Mirrors the compositor's own guard -- a decorated
- * window must be larger than its frame (2*border_w wide, titlebar_h +
- * 2*border_w tall) -- so a zero-sized request is clamped to a size the
+ * window must be larger than its frame, titlebar and inset -- so a zero-sized request is clamped to a size the
  * compositor will actually take instead of being turned down. */
 static int32_t ui_min_extent(uint32_t flags, int vertical) {
     ui_theme_t th;
     if ((flags & (AG_WIN_NO_DECOR | AG_WIN_BORDERLESS)) ||
         ag_theme_get(&th) != 0)
         return 1;
-    return (int32_t)((vertical ? (uint32_t)th.titlebar_h + 2u * th.border_w
-                               : 2u * th.border_w) + 1u);
+    uint32_t frame = 2u * (th.border_w + AG_CONTENT_PAD);
+    return (int32_t)(frame + (vertical ? th.titlebar_h : 0u) + 1u);
 }
 
 W32ABI W32_HWND CreateWindowExW(W32_DWORD exstyle, const uint16_t *clsname,
@@ -3030,30 +3029,14 @@ W32ABI int32_t GetDlgCtrlID(W32_HWND hwnd) {
 
 /* ---- geometry ------------------------------------------------------------ */
 
-/* Decoration thickness the compositor applies to a decorated window. */
-static void ui_decor(const struct ui_window *w, uint32_t *bw, uint32_t *th) {
+/* The actual non-client inset includes the padding inside the drawn frame.
+ * Child controls and popups have no compositor decoration at all. */
+static void ui_decor(W32_DWORD style, uint32_t *bw, uint32_t *th) {
     ui_theme_t t;
     *bw = 0; *th = 0;
-    if (ag_theme_get(&t) != 0) return;
-    /* WS_POPUP is the one style the compositor draws with no frame at all
-     * (it becomes AG_WIN_NO_DECOR | AG_WIN_BORDERLESS).  Everything else
-     * gets the theme's border, and a title bar only if it asks for one:
-     * note that Win32 defines WS_CAPTION as WS_BORDER|WS_DLGFRAME, so a
-     * test for "has a border" must not be read as "has no caption" --
-     * getting that order wrong makes every captioned window undecorated.
-     *
-     * WS_CHILD windows are composited with NO_DECOR|BORDERLESS too (see
-     * CreateWindowExW), and on Win32 a child never carries decorations:
-     * its window rect IS its layout rect.  Charging children the theme
-     * border here made each GetWindowRect report 2*border_w wider/taller
-     * than MoveWindow had just set, so panel relayouts (7-Zip FM reads a
-     * control's height back before repositioning it) grew by 4px per pass
-     * and never converged. */
-    if (w->style & (W32_WS_POPUP | W32_WS_CHILD)) return;
-    *bw = t.border_w;
-    if (w->style & (W32_WS_CAPTION | W32_WS_SYSMENU | W32_WS_THICKFRAME |
-                    W32_WS_MINIMIZEBOX | W32_WS_MAXIMIZEBOX))
-        *th = t.titlebar_h;
+    if ((style & (W32_WS_POPUP | W32_WS_CHILD)) || ag_theme_get(&t) != 0) return;
+    *bw = t.border_w + AG_CONTENT_PAD;
+    *th = t.titlebar_h;
 }
 
 W32ABI W32_BOOL GetWindowRect(W32_HWND hwnd, W32_RECT *r) {
@@ -3073,7 +3056,7 @@ W32ABI W32_BOOL GetWindowRect(W32_HWND hwnd, W32_RECT *r) {
     ui_ancestor_screen_offset(i, &aox, &aoy);  /* WR-4: screen, not parent */
     x += aox; y += aoy;
     uint32_t bw = 0, th = 0;
-    ui_decor(&windows[i], &bw, &th);
+    ui_decor(windows[i].style, &bw, &th);
     r->left = x;
     r->top = y;
     r->right = x + (int32_t)(w + 2 * bw);
@@ -3101,7 +3084,7 @@ W32ABI W32_BOOL ClientToScreen(W32_HWND hwnd, W32_POINT *pt) {
     int32_t x = 0, y = 0;
     ag_window_get_pos(windows[i].ag_wid, &x, &y);
     uint32_t bw = 0, th = 0;
-    ui_decor(&windows[i], &bw, &th);
+    ui_decor(windows[i].style, &bw, &th);
     pt->x += x + (int32_t)bw;
     pt->y += y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
     {   /* WR-4: screen, not parent */
@@ -3118,7 +3101,7 @@ W32ABI W32_BOOL ScreenToClient(W32_HWND hwnd, W32_POINT *pt) {
     int32_t x = 0, y = 0;
     ag_window_get_pos(windows[i].ag_wid, &x, &y);
     uint32_t bw = 0, th = 0;
-    ui_decor(&windows[i], &bw, &th);
+    ui_decor(windows[i].style, &bw, &th);
     pt->x -= x + (int32_t)bw;
     pt->y -= y + (int32_t)(th + bw + ui_menu_h(&windows[i]));
     {   /* WR-4: screen, not parent */
@@ -3143,24 +3126,10 @@ W32ABI W32_BOOL AdjustWindowRectEx(W32_RECT *r, W32_DWORD style,
                                    W32_BOOL menu, W32_DWORD exstyle) {
     (void)menu; (void)exstyle;
     if (!r) { w32_set_last_error(W32_ERROR_INVALID_PARAMETER); return W32_FALSE; }
-    ui_theme_t t;
-    uint32_t bw = 0, th = 0;
-    if (ag_theme_get(&t) == 0) {
-        bw = t.border_w;
-        th = t.titlebar_h;
-    }
-    if (style & W32_WS_POPUP) {
-        /* No decoration: the client rect is the window rect. */
-    } else if (style & W32_WS_THICKFRAME) {
-        r->left -= (int32_t)bw; r->top -= (int32_t)(th + bw);
-        r->right += (int32_t)bw; r->bottom += (int32_t)bw;
-    } else if (style & W32_WS_CAPTION) {
-        r->left -= (int32_t)bw; r->top -= (int32_t)(th + bw);
-        r->right += (int32_t)bw; r->bottom += (int32_t)bw;
-    } else if (style & (W32_WS_BORDER | W32_WS_DLGFRAME)) {
-        r->left -= (int32_t)bw; r->top -= (int32_t)bw;
-        r->right += (int32_t)bw; r->bottom += (int32_t)bw;
-    }
+    uint32_t bw, th;
+    ui_decor(style, &bw, &th);
+    r->left -= (int32_t)bw; r->top -= (int32_t)(th + bw);
+    r->right += (int32_t)bw; r->bottom += (int32_t)bw;
     return W32_TRUE;
 }
 
@@ -4041,8 +4010,8 @@ W32ABI int32_t GetSystemMetrics(int32_t index) {
     case W32_SM_CYFULLSCREEN:
         return (int32_t)(sh - (have ? t.taskbar_h : 0));
     case W32_SM_CYCAPTION:  return have ? (int32_t)t.titlebar_h : 24;
-    case W32_SM_CXFRAME:    return have ? (int32_t)t.border_w : 4;
-    case W32_SM_CYFRAME:    return have ? (int32_t)t.border_w : 4;
+    case W32_SM_CXFRAME:
+    case W32_SM_CYFRAME:    return have ? (int32_t)(t.border_w + AG_CONTENT_PAD) : 4;
     case W32_SM_CXDLGFRAME:
     case W32_SM_CYDLGFRAME: return have ? (int32_t)t.border_w : 4;
     case W32_SM_CXBORDER:
