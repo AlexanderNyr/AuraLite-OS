@@ -57,25 +57,11 @@ LOG="$IL_LOGDIR/virgl_gpu.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
-# Wait for the guest to say it is ready, rather than guessing at it.
-#
-# This used to be `il_send_delay 8` before "run gltest".  Eight seconds is
-# enough on an idle TCG host (the shell lands at ~19 s here) but not on a
-# loaded CI runner, and when the guess is short the whole case dies the way
-# run 120540939354 shows: the serial log ends at the /hello self-test with
-# `qemu-system-x86_64: terminating on signal 15`, gltest never starts, and
-# eight "gltest never printed" assertions fail together.  Under -smp 1 with a
-# virtio-gpu attached the boot is measurably slower than the software path,
-# so this is exactly the configuration where a fixed sleep is wrong.
-#
-# il_send_wait polls the live serial log for the pattern instead (RESIDUE2
-# T9's content-gated feeder), so a fast host waits milliseconds and a slow
-# one still gets its gltest.  The prompt is the receipt that the shell is in
-# its read loop; /gltest's own end marker is the receipt for `exit`.
-il_send_wait "auralite#" 120
-il_send "run gltest"
-il_send_wait "\\[gl\\] ALL TESTS PASSED" 240
-il_send "exit"
+# Wait for the shell and then for gltest to exit successfully. The old
+# WAIT marker used an escaped regex with the fixed-string feeder, so it
+# never recognised the successful test and stalled before sending exit.
+il_send_prompt "run gltest"
+il_send_prompt "exit"
 
 # -device virtio-gpu-pci is the plain 2D device; virgl needs
 # virtio-vga-gl or virtio-gpu-gl-pci and a host GL context, which a headless
@@ -93,7 +79,9 @@ if "$IL_QEMU" -device help 2>&1 | grep -q "virtio-gpu-gl-pci"; then
 fi
 echo "[virgl] using -device $GPU_DEV"
 
-il_run_qemu "$LOG" 300 -device "$GPU_DEV"
+il_run_qemu_prompt "$LOG" 300 -device "$GPU_DEV"
+il_assert_grep_fixed "$IL_PROMPT_DRIVER_LOG" "complete (2/2 commands sent" \
+    "the prompt driver observed gltest exit successfully before sending exit"
 
 # Set to 1 once the virtio-gpu driver initialisation hang is fixed.
 ENABLE_FULL_ASSERTS=1   # RES-40: the init hang no longer reproduces (R1); full asserts armed

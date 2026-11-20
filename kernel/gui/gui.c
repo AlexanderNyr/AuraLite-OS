@@ -36,6 +36,9 @@
 #include "kernel/lib/perfstat.h"
 #include "kernel/lib/spinlock.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/pmm.h"
+#include "kernel/boot_info.h"
+#include "kernel/arch/arch.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/wait_queue.h"
 #include "kernel/proc/thread.h"
@@ -187,6 +190,9 @@ typedef struct gui_win {
  * gui_init().  kmalloc serves it in 2 MiB pages after boot, so the table
  * costs nothing until the GUI starts and the kernel image stays small. */
 static gui_win_t *windows;
+/* GUI syscalls enter with IF clear. A preemptible compositor holding
+ * either lock can otherwise be switched out on the same CPU, leaving the
+ * syscall spinning for a lock whose owner cannot run. */
 static spinlock_t gui_lock;
 /* Event rings and pathname slots share this lock. Always acquire gui_lock
  * before gui_evt_lock if both are needed (destroy/send). */
@@ -232,6 +238,36 @@ extern void   gui_dirty_reset(void);
 extern int    gui_dirty_add(int32_t x, int32_t y, uint32_t w, uint32_t h);
 extern size_t gui_dirty_snapshot(gui_dirty_rect_t *out, size_t max);
 extern int gui_dirty_is_empty(void);
+
+/* Rust's list lock is shared with IF-masked GUI syscalls. Do not let a
+ * thread be preempted locally while it owns that lock. */
+static void dirty_reset(void) {
+    arch_irqflags_t flags = arch_irq_save();
+    gui_dirty_reset();
+    arch_irq_restore(flags);
+}
+
+static int dirty_add(int32_t x, int32_t y, uint32_t w, uint32_t h) {
+    arch_irqflags_t flags = arch_irq_save();
+    int rc = gui_dirty_add(x, y, w, h);
+    arch_irq_restore(flags);
+    return rc;
+}
+
+static size_t dirty_snapshot(gui_dirty_rect_t *out, size_t max) {
+    arch_irqflags_t flags = arch_irq_save();
+    size_t n = gui_dirty_snapshot(out, max);
+    arch_irq_restore(flags);
+    return n;
+}
+
+static int dirty_is_empty(void) {
+    arch_irqflags_t flags = arch_irq_save();
+    int empty = gui_dirty_is_empty();
+    arch_irq_restore(flags);
+    return empty;
+}
+
 extern int gui_sdf_draw_buffer(uint32_t *pixels,
                                uint32_t width, uint32_t height,
                                uint32_t stride,
@@ -420,9 +456,9 @@ static void gui_render_window_rust(int wid) {
     if (wid < 0 || wid >= GUI_MAX_WINDOWS) return;
 
     /* Keep buffers, title, and geometry stable during this render call. */
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     if (!win_alive(wid)) {
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return;
     }
 
@@ -475,7 +511,7 @@ static void gui_render_window_rust(int wid) {
     };
 
     (void)gui_render_window(&rw, &rt);
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
 }
 
 
@@ -636,10 +672,10 @@ static int32_t content_y(const gui_win_t *w) {
 void gui_mark_dirty(int32_t x, int32_t y, uint32_t w, uint32_t h) {
     if (w == 0 || h == 0) return;
     if (full_dirty) return;
-    if (gui_dirty_add(x, y, w, h) < 0) {
+    if (dirty_add(x, y, w, h) < 0) {
         /* Overflow: Rust dropped the list.  Promote to a full redraw. */
         full_dirty = 1;
-        gui_dirty_reset();
+        dirty_reset();
     }
 }
 
@@ -677,7 +713,7 @@ void gui_init(void) {
     gui_clock_last_second = (uint64_t)-1;
     full_dirty = 1;
     
-    gui_dirty_reset();
+    dirty_reset();
     gui_cursor_init();
     gui_shell_init();
 }
@@ -731,14 +767,14 @@ static void recompute_focus(void) {
 
 int gui_raise_window(int wid) {
     if (!win_alive(wid)) return -1;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     int maxz = 0;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++)
         if (windows[i].in_use && windows[i].z > maxz) maxz = windows[i].z;
     windows[wid].z = maxz + 1;
     recompute_focus();
     mark_window_dirty(&windows[wid]);
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return 0;
 }
 
@@ -780,7 +816,7 @@ int gui_focus_window(int wid) {
  * the compositor sorts on them. */
 int gui_lower_window(int wid) {
     if (!win_alive(wid)) return -1;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     int minz = 0;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++)
         if (windows[i].in_use && windows[i].z < minz) minz = windows[i].z;
@@ -791,17 +827,17 @@ int gui_lower_window(int wid) {
     }
     recompute_focus();
     mark_window_dirty(&windows[wid]);
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return 0;
 }
 
 int gui_set_window_flags(int wid, uint32_t flags) {
     if (!win_alive(wid)) return -1;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     windows[wid].flags = flags;
     mark_window_dirty(&windows[wid]);
     full_dirty = 1;
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return 0;
 }
 
@@ -816,22 +852,22 @@ int gui_get_window_z(int wid) {
  * syscall layer; here we only reject cycles and cross-window nonsense. */
 int gui_set_parent(int wid, int parent_wid) {
     if (!win_alive(wid)) return -1;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     if (parent_wid < 0) {
         windows[wid].parent = -1;
         mark_window_dirty(&windows[wid]);
         full_dirty = 1;
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return 0;
     }
     if (parent_wid == wid || !win_alive(parent_wid)) {
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return -1;
     }
     /* Reject a cycle: parent_wid must not be a descendant of wid. */
     for (int p = parent_wid, guard = 0;
          p >= 0 && guard < GUI_MAX_WINDOWS; guard++) {
-        if (p == wid) { spinlock_release(&gui_lock); return -1; }
+        if (p == wid) { spinlock_release_irqrestore(&gui_lock, gui_flags); return -1; }
         p = windows[p].in_use ? windows[p].parent : -1;
     }
     windows[wid].parent = parent_wid;
@@ -840,7 +876,7 @@ int gui_set_parent(int wid, int parent_wid) {
     windows[wid].z = windows[parent_wid].z;
     mark_window_dirty(&windows[wid]);
     full_dirty = 1;
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return 0;
 }
 
@@ -849,21 +885,21 @@ int gui_set_parent(int wid, int parent_wid) {
  * see the compositor's own answer without guessing. */
 int gui_top_window(void) {
     int best = -1, bestz = 0x80000000;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         if (!windows[i].in_use || !windows[i].visible || windows[i].minimized) continue;
         if (best < 0 || windows[i].z > bestz) { best = i; bestz = windows[i].z; }
     }
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return best;
 }
 
 int gui_set_capture(int wid) {
     if (wid >= 0 && !win_alive(wid)) return -1;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     int prev = captured;
     captured = wid;
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return prev;
 }
 
@@ -883,32 +919,68 @@ int gui_mouse_position(int32_t *x, int32_t *y) {
     return mouse_get_position((int *)x, (int *)y);
 }
 
-/* A decoration close action should make the window disappear immediately.
- * User-owned applications still receive GUI_EVT_CLOSE_REQ first, so cooperative
- * apps can run their normal shutdown path and destroy the already-hidden
- * window.  Kernel/demo windows have no userspace event loop; hiding them here
- * is what makes the [X] button visibly work for every window. */
+static void gui_destroy_subtree_locked(int wid);
+
+/* Userspace keeps its cooperative close protocol. Kernel demo windows have
+ * no event consumer, so actually destroy them instead of just hiding them. */
 static void request_window_close(int wid) {
-    if (!win_alive(wid)) return;
-
-    gui_event_t e = { GUI_EVT_CLOSE_REQ, 0,0,0,0,0,0 };
-    gui_post_event(wid, &e);
-
+    uint64_t flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, flags);
+        return;
+    }
     gui_win_t *w = &windows[wid];
-    mark_window_dirty(w);
-    w->visible = 0;
-    w->minimized = 0;
-    if (focused == wid) focused = -1;
-    if (key_focus == wid) key_focus = -1;   /* WR-2 gap 2 */
-    if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
-    if (last_hover_wid == wid) last_hover_wid = -1;
+    if (!w->owner_pid) {
+        gui_destroy_subtree_locked(wid);
+    } else {
+        gui_event_t e = { GUI_EVT_CLOSE_REQ, 0,0,0,0,0,0 };
+        gui_post_event(wid, &e);
+        mark_window_dirty(w);
+        w->visible = 0;
+        w->minimized = 0;
+        if (focused == wid) focused = -1;
+        if (key_focus == wid) key_focus = -1;
+        if (drag_wid == wid) {
+            drag_wid = -1; drag_mode = 0; snap_preview_active = 0;
+        }
+        if (last_hover_wid == wid) last_hover_wid = -1;
+    }
     recompute_focus();
     full_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, flags);
 }
 
 /* ===================================================================
  * Window lifecycle
  * =================================================================== */
+
+/* Window surfaces are reclaimable physical memory, unlike kmalloc's heap
+ * high-water mark. The direct map means no new shared PTEs or shootdowns.
+ * Reject large requests before rounding the stride or touching the PMM. */
+#define GUI_SURFACE_MAX_AXIS 8192u
+#define GUI_SURFACE_MAX_BYTES (64ULL * 1024 * 1024)
+
+static uint64_t gui_surface_pages(uint32_t w, uint32_t h) {
+    if (!w || !h || w > GUI_SURFACE_MAX_AXIS || h > GUI_SURFACE_MAX_AXIS) return 0;
+    uint64_t bytes = (uint64_t)w * h * sizeof(uint32_t);
+    if (bytes > GUI_SURFACE_MAX_BYTES) return 0;
+    return (bytes + PMM_PAGE_SIZE - 1) / PMM_PAGE_SIZE;
+}
+
+static uint32_t *gui_surface_alloc(uint32_t w, uint32_t h) {
+    uint64_t pages = gui_surface_pages(w, h);
+    if (!pages) return NULL;
+    paddr_t phys = pmm_alloc_contiguous(pages);
+    return phys ? (uint32_t *)(uintptr_t)(boot_get_hhdm_offset() + phys) : NULL;
+}
+
+static paddr_t gui_surface_phys(const uint32_t *pixels) {
+    return (uintptr_t)pixels - boot_get_hhdm_offset();
+}
+
+static void gui_surface_free(uint32_t *pixels, uint32_t w, uint32_t h) {
+    if (pixels) pmm_free_contiguous(gui_surface_phys(pixels), gui_surface_pages(w, h));
+}
 
 int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
                       const char *title, uint32_t flags) {
@@ -926,22 +998,22 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
         bw = w - decor_w;
         bh = h - decor_h;
     }
-    if (bw == 0 || bh == 0) return -1;
+    if (!gui_surface_pages(bw, bh)) return -1;
 
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     int id = -1;
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
         if (!windows[i].in_use) { id = i; break; }
     }
     if (id < 0) {
         kprintf("[gui] create_window: no free slots (%d windows)\n", GUI_MAX_WINDOWS);
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return -1;
     }
 
     gui_win_t *win = &windows[id];
     tcb_t *owner = sched_current();
-    spinlock_acquire(&gui_evt_lock);
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
     if (++window_epoch[id] == 0) window_epoch[id] = 1;
     memset(win, 0, sizeof(*win));
     win->x = x; win->y = y;
@@ -949,9 +1021,9 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     win->flags = flags;
     win->snap = GUI_SNAP_NONE;
     win->parent = -1;               /* CW-1: top-level until reparented */
-    win->owner_pid = owner ? (int)owner->id : 0;
+    win->owner_pid = (owner && owner->pml4_phys) ? (int)owner->id : 0;
     win->in_use = 1;
-    spinlock_release(&gui_evt_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
     win->visible = 0;
     win->minimized = 0;
     win->maximized = 0;
@@ -963,28 +1035,18 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
     }
     win->back_w = bw;
     win->back_h = bh;
-    size_t buf_size = (size_t)bw * bh * 4;
-    if (buf_size / 4 != (size_t)bw * bh) {
-        /* Integer overflow — reject impossibly large window. */
-        spinlock_acquire(&gui_evt_lock);
-        win->in_use = 0;
-        spinlock_release(&gui_evt_lock);
-        kprintf("[gui] create_window: buffer size overflow %ux%u\n", bw, bh);
-        spinlock_release(&gui_lock);
-        return -1;
-    }
-    win->back = (uint32_t *)kmalloc(buf_size);
+    win->back = gui_surface_alloc(bw, bh);
     if (!win->back) {
-        spinlock_acquire(&gui_evt_lock);
+        uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
         win->in_use = 0;
-        spinlock_release(&gui_evt_lock);
-        kprintf("[gui] create_window: kmalloc failed for %ux%u back buffer\n", bw, bh);
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
+        kprintf("[gui] create_window: surface allocation failed for %ux%u back buffer\n", bw, bh);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return -1;
     }
     size_t pixels = (size_t)bw * (size_t)bh;
     gui_fill32(win->back, active_theme.win_content, pixels);
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return id;
 }
 
@@ -993,16 +1055,18 @@ int gui_create_window(int32_t x, int32_t y, uint32_t w, uint32_t h,
 static void gui_free_slot_locked(int wid) {
     gui_win_t *w = &windows[wid];
     mark_window_dirty(w);
-    if (w->back) kfree(w->back);
-    if (w->front) { kfree(w->front); w->front = NULL; }
-    spinlock_acquire(&gui_evt_lock);
+    gui_surface_free(w->back, w->back_w, w->back_h);
+    gui_surface_free(w->front, w->back_w, w->back_h);
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
     memset(w, 0, sizeof(*w));
-    spinlock_release(&gui_evt_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
     w->parent = -1;                         /* memset left it 0 (a valid slot) */
     if (focused == wid) focused = -1;
     if (key_focus == wid) key_focus = -1;   /* WR-2 gap 2 */
     if (captured == wid) captured = -1;     /* W32A-5 */
-    if (drag_wid == wid) { drag_wid = -1; drag_mode = 0; }
+    if (drag_wid == wid) {
+        drag_wid = -1; drag_mode = 0; snap_preview_active = 0;
+    }
     if (last_hover_wid == wid) last_hover_wid = -1;
 }
 
@@ -1017,18 +1081,18 @@ static void gui_destroy_subtree_locked(int wid) {
 }
 
 int gui_destroy_window(int wid, uint64_t owner_pid) {
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     /* The syscall's earlier require_owner is only a snapshot: another
      * process could recycle this slot before we acquire gui_lock. */
     if (!owner_pid || !win_alive(wid) ||
         (uint32_t)windows[wid].owner_pid != owner_pid) {
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return -1;
     }
     gui_destroy_subtree_locked(wid);
     recompute_focus();
     full_dirty = 1;
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     /* Anyone parked in gui_wait_event must re-check win_alive; a pending
      * token also dies with the slot rather than waking a recycled HWND. */
     wq_wake_all(&gui_evt_wq);
@@ -1071,31 +1135,23 @@ uint64_t gui_current_pid(void)
     return current ? current->id : 0;
 }
 
-void gui_cleanup_process(uint64_t owner_pid) {
-    if (owner_pid == 0) return;
-    /* The window table is heap-allocated in gui_init(); thread teardown
-     * runs this for EVERY exiting thread -- including early self-test
-     * threads that die before the GUI exists.  Walking the NULL table
-     * from those exits faulted inside the frame of whatever the boot
-     * happened to be doing and hung the SMP bringup dead. */
-    if (!windows) return;
+/* Also exercised by the boot regression; only actual process exits emit
+ * the public cleanup receipt consumed by the process integration gates. */
+static int gui_cleanup_owned_windows_locked(uint64_t owner_pid) {
     int cleaned = 0;
-    spinlock_acquire(&gui_lock);
     for (int i = 0; i < GUI_MAX_WINDOWS; i++) {
-        if (!windows[i].in_use) continue;
-        if ((uint64_t)(uint32_t)windows[i].owner_pid != owner_pid) continue;
-        mark_window_dirty(&windows[i]);
-        if (windows[i].back) kfree(windows[i].back);
-        spinlock_acquire(&gui_evt_lock);
-        memset(&windows[i], 0, sizeof(windows[i]));
-        spinlock_release(&gui_evt_lock);
-        if (focused == i) focused = -1;
-        if (key_focus == i) key_focus = -1;   /* WR-2 gap 2 */
-        if (captured == i) captured = -1;
-        if (drag_wid == i) { drag_wid = -1; drag_mode = 0; }
-        if (last_hover_wid == i) last_hover_wid = -1;
+        if (!windows[i].in_use || (uint32_t)windows[i].owner_pid != owner_pid) continue;
+        gui_free_slot_locked(i);
         cleaned++;
     }
+    return cleaned;
+}
+
+void gui_cleanup_process(uint64_t owner_pid) {
+    /* Thread teardown can run before gui_init(), including on early APs. */
+    if (!owner_pid || !windows) return;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    int cleaned = gui_cleanup_owned_windows_locked(owner_pid);
 
     shell_cleanup_icons(owner_pid);
 
@@ -1103,7 +1159,7 @@ void gui_cleanup_process(uint64_t owner_pid) {
         recompute_focus();
         full_dirty = 1;
     }
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     if (cleaned) {
         wq_wake_all(&gui_evt_wq);
         kprintf("[gui] cleaned %d window(s) for pid %llu\n",
@@ -1140,21 +1196,18 @@ int gui_move_window(int wid, int32_t x, int32_t y) {
     return 0;
 }
 
-int gui_resize_window(int wid, uint32_t w, uint32_t h) {
-    if (!win_alive(wid)) return -1;
-    /* The 60x40 floor keeps a user-draggable, decorated top-level window from
-     * collapsing under the mouse.  Borderless child controls (a toolbar or
-     * rebar band) legitimately auto-size to a single ~24px row, so they must
-     * not be held to the top-level floor -- otherwise the control stays at its
-     * oversized creation default and the app lays panes out beneath a giant
-     * phantom toolbar. */
-    int borderless = (windows[wid].flags &
-                      (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) != 0;
-    uint32_t min_w = borderless ? 1u : 60u;
-    uint32_t min_h = borderless ? 1u : 40u;
-    if (w < min_w || h < min_h) return -1;
-    spinlock_acquire(&gui_lock);
+static int gui_resize_window_at(int wid, uint32_t w, uint32_t h,
+                                int move, int32_t x, int32_t y) {
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) goto fail;
     gui_win_t *win = &windows[wid];
+    /* Borderless child controls can legitimately be one pixel wide/high. */
+    int borderless = win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS);
+    if (w < (borderless ? 1u : 60u) || h < (borderless ? 1u : 40u)) goto fail;
+    if (move && win->w == w && win->h == h && win->x == x && win->y == y) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return 0;
+    }
     /* Compute new content size BEFORE modifying the window. */
     uint32_t new_bw, new_bh;
     if (win->flags & (GUI_WIN_NO_DECOR | GUI_WIN_BORDERLESS)) {
@@ -1163,45 +1216,24 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
         uint32_t decor_w = 2 * active_theme.border_w + 2 * GUI_CONTENT_PAD;
         uint32_t decor_h = active_theme.titlebar_h + 2 * active_theme.border_w
                         + 2 * GUI_CONTENT_PAD;
-        if (w <= decor_w || h <= decor_h) {
-            spinlock_release(&gui_lock);
-            return -1;
-        }
+        if (w <= decor_w || h <= decor_h) goto fail;
         new_bw = w - decor_w;
         new_bh = h - decor_h;
     }
-    if (new_bw == 0 || new_bh == 0) {
-        spinlock_release(&gui_lock);
-        return -1;
-    }
-    mark_window_dirty(win);
+    if (!gui_surface_pages(new_bw, new_bh)) goto fail;
 
-    /* FIX (resize-allocation): keep the existing back buffer whenever it
-     * already covers the requested content size.  Shrinking a window must
-     * not allocate at all (previously every drag-resize mouse event did
-     * kmalloc + kfree + a full multi-MiB memset, and the kernel heap never
-     * returns pages to the PMM, so the peak stuck around forever).  Growing
-     * inside the current allocation is also free.  Only growth beyond the
-     * current allocation reallocates, rounded up to a 64 px grid so a
-     * drag-resize pays for one allocation per 64 px of travel instead of
-     * one per mouse event.  back_w/back_h now mean the ALLOCATED buffer
-     * size; the logical content size is content_w()/content_h(), which is
-     * what gui_get_window_size() and the compositor clip to. */
+    /* Never allocate while shrinking or still within capacity. Round growth
+     * onto a 64px grid, but fall back to the exact extent if necessary. */
     if (new_bw > win->back_w || new_bh > win->back_h) {
         uint32_t alloc_w = (new_bw + 63u) & ~63u;
         uint32_t alloc_h = (new_bh + 63u) & ~63u;
-        size_t buf_size = (size_t)alloc_w * alloc_h * 4;
-        if (buf_size / 4 != (size_t)alloc_w * alloc_h) {
-        kprintf("[gui] resize_window: buffer size overflow %ux%u\n", alloc_w, alloc_h);
-        spinlock_release(&gui_lock);
-        return -1;
-    }
-        uint32_t *nb = (uint32_t *)kmalloc(buf_size);
-        if (!nb) {
-        kprintf("[gui] resize_window: kmalloc failed for %ux%u buffer\n", alloc_w, alloc_h);
-        spinlock_release(&gui_lock);
-        return -1;
-    }
+        uint32_t *nb = gui_surface_alloc(alloc_w, alloc_h);
+        if (!nb && (alloc_w != new_bw || alloc_h != new_bh)) {
+            alloc_w = new_bw;
+            alloc_h = new_bh;
+            nb = gui_surface_alloc(alloc_w, alloc_h);
+        }
+        if (!nb) goto fail;
 
         size_t pixels = (size_t)alloc_w * (size_t)alloc_h;
 
@@ -1216,26 +1248,34 @@ int gui_resize_window(int wid, uint32_t w, uint32_t h) {
                 cw
             );
         }
-        if (win->back) kfree(win->back);
+        /* The old front has the old stride. The next frame bracket will
+         * recreate it; until then the compositor uses the new back. */
+        gui_surface_free(win->back, win->back_w, win->back_h);
+        gui_surface_free(win->front, win->back_w, win->back_h);
+        win->front = NULL;
         win->back   = nb;
         win->back_w = alloc_w;
         win->back_h = alloc_h;
-        /* The front buffer was sized for the OLD dimensions; keeping it
-         * would let the compositor read past its end on the very next
-         * tick.  Drop it and let gui_frame_begin() reallocate at the new
-         * size -- one frame falls back to the live buffer, which is
-         * exactly the pre-existing behaviour. */
-        if (win->front) { kfree(win->front); win->front = NULL; }
     }
+    mark_window_dirty(win);
+    if (move) { win->x = x; win->y = y; }
     win->w = w; win->h = h;
     win->content_dirty = 1;
     mark_window_dirty(win);
     /* Post resize event. */
     gui_event_t e = { GUI_EVT_RESIZE, 0,0,0,0,0,0 };
     e.x = (int32_t)new_bw; e.y = (int32_t)new_bh;
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     gui_post_event(wid, &e);
     return 0;
+
+fail:
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
+    return -1;
+}
+
+int gui_resize_window(int wid, uint32_t w, uint32_t h) {
+    return gui_resize_window_at(wid, w, h, 0, 0, 0);
 }
 
 int gui_set_title(int wid, const char *title) {
@@ -1269,8 +1309,7 @@ int gui_maximize_window(int wid) {
     w->restore_w = w->w; w->restore_h = w->h;
     uint32_t fw = gfx_get_width();
     uint32_t fh = gfx_get_height() - active_theme.taskbar_h;
-    w->x = 0; w->y = 0;
-    gui_resize_window(wid, fw, fh);
+    if (gui_resize_window_at(wid, fw, fh, 1, 0, 0) != 0) return -1;
     w->maximized = 1;
     w->snap = GUI_SNAP_MAXIMIZED;
     mark_window_dirty(w);
@@ -1287,8 +1326,8 @@ int gui_restore_window(int wid) {
         return 0;
     }
     mark_window_dirty(w);
-    w->x = w->restore_x; w->y = w->restore_y;
-    gui_resize_window(wid, w->restore_w, w->restore_h);
+    if (gui_resize_window_at(wid, w->restore_w, w->restore_h,
+                             1, w->restore_x, w->restore_y) != 0) return -1;
     w->maximized = 0;
     w->minimized = 0;
     w->snap = GUI_SNAP_NONE;
@@ -1308,33 +1347,22 @@ int gui_snap_window(int wid, gui_snap_t snap) {
     }
     uint32_t fw = gfx_get_width();
     uint32_t fh = gfx_get_height() - active_theme.taskbar_h;
+    uint32_t nw = fw, nh = fh;
+    int32_t nx = 0, ny = 0;
     switch (snap) {
         case GUI_SNAP_NONE:
-            w->x = w->restore_x; w->y = w->restore_y;
-            gui_resize_window(wid, w->restore_w, w->restore_h);
+            nx = w->restore_x; ny = w->restore_y;
+            nw = w->restore_w; nh = w->restore_h;
             break;
-        case GUI_SNAP_LEFT:
-            w->x = 0; w->y = 0;
-            gui_resize_window(wid, fw / 2, fh);
-            break;
-        case GUI_SNAP_RIGHT:
-            w->x = (int32_t)(fw / 2); w->y = 0;
-            gui_resize_window(wid, fw / 2, fh);
-            break;
-        case GUI_SNAP_TOP:
-            w->x = 0; w->y = 0;
-            gui_resize_window(wid, fw, fh / 2);
-            break;
-        case GUI_SNAP_BOTTOM:
-            w->x = 0; w->y = (int32_t)(fh / 2);
-            gui_resize_window(wid, fw, fh / 2);
-            break;
-        case GUI_SNAP_MAXIMIZED:
-            w->x = 0; w->y = 0;
-            gui_resize_window(wid, fw, fh);
-            w->maximized = 1;
-            break;
+        case GUI_SNAP_RIGHT: nx = (int32_t)(fw / 2); /* fall through */
+        case GUI_SNAP_LEFT: nw = fw / 2; break;
+        case GUI_SNAP_BOTTOM: ny = (int32_t)(fh / 2); /* fall through */
+        case GUI_SNAP_TOP: nh = fh / 2; break;
+        case GUI_SNAP_MAXIMIZED: break;
+        default: return -1;
     }
+    if (gui_resize_window_at(wid, nw, nh, 1, nx, ny) != 0) return -1;
+    w->maximized = snap == GUI_SNAP_MAXIMIZED;
     w->snap = snap;
     w->content_dirty = 1;
     mark_window_dirty(w);
@@ -1381,14 +1409,6 @@ uint32_t gui_get_window_flags(int wid) {
     return windows[wid].flags;
 }
 
-/* ---- Back buffer access ---- */
-
-uint32_t *gui_window_buffer(int wid, uint32_t *out_pitch) {
-    if (!win_alive(wid)) return NULL;
-    if (out_pitch) *out_pitch = windows[wid].back_w;
-    return windows[wid].back;
-}
-
 /* ---- Invalidation ---- */
 
 int gui_invalidate_window(int wid) {
@@ -1420,7 +1440,7 @@ int gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h) {
 
 void gui_request_redraw(void) {
     full_dirty = 1;
-    gui_dirty_reset();
+    dirty_reset();
 }
 
 /* ===================================================================
@@ -1432,22 +1452,33 @@ void gui_request_redraw(void) {
  * =================================================================== */
 
 int gui_draw_pixel(int wid, int32_t x, int32_t y, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_draw_pixel(w->back, w->back_w, w->back_h,
                                      w->back_w, x, y, color);
     if (result == 0 && x >= 0 && y >= 0 &&
         (uint32_t)x < w->back_w && (uint32_t)y < w->back_h)
         w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
 
 int gui_get_pixel(int wid, int32_t x, int32_t y, uint32_t *out) {
-    if (!out || !win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!out || !win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
-    return gui_rust_get_pixel(w->back, w->back_w, w->back_h,
+    int result = gui_rust_get_pixel(w->back, w->back_w, w->back_h,
                               w->back_w, x, y, out);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
+    return result;
 }
 
 
@@ -1473,13 +1504,18 @@ int gui_font_metrics(uint32_t *width, uint32_t *height,
  * Returns 0 on success (including out-of-bounds clip), -1 if wid is dead. */
 int gui_blend_pixel(int wid, int32_t x, int32_t y,
                     uint32_t color, uint8_t a) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_blend_pixel(w->back, w->back_w, w->back_h,
                                       w->back_w, x, y, color, a);
     if (result == 0 && a != 0 && x >= 0 && y >= 0 &&
         (uint32_t)x < w->back_w && (uint32_t)y < w->back_h)
         w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1495,7 +1531,11 @@ int gui_blend_pixel(int wid, int32_t x, int32_t y,
  */
 int gui_blend_pixels4(int wid, int32_t x, int32_t y,
                       uint32_t color, const uint8_t alpha[4]) {
-    if (!win_alive(wid) || !alpha) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid) || !alpha) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_blend_pixels4(w->back, w->back_w, w->back_h,
                                         w->back_w, x, y, color, alpha);
@@ -1510,6 +1550,7 @@ int gui_blend_pixels4(int wid, int32_t x, int32_t y,
         }
     }
     if (touched) w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1517,7 +1558,11 @@ int gui_blend_pixels4(int wid, int32_t x, int32_t y,
 
 int gui_fill_rect(int wid, int32_t x, int32_t y,
                   uint32_t W, uint32_t H, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_fill_rect(w->back, w->back_w, w->back_h,
                                     w->back_w, x, y, W, H, color);
@@ -1527,13 +1572,18 @@ int gui_fill_rect(int wid, int32_t x, int32_t y,
         (int64_t)x + (int64_t)W > 0 &&
         (int64_t)y + (int64_t)H > 0)
         w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
 
 int gui_draw_rect(int wid, int32_t x, int32_t y,
                   uint32_t W, uint32_t H, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_draw_rect(w->back, w->back_w, w->back_h,
                                     w->back_w, x, y, W, H, color);
@@ -1543,17 +1593,23 @@ int gui_draw_rect(int wid, int32_t x, int32_t y,
         (int64_t)x + (int64_t)W > 0 &&
         (int64_t)y + (int64_t)H > 0)
         w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
 
 int gui_draw_line(int wid, int32_t x0, int32_t y0,
                   int32_t x1, int32_t y1, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_draw_line(w->back, w->back_w, w->back_h,
                                     w->back_w, x0, y0, x1, y1, color);
     if (result == 0) w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1564,13 +1620,18 @@ int gui_draw_line(int wid, int32_t x0, int32_t y0,
  * gui_draw_screen_text() and gui_screen_text_width(). */
 int sdf_draw_text(int wid, int32_t x, int32_t y, const char *s,
                   uint32_t color, uint32_t px_size) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
 
     gui_win_t *w = &windows[wid];
     int result = gui_sdf_draw_buffer(w->back,
                                      w->back_w, w->back_h, w->back_w,
                                      x, y, s, color, px_size);
     if (result == 0) w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1590,11 +1651,16 @@ int gui_screen_text_width(const char *text, uint32_t px_size,
     return gui_sdf_measure_text(text, px_size, out_width, NULL);
 }
 int gui_clear(int wid, uint32_t color) {
-    if (!win_alive(wid)) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid)) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_clear(w->back, w->back_w, w->back_h,
                                 w->back_w, color);
     if (result == 0) w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1607,10 +1673,10 @@ int gui_clear(int wid, uint32_t color) {
  * 400 times, and the compositor would simply land in one of the 399 gaps.
  * The bracket has to span the whole frame, so the syscall wrapper owns it. */
 void gui_frame_begin(int wid) {
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
 
     if (!win_alive(wid)) {
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return;
     }
 
@@ -1619,9 +1685,7 @@ void gui_frame_begin(int wid) {
     if (!w->front && w->back) {
         size_t pixels = (size_t)w->back_w * w->back_h;
 
-        uint32_t *front = (uint32_t *)kmalloc(
-            (uint64_t)pixels * sizeof(uint32_t)
-        );
+        uint32_t *front = gui_surface_alloc(w->back_w, w->back_h);
 
         if (front) {
             gui_copy32(front, w->back, pixels);
@@ -1633,14 +1697,14 @@ void gui_frame_begin(int wid) {
 
     w->updating = 1;
 
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
 }
 
 void gui_frame_end(int wid) {
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
 
     if (!win_alive(wid)) {
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return;
     }
 
@@ -1657,16 +1721,21 @@ void gui_frame_end(int wid) {
     w->updating = 0;
     w->content_dirty = 1;
 
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
 }
 
 int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
              const uint32_t *src, uint32_t src_stride) {
-    if (!win_alive(wid) || !src) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid) || !src) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_blit(w->back, w->back_w, w->back_h, w->back_w,
                                x, y, W, H, src, src_stride);
     if (result == 0 && W != 0 && H != 0) w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1674,12 +1743,17 @@ int gui_blit(int wid, int32_t x, int32_t y, uint32_t W, uint32_t H,
 int gui_blit_alpha(int wid, int32_t x, int32_t y,
                    uint32_t W, uint32_t H, const uint32_t *src,
                    uint32_t src_stride) {
-    if (!win_alive(wid) || !src) return -1;
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
+    if (!win_alive(wid) || !src) {
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
+        return -1;
+    }
     gui_win_t *w = &windows[wid];
     int result = gui_rust_blit_alpha(w->back, w->back_w, w->back_h,
                                      w->back_w, x, y, W, H,
                                      src, src_stride);
     if (result == 0 && W != 0 && H != 0) w->content_dirty = 1;
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     return result;
 }
 
@@ -1728,10 +1802,10 @@ static void gui_post_event_locked(gui_win_t *w, const gui_event_t *evt) {
 }
 int gui_post_event(int wid, const gui_event_t *evt) {
     if (!evt) return -1;
-    spinlock_acquire(&gui_evt_lock);
-    if (!win_alive(wid)) { spinlock_release(&gui_evt_lock); return -1; }
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
+    if (!win_alive(wid)) { spinlock_release_irqrestore(&gui_evt_lock, evt_flags); return -1; }
     gui_post_event_locked(&windows[wid], evt);
-    spinlock_release(&gui_evt_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
     wq_wake_all(&gui_evt_wq);
     return 0;
 }
@@ -1751,27 +1825,27 @@ static int gui_poll_owned_event_locked(int wid, uint64_t owner_pid,
     return 1;
 }
 int gui_poll_event(int wid, uint64_t owner_pid, gui_event_t *out) {
-    spinlock_acquire(&gui_evt_lock);
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
     int result = gui_poll_owned_event_locked(wid, owner_pid, 0, out);
-    spinlock_release(&gui_evt_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
     return result;
 }
 
 int gui_wait_event(int wid, uint64_t owner_pid, gui_event_t *out) {
     /* O7: block instead of yield-spinning; the 5-tick net covers a push
      * between our empty check and sleep. Destruction also wakes waiters. */
-    spinlock_acquire(&gui_evt_lock);
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
     if (!out || !owner_pid || !win_alive(wid) ||
         (uint32_t)windows[wid].owner_pid != owner_pid) {
-        spinlock_release(&gui_evt_lock);
+        spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
         return -1;
     }
     uint32_t epoch = window_epoch[wid];
-    spinlock_release(&gui_evt_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
     for (;;) {
-        spinlock_acquire(&gui_evt_lock);
+        uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
         int result = gui_poll_owned_event_locked(wid, owner_pid, epoch, out);
-        spinlock_release(&gui_evt_lock);
+        spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
         if (result) return result; /* event or destroyed/reused HWND */
         wq_wait_deadline(&gui_evt_wq, NULL, timer_get_ticks() + 5);
     }
@@ -2142,26 +2216,26 @@ int gui_send_file_drop(int source_wid, uint64_t source_pid, const char *path) {
     if (n < 2 || n >= GUI_DROP_PATH_MAX) return -1;
     int32_t mx, my;
     if (gui_mouse_position(&mx, &my) != 1) return -1;
-    spinlock_acquire(&gui_lock);
+    uint64_t gui_flags = spinlock_acquire_irqsave(&gui_lock);
     if (!source_pid || !win_alive(source_wid) ||
         (uint32_t)windows[source_wid].owner_pid != source_pid) {
-        spinlock_release(&gui_lock); return -1;
+        spinlock_release_irqrestore(&gui_lock, gui_flags); return -1;
     }
     int dst = hit_window(mx, my);
     if (dst < 0 || dst == source_wid || hit_part(&windows[dst], mx, my) != 0) {
-        spinlock_release(&gui_lock); return -1;
+        spinlock_release_irqrestore(&gui_lock, gui_flags); return -1;
     }
     gui_win_t *w = &windows[dst];
     gui_event_t evt = { GUI_EVT_DROP, 0, 0, 0, 0, 0, 0 };
     evt.x = mx - content_x(w);
     evt.y = my - content_y(w);
-    spinlock_acquire(&gui_evt_lock);
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
     int slot = -1;
     for (int i = 0; i < GUI_DROP_SLOTS; ++i)
         if (!w->drop_busy[i]) { slot = i; break; }
     if (slot < 0) {
-        spinlock_release(&gui_evt_lock);
-        spinlock_release(&gui_lock);
+        spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
+        spinlock_release_irqrestore(&gui_lock, gui_flags);
         return -1;
     }
     uint16_t gen = (uint16_t)((drop_epoch[dst][slot] + 1u) & 0x0fffu);
@@ -2173,28 +2247,28 @@ int gui_send_file_drop(int source_wid, uint64_t source_pid, const char *path) {
     memcpy(w->drop_paths[slot], path, n + 1);
     evt.data = (uint16_t)((gen << 4) | (unsigned)(slot + 1));
     gui_post_event_locked(w, &evt);
-    spinlock_release(&gui_evt_lock);
-    spinlock_release(&gui_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
+    spinlock_release_irqrestore(&gui_lock, gui_flags);
     wq_wake_all(&gui_evt_wq);
     return 0;
 }
 int gui_take_file_drop(int destination_wid, uint64_t destination_pid,
                        uint16_t token, char out[GUI_DROP_PATH_MAX]) {
     if (!out || !destination_pid) return -1;
-    spinlock_acquire(&gui_evt_lock);
+    uint64_t evt_flags = spinlock_acquire_irqsave(&gui_evt_lock);
     if (!win_alive(destination_wid) ||
         (uint32_t)windows[destination_wid].owner_pid != destination_pid) {
-        spinlock_release(&gui_evt_lock); return -1;
+        spinlock_release_irqrestore(&gui_evt_lock, evt_flags); return -1;
     }
     gui_win_t *w = &windows[destination_wid];
     unsigned index = token & 15u;
     if (!index || index > GUI_DROP_SLOTS || !w->drop_busy[index - 1] ||
         w->drop_generation[index - 1] != (token >> 4)) {
-        spinlock_release(&gui_evt_lock); return -1;
+        spinlock_release_irqrestore(&gui_evt_lock, evt_flags); return -1;
     }
     memcpy(out, w->drop_paths[index - 1], GUI_DROP_PATH_MAX);
     w->drop_busy[index - 1] = 0;
-    spinlock_release(&gui_evt_lock);
+    spinlock_release_irqrestore(&gui_evt_lock, evt_flags);
     return 0;
 }
 
@@ -2238,6 +2312,35 @@ static void update_button_hover(void) {
     }
 }
 
+/* Evaluate the signed pointer delta BEFORE casting size to an unsigned
+ * value. Moving a leading edge keeps the opposite edge fixed at the limit. */
+static void resize_drag_axis(int32_t origin, uint32_t initial, int64_t delta,
+                             int leading, uint32_t min, uint32_t screen,
+                             int32_t *pos, uint32_t *size) {
+    uint32_t max = initial > screen ? initial : screen;
+    if (min > initial) min = initial; /* a small window must not grow when shrunk */
+    int64_t n = (int64_t)initial + (leading ? -delta : delta);
+    if (n < min) n = min;
+    if (n > max) n = max;
+    *size = (uint32_t)n;
+    if (leading) {
+        int64_t p = (int64_t)origin + initial - n;
+        *pos = p < INT32_MIN ? INT32_MIN : p > INT32_MAX ? INT32_MAX : (int32_t)p;
+    }
+}
+
+static void start_resize_drag(int wid, int edge, int32_t mx, int32_t my) {
+    gui_win_t *w = &windows[wid];
+    drag_wid = wid;
+    drag_mode = 2;
+    drag_edge = edge;
+    drag_orig_x = w->x; drag_orig_y = w->y;
+    drag_orig_w = w->w; drag_orig_h = w->h;
+    drag_dx = mx; drag_dy = my;
+    snap_preview_active = 0;
+    snap_preview_type = GUI_SNAP_NONE;
+}
+
 static void route_mouse_event(const mouse_event_t *ev) {
     gui_cursor_t target_cursor = GUI_CURSOR_ARROW;
 
@@ -2262,8 +2365,8 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
     /* ---- Active drag/resize ---- */
     if (drag_mode) {
-        gui_win_t *w = &windows[drag_wid];
-        if (!win_alive(drag_wid)) { drag_mode = 0; }
+        gui_win_t *w = win_alive(drag_wid) ? &windows[drag_wid] : NULL;
+        if (!w) { drag_mode = 0; snap_preview_active = 0; }
         else if (drag_mode == 1) {
             /* Move. */
             int32_t nx = mx - drag_dx;
@@ -2288,36 +2391,16 @@ static void route_mouse_event(const mouse_event_t *ev) {
             }
             target_cursor = GUI_CURSOR_MOVE;
         } else if (drag_mode == 2) {
-            /* Resize. */
-            int32_t nx = w->x, ny_pos = w->y;
+            int32_t nx = w->x, ny = w->y;
             uint32_t nw = w->w, nh = w->h;
-
-            if (drag_edge & 1) { /* left */
-                int32_t dx = mx - drag_dx;
-                nw = drag_orig_w - (uint32_t)dx;
-                nx = drag_orig_x + dx;
-                if (nw < 80) { nw = 80; nx = drag_orig_x + (int32_t)drag_orig_w - 80; }
-            }
-            if (drag_edge & 2) { /* right */
-                nw = (uint32_t)((int32_t)drag_orig_w + (mx - drag_dx));
-                if (nw < 80) nw = 80;
-            }
-            if (drag_edge & 4) { /* top */
-                int32_t dy = my - drag_dy;
-                nh = drag_orig_h - (uint32_t)dy;
-                ny_pos = drag_orig_y + dy;
-                if (nh < 60) { nh = 60; ny_pos = drag_orig_y + (int32_t)drag_orig_h - 60; }
-            }
-            if (drag_edge & 8) { /* bottom */
-                nh = (uint32_t)((int32_t)drag_orig_h + (my - drag_dy));
-                if (nh < 60) nh = 60;
-            }
-
-            mark_window_dirty(w);
-            w->x = nx; w->y = ny_pos;
-            gui_resize_window(drag_wid, nw, nh);
-            mark_window_dirty(w);
-            full_dirty = 1;
+            if (drag_edge & 3)
+                resize_drag_axis(drag_orig_x, drag_orig_w, (int64_t)mx - drag_dx,
+                                 drag_edge & 1, 80, gfx_get_width(), &nx, &nw);
+            if (drag_edge & 12)
+                resize_drag_axis(drag_orig_y, drag_orig_h, (int64_t)my - drag_dy,
+                                 drag_edge & 4, 60, gfx_get_height(), &ny, &nh);
+            /* Publish position and size together only if the resize succeeds. */
+            gui_resize_window_at(drag_wid, nw, nh, 1, nx, ny);
 
             if (drag_edge & 0x3) target_cursor = GUI_CURSOR_HRESIZE;
             else if (drag_edge & 0xC) target_cursor = GUI_CURSOR_VRESIZE;
@@ -2326,7 +2409,8 @@ static void route_mouse_event(const mouse_event_t *ev) {
 
         if (ev->released & MOUSE_BTN_LEFT) {
             int rel_wid = drag_wid;
-            gui_snap_t apply_snap = snap_preview_type;
+            gui_snap_t apply_snap = (drag_mode == 1 && snap_preview_active)
+                                   ? snap_preview_type : GUI_SNAP_NONE;
             drag_mode = 0;
             drag_wid  = -1;
             snap_preview_active = 0;
@@ -2425,46 +2509,11 @@ static void route_mouse_event(const mouse_event_t *ev) {
                 }
                 return;
             }
-            case 5: { /* Resize grip */
-                drag_wid    = wid;
-                drag_mode   = 2;
-                drag_edge   = 2 | 8;  /* right + bottom */
-                drag_orig_w = w->w;
-                drag_orig_h = w->h;
-                drag_orig_x = w->x;
-                drag_orig_y = w->y;
-                drag_dx     = mx;
-                drag_dy     = my;
-                return;
-            }
-            case 7: { /* Left edge */
-                drag_wid = wid; drag_mode = 2; drag_edge = 1;
-                drag_orig_w = w->w; drag_orig_h = w->h;
-                drag_orig_x = w->x; drag_orig_y = w->y;
-                drag_dx = mx; drag_dy = my;
-                return;
-            }
-            case 8: { /* Right edge */
-                drag_wid = wid; drag_mode = 2; drag_edge = 2;
-                drag_orig_w = w->w; drag_orig_h = w->h;
-                drag_orig_x = w->x; drag_orig_y = w->y;
-                drag_dx = mx; drag_dy = my;
-                return;
-            }
-            case 9: { /* Top edge */
-                drag_wid = wid; drag_mode = 2; drag_edge = 4;
-                drag_orig_w = w->w; drag_orig_h = w->h;
-                drag_orig_x = w->x; drag_orig_y = w->y;
-                drag_dx = mx; drag_dy = my;
-                return;
-            }
-            case 10: { /* Bottom edge */
-                drag_wid = wid; drag_mode = 2; drag_edge = 8;
-                drag_orig_w = w->w; drag_orig_h = w->h;
-                drag_orig_x = w->x; drag_orig_y = w->y;
-                drag_dx = mx; drag_dy = my;
-                return;
-            }
+            case 5: /* Resize grip */ start_resize_drag(wid, 2 | 8, mx, my); return;
+            case 7: /* Left edge */   start_resize_drag(wid, 1, mx, my); return;
+            case 8: /* Right edge */  start_resize_drag(wid, 2, mx, my); return;
+            case 9: /* Top edge */    start_resize_drag(wid, 4, mx, my); return;
+            case 10: /* Bottom edge */start_resize_drag(wid, 8, mx, my); return;
             case 0: { /* Client area */
                 uint32_t now = (uint32_t)timer_get_ticks();
                 int dbl = gui_is_double_click(now, mx, my, wid, part, MOUSE_BTN_LEFT);
@@ -2669,11 +2718,11 @@ void gui_compositor_tick(void) {
      * from syscall threads are deferred to the next frame. */
     if (full_dirty) {
         full_dirty = 0;
-        gui_dirty_reset();
+        dirty_reset();
         compositor_render(have_cursor, cursor_x, cursor_y);
     } else {
         gui_dirty_rect_t rects[GUI_MAX_DIRTY_RECTS];
-        size_t n = gui_dirty_snapshot(rects, GUI_MAX_DIRTY_RECTS);
+        size_t n = dirty_snapshot(rects, GUI_MAX_DIRTY_RECTS);
 
         if (n > 0) {
             compositor_render_dirty(
@@ -2692,7 +2741,7 @@ void gui_render_now(void) {
     int cursor_x = -1, cursor_y = -1;
     int have_cursor = (mouse_get_position(&cursor_x, &cursor_y) == 1);
     full_dirty = 0;
-    gui_dirty_reset();
+    dirty_reset();
     compositor_render(have_cursor, cursor_x, cursor_y);
 }
 
@@ -2736,13 +2785,111 @@ void gui_compositor_thread(void *arg) {
             gui_compositor_tick();
             timer_sleep_ms(10);
         } while (__atomic_load_n(&gui_pending, __ATOMIC_ACQUIRE) ||
-            full_dirty || !gui_dirty_is_empty());
+            full_dirty || !dirty_is_empty());
     }
 }
 
 /* ===================================================================
  * Self-test
  * =================================================================== */
+
+/* Run before starting the compositor: no other thread owns these windows.
+ * Use the real pointer-motion path and verify the PMM refcounts, not just
+ * that the window disappears or that the heap can recycle some bytes. */
+static int surface_released(paddr_t base, uint64_t pages) {
+    if (!base || !pages) return 0;
+    for (uint64_t i = 0; i < pages; ++i)
+        if (pmm_get_frame_refcount(base + i * PMM_PAGE_SIZE)) return 0;
+    return 1;
+}
+
+static void gui_window_resize_self_test(void) {
+    const char *step = "create";
+    int wid = gui_create_window(200, 100, 200, 160, "Resize regression", GUI_WIN_DEFAULT);
+    if (wid < 0) goto fail;
+    gui_win_t *w = &windows[wid];
+    gui_frame_begin(wid);
+    gui_frame_end(wid);
+    if (!w->front) goto fail;
+    paddr_t back = gui_surface_phys(w->back), front = gui_surface_phys(w->front);
+    uint64_t pages = gui_surface_pages(w->back_w, w->back_h);
+
+    step = "bottom-right past the opposite corner";
+    start_resize_drag(wid, 2 | 8, 399, 259);
+    mouse_event_t move = {0};
+    move.abs_x = 240; move.abs_y = 130;
+    move.buttons = MOUSE_BTN_LEFT;
+    route_mouse_event(&move);
+    move.abs_x = 0; move.abs_y = 0;
+    move.buttons = 0;
+    move.released = MOUSE_BTN_LEFT;
+    /* Even a stale preview must not snap a resize on release. */
+    snap_preview_type = GUI_SNAP_MAXIMIZED;
+    snap_preview_active = 1;
+    route_mouse_event(&move);
+    if (w->x != 200 || w->y != 100 || w->w != 80 || w->h != 60 || w->snap != GUI_SNAP_NONE ||
+        gui_surface_phys(w->back) != back || !w->front || gui_surface_phys(w->front) != front)
+        goto fail;
+
+    step = "left/top anchored at minimum";
+    if (gui_resize_window(wid, 200, 160) != 0) goto fail;
+    start_resize_drag(wid, 1 | 4, 200, 100);
+    move.abs_x = 500; move.abs_y = 400;
+    route_mouse_event(&move);
+    if (w->x != 320 || w->y != 200 || w->w != 80 || w->h != 60) goto fail;
+
+    step = "overflow rejected without a geometry change";
+    if (gui_resize_window_at(wid, UINT32_MAX, 200, 1, 0, 0) == 0 ||
+        w->x != 320 || w->y != 200 || w->w != 80 || w->h != 60) goto fail;
+
+    step = "growth releases both previous surfaces";
+    if (gui_resize_window(wid, 320, 240) != 0 || w->front ||
+        !surface_released(back, pages) || !surface_released(front, pages)) goto fail;
+    gui_frame_begin(wid);
+    gui_frame_end(wid);
+    if (!w->front) goto fail;
+    back = gui_surface_phys(w->back);
+    front = gui_surface_phys(w->front);
+    pages = gui_surface_pages(w->back_w, w->back_h);
+
+    step = "process exit releases both surfaces";
+    const int mock_pid = INT32_MAX;  /* test a user-owned slot before Ring 3 starts */
+    w->owner_pid = mock_pid;
+    request_window_close(wid);
+    if (!win_alive(wid)) goto fail;  /* preserve the user's CLOSE_REQ protocol */
+    uint64_t flags = spinlock_acquire_irqsave(&gui_lock);
+    int cleaned = gui_cleanup_owned_windows_locked(mock_pid);
+    spinlock_release_irqrestore(&gui_lock, flags);
+    if (cleaned != 1 || win_alive(wid) || !surface_released(back, pages) || !surface_released(front, pages))
+        goto fail;
+
+    step = "decoration close frees an ownerless window";
+    wid = gui_create_window(0, 0, 100, 80, "Close regression", GUI_WIN_DEFAULT);
+    if (wid < 0) goto fail;
+    gui_frame_begin(wid);
+    gui_frame_end(wid);
+    w = &windows[wid];
+    if (!w->front || w->owner_pid) goto fail;
+    back = gui_surface_phys(w->back);
+    front = gui_surface_phys(w->front);
+    pages = gui_surface_pages(w->back_w, w->back_h);
+    request_window_close(wid);
+    if (win_alive(wid) || !surface_released(back, pages) || !surface_released(front, pages))
+        goto fail;
+
+    gui_set_cursor(GUI_CURSOR_ARROW);
+    kprintf("[gui] PASS: resize clamps before allocation; window surfaces returned to PMM\n");
+    return;
+
+fail:
+    if (win_alive(wid)) {
+        uint64_t flags = spinlock_acquire_irqsave(&gui_lock);
+        gui_free_slot_locked(wid);
+        spinlock_release_irqrestore(&gui_lock, flags);
+    }
+    gui_set_cursor(GUI_CURSOR_ARROW);
+    kprintf("[gui] FAIL: resize/surface lifecycle: %s\n", step);
+}
 
 void gui_self_test(void) {
     kprintf("[gui] self-test: creating test windows...\n");
@@ -2790,4 +2937,5 @@ void gui_self_test(void) {
     kprintf("[gfx] framebuffer GUI + window manager rendered "
             "(%ux%u, %d windows, text + widgets)\n",
             gui_screen_width(), gui_screen_height(), 2);
+    gui_window_resize_self_test();
 }

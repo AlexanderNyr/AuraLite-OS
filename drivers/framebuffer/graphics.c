@@ -27,7 +27,7 @@
 void *fb32_map_fb(uint32_t phys, uint32_t len);
 #endif
 
-#if defined(__x86_64__)
+#if defined(__x86_64__) && !defined(__TINYC__)
 #include <emmintrin.h>
 #define GFX_HAVE_SIMD 1
 #else

@@ -44,58 +44,15 @@ if ! (cd "$ROOT" && make iso) >"$PREP_LOG" 2>&1; then
 fi
 
 il_init
-il_have qemu-system-x86_64 || exit 2
+il_have qemu-system-x86_64 mformat mcopy || exit 2
+. lib/selfhost_disk.sh
 
 il_section "self-host bootstrap closure (SH8): toolchain closes, loop runs twice"
 
-# /fat must hold the two tcc stages, the linkers, the generated kernel, the
-# packed initrd and the ~48 MiB hybrid image, so pre-format a real 64 MiB FAT32
-# volume on the host (the guest's stock 4 MiB superfloppy cannot).  Same BPB /
-# FSInfo / FAT shape the guest's parse_or_format accepts (see test_selfhost_iso.sh).
+# Each loop links against the same prebuilt Rust input, outside the initrd.
+# Leave room for that input, the guest-produced ELF and the ~48 MiB ISO.
 DISK="$IL_BUILD/selfhost-sh8-fat.img"
-rm -f "$DISK"
-mkdir -p "$(dirname "$DISK")"
-dd if=/dev/zero of="$DISK" bs=512 count=131000 status=none
-python3 - "$DISK" <<'PY'
-import sys, struct
-path = sys.argv[1]
-bs = 512
-BASE = 64; T = 131000; RES = 32; NF = 2
-fat = ((T - 1) // 128) + 1
-clusters = T - (RES + NF * fat)
-def w16(v): return struct.pack('<H', v)
-def w32(v): return struct.pack('<I', v)
-disk = bytearray((BASE + T) * bs)
-mb = bytearray(bs)
-mb[510] = 0x55; mb[511] = 0xAA
-mb[446 + 0] = 0x80; mb[446 + 4] = 0x0C
-struct.pack_into('<I', mb, 446 + 8, BASE)
-struct.pack_into('<I', mb, 446 + 12, T)
-disk[0:bs] = mb
-def put(lba, data): disk[lba*bs:(lba+1)*bs] = data
-bpb = bytearray(bs)
-bpb[0] = 0xEB; bpb[1] = 0x58; bpb[2] = 0x90
-bpb[3:11] = b'AURALITE'
-bpb[11:13] = w16(512); bpb[13] = 1
-bpb[14:16] = w16(RES); bpb[16] = NF
-bpb[21] = 0xF8; bpb[24:26] = w16(63); bpb[26:28] = w16(255)
-bpb[28:32] = w32(BASE); bpb[32:36] = w32(T)
-bpb[36:40] = w32(fat); bpb[44:48] = w32(2)
-bpb[48:50] = w16(1); bpb[50:52] = w16(6)
-bpb[64] = 0x80; bpb[66] = 0x29; bpb[67:71] = w32(0xA2026022)
-bpb[71:82] = b'AURALITE   '; bpb[82:90] = b'FAT32   '
-bpb[510] = 0x55; bpb[511] = 0xAA
-put(BASE, bpb); put(BASE + 6, bpb)
-fs = bytearray(bs)
-fs[0:4] = w32(0x41615252); fs[484:488] = w32(0x61417272)
-fs[488:492] = w32(clusters - 1); fs[492:496] = w32(3); fs[508:512] = w32(0xAA550000)
-put(BASE + 1, fs); put(BASE + 7, fs)
-for j in range(NF):
-    fla = bytearray(bs)
-    fla[0:4] = w32(0x0FFFFFF8); fla[4:8] = w32(0x0FFFFFFF); fla[8:12] = w32(0x0FFFFFFF)
-    put(BASE + RES + j * fat, fla)
-open(path, "wb").write(disk)
-PY
+selfhost_make_disk "$DISK" "$ROOT" || exit 2
 
 AHCI=(
     -drive "file=$DISK,format=raw,if=none,id=sh8disk"
@@ -107,16 +64,11 @@ LOG="$IL_LOGDIR/selfhost_closure.log"
 IL_LAST_LOG="$LOG"
 trap il_dump_on_error EXIT
 
-# Long-running: the closure compiles the whole x86_64 kernel twice plus the
-# two-stage tcc, so give it a generous budget and keep the guest alive after.
-il_send_delay 8
-il_send "sh /tests/sh8_closure.sh"
-il_send_delay 30
-il_send "echo SH8_STILL_ALIVE"
-il_send_delay 3
-il_send "exit"
-
-il_run_qemu "$LOG" 1400 "${AHCI[@]}"
+# Do not feed commands while the foreground closure owns the shell.
+il_send_prompt "sh /tests/sh8_closure.sh"
+il_send_prompt "echo SH8_STILL_ALIVE"
+il_send_prompt "exit"
+il_run_qemu_prompt "$LOG" 1400 "${AHCI[@]}"
 
 # ---- the §8 receipt, only after both loops are clean ----------------------
 il_assert_grep "$LOG" "\[selfhost\] FULL LOOP PASS \(2/2 clean loops\)" \
@@ -146,7 +98,7 @@ il_assert_grep "$LOG" "sha256" \
 il_assert_count "$LOG" "\[selfhost\] mkiso PASS:.*written in-guest" 2 \
     "the ISO was written in BOTH loops"
 
-# ---- nothing used a host compiler/linker/assembler ------------------------
+# ---- no failures in the in-guest C/asm build or final link ---------------
 il_assert_no_grep "$LOG" "tcc: error|aulink: [1-9][0-9]* error|undefined reference|cannot open object directory" \
     "no in-guest build error"
 il_assert_no_grep "$LOG" "UNREACHABLE" \

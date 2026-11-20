@@ -48,6 +48,8 @@ void pic_unmask(int irq);
 void pic_disable_for_apic(void);
 
 void irq_register_handler(int irq, irq_handler_t handler);
+/* Change the handler without touching the legacy PIC masks. */
+irq_handler_t irq_exchange_handler(int irq, irq_handler_t handler);
 void irq_dispatch(int irq, struct registers *regs);
 
 #endif /* AURALITE_ARCH_X86_64_IRQ_H */

@@ -227,17 +227,21 @@ static void madt_walk(uint64_t hhdm) {
     }
 }
 
-int ioapic_route_gsi(int gsi, int vector, uint32_t dest_apic_id) {
-    if (!apic_irq_mode || !ioapic_win) {
+int ioapic_route_gsi(int gsi, int vector, uint32_t dest_apic_id,
+                     uint64_t *saved) {
+    if (!apic_irq_mode || !ioapic_win || gsi < 0 || gsi >= ioapic_count) {
         return -1;
     }
-    if (gsi < 0 || gsi >= ioapic_count) {
-        return -1;
-    }
-    /* Edge/high/fixed, unmasked -- the ISA shape; the caller restores the
-     * pin when it is done (see the RES-16 wake selftest). */
+    uint8_t reg = (uint8_t)(IOAPIC_REDTBL + 2 * gsi);
+    *saved = io_read(reg);
+    *saved |= (uint64_t)io_read(reg + 1) << 32;
     io_set_redir(gsi, io_make_entry(vector, dest_apic_id, 0, 0));
     return 0;
+}
+
+void ioapic_restore_gsi(int gsi, uint64_t saved) {
+    if (!apic_irq_mode || !ioapic_win || gsi < 0 || gsi >= ioapic_count) return;
+    io_set_redir(gsi, saved);
 }
 
 int ioapic_init(void) {

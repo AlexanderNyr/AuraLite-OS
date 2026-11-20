@@ -18,8 +18,9 @@
 #       are rebuilt with the stage compiler so the kernel never sees a host
 #       binary.
 #   L1, L2  the full loop, twice: from a clean /fat the generated kernel build
-#       (/src/selfhost/kernel_build.sh) compiles all 149 C + 9 asm x86_64 kernel sources
-#       and links /fat/KERNEL.ELF with the self-built aulink; mkinitrd packs
+#       (/src/selfhost/kernel_build.sh) compiles all 150 C + 9 asm x86_64 kernel sources
+#       and links /fat/KERNEL.ELF with the self-built aulink plus the staged
+#       Rust GUI bootstrap object; mkinitrd packs
 #       the initrd payload; mkiso splices the hybrid image to /fat/auralite.iso.
 #       Loop 1 drives it with tcc1, loop 2 with tcc2.
 #   PASS  [selfhost] FULL LOOP PASS (2/2 clean loops) -- printed only after

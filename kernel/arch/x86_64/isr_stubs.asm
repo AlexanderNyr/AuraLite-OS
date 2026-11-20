@@ -186,3 +186,12 @@ ISR_NOERR 31
     ISR_NOERR i
 %assign i i+1
 %endrep
+
+; Keep the scheduler's idle HLT at a known address so an IRQ handler can
+; distinguish waking idle from interrupting ordinary work on the same AP.
+global x86_sched_idle_wait, x86_sched_idle_resume
+x86_sched_idle_wait:
+    sti
+    hlt
+x86_sched_idle_resume:
+    ret

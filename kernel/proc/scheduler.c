@@ -71,10 +71,12 @@ int sched_is_ready(void) { return scheduler_ready; }
 
 /* The idle thread runs when no other thread is ready. It enables interrupts
  * and halts until the next IRQ (typically the PIT timer). */
+extern void x86_sched_idle_wait(void);
+
 static void idle_loop(void *arg) {
     (void)arg;
     for (;;) {
-        arch_wait_for_interrupt();
+        x86_sched_idle_wait();
     }
 }
 
@@ -344,7 +346,7 @@ void sched_idle(void) {
          * -> schedule(), which is how real threads reach this CPU.  Between
          * ticks the core simply sleeps on hlt with interrupts on -- the idle
          * TCB above keeps the accounting/stealing story consistent. */
-        arch_wait_for_interrupt();
+        x86_sched_idle_wait();
     }
 }
 

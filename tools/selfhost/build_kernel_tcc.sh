@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # build_kernel_tcc.sh -- SELFHOST_PLAN.md SH5c: build the x86_64 kernel with
-# the self-host toolchain (host tcc + mini-asm + aulink), no clang/lld/nasm
-# in the tool path.
+# the self-host C toolchain (host tcc + mini-asm + aulink). Rust GUI code
+# is a bootstrap link input; C/asm and the final ELF use the self-host tools.
 #
 #   tcc   = build/selfhost/host-tcc-src/tcc   (make selfhost-deps selfhost-host-tcc)
 #   asm   = tools/mini-asm/mini-asm.c         (SH4d: elf64 parity with nasm)
@@ -112,11 +112,12 @@ echo "[sh5c] mini-asm assembled $(echo $ASMS | wc -w) kernel asm files"
 rm -rf "$OUT/lib1"; mkdir -p "$OUT/lib1"
 ( cd "$OUT/lib1" && ar x "$LIBTCC1" atomic.o stdatomic.o builtin.o alloca.o va_list.o ) || exit 1
 
-# ---- 6) link with aulink (object order = the clang link order) ---------
+# ---- 6) link with aulink, including the actual Rust GUI -----------------
+make selfhost-gui-input || exit 1
 ASM_OBJS=""
 for f in $ASMS; do ASM_OBJS="$ASM_OBJS $OUT/asm/$(echo "$f" | tr '/' '_').o"; done
 "$OUT/aulink" -T kernel.ld -o "$ROOT/build/selfhost/kernel-tcc.elf" \
-    $OUT/obj/*.o $OUT/lib1/*.o $ASM_OBJS 2>"$OUT/aulink.err" || {
+    $OUT/obj/*.o $OUT/lib1/*.o $ASM_OBJS "$ROOT/build/selfhost/gui-core-link.o" 2>"$OUT/aulink.err" || {
     echo "[selfhost] tcc build FAIL: aulink link" >&2
     sed 's/^/    /' "$OUT/aulink.err" | head -10 >&2
     exit 1

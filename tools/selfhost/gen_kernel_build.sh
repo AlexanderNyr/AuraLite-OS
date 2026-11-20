@@ -121,7 +121,7 @@ emit ""
 
 # ---- link with the self-built aulink (directory = sorted lexical object set)
 emit "# ---- link with the self-built aulink (directory = sorted lexical set) ----"
-emit "run /tmp/sh8/tools/aulink -T /src/kernel.ld -o /fat/KERNEL.ELF /tmp/sh8/cobj /apps/tcc/libtcc1.a /tmp/sh8/aobj"
+emit "run /tmp/sh8/tools/aulink -T /src/kernel.ld -o /fat/KERNEL.ELF /tmp/sh8/cobj /apps/tcc/libtcc1.a /tmp/sh8/aobj /fat/GUICORE.O"
 emit "echo [selfhost] sh8: kernel assembled in-guest"
 
 echo "[selfhost] gen_kernel_build: emitted $C_COUNT C + $ASM_COUNT asm compile lines" >&2

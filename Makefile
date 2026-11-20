@@ -892,6 +892,14 @@ $(GUI_RUST_OBJ): $(GUI_LIB) $(GUI_RUST_SOURCES) $(GUI_ATLAS)
 		$(GUI_LIB)
 	@echo "[rustc] $@ ($$(du -h $@ | cut -f1))"
 
+# TinyCC cannot compile Rust. Stage the real GUI object and its selected Rust
+# runtime members as ET_REL; aulink still performs the final kernel link.
+.PHONY: selfhost-gui-input
+selfhost-gui-input: $(BUILD_DIR)/selfhost/gui-core-link.o
+$(BUILD_DIR)/selfhost/gui-core-link.o: $(GUI_RUST_OBJ) $(RUST_CORE_RLIB) $(RUST_COMPILER_BUILTINS_RLIB)
+	@mkdir -p $(dir $@)
+	$(LD) -m elf_x86_64 -r --strip-debug -o $@ $^
+
 # USB_PLAN U2: -Wunreachable-code, as an error, for the USB drivers.
 #
 # Not a style preference.  xhci_control_transfer() carried a complete, real
@@ -3992,8 +4000,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # and a writable /tmp/sh5d/build overlay.  The complete stage is intentional:
 # the guest, not a host compiler, turns every x86_64 kernel source into the
 # final /fat/KERNEL.ELF.
-# The SDF atlas is a rustc input only. The guest TinyCC C/asm closure never
-# reads it; duplicating it here consumes 12 MiB of the 32 MiB BIOS initrd slot.
+# The SDF atlas is baked into the staged GUI link input instead. Do not put
+# the link input or loose atlas in the initrd: they exceed its BIOS budget.
 	@set -e; if [ -f "$(SELFHOST_TCC)" ]; then \
 	    strip -s $(SELFHOST_TCC) -o $(INITRD_DIR)/bin/tcc; \
 	    mkdir -p $(INITRD_DIR)/apps/tcc/include; \

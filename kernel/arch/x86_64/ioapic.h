@@ -32,7 +32,8 @@ extern volatile int apic_irq_mode;
  * (edge/high/fixed, vector as given, unmasked).  Used by the RES-16 wake
  * selftest to aim a device IRQ at a hlt-ed AP and restore the pin after.
  * Returns 0 on success, -1 if the I/O APIC is not up or the GSI is out of
- * range. */
-int ioapic_route_gsi(int gsi, int vector, uint32_t dest_apic_id);
+ * range; on success the previous redirection entry is stored in *saved. */
+int ioapic_route_gsi(int gsi, int vector, uint32_t dest_apic_id, uint64_t *saved);
+void ioapic_restore_gsi(int gsi, uint64_t saved);
 
 #endif /* AURALITE_ARCH_X86_64_IOAPIC_H */

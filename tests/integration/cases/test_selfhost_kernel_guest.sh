@@ -7,8 +7,8 @@
 # every kernel .asm object, and guest-built aulink links the result to the
 # writable FAT volume as /fat/KERNEL.ELF.  There is deliberately no clang,
 # ld.lld, nasm, Python, host-built tree kernel C/asm object, or host linker in
-# that build command set.  The bootstrap tcc/libtcc1.a and pre-existing init.elf
-# user-program byte stream are explicit seeds; closing them is SH8 scope.
+# that build command set. The bootstrap tcc/libtcc1.a, init.elf byte stream
+# and prebuilt Rust GUI relocatable are explicit seeds. Rust is not self-hosted.
 #
 # Boot #2 extracts that exact FAT artifact with mtools, packs it through the
 # existing host image writer, and proves it reaches the ordinary Ring 3 shell.
@@ -40,20 +40,19 @@ if ! (cd "$ROOT" && make iso) >"$PREP_LOG" 2>&1; then
 fi
 
 il_init
-il_have qemu-system-x86_64 mcopy readelf || exit 2
+il_have qemu-system-x86_64 mformat mcopy readelf || exit 2
+. lib/selfhost_disk.sh
 
 il_section "self-host kernel (SH5d): build in AuraLite, extract FAT ELF, boot it"
 
-# The build itself uses /tmp: the stock FAT formatter intentionally creates a
-# small 4 MiB volume, enough for the final ~1 MiB ELF but not a full object
-# directory.  /tmp has 256 slots, and this job has 150 C + 9 asm objects plus
-# fewer than 20 tools/generated files.  Only the completed kernel crosses the
-# durability boundary, exactly what this phase gates.
+# The bootstrap GUI object contains Rust and its SDF atlas. Flow it into
+# the guest on FAT, outside the BIOS initrd. All C and asm are rebuilt in
+# /tmp, and the ELF extracted for the next boot is linked by guest aulink.
 DISK="$IL_BUILD/selfhost-sh5d-fat.img"
 GUEST_ELF="$IL_BUILD/selfhost/kernel-guest.elf"
 GUEST_ISO="$IL_BUILD/selfhost/kernel-guest.iso"
 rm -f "$DISK" "$GUEST_ELF" "$GUEST_ISO"
-il_make_disk "$DISK" 16 "AURSH5D!"
+selfhost_make_disk "$DISK" "$ROOT" || exit 2
 
 # Mirror KERNEL_SRCS/KERNEL_ASMS in the Makefile rather than hand-maintaining
 # a second list.  aulink sorts each object directory, so host filesystem
@@ -154,7 +153,7 @@ done
 
 # Directory arguments are lexical object sets.  This is the crucial SH5d
 # aulink mode: one short command replaces an impossible 150-argument line.
-il_send_prompt "run /tmp/sh5d/aulink -T /src/kernel.ld -o /fat/KERNEL.ELF /tmp/sh5d/cobj /apps/tcc/libtcc1.a /tmp/sh5d/aobj"
+il_send_prompt "run /tmp/sh5d/aulink -T /src/kernel.ld -o /fat/KERNEL.ELF /tmp/sh5d/cobj /apps/tcc/libtcc1.a /tmp/sh5d/aobj /fat/GUICORE.O"
 il_send_prompt "stat /fat/KERNEL.ELF"
 # RESIDUE2 CI fix (run 92442558788): the aulink write lands in the kernel
 # buffer cache; the periodic writeback lags a ~1.4 MB ELF, so the host-side
@@ -207,21 +206,11 @@ else
     exit 1
 fi
 
-# The default formatter exposes 8,095 usable 512-byte clusters in its
-# 8,192-sector (4 MiB) volume.  The successful guest write already proves
-# physical fit; retain this explicit host-side measurement so a future kernel
-# growth names the point where SH5d needs a larger-volume design rather than
-# silently relying on the current formatter's fixed geometry.
-FAT_USABLE_BYTES=$((8095 * 512))
-GUEST_ELF_BYTES=$(wc -c < "$GUEST_ELF")
-IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
-if [ "$GUEST_ELF_BYTES" -le "$FAT_USABLE_BYTES" ]; then
-    il_pass "guest kernel is $GUEST_ELF_BYTES B, within the stock ${FAT_USABLE_BYTES} B FAT payload"
-else
-    il_fail "guest kernel is $GUEST_ELF_BYTES B, above the stock ${FAT_USABLE_BYTES} B FAT payload"
-    il_summary
-    exit 1
-fi
+# The physical fit is proven by the extracted complete ELF, not stat alone.
+# Also ensure the guest final link retained the actual GUI implementation.
+il_assert_grep <(readelf -Ws "$GUEST_ELF" 2>/dev/null) \
+    "FUNC[[:space:]]+GLOBAL[[:space:]]+DEFAULT[[:space:]]+[0-9]+[[:space:]]+gui_rust_blit$" \
+    "guest-linked ELF defines the real Rust GUI blit"
 
 # The image writer remains a host tool in SH5d (SH7 moves it in-guest), but it
 # takes only the extracted guest ELF.  Rebuild its boot components incrementally

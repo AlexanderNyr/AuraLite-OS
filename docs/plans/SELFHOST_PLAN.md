@@ -1890,6 +1890,14 @@ the normal boot receipts.
 
 ### Phase SH8 — bootstrap closure ✅ LANDED (2026-08-30)
 
+**Current input boundary (after the GUI Rust migration).** SH5c, SH5d and
+SH8 rebuild the C/asm portion and use aulink for the final kernel ELF.
+`make selfhost-gui-input` prepares the real Rust GUI, including its atlas
+and Rust runtime dependencies, as a relocatable bootstrap object. SH5d
+and SH8 carry it as `/fat/GUICORE.O`, outside the size-limited BIOS initrd.
+The in-guest toolchain does not rebuild Rust. SH8 runs the C-toolchain and
+image loops in the guest against this same read-only input.
+
 **Goal.** No host toolchain anywhere in the loop, twice in a row.
 
 **Definition of done.** Stage 2 (D1): tcc rebuilt by tcc on AuraLite

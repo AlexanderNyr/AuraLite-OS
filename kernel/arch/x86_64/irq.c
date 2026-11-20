@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdatomic.h>
 #include "kernel/arch/x86_64/irq.h"
 #include "kernel/arch/x86_64/ioapic.h"
 #include "kernel/arch/x86_64/lapic.h"
@@ -86,11 +87,19 @@ void pic_disable_for_apic(void) {
     outb(IMCR_DATA_PORT, IMCR_MODE_APIC);
 }
 
+irq_handler_t irq_exchange_handler(int irq, irq_handler_t handler) {
+    irq_handler_t old = NULL;
+    if (irq >= 0 && irq < NUM_IRQS) {
+        __atomic_exchange(&irq_handlers[irq], &handler, &old, __ATOMIC_ACQ_REL);
+    }
+    return old;
+}
+
 void irq_register_handler(int irq, irq_handler_t handler) {
     if (irq < 0 || irq >= NUM_IRQS) {
         return;
     }
-    irq_handlers[irq] = handler;
+    (void)irq_exchange_handler(irq, handler);
     pic_unmask(irq);
     /* Slave-PIC IRQs (8-15) are wired through the master PIC's cascade input
      * on IRQ2.  If that line stays masked, no slave-PIC interrupt (including
@@ -135,7 +144,8 @@ void irq_dispatch(int irq, struct registers *regs) {
      * entropy source when the CPU has no RDRAND/RDSEED.  Safe before
      * rng_init() — events just accumulate. */
     rng_jitter_event(read_tsc());
-    if (irq >= 0 && irq < NUM_IRQS && irq_handlers[irq] != NULL) {
-        irq_handlers[irq](regs);
+    if (irq >= 0 && irq < NUM_IRQS) {
+        irq_handler_t handler = __atomic_load_n(&irq_handlers[irq], __ATOMIC_ACQUIRE);
+        if (handler) handler(regs);
     }
 }

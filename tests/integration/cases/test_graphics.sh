@@ -26,4 +26,7 @@ il_assert_grep "$LOG" "graphics \+ keyboard \+ mouse"             "gfx/kbd/mouse
 il_assert_grep "$LOG" "framebuffer GUI \+ window manager rendered" "WM demo rendered"
 il_assert_grep "$LOG" "\[3d\] demo complete"                      "3D demo finished"
 
+il_assert_grep_fixed "$LOG" "[gui] PASS: resize clamps before allocation; window surfaces returned to PMM" \
+    "dragging past the opposite corner clamps the extent; both surfaces are freed on close"
+
 il_summary

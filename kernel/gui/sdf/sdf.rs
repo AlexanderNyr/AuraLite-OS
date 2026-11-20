@@ -32,7 +32,6 @@ const PIXEL_FORMAT_RGB888: u32 = 0;
 const ATLAS_PX_RANGE: f32 = 8.0;
 const ATLAS_ASCENT_EM: f32 = 0.96875;
 const ATLAS_LINE_HEIGHT_EM: f32 = 1.2109375;
-const INV_255: f32 = 1.0 / 255.0;
 
 #[used]
 static ATLAS_RAW: &[u8] = include_bytes!("atlas.bin");
@@ -43,6 +42,7 @@ struct Atlas {
     glyphs: &'static [u8],
     glyph_count: u32,
     pixels: &'static [u8],
+    ascii: [Option<Glyph>; 128],
 }
 
 static INIT_STATE: AtomicU8 = AtomicU8::new(0);
@@ -103,13 +103,20 @@ fn parse_atlas() -> Option<Atlas> {
         return None;
     }
 
-    Some(Atlas {
+    let mut atlas = Atlas {
         width,
         height,
         glyphs: &raw[glyphs_off..glyphs_end],
         glyph_count,
         pixels: &raw[glyphs_end..pixels_end],
-    })
+        ascii: [None; 128],
+    };
+    // Validate common UI glyphs once, rather than scanning the unsorted
+    // atlas and re-validating coordinates for each character on every frame.
+    for codepoint in 0..atlas.ascii.len() {
+        atlas.ascii[codepoint] = find_glyph(&atlas, codepoint as u32);
+    }
+    Some(atlas)
 }
 
 fn atlas() -> Option<&'static Atlas> {
@@ -148,6 +155,7 @@ fn atlas() -> Option<&'static Atlas> {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Glyph {
     advance: f32,
     plane_l: f32,
@@ -178,7 +186,7 @@ fn blank_glyph(advance: f32) -> Glyph {
 }
 
 // msdf-atlas-gen does not guarantee sorted codepoints.
-fn glyph_for(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
+fn find_glyph(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
     for i in 0..atlas.glyph_count {
         let offset = i as usize * GLYPH_RECORD_BYTES;
         let record = &atlas.glyphs[offset..offset + GLYPH_RECORD_BYTES];
@@ -245,6 +253,14 @@ fn glyph_for(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
 }
 
 #[inline]
+fn glyph_for(atlas: &Atlas, codepoint: u32) -> Option<Glyph> {
+    match atlas.ascii.get(codepoint as usize) {
+        Some(glyph) => *glyph,
+        None => find_glyph(atlas, codepoint),
+    }
+}
+
+#[inline]
 fn space_advance(atlas: &Atlas) -> f32 {
     glyph_for(atlas, 0x20)
         .map(|glyph| glyph.advance)
@@ -271,67 +287,53 @@ fn glyph_for_char(atlas: &Atlas, ch: char) -> Option<Glyph> {
     }
 }
 
-#[inline]
-fn pixel_rgb(atlas: &Atlas, x: u32, y: u32) -> (f32, f32, f32) {
-    let offset = (y as usize * atlas.width as usize + x as usize) * 3;
-    (
-        atlas.pixels[offset] as f32 * INV_255,
-        atlas.pixels[offset + 1] as f32 * INV_255,
-        atlas.pixels[offset + 2] as f32 * INV_255,
-    )
-}
+// Do the inner coverage loop in fixed point. The kernel Rust target uses
+// soft-float, so bilinear interpolation of three f32 channels per pixel
+// otherwise calls software arithmetic even at ordinary UI text sizes.
+const SAMPLE_ONE: i64 = 1 << 20;
+const WEIGHT_ONE: i64 = 1 << 16;
 
-/// Bilinear sample in atlas pixel space, clamped to the glyph's own bounds.
-#[inline]
-fn sample_bilinear(
-    atlas: &Atlas,
-    fx: f32,
-    fy: f32,
-    gx0: u32,
-    gy0: u32,
-    gx1: u32,
-    gy1: u32,
-) -> (f32, f32, f32) {
-    let max_x = if gx1 > gx0 { gx1 - 1 } else { gx0 };
-    let max_y = if gy1 > gy0 { gy1 - 1 } else { gy0 };
-
-    let cx = fx.clamp(gx0 as f32, max_x as f32);
-    let cy = fy.clamp(gy0 as f32, max_y as f32);
-
-    let x0 = (floor_f(cx) as u32).min(max_x);
-    let y0 = (floor_f(cy) as u32).min(max_y);
-    let x1 = (x0 + 1).min(max_x);
-    let y1 = (y0 + 1).min(max_y);
-    let tx = cx - x0 as f32;
-    let ty = cy - y0 as f32;
-
-    let (r00, g00, b00) = pixel_rgb(atlas, x0, y0);
-    let (r10, g10, b10) = pixel_rgb(atlas, x1, y0);
-    let (r01, g01, b01) = pixel_rgb(atlas, x0, y1);
-    let (r11, g11, b11) = pixel_rgb(atlas, x1, y1);
-
-    #[inline(always)]
-    fn lerp(a: f32, b: f32, t: f32) -> f32 {
-        a + (b - a) * t
-    }
-
-    (
-        lerp(lerp(r00, r10, tx), lerp(r01, r11, tx), ty),
-        lerp(lerp(g00, g10, tx), lerp(g01, g11, tx), ty),
-        lerp(lerp(b00, b10, tx), lerp(b01, b11, tx), ty),
-    )
+struct GlyphSampler<'a> {
+    atlas: &'a Atlas,
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+    range: i64, // Q12 screen-pixel range
 }
 
 #[inline]
-fn median3(a: f32, b: f32, c: f32) -> f32 {
-    if a > b {
-        if b > c { b } else if a > c { c } else { a }
-    } else if a > c {
-        a
-    } else if b > c {
-        c
-    } else {
-        b
+fn sample_axis(pos: i64, lo: u32, hi: u32) -> (usize, usize, i64) {
+    let pos = pos.clamp(i64::from(lo) * SAMPLE_ONE, i64::from(hi) * SAMPLE_ONE);
+    let p = (pos / SAMPLE_ONE) as usize;
+    let weight = (pos % SAMPLE_ONE) >> 4;
+    (p, (p + 1).min(hi as usize), weight)
+}
+
+impl GlyphSampler<'_> {
+    #[inline]
+    fn coverage(&self, x: i64, y: (usize, usize, i64)) -> u8 {
+        let (x0, x1, tx) = sample_axis(x, self.min_x, self.max_x);
+        let (y0, y1, ty) = y;
+        let pitch = self.atlas.width as usize * 3;
+        let i00 = y0 * pitch + x0 * 3;
+        let i01 = y1 * pitch + x0 * 3;
+        let i10 = y0 * pitch + x1 * 3;
+        let i11 = y1 * pitch + x1 * 3;
+        let p = self.atlas.pixels;
+        let channel = |c: usize| {
+            let top = i64::from(p[i00 + c]) * (WEIGHT_ONE - tx) + i64::from(p[i10 + c]) * tx;
+            let bot = i64::from(p[i01 + c]) * (WEIGHT_ONE - tx) + i64::from(p[i11 + c]) * tx;
+            (top * (WEIGHT_ONE - ty) + bot * ty) >> 16
+        };
+        let r = channel(0);
+        let g = channel(1);
+        let b = channel(2);
+        let median = r.min(g).max(r.max(g).min(b));
+        // median is Q16 in byte units. Convert the signed distance around
+        // 127.5 to coverage, bias by 127.5 and round to the nearest byte.
+        let delta = median - (255 * WEIGHT_ONE / 2);
+        (((delta * self.range) + (128 << 28)) >> 28).clamp(0, 255) as u8
     }
 }
 
@@ -452,6 +454,15 @@ fn draw_glyph(
     let quad_w = quad_w64 as i32;
     let quad_h = quad_h64 as i32;
 
+    let (mut first_x, mut first_y, mut end_x, mut end_y) = (0, 0, quad_w, quad_h);
+    if let TextTarget::Buffer { width, height, .. } = target {
+        first_x = (-left64).clamp(0, quad_w64) as i32;
+        first_y = (-top64).clamp(0, quad_h64) as i32;
+        end_x = (i64::from(width) - left64).clamp(0, quad_w64) as i32;
+        end_y = (i64::from(height) - top64).clamp(0, quad_h64) as i32;
+        if first_x >= end_x || first_y >= end_y { return; }
+    }
+
     // Original floating-point atlas dimensions.
     let atlas_glyph_w = glyph.atlas_r - glyph.atlas_l;
     let atlas_glyph_h = glyph.atlas_t - glyph.atlas_b;
@@ -489,11 +500,11 @@ fn draw_glyph(
     // Atlas coordinates are converted to texel-index coordinates
     // by subtracting the half-texel offset.
     let fx_start = glyph.atlas_l
-        + ((first_screen_x - x0) / screen_w) * atlas_glyph_w
+        + (first_screen_x - x0) * dfx
         - 0.5;
 
     let fy_start = atlas_top
-        + ((first_screen_y - y0) / screen_h) * atlas_glyph_h
+        + (first_screen_y - y0) * dfy
         - 0.5;
 
     // MSDF range converted into screen pixels.
@@ -502,90 +513,46 @@ fn draw_glyph(
             .max(screen_h / atlas_glyph_h))
         .max(1.0);
 
+    let sampler = GlyphSampler {
+        atlas,
+        min_x: gx0,
+        min_y: gy0,
+        max_x: gx1 - 1,
+        max_y: gy1 - 1,
+        // Clamping protects integer arithmetic for degenerate atlas input.
+        range: ((screen_px_range * 4096.0) as i64).min(i64::from(i32::MAX)),
+    };
+    let fixed = |value: f32| {
+        // All real atlas coordinates and nonempty steps are much smaller
+        // than this; bounding also protects the 4096-pixel loop increments.
+        ((value * SAMPLE_ONE as f32) as i64).clamp(-(1 << 50), 1 << 50)
+    };
+    let fx0 = fixed(fx_start);
+    let fy0 = fixed(fy_start);
+    let dx = fixed(dfx);
+    let dy = fixed(dfy);
     let mut alpha_buf = [0u8; 4];
 
-    for py in 0..quad_h {
-        let fy = fy_start + dfy * py as f32;
-        let dy = top + py;
-        let mut px = 0i32;
-
-        while px + 4 <= quad_w {
-            let mut any = false;
-            let mut k = 0usize;
-
-            while k < 4 {
-                let fx = fx_start + dfx * (px + k as i32) as f32;
-
-                let (r, g, b) = sample_bilinear(
-                    atlas,
-                    fx,
-                    fy,
-                    gx0,
-                    gy0,
-                    gx1,
-                    gy1,
-                );
-
-                let distance = median3(r, g, b);
-
-                let coverage = ((distance - 0.5) * screen_px_range + 0.5)
-                    .clamp(0.0, 1.0);
-
-                let value = (coverage * 255.0 + 0.5) as u8;
-
-                alpha_buf[k] = value;
-                any |= value != 0;
-
-                k += 1;
+    for py in first_y..end_y {
+        let y = sample_axis(fy0 + dy * i64::from(py), sampler.min_y, sampler.max_y);
+        let mut fx = fx0 + dx * i64::from(first_x);
+        let mut px = first_x;
+        while px + 4 <= end_x {
+            for alpha in &mut alpha_buf {
+                *alpha = sampler.coverage(fx, y);
+                fx += dx;
             }
-
-            if any {
-                unsafe {
-                    blend_four(
-                        target,
-                        left + px,
-                        dy,
-                        color,
-                        &alpha_buf,
-                    );
-                }
+            if alpha_buf != [0; 4] {
+                unsafe { blend_four(target, left + px, top + py, color, &alpha_buf); }
             }
-
             px += 4;
         }
-
-        while px < quad_w {
-            let fx = fx_start + dfx * px as f32;
-
-            let (r, g, b) = sample_bilinear(
-                atlas,
-                fx,
-                fy,
-                gx0,
-                gy0,
-                gx1,
-                gy1,
-            );
-
-            let distance = median3(r, g, b);
-
-            let coverage = ((distance - 0.5) * screen_px_range + 0.5)
-                .clamp(0.0, 1.0);
-
-            let alpha = (coverage * 255.0 + 0.5) as u8;
-
+        while px < end_x {
+            let alpha = sampler.coverage(fx, y);
             if alpha != 0 {
-                unsafe {
-                    blend_one(
-                        target,
-                        left + px,
-                        dy,
-                        color,
-                        alpha,
-                    );
-                }
+                unsafe { blend_one(target, left + px, top + py, color, alpha); }
             }
-
+            fx += dx;
             px += 1;
         }
     }

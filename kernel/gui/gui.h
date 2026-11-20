@@ -305,9 +305,6 @@ uint32_t gui_screen_height(void);
 int  gui_focused_window(void);                  /* focused wid, or -1 */
 int  gui_mouse_position(int32_t *x, int32_t *y);
 
-/* Back-buffer access for in-kernel apps. */
-uint32_t *gui_window_buffer(int wid, uint32_t *out_pitch_pixels);
-
 /* Invalidation. */
 int  gui_invalidate_window(int wid);
 int  gui_invalidate_rect(int wid, int32_t x, int32_t y, uint32_t w, uint32_t h);
