@@ -15,6 +15,8 @@
 #include "kernel/mm/pmm.h"
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
+#include "kernel/lib/perfstat.h"   /* GPU_ACCEL_PLAN H1: present accounting */
+#include "kernel/lib/paddr.h"        /* paddr_t: the width the counters want */
 
 #define VIRTIO_VENDOR_ID 0x1AF4
 #define VIRTIO_GPU_MODERN_DEVICE 0x1050
@@ -599,7 +601,13 @@ static int submit_2desc(uint64_t req_phys, uint32_t req_len,
     while (vq_used->idx == vq_last_used_idx && timeout-- > 0) {
         __asm__ volatile ("pause");
     }
-    if (timeout <= 0) return -1;
+    if (timeout <= 0) {
+        /* H1: the deadline is a stalled device, and the D2 rule says a
+         * stall must be visible in a counter, not inferred from a hang. */
+        perfstat_add(PERF_GPU_CONTROL_QUEUE_TIMEOUTS, 1);
+        return -1;
+    }
+    perfstat_add(PERF_GPU_CONTROL_QUEUE_WAITS, 1);
     __asm__ volatile ("mfence" ::: "memory");
     vq_last_used_idx = vq_used->idx;
     if (isr_cfg) (void)*isr_cfg;
@@ -781,8 +789,14 @@ int virtio_gpu_create_2d(uint32_t width, uint32_t height) {
 int virtio_gpu_present_rect(const void *pixels, uint32_t width, uint32_t height,
                             uint32_t pitch_bytes, int32_t x, int32_t y,
                             uint32_t w, uint32_t h) {
-    if (!pixels || !virtio_gpu_available()) return -1;
-    if (virtio_gpu_create_2d(width, height) != 0) return -1;
+    if (!pixels || !virtio_gpu_available()) {
+        perfstat_add(PERF_GPU_PRESENT_FALLBACKS, 1);
+        return -1;
+    }
+    if (virtio_gpu_create_2d(width, height) != 0) {
+        perfstat_add(PERF_GPU_PRESENT_FALLBACKS, 1);
+        return -1;
+    }
 
     int32_t x1 = x + (int32_t)w;
     int32_t y1 = y + (int32_t)h;
@@ -802,6 +816,12 @@ int virtio_gpu_present_rect(const void *pixels, uint32_t width, uint32_t height,
     }
     __asm__ volatile ("mfence" ::: "memory");
 
+    /* H1 charges the three copies separately (see perfstat.h): this is
+     * copy #2, the back→gpu_fb one the driver pays on top of the
+     * back→front one in graphics.c. */
+    perfstat_add(PERF_GPU_TRANSFER_BYTES, (paddr_t)w * h * 4ULL);
+    perfstat_add(PERF_GPU_PIXELS_TRANSFERRED, (paddr_t)w * h);
+
     struct virtio_gpu_transfer_to_host_2d tx;
     memset(&tx, 0, sizeof(tx));
     tx.hdr.type = VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
@@ -815,7 +835,13 @@ int virtio_gpu_present_rect(const void *pixels, uint32_t width, uint32_t height,
     fl.hdr.type = VIRTIO_GPU_CMD_RESOURCE_FLUSH;
     fl.r.x = (uint32_t)x; fl.r.y = (uint32_t)y; fl.r.width = w; fl.r.height = h;
     fl.resource_id = VGPU_RESOURCE_ID;
-    return gpu_cmd_nodata(&fl, sizeof(fl));
+    int rc = gpu_cmd_nodata(&fl, sizeof(fl));
+    if (rc != 0) {
+        perfstat_add(PERF_GPU_PRESENT_FALLBACKS, 1);
+        return rc;
+    }
+    perfstat_add(PERF_GPU_FLUSH_BYTES, (paddr_t)w * h * 4ULL);
+    return 0;
 }
 
 int virtio_gpu_present(const void *pixels, uint32_t width, uint32_t height, uint32_t pitch_bytes) {

@@ -20,6 +20,7 @@
 #include "kernel/arch/x86_64/smp.h"
 #include "kernel/arch/x86_64/diagnostics.h"
 #include "kernel/lib/perfstat.h"
+#include "kernel/lib/fbgeom.h"   /* H1: the geometry seam (P1/R6: fs takes no driver header) */
 
 #define PROCFS_MAX_VNODES 64
 static struct vnode procfs_vnodes[PROCFS_MAX_VNODES];
@@ -148,6 +149,21 @@ static struct vnode *procfs_lookup(void *fs_data, const char *path) {
         vn->inode_id = 15;
         return vn;
     }
+    if (strcmp(path, "fb") == 0) {
+        /* GPU_ACCEL_PLAN H1: the framebuffer geometry, one line, so a
+         * user program can size its own copy bench and compare it to
+         * the kernel's present path.  Before this file existed the
+         * measurement H1 asks for could not be written in user space
+         * without guessing the resolution.  Arch-neutral: the three
+         * accessors are graphics.h's, implemented by every port. */
+        struct vnode *vn = get_procfs_vnode();
+        strncpy(vn->name, "fb", VFS_PATH_MAX - 1);
+        vn->type = VFS_TYPE_FILE;
+        vn->mode = 0444;
+        vn->size = 64;
+        vn->inode_id = 16;
+        return vn;
+    }
     if (strcmp(path, "sysrq-trigger") == 0) {
         /* FIX_R0 test gate: Linux-style /proc/sysrq-trigger.  Writing 'c'
          * requests a deliberate kernel fault so the fatal diagnostics can
@@ -270,9 +286,9 @@ static int procfs_readdir(struct vnode *vn, struct vfs_dirent *out, int max) {
     if (vn->inode_id == 0) { /* Root of /proc */
         const char *static_files[] = {"uptime", "meminfo", "cpuinfo", "version", "stat",
                                        "loadavg", "netdev", "diskstats", "sysrq-trigger",
-                                       "perf"};
-        const uint64_t static_inodes[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 15};
-        for (int i = 0; i < 10 && n < max; i++) {
+                                       "perf", "fb"};
+        const uint64_t static_inodes[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16};
+        for (int i = 0; i < 11 && n < max; i++) {
             memset(&out[n], 0, sizeof(out[n]));
             strncpy(out[n].name, static_files[i], VFS_PATH_MAX - 1);
             out[n].type = VFS_TYPE_FILE;
@@ -525,6 +541,12 @@ static int64_t procfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t c
                              (unsigned long long)perfstat_get(i));
             if (len >= (int)sizeof(text) - 1) break;
         }
+    } else if (vn->inode_id == 16) {
+        /* /proc/fb: "WxH pitch=<bytes>" — the first token is what
+         * gpubench's parser takes; the rest is for a human. */
+        uint32_t fw = 0, fh = 0, fp = 0;
+        gfx_fbgeom_get(&fw, &fh, &fp);
+        len = ksnprintf(text, sizeof(text), "%ux%u pitch=%u\n", fw, fh, fp);
     } else if ((vn->inode_id >> 16) != 0) {
         uint64_t pid = vn->inode_id >> 16;
         uint64_t file_type = vn->inode_id & 0xFFFF;

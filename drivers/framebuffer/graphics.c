@@ -19,6 +19,8 @@
 #include "kernel/lib/string.h"
 #include "kernel/boot_info.h"
 #include "drivers/gpu/virtio_gpu.h"
+#include "kernel/lib/perfstat.h"   /* GPU_ACCEL_PLAN H1: present accounting */
+#include "kernel/lib/fbgeom.h"      /* GPU_ACCEL_PLAN H1: the geometry seam */
 
 #if defined(__i386__)
 /* RES-11: declared here for the same reason fb.c declares it -- including
@@ -249,6 +251,9 @@ void gfx_init(void) {
     fb_width = (uint32_t)width;
     fb_height = (uint32_t)height;
     fb_pitch = (uint32_t)pitch;
+    /* H1: publish to the fs-readable seam (kernel/lib/fbgeom.h) in the
+     * same statement group that owns the values — one source of truth. */
+    gfx_fbgeom_publish(fb_width, fb_height, fb_pitch);
 
     r_shift = fb->red_shift;
     g_shift = fb->green_shift;
@@ -1614,6 +1619,10 @@ void gfx_flip(void) {
     }
 
     if (virtio_gpu_available()) {
+        /* H1: counted whether or not the command succeeds — the
+         * fallback counter inside virtio_gpu_present_rect() records the
+         * failure half, and the pair is what makes D2 auditable. */
+        perfstat_add(PERF_GPU_PRESENTS_FULL, 1);
         (void)virtio_gpu_present(back_fb, fb_width, fb_height, fb_pitch);
     }
 }
@@ -1658,6 +1667,7 @@ void gfx_flip_rect(
     }
 
     if (virtio_gpu_available()) {
+        perfstat_add(PERF_GPU_PRESENTS_RECT, 1);
         (void)virtio_gpu_present_rect(
             back_fb,
             fb_width,

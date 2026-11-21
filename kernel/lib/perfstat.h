@@ -97,6 +97,59 @@ enum perfstat_id {
     PERF_TCP_RTO_EVENTS,
     PERF_TCP_CWND_LIMITED_SENDS,
 
+    /* ----------------------------------------------------------------
+     * GPU_ACCEL_PLAN H1: the present accounting.  Before these eight
+     * slots existed the tree could not answer "is the 2D present path
+     * faster than not using it?" — /proc/perf had zero GPU counters
+     * (measured: `grep -c 'GPU\|VIRGL\|VIRTIO_GPU' perfstat.h` = 0).
+     * The names are the wire format; `test_perf_smoke` and
+     * `check_gpu_claims.py` both pin them.
+     *
+     * The three copies per full-screen flip are charged SEPARATELY
+     * (H1's whole point): the back→front memcpy, the back→gpu_fb
+     * memcpy inside virtio_gpu_present_rect(), and the command pair
+     * (TRANSFER_TO_HOST_2D + RESOURCE_FLUSH).
+     * ---------------------------------------------------------------- */
+
+    /* gfx_flip() presents that took the full-screen virtio-gpu path.
+     * Bumped once per call that reached virtio_gpu_present(). */
+    PERF_GPU_PRESENTS_FULL,
+
+    /* gfx_flip_rect() presents that reached virtio_gpu_present_rect().
+     * The compositor's dirty-rect path (OPT O4) lands here. */
+    PERF_GPU_PRESENTS_RECT,
+
+    /* Pixels handed to the device by TRANSFER_TO_HOST_2D, i.e. the
+     * clip-rect area per present.  H2's claim is that a full repaint
+     * moves exactly one screen's pixels: 786 432 at 1024×768, not
+     * twice that. */
+    PERF_GPU_PIXELS_TRANSFERRED,
+
+    /* Bytes copied back_fb → gpu_fb (the driver's own memcpy, separate
+     * from the back→front framebuffer copy).  Grows by w×4 per row. */
+    PERF_GPU_TRANSFER_BYTES,
+
+    /* Bytes covered by RESOURCE_FLUSH rectangles — the host-side upload
+     * the flush asks the device for (same area, counted separately so a
+     * future damage-coalescing change shows up as a delta between the
+     * two, not as a mystery). */
+    PERF_GPU_FLUSH_BYTES,
+
+    /* Presents that fell back to the plain framebuffer path because the
+     * device was absent, not ready, or the command failed.  This is the
+     * counter that makes D2 auditable: a "2D acceleration works" claim
+     * with a non-zero value here is a claim about the fallback. */
+    PERF_GPU_PRESENT_FALLBACKS,
+
+    /* Bounded busy-waits in submit_2desc() that FOUND the used ring
+     * advanced before the deadline (the common case). */
+    PERF_GPU_CONTROL_QUEUE_WAITS,
+
+    /* Busy-waits that hit the 10 000 000-iteration deadline.  A non-zero
+     * value is a stalled device, and Fact 5's cursor-queue decision
+     * turns on whether this stays at zero. */
+    PERF_GPU_CONTROL_QUEUE_TIMEOUTS,
+
     PERF_COUNTER_MAX
 };
 

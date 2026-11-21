@@ -80,8 +80,8 @@ C_COUNT=${#C_SRCS[@]}
 ASM_COUNT=${#ASM_SRCS[@]}
 # Mirror the generator and the SH5c host gate's exact source-set count.  A
 # mismatch must stop the expensive QEMU build rather than drop source files.
-if [ "$C_COUNT" -ne 150 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 150 / 9)${C_RESET}"
+if [ "$C_COUNT" -ne 151 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 151 / 9)${C_RESET}"
     exit 2
 fi
 

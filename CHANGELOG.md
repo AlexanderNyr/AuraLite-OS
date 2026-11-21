@@ -2,6 +2,68 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GPU H0 — the rig, and GPU H1 — the present accounting] 2026-11-21
+
+`GPU_ACCEL_PLAN.md` opened with a measured premise and two phases landed the
+same day. Neither implements a renderer: H0 builds the tripwire, H1 answers
+whether the 2D present path is worth having at all. The answer, measured, is
+**no — it copies exactly 2.000× the bytes** — and that is written into the
+plan as the branch D1 pre-registered, not as a setback.
+
+- **H0 — `tools/check_gpu_claims.py` + `tests/unit/test_gpu_claims.sh`,
+  wired into `make test-unit` (32 pins, `--selftest`).** Phase-gated shape
+  from `check_gl2_claims.py`: a pin binds while the phase that moves it is
+  not complete, so each phase moves its own pin in its own commit. It caught
+  three things on the first run: `gl_backend_draw_eligible()` has **15**
+  `return 0;` statements of which **13** are state refusals (the two others
+  are preconditions — the plan's 13 was right about refusals and wrong about
+  the function); the plan's `PROPOSED` status is vocabulary no other plan in
+  `docs/plans/` uses (`PLANNED` is the tree's word); and the residue-debt
+  ratchet went red on the new file, requiring `tools/residue_baseline.txt` to
+  move in the same change (13 markers).
+- **H1 — eight GPU counters, and the present accounting they make possible.**
+  `perfstat.h`/`perfstat.c` gain `gpu_presents_full`, `gpu_presents_rect`,
+  `gpu_pixels_transferred`, `gpu_transfer_bytes`, `gpu_flush_bytes`,
+  `gpu_present_fallbacks`, `gpu_control_queue_waits`,
+  `gpu_control_queue_timeouts` — before this the tree had **zero** GPU
+  counters (`grep -c 'GPU\|VIRGL\|VIRTIO_GPU' perfstat.h` = 0), so "the 2D
+  path helps" was unfalsifiable. The three copies per flip are now charged
+  **separately**: the back→front memcpy (`compositor_*`, pre-existing), the
+  back→`gpu_fb` memcpy (`gpu_transfer_bytes`) and the command pair
+  (`gpu_flush_bytes`), plus the present counts themselves.
+- **Measured result (QEMU 10.0.13, 2-vCPU TCG, 15 identical rect presents
+  in both lanes):** without virtio-gpu the tree copies **6 094 848 B** for
+  the frame set; with it, **12 189 696 B — ratio exactly 2.000×**, with
+  `gpu_present_fallbacks` = 0 and `gpu_control_queue_timeouts` = 0. The
+  path adds a copy, it does not replace one, because the front buffer still
+  has to hold the pixels for a memory scanout. H2 therefore ships as
+  *elision + threshold*, not as a default flip, and the cursor queue is
+  **dropped on a measured ground** (2.13 control-queue round trips per
+  present, no timeouts).
+- **`/proc/fb` and the `kernel/lib/fbgeom.{c,h}` seam.** A bench cannot
+  size its own copy without the geometry, and `kernel/fs` may not include a
+  driver header (PARITY P1/R6). So the driver publishes three integers
+  through a seam fs reads — the same shape `kernel/time.h` gave procfs for
+  `pit.h`. `PROCFS` reads `gfx_fbgeom_get()`; no driver include enters `fs`.
+- **`userspace/tests/gpubench`** — reads `/proc/perf` and `/proc/fb` and
+  prints a fixed-format table (`GPUBENCH begin/-config/-counters/-cpu/-gpu/
+  -fallback/-ratio/-DONE`). It measures the half a user program can reach:
+  the plain row copy at the live geometry, against the GPU counters the
+  kernel's own flips charged. A private present path was **not** built —
+  `GUI_OP_RENDER` is pid≤2 and a bench of a path nothing ships measures
+  nothing.
+- **`tests/unit/test_perfstat_gpu.c`** — 18 host checks linking the REAL
+  `kernel/lib/perfstat.c`: monotonic adds, out-of-range ids inert, all eight
+  names in the wire table with no duplicates, and the charge arithmetic
+  (`1024x768 → 786 432 px / 3 145 728 B`, linear in presents, the measured
+  2.000× ratio, `1280x800x4 = 4 096 000`).
+- **Pins moved in this same change, as D6 requires:** `test_perf_smoke`
+  asserts the eight counters, the `transfer == flush` invariant and the
+  pixel/byte relation; the SH8 self-host source-closure pins move 150 → 151
+  for `kernel/lib/fbgeom.c` (three files: the generator, the integration
+  case and the SH5c unit gate); the width-sweep ratchet sent two `(uint64_t)`
+  casts in `virtio_gpu.c` back to `paddr_t` (445/449, down from 451).
+
 ## [CI — the toolchain pin and the documentation re-sync] 2026-11-18
 
 The 2026-11-17 workflow run failed **all twenty jobs at the same object

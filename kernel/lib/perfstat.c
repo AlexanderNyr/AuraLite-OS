@@ -39,6 +39,15 @@ static const char *const names[PERF_COUNTER_MAX] = {
     [PERF_TCP_FAST_RETRANSMITS]          = "tcp_fast_retransmits",
     [PERF_TCP_RTO_EVENTS]                = "tcp_rto_events",
     [PERF_TCP_CWND_LIMITED_SENDS]        = "tcp_cwnd_limited_sends",
+    /* GPU_ACCEL_PLAN H1: the present accounting (see perfstat.h). */
+    [PERF_GPU_PRESENTS_FULL]             = "gpu_presents_full",
+    [PERF_GPU_PRESENTS_RECT]             = "gpu_presents_rect",
+    [PERF_GPU_PIXELS_TRANSFERRED]        = "gpu_pixels_transferred",
+    [PERF_GPU_TRANSFER_BYTES]            = "gpu_transfer_bytes",
+    [PERF_GPU_FLUSH_BYTES]               = "gpu_flush_bytes",
+    [PERF_GPU_PRESENT_FALLBACKS]         = "gpu_present_fallbacks",
+    [PERF_GPU_CONTROL_QUEUE_WAITS]       = "gpu_control_queue_waits",
+    [PERF_GPU_CONTROL_QUEUE_TIMEOUTS]    = "gpu_control_queue_timeouts",
 };
 
 void perfstat_add(int id, uint64_t n) {

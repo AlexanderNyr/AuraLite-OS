@@ -255,7 +255,7 @@ KERNEL32_DIR  := kernel/arch/i386
 # consumer.  Growth rule: a file lands here only when something on
 # this side actually calls it.
 KERNEL32_SHARED := drivers/pci/pci.c kernel/net/miniproto.c \
-                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c kernel/boot_info.c drivers/framebuffer/fb.c drivers/framebuffer/psf.c drivers/framebuffer/graphics.c
+                   kernel/lib/kprintf.c kernel/lib/spinlock.c kernel/fs/blkdev.c kernel/fs/vfsmount.c kernel/net/tcp.c kernel/net/netl3.c kernel/net/netdev.c kernel/fs/ext2.c kernel/fs/buffer_cache.c kernel/lib/string.c kernel/fs/tmpfs.c kernel/fs/devfs.c kernel/lib/selftest.c kernel/lib/perfstat.c kernel/lib/fbgeom.c kernel/boot_info.c drivers/framebuffer/fb.c drivers/framebuffer/psf.c drivers/framebuffer/graphics.c
 KERNEL32_SRCS := $(shell find $(KERNEL32_DIR) -name '*.c') $(KERNEL32_SHARED)
 KERNEL32_ASMS := $(shell find $(KERNEL32_DIR) -name '*.asm')
 KERNEL32_OBJS := $(patsubst %.c,$(BUILD_DIR)/k32/%.o,$(KERNEL32_SRCS)) \
@@ -1141,7 +1141,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
                 $(USER_BUILD)/irqapwake.elf \
                 $(USER_BUILD)/mmapshare.elf \
                 $(USER_BUILD)/mmapfile.elf \
-                $(USER_BUILD)/membench.elf
+                $(USER_BUILD)/membench.elf $(USER_BUILD)/gpubench.elf
 
 # auragui, linked into every GUI app.  As with libaurac, the archive is what
 # the link line names; --whole-archive is not needed here because every
@@ -1443,6 +1443,15 @@ $(USER_BUILD)/membench.o: userspace/tests/membench/membench.c $(USER_CFLAGS_INC)
 $(USER_BUILD)/membench.elf: $(USER_BUILD)/membench.o $(USER_COMMON) lib/libc/user.ld
 	@mkdir -p $(dir $@)
 	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/membench.o $(USER_COMMON_LNK) -o $@
+
+# gpubench: the GPU_ACCEL_PLAN H1 present-path decision bench.  Reads
+# /proc/perf and /proc/fb (both H1 artefacts) and prints the fixed-format
+# GPUBENCH table the integration case and the plan's §5 read.
+$(USER_BUILD)/gpubench.o: userspace/tests/gpubench/gpubench.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+$(USER_BUILD)/gpubench.elf: $(USER_BUILD)/gpubench.o $(USER_COMMON) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/gpubench.o $(USER_COMMON_LNK) -o $@
 
 $(USER_BUILD)/dlltest.o: userspace/apps/w32run/dlltest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -I w32/include -c $< -o $@
@@ -2835,7 +2844,7 @@ INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test tcpordtest fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
-                usertest mmapshare mmapfile membench smpstress irqapwake execvetest
+                usertest mmapshare mmapfile membench gpubench smpstress irqapwake execvetest
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
 # Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they
@@ -3627,7 +3636,7 @@ W32C8_SO_H   := $(BUILD_DIR)/w32_static_slice.h
 $(W32C8_SO_H): tools/w32_static_slice.py $(wildcard w32/app_ledger/*.imports) \
                w32/src/w32_bind.c w32/src/w32_stubs_gen.c
 	@mkdir -p $(BUILD_DIR)
-	python3 $< > /dev/null
+	AURALITE_BUILD_DIR=$(abspath $(BUILD_DIR)) python3 $< > /dev/null
 
 ifneq ($(MINGW_CC),)
 $(W32C8_FC_EXE): w32/tests/w32c8_failclean.c $(W32_MINGW_STAMP)
@@ -4317,7 +4326,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	@$(MAKE) --no-print-directory sdk >/dev/null
 	@for ex in hello-app gui-app; do \
 	    $(MAKE) --no-print-directory -C examples/$$ex \
-	            AURALITE_SDK=$(CURDIR)/$(SDK_DIR) >/dev/null; \
+	            AURALITE_SDK=$(SDK_DIR_ABS) >/dev/null; \
 	    strip -s examples/$$ex/$$ex.elf -o $(INITRD_DIR)/apps/$$ex; \
 	done
 	@bash tools/mkinitrd.sh $(INITRD_DIR) $@
@@ -4343,7 +4352,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glsl \
                 $(BUILD_DIR)/test_glslexec $(BUILD_DIR)/test_glprog \
                 $(BUILD_DIR)/test_glcoexist $(BUILD_DIR)/test_glvirgl \
-                $(BUILD_DIR)/test_gpu_syscall \
+                $(BUILD_DIR)/test_gpu_syscall $(BUILD_DIR)/test_perfstat_gpu \
                 $(BUILD_DIR)/test_initrd_dirs \
                 $(BUILD_DIR)/test_initrd_allocfail \
                 $(BUILD_DIR)/test_execpolicy \
@@ -5166,6 +5175,15 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@echo "[unit] running tests/unit/test_gl2_claims.sh"
 	@bash tests/unit/test_gl2_claims.sh || exit 1
 
+# GPU_ACCEL_PLAN.md H0: tools/check_gpu_claims.py cannot drift from the
+# tree.  The GPU stack's opener facts are pinned as live greps (no GPU
+# counter exists yet, gfx_flip still pays the second full copy, the
+# eligible screen still has 13 state refusals, the canned TGSI is still
+# 34 hand-written dwords, RES-54 is still OPEN); each phase moves its own
+# pin in the same commit.  Negative control as usual.
+	@echo "[unit] running tests/unit/test_gpu_claims.sh"
+	@bash tests/unit/test_gpu_claims.sh || exit 1
+
 # RESIDUE2_PLAN.md T0: the residue sequel cannot drift from TODO.md and
 # the ledger.  Same shape as the GL2 wrapper above: run the checker,
 # then prove it can fail.
@@ -5682,6 +5700,17 @@ $(BUILD_DIR)/test_gpu_syscall: tests/unit/test_gpu_syscall.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_gpu_syscall.c kernel/gpu/gpu_cmdcheck.c -o $@
+
+# GPU_ACCEL_PLAN H1: test_perfstat_gpu links the REAL kernel/lib/perfstat.c.
+# The counter rig is dependency-free by design (flat array, relaxed atomics,
+# static names), which is what makes the shipping file host-testable — the
+# H1 claim is arithmetic, and arithmetic that only runs in the guest is
+# arithmetic nobody checks per commit.
+$(BUILD_DIR)/test_perfstat_gpu: tests/unit/test_perfstat_gpu.c \
+                                kernel/lib/perfstat.c kernel/lib/perfstat.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_perfstat_gpu.c kernel/lib/perfstat.c -o $@
 
 $(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c lib/libgl/src/glmath.c \
                           lib/libgl/include/GL/glmath.h
@@ -6735,6 +6764,12 @@ run-doom: $(DOOM_DISK) iso
 # reach into lib/libc/include directly they would keep building after the SDK
 # stopped being sufficient, and the check would prove nothing.
 SDK_DIR := $(BUILD_DIR)/sdk
+# The initrd staging step hands each example `AURALITE_SDK=$(CURDIR)/$(SDK_DIR)`.
+# That prefix is only correct for a RELATIVE BUILD_DIR; an absolute one
+# (`make iso BUILD_DIR=/tmp/x`, the OTA O2 cold-build lane) produced
+# "/repo//tmp/x/sdk" and the example sub-makes died on the missing
+# auralite.mk.  $(abspath) normalises both shapes to one absolute path.
+SDK_DIR_ABS := $(abspath $(SDK_DIR))
 
 sdk: libs $(USER_BUILD)/crt0.o
 	@rm -rf $(SDK_DIR)

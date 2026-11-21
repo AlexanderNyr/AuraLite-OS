@@ -72,8 +72,13 @@ ASM_COUNT=${#ASM_SRCS[@]}
 # when the self-host closure is staged.  The count is C + asm only --
 # a migration to another language moves a file out of this number, it does
 # not mean the file stopped being built.
-if [ "$C_COUNT" -ne 150 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 150 / 9)" >&2
+# 150 -> 151 (GPU_ACCEL_PLAN H1): kernel/lib/fbgeom.c -- the framebuffer
+# geometry seam /proc/fb reads.  It exists because kernel/fs may not take a
+# driver header (PARITY P1/R6) while the driver must still publish its
+# geometry somewhere fs can read it.  Same ratchet, same reason: the
+# in-guest build compiles exactly what the tree has, or it refuses.
+if [ "$C_COUNT" -ne 151 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 151 / 9)" >&2
     exit 2
 fi
 

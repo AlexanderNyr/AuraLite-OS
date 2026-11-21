@@ -40,10 +40,13 @@ trap il_dump_on_error EXIT
 # two "compositor_frames_full" values is the idle-full-redraw assertion.
 il_send_delay 7
 il_send "cat /proc/perf"
+il_send "cat /proc/fb"
 il_send_delay 3
 il_send "cat /proc/perf"
 il_send "cat /proc/loadavg"
 il_send "run membench"
+il_send_delay 6
+il_send "run gpubench"
 il_send_delay 30
 il_send "echo perf-gate-end"
 il_send_delay 2
@@ -60,6 +63,21 @@ else
     il_fail "boot-to-shell ratchet: got '${BOOT_TICKS:-none}' ticks (limit 6000)"
 fi
 
+# --- H1: the framebuffer geometry file exists and parses in the same
+# log the counters come from (one boot, so the geometry is the one the
+# counters describe) ---
+il_assert_grep "$LOG" "^[0-9]+x[0-9]+ pitch=[0-9]+" \
+    "/proc/fb prints WxH pitch=BYTES (H1's geometry source)"
+
+# --- H1: gpubench runs to completion and reports the counter inventory.
+# Whether it finds a device is lane-specific (D2); that it PARSES the rig
+# and prints a well-formed table is not. ---
+il_assert_grep "$LOG" "^GPUBENCH-DONE" "gpubench runs to GPUBENCH-DONE (H1)"
+il_assert_grep "$LOG" "^GPUBENCH-counters 8/8" \
+    "gpubench finds all 8 H1 counters in /proc/perf"
+il_assert_grep "$LOG" "^GPUBENCH-config virtio_gpu=[01] fb=[0-9]*x[0-9]*" \
+    "gpubench reports the lane's geometry"
+
 # --- /proc/perf: every O0 counter present ---
 for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
          compositor_pixels_composited compositor_pixels_flipped \
@@ -68,6 +86,39 @@ for c in boot_ticks_to_shell compositor_frames_full compositor_frames_partial \
          uart_tx_ring_bytes; do
     il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c"
 done
+
+# --- GPU_ACCEL_PLAN H1: the present accounting.  The eight counters that
+# make "is the 2D path faster?" a question with an answer.  Presence is the
+# gate; the VALUES are weather on this lane (D2) — but a value that is
+# nonzero on the no-device lane would mean the accounting fired without a
+# GPU, which is exactly the drift this pin exists to catch. ---
+for c in gpu_presents_full gpu_presents_rect gpu_pixels_transferred \
+         gpu_transfer_bytes gpu_flush_bytes gpu_present_fallbacks \
+         gpu_control_queue_waits gpu_control_queue_timeouts; do
+    il_assert_grep "$LOG" "^$c [0-9]+" "/proc/perf lists $c (H1)"
+done
+
+# --- H1: the byte arithmetic.  Every GPU copy charged is a multiple of 4
+# (32 bpp), and the transfer/flush pair covers the same area — the flush is
+# the host-side upload of the transfer rectangle, so the two must be equal.
+# ck: equality is the invariant; a divergence means a flush rectangle was
+# computed from different bounds than the transfer, which corrupts nothing
+# today and lies to the plan forever. ---
+GPU_TX=$(grep -a '^gpu_transfer_bytes ' "$LOG" | tail -1 | awk '{print $2}')
+GPU_FL=$(grep -a '^gpu_flush_bytes ' "$LOG" | tail -1 | awk '{print $2}')
+GPU_PX=$(grep -a '^gpu_pixels_transferred ' "$LOG" | tail -1 | awk '{print $2}')
+if [ -n "${GPU_TX:-}" ] && [ -n "${GPU_FL:-}" ] && [ "$GPU_TX" = "$GPU_FL" ]; then
+    il_pass "H1: transfer and flush bytes agree ($GPU_TX each)"
+else
+    il_fail "H1: transfer ($GPU_TX) and flush ($GPU_FL) bytes disagree"
+fi
+if [ -n "${GPU_PX:-}" ] && [ -n "${GPU_TX:-}" ] && \
+   [ "$GPU_TX" = "$((GPU_PX * 4))" ]; then
+    il_pass "H1: every transferred pixel is 4 bytes ($GPU_PX px -> $GPU_TX B)"
+else
+    il_fail "H1: pixel/byte arithmetic broken ($GPU_PX px vs $GPU_TX B)"
+fi
+
 
 # --- HW H4 → RESIDUE R11: the PCID counters are now BACKED by the
 # implementation (pcid.c), gated on CR4.PCIDE.  TCG has no PCID
