@@ -17,7 +17,7 @@
 | C7 — network: window scaling (RES-52) | ✅ done (2026-11-04) — RES-52 flips: wscale negotiated both ways, a megabyte with 395660 bytes in flight, a window-clamped peer as the control | `patches/RESIDUE3_C7_net.patch` |
 | C7b — NVMe: a queue-pair driver over PCIe (RES-46's storage successor) | ✅ done (2026-11-04) — polled queue-pair driver, controller identity from Identify, ext2 mounted off the namespace, host-verified round trip | `patches/RESIDUE3_C7b_nvme.patch` |
 | C8 — Win32: the dynamic-scale loader, live FAIL-CLEAN receipts, DOOM D7 (RES-57/58/59) | ✅ done (2026-11-05) — one streaming relocation path (90932 fixups, no cap), 256/128/32 module table, a gap report that NAMES symbols, 35 FAIL-CLEAN + 820 static-only pairs measured live, DOOM D7 measured at 52 named gaps | `patches/RESIDUE3_C8_receipts.patch` (receipt half, 20 files, replays byte-for-byte) + `patches/RESIDUE3_C8_receipts.manifest` (the loader half pinned by hash — no pre-image exists in this environment) |
-| C9 — GL: the GLSL AST → TGSI back end (RES-54) | ⬜ planned | `patches/RESIDUE3_C9_tgsi.patch` |
+| C9 — GL: the GLSL AST → TGSI back end (RES-54) | ✅ done by GPU_ACCEL H4 | `patches/GPU_H4_tgsi.patch` |
 | C10 — close-out: the arithmetic, the honest zero, the parked M class | ⬜ planned | `patches/RESIDUE3_C10_close.patch` |
 
 ## 1. Where this plan comes from
@@ -1310,23 +1310,38 @@ bindreport regenerated and diffed.
 
 ### C9 — GL: the GLSL AST → TGSI back end (RES-54)
 
-**Status:** ⬜ planned
+**Status:** ✅ DONE — carried out by `GPU_ACCEL_PLAN.md` H4, not by this
+series (recorded here because the row was opened here). The retarget
+landed: `lib/libgl/src/tgsi.{c,h}` compiles the sema-proven AST subset to
+TGSI dwords with a round-trip test (`test_tgsi`, 64/64), and
+`glDrawArrays` feeds `CREATE_SHADER` from it — the canned arrays became a
+fixture. RES-54 flipped **DONE@H5**.
 
-**Objective:** replace the canned TGSI dword triangle with a real
-compiler back end, so `glDrawArrays` is driven by GLSL source.
+**What C9 does *not* cover, opened as its own rows by GPU_ACCEL H7:**
+ledger **RES-63** (S) — the constructs H4 refuses by name rather than
+guessing at (matrices, `texture2D`, control flow, compound assignment,
+user functions, and `tan`/`asin`/`pow`/`mod`/`sin`/`cos`) still fall back
+to the interpreter; and ledger **RES-64** (M) — a hardware frame has never
+been compared against the software oracle, because `GPU_OP_TRANSFER` is
+upload-only and no `virtio-gpu-gl-pci` device exists to produce one. Both
+stay OPEN, counted, with owners that can pick them up without reading the
+GPU series' diffs.
 
 Measured: `glvirgl.c` ships hand-written dword arrays; `glsl_*` (lex,
 type, parse, sema, exec) produces an interpreted AST with no back end;
 `gl_backend_t.draw` is wired and `test_glvirgl` (73 checks) pins the
 seam.
 
-- [ ] AST → TGSI: declarations, temporaries, ALU ops for the subset the
+- [x] AST → TGSI: declarations, temporaries, ALU ops for the subset the
       sema already proves, `DCL`/`MOV`/`MAD`/`DP4` lowering, and a
-      text+dword emitter with a round-trip test.
-- [ ] Feed `CREATE_SHADER` from it for arbitrary `glDrawArrays`
+      text+dword emitter with a round-trip test. *(GPU_ACCEL H4:
+      `test_tgsi`, 64/64.)*
+- [x] Feed `CREATE_SHADER` from it for arbitrary `glDrawArrays`
       batches; the canned arrays become a *fixture*, not the feature.
-- [ ] A host test (`test_glsl_tgsi`) with vector cases and a negative
-      control (an unsupported construct refused by name).
+      *(H4 retarget; H5 drew through it.)*
+- [x] A host test (`test_glsl_tgsi`) with vector cases and a negative
+      control (an unsupported construct refused by name). *(shipped as
+      `test_tgsi`; the refusals are RES-63.)*
 
 **Definition of done:** a GLSL vertex+fragment pair compiles to TGSI in
 guest and draws through the virgl path; `gltest` stays 373/373;

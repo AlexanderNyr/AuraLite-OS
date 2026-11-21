@@ -1605,17 +1605,39 @@ void gfx_bsod_seize(void) {
     bsod_seized = 1;
 }
 
+/* GPU_ACCEL_PLAN H2: does the scanout own the display?
+ *
+ * When a virtio-gpu resource is up to date, the pixels have ALREADY been
+ * copied into gpu_fb by the previous present, and front_fb is a memory
+ * window nothing reads back (verified: `front_fb` appears in this file
+ * only at the two copies below and at its initialisation — no reader
+ * anywhere in the tree).  Copying back→front as well is therefore a
+ * second full-screen memcpy with no consumer: H1 measured it as exactly
+ * half the bytes moved per frame (6 094 848 of 12 189 696 on the
+ * reference lane), which is the 2.000× the plan's H1 Results report.
+ *
+ * The elision is conditional on purpose: with NO device, or after a
+ * present failure, front_fb is the only place the pixels reach the
+ * screen, so the copy must run.  `virtio_gpu_present_*()` returning
+ * non-zero (it charged PERF_GPU_PRESENT_FALLBACKS) re-arms the copy for
+ * the NEXT flip, so a dying device degrades into the old behaviour
+ * instead of freezing the display.
+ */
+static int scanout_owns_display;
+
 void gfx_flip(void) {
     if (bsod_seized || !back_fb || !front_fb) return;
 
     size_t pitch32 = fb_pitch / sizeof(uint32_t);
 
-    for (uint32_t y = 0; y < fb_height; y++) {
-        memcpy(
-            front_fb + (size_t)y * pitch32,
-            back_fb + (size_t)y * pitch32,
-            (size_t)fb_pitch
-        );
+    if (!scanout_owns_display) {
+        for (uint32_t y = 0; y < fb_height; y++) {
+            memcpy(
+                front_fb + (size_t)y * pitch32,
+                back_fb + (size_t)y * pitch32,
+                (size_t)fb_pitch
+            );
+        }
     }
 
     if (virtio_gpu_available()) {
@@ -1623,7 +1645,14 @@ void gfx_flip(void) {
          * fallback counter inside virtio_gpu_present_rect() records the
          * failure half, and the pair is what makes D2 auditable. */
         perfstat_add(PERF_GPU_PRESENTS_FULL, 1);
-        (void)virtio_gpu_present(back_fb, fb_width, fb_height, fb_pitch);
+        /* H2: a present that SUCCEEDED means the scanout now holds this
+         * frame, so the next flip can skip the front-fb copy.  A failed
+         * one clears the flag, and the next flip pays the copy again —
+         * the failure is already counted by the driver. */
+        scanout_owns_display =
+            (virtio_gpu_present(back_fb, fb_width, fb_height, fb_pitch) == 0);
+    } else {
+        scanout_owns_display = 0;
     }
 }
 
@@ -1657,18 +1686,20 @@ void gfx_flip_rect(
     uint32_t rows = (uint32_t)(y1 - y0);
     size_t pitch32 = fb_pitch / sizeof(uint32_t);
 
-    for (uint32_t row = 0; row < rows; row++) {
-        size_t offset = (size_t)(dy + row) * pitch32 + dx;
-        memcpy(
-            front_fb + offset,
-            back_fb + offset,
-            (size_t)row_pixels * sizeof(uint32_t)
-        );
+    if (!scanout_owns_display) {
+        for (uint32_t row = 0; row < rows; row++) {
+            size_t offset = (size_t)(dy + row) * pitch32 + dx;
+            memcpy(
+                front_fb + offset,
+                back_fb + offset,
+                (size_t)row_pixels * sizeof(uint32_t)
+            );
+        }
     }
 
     if (virtio_gpu_available()) {
         perfstat_add(PERF_GPU_PRESENTS_RECT, 1);
-        (void)virtio_gpu_present_rect(
+        int rc = virtio_gpu_present_rect(
             back_fb,
             fb_width,
             fb_height,
@@ -1678,6 +1709,9 @@ void gfx_flip_rect(
             row_pixels,
             rows
         );
+        scanout_owns_display = (rc == 0);
+    } else {
+        scanout_owns_display = 0;
     }
 }
 

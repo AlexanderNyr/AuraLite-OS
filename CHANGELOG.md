@@ -2,6 +2,186 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [GPU H7 — the close-out] 2026-11-21
+
+The series leaves the tree able to say what it did and what it did not. Three
+documents changed and one is new; no code moved, which is the point — a
+close-out that also refactors cannot be reviewed.
+
+- **`docs/GPU_ACCELERATION.md` (new).** The seam's architecture and the
+  behaviour worth knowing, in `opengl.md`'s shape: the batch's three load-bearing
+  properties (clip positions, post-lighting colour, opt-in capabilities), the
+  versioned formats, the 13→9 screen with a reason per removal, and the four
+  "do not assume" items — including the one that costs the most debugging time,
+  that **a GPU-drawn frame cannot be read back** because `GPU_OP_TRANSFER` is
+  upload-only.
+- **`docs/opengl.md`.** The Not-implemented row for hardware drawing is
+  rewritten as *what the GPU path does not cover*, exactly as far as H5
+  reached: the nine refusals are spelled out by name, the four conditional
+  states say they are conditional, and lighting's absence from the GPU is
+  stated in the row rather than left to be inferred. A second row now carries
+  H4's real boundary — the arithmetic subset that works and the constructs
+  refused by name.
+- **`docs/status.md`.** The OpenGL, virtio-gpu 2D and `SYS_GPU_CALL` cells
+  carry this series' measured numbers, with the 🧪 glyphs kept: no gate has yet
+  compared a **hardware** frame, so the cells say so instead of implying
+  otherwise.
+- **Residue ledger.** **RES-54 → DONE@H5** — the AST→TGSI retarget exists and
+  refuses by name rather than guessing. Two rows open because the phase is
+  honest about what it did not do: **RES-63** (S) is the refused-construct
+  successor, **RES-64** (M) is the metal-only gap a hardware comparison would
+  close. Rows 62 → 64, S 14 → 15, M 8 → 9, and the checker's pins moved with
+  them in the same change.
+
+## [GPU H6 — the frame oracle] 2026-11-21
+
+"The GPU path is correct" is now a machine-checked statement on the host and a
+stated limit on the device.
+
+- **`lib/libgl/src/gloracle.{h,c}`.** A deterministic scene — two triangles at
+  different depths, per-vertex colours differing in every channel, a
+  pixel-space orthographic projection, no clock, no RNG, no allocation — hashed
+  with the **kernel's own `ksha256`**, so both lanes hash with the same code.
+  `test_gloracle` **14/14**, and half of it is mutation cases: the hash must
+  see one pixel, a flipped row, a shifted scene and a swapped channel, and the
+  comparator must accept an epsilon and reject a band **at the exact budget
+  boundary**.
+- **The tolerance is a stated number, not a buried constant:** 5 differing
+  pixels per thousand (two at 64×64) and a per-channel epsilon of 1/255, in
+  `gloracle.h` and quoted in the plan, with the checker holding the two
+  together. A channel past the epsilon makes the whole pixel count as
+  differing — the rule that stops a half-brightness band hiding in "numeric
+  noise".
+- **Measured in the guest:** `/gltest` prints the software reference hash
+  **`93ea06fd…e87cb`**, stable across boots and across two renders in one boot,
+  with **434 in-OS GL checks, 0 failed**. What it cannot print is a hardware
+  frame: `GPU_OP_TRANSFER` reaches `virtio_gpu_resource_upload()` and nothing
+  else, so a GPU-drawn frame never returns to guest memory. The phase says that
+  in the plan, the document and the test, rather than hashing something else
+  and calling it a comparison.
+- **The oracle found three defects on its first run**, all H5-era and none
+  visible to H5's own tests: `gloracle_render()` left a **dangling current
+  context** (the caller's next `glGetError()` read freed memory and answered
+  `0x502`); gltest's L6 block tore its context down **without unbinding it**;
+  and `glGetError()` with no context returns `GL_INVALID_OPERATION` by design,
+  which the new block was accidentally asserting on. Each has its own fix and
+  the first has its own regression test.
+
+## [GPU H5 — hardware fixed-function draws] 2026-11-21
+
+The batch widened, and the screen shrank by exactly what widened.
+
+- **Two batch formats, versioned rather than mutated.** `gl_draw_batch_t`
+  gains a `format` field: 0 is the L6 eight floats, byte for byte, and 1 is
+  twelve (clip `xyzw`, colour `rgba`, normal `xyz`, `texcoord0.s`). Format 1 is
+  requested only when the backend declares `GL_BACKEND_DRAW_FULL`, so a backend
+  that predates the phase never receives a shape it does not understand.
+  `GL_BATCH_STRIDE()` is the one definition of the width — the builder, the
+  backend and the setup stream's vertex-element description all derive from it.
+- **The plan's own arithmetic was wrong and the phase says which way it went.**
+  The task text says "eight floats become twelve" and lists fields summing to
+  **thirteen**. Twelve won: the texcoord contributes its `s` lane, the `t` it
+  would need is not carried, which is sound because the seam allows one 2D unit
+  and refuses a draw that needs `t`. Twelve keeps every vertex 4-float aligned.
+- **Eligibility 13 → 9, and each removal is conditional.** Depth (needs
+  `GL_BACKEND_DEPTH`, `GL_LESS`, writes on), blending (only the 1:1 factor
+  set), culling (`GL_CCW`, `GL_BACK`/`GL_FRONT`) and one 2D texture unit (unit
+  0, `GL_MODULATE`, `GL_BACKEND_TEXTURE`) moved into
+  `h5_state_is_reproducible()`; the nine that stayed are untouched, and each
+  removal is paired in `test_glbackend` with a state that still declines.
+  `test_glbackend` 17 → **33**, `test_glvirgl` 91 → **109**.
+- **The depth test is a real surface, not a flag.** A DSA with the test enabled
+  and no `zsurf` tests against nothing, so the draw creates a
+  `PIPE_FORMAT_Z32_FLOAT` resource, attaches it, clears it to `1.0` once and
+  destroys it with its target. State is uploaded in **gallium** terms —
+  `PIPE_FUNC_LESS` is `1` where `GL_LESS` is `0x0201`; sending the GL value
+  would select a different comparison, out of range.
+- **A defect the tests could not see until the phase grew past them:**
+  `GL_MAX_BACKENDS` was 4 and the suite needed a fifth slot, so `register()`
+  dropped the backend **silently** and a green suite could go red purely
+  because a test moved. Now 8.
+- **Not done, with a reason:** `/glcube --gpu` is deferred to the phase whose
+  job is comparing frames. A flag in a binary this environment cannot build is
+  a claim without a test.
+
+## [GPU H4 — the TGSI back end] 2026-11-21
+
+The GLSL AST now targets a token stream, and building it proved the tree's own
+hand-written TGSI was never valid.
+
+- **`lib/libgl/src/tgsi.{h,c}`** — wire macros, a 4096-dword buffer, a
+  16-IN/8-OUT/32-uniform layout, and a retarget from the typed AST to real
+  TGSI tokens: add/sub/mul, dp2/3/4, rsq, sqrt, abs, flr, frc, ex2, lg2, min,
+  max, normalize, length, inversesqrt, and the constructors. `test_tgsi`
+  **64/64**, carrying an **independently written disassembler** built from the
+  Gallium specification so the encoding is checked against a second reading
+  rather than the emitter's own constants.
+- **Six defects in the canned TGSI this tree has shipped since G13**, found by
+  that second opinion and recorded in the plan's Results: a fragment-stage
+  processor byte in the vertex array and vice versa, two instruction tokens
+  and a DCL with wrong type nibbles, an END with the same, and a source index
+  of 29184 where 0 was meant. It never executed on hardware, which is exactly
+  why it survived four phases of tests.
+- **The boundary is a refusal that names its reason.** Matrices, `texture2D`,
+  control flow, compound assignment, user functions and
+  `tan`/`asin`/`pow`/`mod`/`sin`/`cos` have no exact TGSI opcode here, so the
+  emitter says so — "has no exact TGSI opcode", "built-in '%s'" — and the
+  interpreter draws the shader. `/glshade`'s Lambert shader, which needs a
+  matrix, is refused this way and still renders.
+
+## [GPU H3 — textures on the device] 2026-11-21
+
+The texture packet path, proved against the kernel's own command validator
+rather than against the builder's opinion of the protocol.
+
+- `gl_backend_try_tex_image()` mirrors a mip level to the device; the three
+  packets (resource create, transfer, sampler view) are built by
+  `drivers/gpu/virgl_cmd.c` and checked by `test_tex_packets` **32/32** plus
+  `test_glvirgl`'s inventory. Formats: `B8G8R8A8_UNORM` (1) and
+  `B8G8R8X8_UNORM` (2); the sampler chain is view → state → `set_sampler_views`.
+
+## [GPU H2 — the copy elision, and the MSDF SIMD oracle] 2026-11-21
+
+H2 shipped as the elision only, because H1's measurement made the rest of the
+phase unnecessary: the 2D present path's overhead was never a tuning problem,
+it was a **second full copy of the same rectangle**. Removing it takes the
+measured cost from **2.000× to 1.000×** while the desktop keeps working on
+every lane.
+
+- **The elision (`drivers/framebuffer/graphics.c`).** `gfx_flip()` and
+  `gfx_flip_rect()` now guard the back→front memcpy on
+  `scanout_owns_display`. When a virtio-gpu present **returned success**, the
+  scanout resource already holds the frame and `front_fb` is a memory window
+  with no reader (re-verified: `grep -rl front_fb` across `kernel drivers
+  userspace lib` returns `graphics.c` alone, and `check_gpu_claims.py` now
+  pins that). A present that fails clears the flag, so a dying device
+  degrades to the old behaviour on the next flip instead of freezing.
+- **Measured, same 15-present workload as H1:** 12 189 696 B → **6 094 848 B**
+  of copying for the same 1 523 712 flipped pixels. `gpu_transfer_bytes`
+  unchanged (6 094 848), `gpu_present_fallbacks` 0, control-queue round trips
+  32 — the elision removed a copy, not a transfer. On a lane with no device
+  the counters read zero and the path is byte-for-byte what it was.
+- **Two H2 tasks dropped with a stated reason, not silently:** the cursor
+  queue (H1 measured 2.13 round trips and zero timeouts, so the spin is not
+  the bottleneck Fact 5 feared) and a damage threshold (there was no N to
+  tune — the cost was linear in the copied area, and the copy is now gone).
+  Dirty-union flush coalescing is named as the next measured opportunity
+  rather than claimed.
+- **The upstream SSE4.1 MSDF commit (4628af0) gets the oracle it lacked.**
+  That commit is titled `perf` and carries no measurement, while its comment
+  asserts the vector path is *bit-identical* to the scalar one — with no
+  test. `tools/test_sdf_simd.sh` links the **real** `kernel/gui/sdf/sdf.rs`
+  (the two `extern "C"` blend hooks resolve against an inert stub) and
+  compares `coverage4` against `coverage` over **29 456 exhaustive cases**:
+  every Q16 vertical weight against texel extremes in both rows, every
+  horizontal weight against a synthetic atlas containing 0 and 255, five
+  `range` values. **All bit-identical.** The speedup the commit never
+  measured: **scalar 130.5 ns/quad → SSE4.1 115.3 ns/quad, 1.07–1.17×** —
+  small because the gather stays scalar (SSE4.1 has no general gather, which
+  the source says itself). Folded into `make test-unit`; three test hooks
+  live behind `cfg(test_sdf_host)` and are absent from `gui_core.o`
+  (verified with `nm`).
+
 ## [GPU H0 — the rig, and GPU H1 — the present accounting] 2026-11-21
 
 `GPU_ACCEL_PLAN.md` opened with a measured premise and two phases landed the

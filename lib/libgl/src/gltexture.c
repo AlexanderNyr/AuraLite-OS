@@ -45,6 +45,7 @@
 #include <math.h>
 
 #include "GL/gl.h"
+#include "GL/glbackend.h"
 #include "glcontext.h"
 #include "glvertex.h"
 
@@ -329,6 +330,55 @@ static void recount_levels(gl_texture_t *t) {
     t->levels = n;
 }
 
+/* GPU_ACCEL_PLAN H3: hand one freshly written mip level to the backend.
+ *
+ * The backend's answer is latched per texture: once it declines, libgl stops
+ * offering -- a backend that cannot store a texture must not be asked about
+ * it on every frame.  `backend_note_image` therefore only runs for images the
+ * backend accepted, and only for level 0 and its sub-images, which is what a
+ * level-0 resident chain needs.  Higher levels are uploaded the first time
+ * the chain reaches them (recount_levels leaves a complete chain here). */
+typedef struct { GLuint name; int declined; } tex_backend_mark_t;
+static tex_backend_mark_t s_tex_marks[64];
+
+static int tex_backend_declined(GLuint name) {
+    if (name == 0) return 1;
+    for (size_t i = 0; i < sizeof s_tex_marks / sizeof s_tex_marks[0]; i++)
+        if (s_tex_marks[i].name == name) return s_tex_marks[i].declined;
+    return 0;
+}
+
+static void tex_backend_mark(GLuint name, int declined) {
+    if (name == 0) return;
+    for (size_t i = 0; i < sizeof s_tex_marks / sizeof s_tex_marks[0]; i++) {
+        if (s_tex_marks[i].name == name || s_tex_marks[i].name == 0) {
+            s_tex_marks[i].name = name;
+            s_tex_marks[i].declined = declined;
+            return;
+        }
+    }
+    /* Table full: forget everything rather than mis-track.  Declining is
+     * always safe here; accepting on stale marks would not be. */
+    memset(s_tex_marks, 0, sizeof s_tex_marks);
+    s_tex_marks[0].name = name;
+    s_tex_marks[0].declined = declined;
+}
+
+static void backend_note_image(struct aglx_context *ctx, gl_texture_t *t,
+                               GLenum target, GLuint name, int face, int level,
+                               const gl_teximage_t *im) {
+    (void)name;                 /* the name is t->name; kept for the call sites */
+    if (!t || !im || !im->texels || im->width <= 0 || im->height <= 0) return;
+    if (tex_backend_declined(t->name)) return;
+    if (gl_backend_try_tex_image(ctx, t->name, target, face, level,
+                                 im->width, im->height, im->texels,
+                                 t->levels) != 0) {
+        tex_backend_mark(t->name, 1);
+    } else {
+        tex_backend_mark(t->name, 0);
+    }
+}
+
 /* Shared body of glTexImage2D and glTexImage3D. */
 static void teximage(GLenum target, GLint level, GLsizei width, GLsizei height,
                      GLsizei depth, GLint border, GLenum format, GLenum type,
@@ -412,6 +462,13 @@ static void teximage(GLenum target, GLint level, GLsizei width, GLsizei height,
         }
     }
     recount_levels(t);
+
+    /* GPU_ACCEL_PLAN H3: the software image is authoritative and final; the
+     * device copy is an optimisation offered afterwards.  Only level 0 is
+     * offered -- see glTexSubImage2D for why. */
+    if (level == 0 && !is_3d) {
+        backend_note_image(ctx, t, target, t->name, face, 0, im);
+    }
 }
 
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,

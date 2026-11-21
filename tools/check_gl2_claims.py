@@ -360,10 +360,11 @@ def claims():
             "tgsi_walk_ok" in tglvirgl and
             "test_canned_dispatch" in tglvirgl))
         checks.append((
-            "L6: the integration case asserts the eligibility screen and "
-            "docs call the path canned",
+            "L6: the integration case asserts the eligibility screen AND "
+            "docs still distinguish the hand-written canned pipeline from "
+            "the H4 retarget",
             "l6_eligible_whole_triangles" in virgl_case and
-            "canned TGSI" in opengl))
+            ("canned TGSI" in opengl or "canned shader" in opengl)))
         fact6 = plan.split("### Fact 6")[1].split("### Fact 7")[0] \
             if "### Fact 6" in plan else ""
         checks.append((
@@ -406,10 +407,13 @@ def claims():
             "docs/plans/GL2_PLAN.md" in readme and
             "docs/plans/GL_PLAN.md" in readme))
         checks.append((
-            "L7: the ledger closes RES-41 and opens the D7 hand-off as "
-            "RES-54",
+            "L7: the ledger closes RES-41 and records the D7 hand-off as "
+            "RES-54 (opened by L7, closed later by GPU_ACCEL H5 -- GL2 must "
+            "neither lose the row nor claim a closure it did not make)",
             "| RES-41 | S | DONE@L7 |" in ledger and
-            "| RES-54 | S | OPEN |" in ledger))
+            "| RES-54 | S | " in ledger
+            and ("| RES-54 | S | OPEN |" in ledger
+                 or "| RES-54 | S | DONE@H5 |" in ledger)))
         checks.append((
             "L7: docs/opengl.md's Not-implemented table enumerates §4",
             "GLSL preprocessor" in opengl and

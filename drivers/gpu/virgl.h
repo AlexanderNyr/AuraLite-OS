@@ -63,6 +63,7 @@
 #define VIRGL_PIPE_SHADER_FRAGMENT     1u
 #define VIRGL_PIPE_SHADER_COMPUTE      5u
 #define VIRGL_PIPE_PRIM_TRIANGLES      4u
+#define VIRGL_PIPE_FORMAT_B8G8R8A8_UNORM 1u   /* gallium p_format order */
 #define VIRGL_PIPE_FORMAT_B8G8R8X8_UNORM 2u
 #define VIRGL_PIPE_TEXTURE_2D          2u
 #define VIRGL_BIND_RENDER_TARGET       0x00000010u
@@ -71,8 +72,51 @@
 #define VIRGL_BIND_INDEX_BUFFER        0x00000008u
 #define VIRGL_BIND_CUSTOM              0x00000040u
 
+/* Gallium sampler enums carried by VIRGL_OBJECT_SAMPLER_STATE (H3).  Wrap
+ * modes 0..7 and filters 0..2 are the real Gallium values; spelling them
+ * here keeps the one-definition-per-constant rule G13 established. */
+#define VIRGL_TEX_WRAP_REPEAT          0u
+#define VIRGL_TEX_WRAP_CLAMP           2u
+#define VIRGL_TEX_WRAP_CLAMP_TO_BORDER 5u
+#define VIRGL_TEX_FILTER_NEAREST       0u
+#define VIRGL_TEX_FILTER_LINEAR        1u
+#define VIRGL_TEX_MIPFILTER_NONE       0u
+#define VIRGL_TEX_MIPFILTER_NEAREST    1u
+#define VIRGL_TEX_MIPFILTER_LINEAR     2u
+
 #define VIRGL_PIPE_FORMAT_R32G32B32_FLOAT 31u
 #define VIRGL_PIPE_FORMAT_R32G32B32A32_FLOAT 32u
+#define VIRGL_PIPE_FORMAT_R32_FLOAT        26u
+
+/* H5: gallium depth/stencil state.  The host reads PIPE_FUNC_*, not GL
+ * enums -- GL_LESS is 0x0201 and PIPE_FUNC_LESS is 1, so sending the GL
+ * value would select a different comparison (and out of range, at that). */
+#define VIRGL_PIPE_FUNC_NEVER     0u
+#define VIRGL_PIPE_FUNC_LESS      1u
+#define VIRGL_PIPE_FUNC_EQUAL     2u
+#define VIRGL_PIPE_FUNC_LEQUAL    3u
+#define VIRGL_PIPE_FUNC_GREATER   4u
+#define VIRGL_PIPE_FUNC_NOTEQUAL  5u
+#define VIRGL_PIPE_FUNC_GEQUAL    6u
+#define VIRGL_PIPE_FUNC_ALWAYS    7u
+
+/* Depth surface: PIPE_FORMAT_Z32_FLOAT and the depth binding bit. */
+#define VIRGL_PIPE_FORMAT_Z32_FLOAT 48u
+#define VIRGL_BIND_DEPTH_STENCIL    0x00000002u
+
+/* Cull mode, the rasterizer object's first dword. */
+#define VIRGL_PIPE_FACE_NONE  0u
+#define VIRGL_PIPE_FACE_FRONT 1u
+#define VIRGL_PIPE_FACE_BACK  2u
+
+/* Blend factors (PIPE_BLENDFACTOR_*), the set H5 maps 1:1. */
+#define VIRGL_PIPE_BLENDFACTOR_ZERO                0u
+#define VIRGL_PIPE_BLENDFACTOR_ONE                 1u
+#define VIRGL_PIPE_BLENDFACTOR_SRC_ALPHA           5u
+#define VIRGL_PIPE_BLENDFACTOR_ONE_MINUS_SRC_ALPHA 7u
+
+/* H5: the depth surface's object handle, next to the colour surface's. */
+#define VIRGL_ZSURFACE_HANDLE      98u
 #define VIRGL_PIPE_FORMAT_R8G8B8A8_UNORM 67u
 
 #define VIRGL_SHADER_HANDLE_VS 101u
@@ -92,6 +136,13 @@
 #define VIRGL_CANNED_DSA       113u
 #define VIRGL_CANNED_VELEM     114u
 #define VIRGL_CANNED_VB_RES    115u
+
+/* GPU_ACCEL_PLAN H3: the texture-pipeline handles (userspace libgl).  The
+ * numbers continue the canned-draw block so one grep over virgl.h sees the
+ * whole handle space and two subsystems cannot pick the same value. */
+#define VIRGL_TEX_SAMPLER_VIEW  116u
+#define VIRGL_TEX_SAMPLER_STATE 117u
+#define VIRGL_TEX_RES_BASE      200u   /* + texture unit slot, H3 */
 
 #define VIRGL_CMD0(cmd, obj, len) ((((cmd) & 0xffu) << 24) | (((obj) & 0xffu) << 16) | ((len) & 0xffffu))
 
@@ -153,6 +204,29 @@ int virgl_cmd_create_shader_tgsi(virgl_cmd_buf_t *cb, uint32_t handle,
                                 uint32_t token_count);
 int virgl_cmd_set_vertex_buffer_1(virgl_cmd_buf_t *cb, uint32_t resource_id,
                                   uint32_t stride, uint32_t offset);
+/* GPU_ACCEL_PLAN H3: a texture as a device sampler view (H3).
+ *
+ * `last_level` is the chain length - 1, which is what makes a mip chain ONE
+ * resource rather than one per level (the driver's RESOURCE_CREATE_3D
+ * already takes it). */
+int virgl_cmd_create_sampler_view(virgl_cmd_buf_t *cb, uint32_t handle,
+                                  uint32_t resource_id, uint32_t format,
+                                  uint32_t first_level, uint32_t last_level);
+/* The sampler's wrap/filter state.  Both the min/mag filters and the three
+ * wrap axes go in one packet; a value outside the enums above is refused by
+ * the caller, not clamped here (silently clamping state is how a texture
+ * renders "plausibly wrong"). */
+int virgl_cmd_create_sampler_state(virgl_cmd_buf_t *cb, uint32_t handle,
+                                   uint32_t wrap_s, uint32_t wrap_t,
+                                   uint32_t wrap_r, uint32_t min_filter,
+                                   uint32_t mag_filter, uint32_t mip_filter);
+/* Binds N (handle, state) pairs to ONE shader stage starting at `start_slot`.
+ * The count is a parameter because SET_SAMPLER_VIEWS is how virglrenderer
+ * learns how many units this draw may sample. */
+int virgl_cmd_set_sampler_views(virgl_cmd_buf_t *cb, uint32_t shader_type,
+                                uint32_t start_slot, uint32_t count,
+                                const uint32_t *view_handles);
+
 int virgl_cmd_inline_write(virgl_cmd_buf_t *cb, uint32_t resource_id,
                            uint32_t level, uint32_t usage, uint32_t stride,
                            uint32_t layer_stride, uint32_t x, uint32_t y,

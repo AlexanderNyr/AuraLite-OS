@@ -123,6 +123,47 @@ if [ "$ENABLE_FULL_ASSERTS" = "1" ]; then
                    "tested state still takes the draw back to software"
     il_assert_grep "$LOG" "\\[gl\\] PASS l6_no_pending_error" \
                    "the L6 block leaves no GL error"
+
+    # GPU_ACCEL_PLAN H6: the frame oracle.  Two different things are asserted
+    # here, in order of what they can actually prove:
+    #
+    #   1. The oracle RAN and produced a hash.  That is unconditional: with a
+    #      device or without one, the deterministic scene must render and hash,
+    #      and a run whose log has no line is a run whose oracle did not
+    #      execute -- which is the failure mode a hash-only check cannot see.
+    #   2. The software reference hash is STABLE across boot.  The guest prints
+    #      it every time; comparing it here means a change in the software path
+    #      shows up as an integration failure rather than as a "cube looks
+    #      slightly different" report later.
+    #
+    # What is NOT asserted, and why: the hardware frame's pixels.  The GPU ABI
+    # in this tree is upload-only (GPU_OP_TRANSFER -> virtio_gpu_resource_upload;
+    # there is no download path), so a GPU-drawn frame never returns to guest
+    # memory and the guest cannot hash it.  test_virgl_gpu.sh therefore checks
+    # that the oracle ran and that a SECOND render in the same boot agreed --
+    # non-determinism is the one hardware defect this lane can see -- and says
+    # so rather than implying a comparison it did not make.
+    il_assert_grep "$LOG" "\\[gl\\] PASS h6_software_render" \
+                   "the H6 oracle renders the deterministic scene"
+    il_assert_grep "$LOG" "\\[gl\\] PASS h6_software_hash_stable" \
+                   "the H6 oracle's hash is stable across two renders in one boot"
+    il_assert_grep "$LOG" "\\[gl\\] H6 software frame sha256 [0-9a-f]\\{64\\}" \
+                   "the software reference hash is printed (64 hex digits)"
+    il_assert_grep "$LOG" "\\[gl\\] PASS h6_no_pending_error" \
+                   "the H6 block leaves no GL error"
+
+    # The pin: the software reference hash, recorded from a run on this tree.
+    # A change here is not automatically a bug -- the software rasterizer is
+    # allowed to change -- but it must be a DELIBERATE change, recorded in the
+    # plan's H6 Results, not a silent drift.  Kept as its own assertion so a
+    # failure names which of the two happened.
+    if [ -n "${H6_SOFTWARE_HASH:-}" ]; then
+        il_assert_grep "$LOG" "\\[gl\\] H6 software frame sha256 $H6_SOFTWARE_HASH" \
+                       "the software reference hash matches the recorded pin"
+    else
+        echo "[virgl] H6 software hash: no pin recorded in this environment" \
+             "(set H6_SOFTWARE_HASH to assert one)"
+    fi
 else
     if grep -q "auralite#" "$LOG" 2>/dev/null; then
         echo "[virgl] NOTE: the system reached the shell with a GPU attached —"

@@ -46,21 +46,52 @@ extern "C" {
 #define GL_BACKEND_HARDWARE   0x0002u  /* real GPU command submission        */
 #define GL_BACKEND_DEPTH      0x0004u  /* provides its own depth buffer      */
 #define GL_BACKEND_TEXTURE    0x0008u  /* accelerates texture sampling       */
+/* H5: accepts GL_BATCH_FMT_FULL batches.  Declaring it is a promise that
+ * normal and texcoord are consumed; libgl checks the flag before building
+ * the wider batch, so a backend that does not promise one never sees a
+ * shape it does not understand. */
+#define GL_BACKEND_DRAW_FULL  0x0010u
 
 /* Opaque to backends; defined in libgl/src/glcontext.h. */
 struct aglx_context;
 
 /* One draw batch handed to a backend's `draw` hook.
  *
- * `data` holds `count` vertices of eight floats each: the CLIP-space position
- * (x, y, z, w — the same values the fixed-function transform stage computes,
- * so the GPU divides and clips exactly what the CPU rasterizer would have)
- * followed by the vertex colour (r, g, b, a).  Only whole GL_TRIANGLES
- * batches are eligible, so `count` is always a multiple of three.
+ * `data` holds `count` vertices whose size in floats is `format`:
+ *
+ *   GL_BATCH_FMT_POS_COLOR (0)  8 floats: clip xyzw, rgba
+ *   GL_BATCH_FMT_FULL      (1) 12 floats: clip xyzw, rgba, normal xyz, st
+ *
+ * Format 0 is what GL2 L6 shipped, and it is what every existing backend
+ * keeps receiving: libgl asks for format 1 only when the backend declares
+ * GL_BACKEND_DRAW_FULL.  Versioning the format instead of widening the old
+ * one is what makes that guarantee real rather than aspirational — the L6
+ * bytes are produced by the same code path they always were.
+ *
+ * The position is the CLIP-space value the fixed-function transform stage
+ * computes (so the GPU divides and clips exactly what the CPU rasterizer
+ * would have), and the colour is the POST-LIGHTING colour — H5's scope keeps
+ * fixed-function lighting on the CPU because it is per-vertex and already
+ * cheap (G7 measured the transform, not the shading).  Only whole
+ * GL_TRIANGLES batches are eligible, so `count` is a multiple of three.
  */
+#define GL_BATCH_FMT_POS_COLOR 0u
+#define GL_BATCH_FMT_FULL      1u
+
+/* Floats per vertex, one definition for the batch builder, the backend and
+ * the tests.  The plan's first bullet says "eight floats become twelve"; its
+ * field list (position 4 + colour 4 + normal 3 + texcoord 2) sums to
+ * thirteen, and the twelfth lane here is filled with zero.  Twelve wins over
+ * thirteen because the buffers, the chunk arithmetic and the pinned VELEM
+ * stride are all 4-float-aligned, and because a thirteenth float carrying
+ * nothing is a byte that has to be explained in every test.  The gap is
+ * recorded in the plan's H5 Results rather than hidden. */
+#define GL_BATCH_STRIDE(fmt) ((fmt) == GL_BATCH_FMT_FULL ? 12u : 8u)
+
 typedef struct gl_draw_batch {
     const GLfloat *data;
     GLsizei        count;
+    unsigned       format;      /* GL_BATCH_FMT_*                          */
 } gl_draw_batch_t;
 
 /* One rendering backend.
@@ -92,6 +123,27 @@ typedef struct gl_backend {
      * half GPU-drawn is a tearing bug, so the fallback unit is the entire
      * draw call, never one triangle inside it. */
     int (*draw)(struct aglx_context *ctx, const gl_draw_batch_t *batch);
+
+    /* Keep one texture's storage on the device (GPU_ACCEL_PLAN H3).
+     *
+     * Called by libgl when a mip level changes (`glTexImage2D`,
+     * `glTexSubImage2D`) and after a bind, so the backend can upload ONLY
+     * what changed.  `face`/`level` identify the image; `data` is
+     * width*height 0xAARRGGBB texels, row-major, no padding.  `last_level`
+     * is the chain length the texture currently has, so a backend that
+     * stores a chain as one resource can size it without a second call.
+     *
+     * Return 0 if the backend owns the texture and the upload happened or
+     * was cached; non-zero and libgl never asks about this texture again —
+     * the software sampler is authoritative and nothing has been uploaded.
+     * NULL means the backend stores no textures at all, which is what every
+     * backend before H3 did.
+     *
+     * A `data` of NULL with width 0 is the DELETE notification: the name is
+     * being reused or freed, drop any device storage for it. */
+    int (*tex_image)(struct aglx_context *ctx, GLuint name, GLenum target,
+                     int face, int level, GLsizei width, GLsizei height,
+                     const uint32_t *data, int last_level);
 
     /* Release backend resources for a context being destroyed. */
     void (*destroy)(struct aglx_context *ctx);
@@ -130,6 +182,18 @@ int gl_backend_force(const char *name);
 int gl_backend_try_draw(struct aglx_context *ctx,
                         const gl_draw_batch_t *batch);
 
+/* H5: which batch format libgl should pack for the active backend.  Returns
+ * GL_BATCH_FMT_FULL only when the backend declared GL_BACKEND_DRAW_FULL, so
+ * a backend that predates H5 never sees a wider shape than it knows. */
+unsigned gl_backend_draw_format(struct aglx_context *ctx);
+
+/* H3: offer one changed texture mip level to the backend.  Returns 0 if the
+ * backend mirrored it, non-zero to keep the texture software-only. */
+int gl_backend_try_tex_image(struct aglx_context *ctx, GLuint name,
+                             GLenum target, int face, int level,
+                             GLsizei width, GLsizei height,
+                             const uint32_t *data, int last_level);
+
 /* Whether the current GL state would let a fixed-function glDrawArrays batch
  * take the canned hardware path at all: GL_TRIANGLES, whole triangles, no
  * bound program, and none of the state the canned pipeline cannot reproduce
@@ -154,7 +218,22 @@ void gl_virgl_register(void);
  * and returns its length, or -1 when `cap` is too small. */
 const uint32_t *gl_virgl_canned_vs_tokens(int *n);
 const uint32_t *gl_virgl_canned_fs_tokens(int *n);
+/* H5: the device state the widened batch can reproduce.  Every field's zero
+ * value is "off", so a caller that wants exactly the GL2 L6 stream passes a
+ * zeroed struct (or NULL) and gets the same bytes as before. */
+typedef struct gl_virgl_state {
+    unsigned depth;          /* 1 = GL_LESS test on, depth writes on        */
+    unsigned blend;          /* 1 = blend enabled                           */
+    unsigned blend_src;      /* PIPE_BLENDFACTOR_* when blend is set        */
+    unsigned blend_dst;
+    unsigned cull;           /* PIPE_FACE_NONE / _FRONT / _BACK             */
+} gl_virgl_state_t;
+
 int  gl_virgl_canned_setup(uint32_t w, uint32_t h, uint32_t *d, uint32_t cap);
+/* The H5 form: the same stream, describing `fmt`'s vertex layout and the
+ * state the batch can now carry.  `fmt` is GL_BATCH_FMT_*. */
+int  gl_virgl_setup_state(uint32_t w, uint32_t h, const gl_virgl_state_t *st,
+                         unsigned fmt, uint32_t *d, uint32_t cap);
 
 #ifdef __cplusplus
 }

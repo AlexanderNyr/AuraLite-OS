@@ -63,6 +63,21 @@ else
     il_fail "boot-to-shell ratchet: got '${BOOT_TICKS:-none}' ticks (limit 6000)"
 fi
 
+# --- H2: the front-fb elision.  On a lane WITH a device, a steady-state
+# rect present must copy exactly ONE screen's bytes, not two: gpu_transfer_bytes
+# divided by compositor_pixels_flipped must be ~4 (bytes per pixel), because
+# the back->front copy is skipped once the scanout owns the display.
+# ck: 8 means the elision regressed to H1's 2.000x. ---
+if [ "${GPU_PX:-0}" -gt 0 ]; then
+    if [ "${GPU_TX:-0}" = "$((GPU_PX * 4))" ]; then
+        il_pass "H2: one copy per present, not two ($GPU_TX B for $GPU_PX px)"
+    else
+        il_fail "H2: copies regressed ($GPU_TX B for $GPU_PX px; expected $((GPU_PX * 4)))"
+    fi
+else
+    il_pass "H2: no device on this lane -- counters zero, path unchanged (D2 skip)"
+fi
+
 # --- H1: the framebuffer geometry file exists and parses in the same
 # log the counters come from (one boot, so the geometry is the one the
 # counters describe) ---

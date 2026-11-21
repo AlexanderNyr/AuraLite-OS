@@ -1015,3 +1015,88 @@ pub unsafe extern "C" fn gui_sdf_measure_text(
     }
     0
 }
+
+// ===================================================================
+// Test hooks (GPU_ACCEL_PLAN H2 guard)
+// ===================================================================
+//
+// 4628af0 shipped a vectorised path whose comment asserts it is "bit-
+// identical to the scalar path", with no test and no measurement.  These
+// three functions exist so tests/unit/test_sdf_simd.rs can compare the
+// two paths on the REAL file instead of a copy of it — the project's
+// rule (GL2/OPT: host tests link the shipping source).
+//
+// They compile to nothing in the kernel: `cfg(test_sdf_host)` is set only
+// by the test harness's rustc invocation, so `make iso` sees no new
+// symbol, no new branch and no size change.  The names say what they are.
+
+#[cfg(test_sdf_host)]
+pub const WEIGHT_ONE_TEST: i64 = WEIGHT_ONE;
+
+/// The scalar vertical lerp the SIMD path is required to reproduce.
+#[cfg(test_sdf_host)]
+pub fn test_vertical_lerp(top: u64, bottom: u64, inv: u64, ty: u64) -> u64 {
+    ((top as i128 * inv as i128 + bottom as i128 * ty as i128) >> 16) as u64
+}
+
+#[cfg(test_sdf_host)]
+pub fn test_coverage4_scalar<'a>(
+    pixels: &'a [u8], w: u32, h: u32,
+    first_x: i64, dx: i64, ty: i64, range: i64,
+    out: &mut [u8; 4],
+) {
+    // Build the smallest Atlas the sampler needs.
+    // Safety: every hook call is synchronous and the borrowed slice
+    // outlives it; the 'static bound is Atlas's storage detail, not a
+    // promise the hook makes.
+    let pixels: &'static [u8] = unsafe { core::mem::transmute(pixels) };
+    let atlas = Atlas {
+        width: w,
+        height: h,
+        glyphs: &[],
+        glyph_count: 0,
+        pixels,
+        ascii: [None; 128],
+    };
+    let s = GlyphSampler {
+        atlas: &atlas,
+        min_x: 0,
+        min_y: 0,
+        max_x: w - 1,
+        max_y: h - 1,
+        range,
+    };
+    let y = (0usize, 1usize, ty);
+    let mut x = first_x;
+    for slot in out.iter_mut() {
+        *slot = s.coverage(x, y);
+        x += dx;
+    }
+}
+
+#[cfg(test_sdf_host)]
+pub fn test_coverage4_simd<'a>(
+    pixels: &'a [u8], w: u32, h: u32,
+    first_x: i64, dx: i64, ty: i64, range: i64,
+    out: &mut [u8; 4],
+) {
+    let pixels: &'static [u8] = unsafe { core::mem::transmute(pixels) };
+    let atlas = Atlas {
+        width: w,
+        height: h,
+        glyphs: &[],
+        glyph_count: 0,
+        pixels,
+        ascii: [None; 128],
+    };
+    let s = GlyphSampler {
+        atlas: &atlas,
+        min_x: 0,
+        min_y: 0,
+        max_x: w - 1,
+        max_y: h - 1,
+        range,
+    };
+    let y = (0usize, 1usize, ty);
+    unsafe { s.coverage4(first_x, dx, y, true, out) };
+}

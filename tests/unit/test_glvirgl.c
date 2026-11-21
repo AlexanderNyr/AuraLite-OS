@@ -365,6 +365,136 @@ static void test_canned_shaders(void) {
           "the FS input is a perspective-interpolated COLOR");
 }
 
+/* H5: the versioning promise, as bytes.
+ *
+ * The plan's gate says the widened batch must be byte-identical between
+ * formats 0 and 1 for a position+colour draw.  In the SETUP stream the two
+ * differ only where the format adds something -- the VELEM object -- and the
+ * zero-state (NULL) form must still equal the GL2 L6 stream that
+ * test_canned_setup_stream walks.  These three checks pin each half of that
+ * sentence. */
+static void test_h5_format_versioning(void) {
+    printf("--- H5: batch format versioning ---\n");
+
+    uint32_t a[128], b[128], c[128];
+    int na = gl_virgl_canned_setup(320, 240, a, 128);
+    int nb = gl_virgl_setup_state(320, 240, NULL, GL_BATCH_FMT_POS_COLOR, b, 128);
+    CHECK(na > 0 && na == nb, "the NULL-state form is the same length");
+    CHECK(na > 0 && memcmp(a, b, (size_t)na * 4u) == 0,
+          "the NULL-state form is BYTE-IDENTICAL to the GL2 L6 stream");
+
+    gl_virgl_state_t st; memset(&st, 0, sizeof st);
+    int nc = gl_virgl_setup_state(320, 240, &st, GL_BATCH_FMT_FULL, c, 128);
+    CHECK(na > 0 && nc > 0, "the format-1 setup builds");
+    CHECK(nc > na, "format 1's setup carries more (the wider VELEM)");
+
+    /* Both streams must still be valid command streams. */
+    CHECK(na > 0 && gpu_validate_cmd_stream(a, (uint32_t)na) == 0,
+          "format 0's stream passes the kernel validator");
+    CHECK(nc > 0 && gpu_validate_cmd_stream(c, (uint32_t)nc) == 0,
+          "format 1's stream passes the kernel validator");
+
+    /* The VELEM object: find it in each and read the element count. */
+    int i = 0, elems0 = -1, elems1 = -1;
+    while (i < na) {
+        uint32_t hdr = a[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFu, len = hdr & 0xFFFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_VERTEX_ELEMENTS)
+            elems0 = (int)a[i + 2];   /* [hdr][handle][payload: count...] */
+        i += 1 + (int)len;
+    }
+    i = 0;
+    while (i < nc) {
+        uint32_t hdr = c[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFu, len = hdr & 0xFFFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_VERTEX_ELEMENTS)
+            elems1 = (int)c[i + 2];
+        i += 1 + (int)len;
+    }
+    CHECK(elems0 == 2, "format 0 describes two vertex elements (pos, col)");
+    CHECK(elems1 == 4, "format 1 adds normal and texcoord");
+
+    /* The stride table is the one definition everything shares. */
+    CHECK(GL_BATCH_STRIDE(GL_BATCH_FMT_POS_COLOR) == 8u,
+          "format 0 is eight floats");
+    CHECK(GL_BATCH_STRIDE(GL_BATCH_FMT_FULL) == 12u,
+          "format 1 is twelve floats");
+}
+
+/* H5: state reaches the setup stream -- and only when asked for. */
+static void test_h5_state_in_stream(void) {
+    printf("--- H5: depth / blend / cull in the setup stream ---\n");
+
+    gl_virgl_state_t st; memset(&st, 0, sizeof st);
+    uint32_t d[128];
+    int n = gl_virgl_setup_state(320, 240, &st, GL_BATCH_FMT_POS_COLOR, d, 128);
+    CHECK(n > 0, "the all-off state builds");
+
+    /* Find the DSA object and read its depth dword. */
+    int i = 0; uint32_t dsa0 = 0xFFFFFFFFu;
+    while (i < n) {
+        uint32_t hdr = d[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFu, len = hdr & 0xFFFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_DSA)
+            dsa0 = d[i + 2];
+        i += 1 + (int)len;
+    }
+    CHECK(dsa0 == 0u, "depth off: the DSA's depth word is zero");
+
+    st.depth = 1u;
+    n = gl_virgl_setup_state(320, 240, &st, GL_BATCH_FMT_POS_COLOR, d, 128);
+    i = 0; uint32_t dsa1 = 0xFFFFFFFFu;
+    while (i < n) {
+        uint32_t hdr = d[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFFFu, len = hdr & 0xFFFFu;
+        obj = (hdr >> 16) & 0xFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_DSA)
+            dsa1 = d[i + 2];
+        i += 1 + (int)len;
+    }
+    /* dword 0 of the payload: enabled | writemask<<1 | PIPE_FUNC_LESS<<2 */
+    CHECK(dsa1 == (1u | (1u << 1) | (VIRGL_PIPE_FUNC_LESS << 2)),
+          "depth on: enabled, writing, GL_LESS -- in PIPE_FUNC_* terms");
+    CHECK(gpu_validate_cmd_stream(d, (uint32_t)n) == 0,
+          "the depth-enabled stream passes the validator");
+
+    /* Blend: RT0's equation carries the two factors, src low, dst high. */
+    memset(&st, 0, sizeof st);
+    st.blend = 1u;
+    st.blend_src = VIRGL_PIPE_BLENDFACTOR_SRC_ALPHA;
+    st.blend_dst = VIRGL_PIPE_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    n = gl_virgl_setup_state(320, 240, &st, GL_BATCH_FMT_POS_COLOR, d, 128);
+    i = 0; int found = 0;
+    while (i < n) {
+        uint32_t hdr = d[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFu, len = hdr & 0xFFFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_BLEND) {
+            found = 1;
+            CHECK(d[i + 2 + 4] == (VIRGL_PIPE_BLENDFACTOR_SRC_ALPHA |
+                                  (VIRGL_PIPE_BLENDFACTOR_ONE_MINUS_SRC_ALPHA << 16)),
+                  "blend: src in the low half, dst in the high");
+        }
+        i += 1 + (int)len;
+    }
+    CHECK(found, "the BLEND object is created");
+
+    /* Cull: the rasterizer's first dword. */
+    memset(&st, 0, sizeof st);
+    st.cull = VIRGL_PIPE_FACE_BACK;
+    n = gl_virgl_setup_state(320, 240, &st, GL_BATCH_FMT_POS_COLOR, d, 128);
+    i = 0; found = 0;
+    while (i < n) {
+        uint32_t hdr = d[i];
+        uint32_t cmd = hdr >> 24, obj = (hdr >> 16) & 0xFFu, len = hdr & 0xFFFFu;
+        if (cmd == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_RASTERIZER) {
+            found = 1;
+            CHECK(d[i + 2] == VIRGL_PIPE_FACE_BACK, "cull: PIPE_FACE_BACK, not a GL enum");
+        }
+        i += 1 + (int)len;
+    }
+    CHECK(found, "the rasterizer object is created");
+}
+
 static void test_canned_setup_stream(void) {
     printf("--- GL2 L6: the canned setup stream vs the kernel validator ---\n");
 
@@ -426,6 +556,7 @@ static const gl_backend_t fake_backend = {
     GL_BACKEND_SOFTWARE,
     0, 0, 0,
     fake_draw,
+    0,                  /* tex_image */
     0,
 };
 
@@ -505,6 +636,137 @@ static void test_canned_dispatch(void) {
  * Driver
  * ==========================================================================*/
 
+
+/* ============================================================================
+ * H3: the texture inventory
+ *
+ * The backend's texture pool is static state in glvirgl.c, invisible from
+ * here except through what it promises.  Three promises are checkable on a
+ * host with no GPU, and each of them is a bug the naive version has:
+ *
+ *   1. With no device the hook DECLINES, so libgl keeps the software image
+ *      authoritative and never asks twice.  A backend that returned 0 here
+ *      would have libgl believe in a device copy that does not exist.
+ *
+ *   2. The size of the context did not grow.  H3 put the pool in the
+ *      backend's own static state, which is why this number is unchanged:
+ *      the G10 rule ("any phase that grows per-context state re-measures it")
+ *      is satisfied by not growing it.  The pin makes the claim checkable.
+ *
+ *   3. The sampler packet builders agree with the kernel validator, which is
+ *      what test_tex_packets walks in detail; here the same three packets are
+ *      assembled through the backend's own sequence and checked for order.
+ * ==========================================================================*/
+
+static void test_tex_inventory(void) {
+    printf("--- H3: the texture inventory ---\n");
+
+    aglx_context_t *c = aglxCreateContext(1, W, H, AGLX_DEPTH);
+    CHECK(c != NULL, "context");
+    if (!c) return;
+
+    /* No GPU here: the backend that registered declined, so the software
+     * backend -- which stores nothing -- is active and its hook is NULL. */
+    const gl_backend_t *b = gl_backend_active();
+    CHECK(b != NULL && b->tex_image == NULL,
+          "with no device, no backend claims textures");
+
+    /* The try_* wrapper must then report "not handled" rather than crash. */
+    uint32_t texel = 0xFFFF00FFu;
+    CHECK(gl_backend_try_tex_image(c, 1, GL_TEXTURE_2D, 0, 0, 1, 1,
+                                   &texel, 1) != 0,
+          "and the try_ hook declines cleanly");
+
+    /* G10's rule, satisfied by not growing: the pool is backend static
+     * state, so the context is exactly the size H0 measured. */
+    CHECK(sizeof(struct aglx_context) == 240328u,
+          "sizeof(aglx_context) is unchanged at 240328 (pool is backend state)");
+
+    /* A 0 handle is the DELETE notification: legal even with no backend. */
+    CHECK(gl_backend_try_tex_image(c, 0, GL_TEXTURE_2D, 0, 0, 0, 0,
+                                   NULL, 0) != 0,
+          "the delete notification is declined too, not misread as an image");
+
+    aglxDestroyContext(c);
+}
+
+/* The order a draw needs the three H3 packets in, assembled through the
+ * builders the backend calls.  This is the seam check: the same functions
+ * test_tex_packets exercises in isolation, here as one stream. */
+static void test_tex_packet_order(void) {
+    printf("--- H3: the three texture packets in one stream ---\n");
+
+    virgl_cmd_buf_t cb;
+    virgl_cmd_init(&cb, 1);
+
+    CHECK(virgl_cmd_create_sampler_view(&cb, VIRGL_TEX_SAMPLER_VIEW, 200,
+                                        VIRGL_PIPE_FORMAT_B8G8R8A8_UNORM,
+                                        0, 0) == 0,
+          "the sampler view builds");
+    CHECK(virgl_cmd_create_sampler_state(&cb, VIRGL_TEX_SAMPLER_STATE,
+                                         VIRGL_TEX_WRAP_REPEAT,
+                                         VIRGL_TEX_WRAP_REPEAT,
+                                         VIRGL_TEX_WRAP_REPEAT,
+                                         VIRGL_TEX_FILTER_NEAREST,
+                                         VIRGL_TEX_FILTER_NEAREST,
+                                         VIRGL_TEX_MIPFILTER_NONE) == 0,
+          "the sampler state builds");
+    uint32_t views[1] = { VIRGL_TEX_SAMPLER_VIEW };
+    CHECK(virgl_cmd_set_sampler_views(&cb, VIRGL_PIPE_SHADER_FRAGMENT, 0, 1,
+                                      views) == 0,
+          "the binding builds");
+
+    CHECK(!cb.overflow, "no buffer overflow");
+    CHECK(gpu_validate_cmd_stream(cb.dwords, cb.count) == 0,
+          "the KERNEL validator accepts the whole sequence");
+
+    /* Walk it: three packets, and CREATE_OBJECT before SET_SAMPLER_VIEWS is
+     * the order virglrenderer requires -- a bind naming a handle that was
+     * never created is what a reordered stream would send it. */
+    unsigned idx = 0, packets = 0, view_at = 0, bind_at = 0;
+    int seen_view = 0, seen_state = 0;
+    while (idx < cb.count && packets < 8) {
+        uint32_t hdr = cb.dwords[idx];
+        uint32_t id  = (hdr >> 24) & 0xFFu;
+        uint32_t len = hdr & 0xFFFFu;
+        /* The object type rides in the HEADER (bits 16..23), not in the first
+         * payload dword -- a walk that reads the payload sees the handle and
+         * mistakes every CREATE_OBJECT for a different object. */
+        uint32_t obj = (hdr >> 16) & 0xFFu;
+        if (id == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_SAMPLER_VIEW)
+            { seen_view = 1; view_at = packets; }
+        if (id == VIRGL_CCMD_CREATE_OBJECT && obj == VIRGL_OBJECT_SAMPLER_STATE)
+            seen_state = 1;
+        if (id == VIRGL_CCMD_SET_SAMPLER_VIEWS) bind_at = packets;
+        idx += 1 + len;
+        packets++;
+    }
+    CHECK(packets == 3, "three packets, three walks");
+    CHECK(seen_view, "one of them creates the sampler view");
+    CHECK(seen_state, "one of them creates the sampler state");
+    CHECK(bind_at > view_at || (seen_view && bind_at > view_at),
+          "and the binding comes after the view it names");
+    CHECK(idx == cb.count, "the walk lands exactly at the end");
+
+    /* Every SAMPLER_VIEW create must carry a length that matches the 8 dwords
+     * the builder emits; this is the assertion that caught the original
+     * length lie, restated where the backend's own sequence is assembled. */
+    unsigned vh = 0, vfound = 0;
+    while (vh < cb.count) {
+        uint32_t h = cb.dwords[vh];
+        if (((h >> 24) & 0xFFu) == VIRGL_CCMD_CREATE_OBJECT &&
+            ((h >> 16) & 0xFFu) == VIRGL_OBJECT_SAMPLER_VIEW) {
+            CHECK((h & 0xFFFFu) == 8u, "the view declares the 8 dwords it writes");
+            vfound = 1;
+        }
+        vh += 1 + (h & 0xFFFFu);
+    }
+    CHECK(vfound, "and there was a view to check");
+
+    CHECK(sizeof(struct aglx_context) == 240328u,
+          "the packet path allocates nothing per context");
+}
+
 int main(void) {
     printf("=== test_glvirgl: the VirGL hardware backend (phase G13) ===\n");
 
@@ -515,7 +777,11 @@ int main(void) {
     test_abi();
     test_canned_shaders();
     test_canned_setup_stream();
+    test_h5_format_versioning();
+    test_h5_state_in_stream();
     test_canned_dispatch();
+    test_tex_inventory();
+    test_tex_packet_order();
 
     printf("\ntest_glvirgl: %d passed, %d failed (%d total)\n",
            passed, failed, tn);

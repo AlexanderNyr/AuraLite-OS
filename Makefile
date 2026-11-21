@@ -1159,11 +1159,18 @@ LIBGL_OBJS := $(USER_BUILD)/glmath.o $(USER_BUILD)/auraglx.o \
               $(USER_BUILD)/gltexture.o $(USER_BUILD)/glfrag.o \
               $(USER_BUILD)/glarray.o $(USER_BUILD)/gllist.o \
               $(USER_BUILD)/glu.o $(USER_BUILD)/glbackend.o \
-              $(USER_BUILD)/glvirgl.o $(USER_BUILD)/glfbo.o \
+              $(USER_BUILD)/glvirgl.o $(USER_BUILD)/virgl_cmd.o \
+              $(USER_BUILD)/glfbo.o \
               $(USER_BUILD)/glsl_lex.o $(USER_BUILD)/glsl_type.o \
               $(USER_BUILD)/glsl_parse.o $(USER_BUILD)/glsl_sema.o \
               $(USER_BUILD)/glsl_exec.o \
-              $(USER_BUILD)/glshader.o $(USER_BUILD)/glshaderpipe.o
+              $(USER_BUILD)/glshader.o $(USER_BUILD)/glshaderpipe.o \
+              $(USER_BUILD)/gloracle.o
+# H6: the oracle hashes with the KERNEL's SHA-256 (kernel/lib/sha256.c), so
+# the host lane and the guest lane hash with the same code and their digests
+# are comparable.  It is compiled into the same archive because gloracle.o
+# calls it; nothing else in libgl does.
+LIBGL_OBJS += $(USER_BUILD)/sha256_user.o
 USER_GL_OBJ := $(LIBAGL)
 USER_CFLAGS += -I lib/libgl/include
 
@@ -1973,6 +1980,29 @@ $(USER_BUILD)/glvirgl.o: lib/libgl/src/glvirgl.c lib/libgl/include/GL/glbackend.
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -I . -c $< -o $@
 
+# GPU_ACCEL_PLAN H6: the frame oracle.  It sits in libgl rather than in the
+# test binary because BOTH lanes need it -- /gltest renders the scene in the
+# guest, and the host unit test renders the same scene through the same
+# software path -- and because the hash it uses (ksha256) is the kernel's own,
+# compiled here for user space.
+$(USER_BUILD)/gloracle.o: lib/libgl/src/gloracle.c lib/libgl/src/gloracle.h \
+                          kernel/lib/sha256.h lib/libgl/src/glcontext.h \
+                          $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -I . -c $< -o $@
+
+$(USER_BUILD)/sha256_user.o: kernel/lib/sha256.c kernel/lib/sha256.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -I . -c $< -o $@
+
+# GPU_ACCEL_PLAN H3: the VirGL packet builders are pure dword encoders, so
+# they link into BOTH the kernel driver and libgl.  One definition of the wire
+# format in the tree was the G13 lesson; a second copy in glvirgl.c would be
+# the drift this rule exists to prevent.
+$(USER_BUILD)/virgl_cmd.o: drivers/gpu/virgl_cmd.c drivers/gpu/virgl.h $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -I . -c $< -o $@
+
 $(USER_BUILD)/glfbo.o: lib/libgl/src/glfbo.c lib/libgl/src/glcontext.h \
                        lib/libgl/src/glvertex.h lib/libgl/include/GL/gl.h \
                        $(USER_CFLAGS_INC)
@@ -2020,7 +2050,7 @@ $(USER_BUILD)/atls_%.o: lib/libatls/src/atls_%.c \
 # /gltest reaches into lib/libgl/src for glsl.h: it is libgl's own regression
 # suite, and the GLSL front end has no public entry point until phase G11c.
 $(USER_BUILD)/gltest.o: userspace/tests/gltest/gltest.c lib/libauragui/include/auragui.h \
-                        lib/libgl/src/glsl.h $(USER_CFLAGS_INC)
+                        lib/libgl/src/glsl.h lib/libgl/src/gloracle.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -I lib/libgl/src -c $< -o $@
 
@@ -4353,6 +4383,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_glslexec $(BUILD_DIR)/test_glprog \
                 $(BUILD_DIR)/test_glcoexist $(BUILD_DIR)/test_glvirgl \
                 $(BUILD_DIR)/test_gpu_syscall $(BUILD_DIR)/test_perfstat_gpu \
+                $(BUILD_DIR)/test_tex_packets $(BUILD_DIR)/test_tgsi \
+                $(BUILD_DIR)/test_gloracle \
                 $(BUILD_DIR)/test_initrd_dirs \
                 $(BUILD_DIR)/test_initrd_allocfail \
                 $(BUILD_DIR)/test_execpolicy \
@@ -5175,6 +5207,15 @@ test-unit: $(UNIT_TESTS) $(BUILD_DIR)/w32_peinfo $(BUILD_DIR)/w32_unwinddump $(W
 	@echo "[unit] running tests/unit/test_gl2_claims.sh"
 	@bash tests/unit/test_gl2_claims.sh || exit 1
 
+# GPU_ACCEL_PLAN H2 guard: commit 4628af0 vectorised the MSDF renderer
+# (SSE4.1) and asserted bit-identical results, with no test and no number.
+# This gate supplies both: it links the REAL kernel/gui/sdf/sdf.rs, compares
+# coverage4 against coverage over 29 456 exhaustive cases, and prints the
+# speedup the commit's `perf` title never measured.  Skips loudly without
+# rustc (D2).
+	@echo "[unit] running tools/test_sdf_simd.sh"
+	@bash tools/test_sdf_simd.sh || exit 1
+
 # GPU_ACCEL_PLAN.md H0: tools/check_gpu_claims.py cannot drift from the
 # tree.  The GPU stack's opener facts are pinned as live greps (no GPU
 # counter exists yet, gfx_flip still pays the second full copy, the
@@ -5627,6 +5668,7 @@ LIBGL_TEST_SRCS := lib/libgl/src/auraglx.c lib/libgl/src/glstate.c \
                    lib/libgl/src/glarray.c lib/libgl/src/gllist.c \
                    lib/libgl/src/glu.c lib/libgl/src/glbackend.c \
                    lib/libgl/src/glvirgl.c lib/libgl/src/glfbo.c \
+                   drivers/gpu/virgl_cmd.c lib/libgl/src/tgsi.c \
                    lib/libgl/src/glsl_lex.c lib/libgl/src/glsl_type.c \
                    lib/libgl/src/glsl_parse.c lib/libgl/src/glsl_sema.c \
                    lib/libgl/src/glsl_exec.c \
@@ -5711,6 +5753,50 @@ $(BUILD_DIR)/test_perfstat_gpu: tests/unit/test_perfstat_gpu.c \
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
 	          tests/unit/test_perfstat_gpu.c kernel/lib/perfstat.c -o $@
+
+# GPU_ACCEL_PLAN H3: test_tex_packets links the REAL packet builders from
+# drivers/gpu/virgl.c (drivers/gpu/virgl_host_stub.c answers the transport
+# symbols; the compiler checks every stub signature against the header) and
+# walks every emitted packet through the REAL kernel validator.  It found a
+# length lie on its first run: the SAMPLER_VIEW builder declared 9 payload
+# dwords and wrote 8.
+$(BUILD_DIR)/test_tex_packets: tests/unit/test_tex_packets.c \
+                               drivers/gpu/virgl_cmd.c drivers/gpu/virgl.c \
+                               drivers/gpu/virgl.h \
+                               tests/unit/virgl_host_stub.c \
+                               kernel/gpu/gpu_cmdcheck.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . \
+	          tests/unit/test_tex_packets.c drivers/gpu/virgl.c \
+	          drivers/gpu/virgl_cmd.c \
+	          kernel/gpu/gpu_cmdcheck.c tests/unit/virgl_host_stub.c -o $@
+
+# GPU_ACCEL_PLAN H4: the GLSL AST -> TGSI retarget.  The test carries an
+# INDEPENDENT disassembler written from the Gallium TGSI spec, so the encoding
+# is checked against a second opinion rather than against the emitter's own
+# constants.  It refuses every token the canned arrays in glvirgl.c contain --
+# see the finding recorded in tgsi.h and in the phase's Results.
+$(BUILD_DIR)/test_tgsi: tests/unit/test_tgsi.c lib/libgl/src/tgsi.c \
+                        lib/libgl/src/tgsi.h $(LIBGL_TEST_SRCS) \
+                        $(LIBGL_TEST_HDRS) $(LIBGL_TEST_STUB) \
+                        kernel/gpu/gpu_cmdcheck.c drivers/gpu/virgl.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBGL_TEST_CFLAGS) $< $(LIBGL_TEST_SRCS) \
+	          kernel/gpu/gpu_cmdcheck.c $(LIBGL_TEST_STUB) -o $@ -lm
+
+# GPU_ACCEL_PLAN H6: the frame oracle.  The scene renders through libgl's own
+# software path (no GPU in CI), the hash is the SAME ksha256 the kernel uses,
+# and half the suite is mutation cases -- an oracle that cannot see a shifted
+# vertex or a band is not an oracle.
+$(BUILD_DIR)/test_gloracle: tests/unit/test_gloracle.c lib/libgl/src/gloracle.c \
+                            lib/libgl/src/gloracle.h kernel/lib/sha256.c \
+                            kernel/lib/sha256.h $(LIBGL_TEST_SRCS) \
+                            $(LIBGL_TEST_HDRS) $(LIBGL_TEST_STUB) \
+                            kernel/gpu/gpu_cmdcheck.c
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) $(LIBGL_TEST_CFLAGS) $< lib/libgl/src/gloracle.c \
+	          kernel/lib/sha256.c $(LIBGL_TEST_SRCS) \
+	          kernel/gpu/gpu_cmdcheck.c $(LIBGL_TEST_STUB) -o $@ -lm
 
 $(BUILD_DIR)/test_glmath: tests/unit/test_glmath.c lib/libgl/src/glmath.c \
                           lib/libgl/include/GL/glmath.h

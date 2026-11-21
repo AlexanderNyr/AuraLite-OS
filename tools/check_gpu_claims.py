@@ -66,14 +66,17 @@ def phase_done(plan, phase):
 
 
 def eligibility_refusals(glbackend):
-    """Count the STATE refusals in the eligibility screen: 13.
+    """Count the STATE refusals in the eligibility screen.
 
-    The screen has 15 `return 0;` statements in total, but two of them are
-    preconditions, not refusals — `if (!ctx)` and `if (!b || !b->draw)`
-    (software is the fallback).  The plan's 13 is the count of *state*
-    conditions, and this helper fails if a precondition is ever folded
-    into it by accident.  The texture loop is ONE refusal covering N
-    units; counting statements (not units) is what the 13 names.
+    Thirteen before H5, nine after it.  The screen always has two extra
+    `return 0;` statements that are PRECONDITIONS, not refusals — `if
+    (!ctx)` and `if (!b || !b->draw)` (software is the fallback) — so the
+    raw statement count is two higher than the number the plan names, and
+    this helper fails if a precondition is ever folded into it by accident.
+    H5 removed exactly four (depth, blend, cull, texture), each of which
+    became conditional on a BACKEND FLAG rather than on the GL state alone;
+    the conditionals still contain a `return 0;`, so the statement walk
+    sees them and the count lands on nine.
     """
     m = re.search(
         r"int gl_backend_draw_eligible\([^)]*\)\s*\{(.*?)\n\}",
@@ -86,6 +89,23 @@ def eligibility_refusals(glbackend):
     return total - preconditions
 
 
+def front_fb_readers():
+    """Files OTHER than graphics.c that mention front_fb.
+
+    H2 skips the back→front copy when the scanout owns the display.  That
+    is only sound while nothing else reads front_fb; the moment a reader
+    appears the pixels it expects would be one frame stale.  Returned as a
+    list so the failure message can name the file.
+    """
+    import subprocess
+    out = subprocess.run(
+        ["sh", "-c",
+         "grep -rl front_fb --include=*.c --include=*.h kernel drivers "
+         "userspace lib 2>/dev/null | grep -v graphics.c"],
+        capture_output=True, text=True, cwd=ROOT).stdout
+    return [line for line in out.split() if line.strip()]
+
+
 def claims():
     plan = read("docs", "plans", "GPU_ACCEL_PLAN.md")
     perfstat = read("kernel", "lib", "perfstat.h")
@@ -93,6 +113,16 @@ def claims():
     virtio_gpu = read("drivers", "gpu", "virtio_gpu.c")
     glbackend_h = read("lib", "libgl", "include", "GL", "glbackend.h")
     glbackend_c = read("lib", "libgl", "src", "glbackend.c")
+    glarray_c   = read("lib", "libgl", "src", "glarray.c")
+    glvirgl_c   = read("lib", "libgl", "src", "glvirgl.c")
+    virgl_h     = read("drivers", "gpu", "virgl.h")
+    glbe_test   = read("tests", "unit", "test_glbackend.c")
+    goracle_c   = read("lib", "libgl", "src", "gloracle.c")
+    goracle_h   = read("lib", "libgl", "src", "gloracle.h")
+    goracle_t   = read("tests", "unit", "test_gloracle.c")
+    gltest_c    = read("userspace", "tests", "gltest", "gltest.c")
+    virgl_case  = read("tests", "integration", "cases", "test_virgl_gpu.sh")
+    glvirgl_test = read("tests", "unit", "test_glvirgl.c")
     glvirgl = read("lib", "libgl", "src", "glvirgl.c")
     glcube = read("userspace", "demos", "glcube", "glcube.c")
     ledger = read("docs", "residue_ledger.md")
@@ -105,6 +135,8 @@ def claims():
     h2 = phase_done(plan, "H2")
     h4 = phase_done(plan, "H4")
     h5 = phase_done(plan, "H5")
+    h6 = phase_done(plan, "H6")
+    h7 = phase_done(plan, "H7")
     h7 = phase_done(plan, "H7")
 
     # --- opener pin 1: MOVED BY H1 -----------------------------------
@@ -180,7 +212,7 @@ def claims():
             and "gpu_transfer_bytes" in read("tests", "integration", "cases",
                                              "test_perf_smoke.sh")))
 
-    # --- opener pin 2: gfx_flip still pays the second full copy --------
+    # --- opener pin 2: MOVED BY H2 -----------------------------------
     if not h2:
         checks.append((
             "opener 2: gfx_flip() still calls virtio_gpu_present() after "
@@ -191,6 +223,21 @@ def claims():
                       graphics, re.S).group(1).count("virtio_gpu_present(") == 1 and
             "front_fb" in re.search(r"void gfx_flip\(void\)\s*\{(.*?)\n\}",
                                     graphics, re.S).group(1)))
+    else:
+        checks.append((
+            "H2: both flips guard the back→front copy on "
+            "`scanout_owns_display`, so a healthy scanout skips it",
+            graphics.count("if (!scanout_owns_display)") == 2))
+        checks.append((
+            "H2: the flag is set from the PRESENT'S RETURN, not assumed — a "
+            "failed present re-arms the copy on the next flip",
+            graphics.count("scanout_owns_display =") >= 3
+            and "(virtio_gpu_present(back_fb, fb_width, fb_height, fb_pitch) == 0)"
+            in graphics))
+        checks.append((
+            "H2: front_fb still has NO reader outside graphics.c (the "
+            "elision's safety condition, re-checked now that it matters)",
+            front_fb_readers() == []))
 
     # --- opener pin 3: the batch shape and the 13 refusals -------------
     if not h5:
@@ -226,6 +273,149 @@ def claims():
             len(re.findall(r"\breturn 0;", re.search(
                 r"int gl_backend_draw_eligible\([^)]*\)\s*\{(.*?)\n\}",
                 glbackend_c, re.S).group(1))) == 15))
+
+    # --- H5: the widened draw path ------------------------------------
+    if h5:
+        # The versioned format, not a mutation of the old one.
+        checks.append((
+            "H5: gl_draw_batch_t carries a `format` field beside "
+            "{data, count}, and the two formats are named constants",
+            "unsigned       format;" in glbackend_h
+            and "GL_BATCH_FMT_POS_COLOR 0u" in glbackend_h
+            and "GL_BATCH_FMT_FULL      1u" in glbackend_h))
+        checks.append((
+            "H5: one stride definition (8 / 12 floats) shared by the batch "
+            "builder, the backend and the tests",
+            "GL_BATCH_STRIDE(fmt)" in glbackend_h
+            and "GL_BATCH_STRIDE(fmt)" in glarray_c
+            and glvirgl_c.count("GL_BATCH_STRIDE") >= 1
+            and "GL_BATCH_STRIDE" in glvirgl_test))
+        # Versioning is OPT-IN, so a backend that predates H5 never sees a
+        # wider batch than it understands.
+        checks.append((
+            "H5: the wide format is opt-in — GL_BACKEND_DRAW_FULL is declared "
+            "and gl_backend_draw_format() consults it",
+            "GL_BACKEND_DRAW_FULL" in glbackend_h
+            and "b->flags & GL_BACKEND_DRAW_FULL" in glbackend_c))
+        # The screen: 13 -> 9, with the four removals each gated on backend
+        # support rather than dropped outright.
+        checks.append((
+            "H5: gl_backend_draw_eligible() is down to NINE state refusals "
+            "(13 before this phase)",
+            eligibility_refusals(glbackend_c) == 9))
+        checks.append((
+            "H5: each of the four removals is CONDITIONAL on the backend, "
+            "never an unconditional drop",
+            "GL_BACKEND_DEPTH) == 0" in glbackend_c
+            and "GL_BACKEND_TEXTURE) == 0" in glbackend_c
+            and "blend_is_gpu_exact" in glbackend_c))
+        checks.append((
+            "H5: the blend set is the enumerated 1:1 factors, and an "
+            "unlisted factor still declines",
+            "blend_is_gpu_exact" in glbackend_c
+            and glbackend_c.count("GL_ONE_MINUS_SRC_ALPHA") >= 1
+            and "default: return 0;" in glbackend_c))
+        # Depth: a real surface and a DSA that names PIPE_FUNC_LESS.
+        checks.append((
+            "H5: depth is a real surface — created, attached as zsurf, and "
+            "described by a DSA that uses PIPE_FUNC_* (not a GL enum)",
+            "ensure_depth_surface" in glvirgl_c
+            and "VIRGL_ZSURFACE_HANDLE" in glvirgl_c
+            and "VIRGL_PIPE_FUNC_LESS" in glvirgl_c
+            and "VIRGL_PIPE_FORMAT_Z32_FLOAT" in virgl_h))
+        checks.append((
+            "H5: the depth surface is released with its render target",
+            "release_target" in glvirgl_c
+            and glvirgl_c.count("vg.zres") >= 3))
+        # The setup stream keeps the L6 bytes when nothing is asked for.
+        checks.append((
+            "H5: gl_virgl_canned_setup() still exists as the zero-state "
+            "wrapper, so GL2 L6's bytes are produced by the same path",
+            "int gl_virgl_canned_setup" in glvirgl_c
+            and "gl_virgl_setup_state(w, h, NULL, 0, d, cap)" in glvirgl_c))
+        # The widened VELEM describes four elements at the right offsets.
+        checks.append((
+            "H5: format 1's VELEM describes four elements — normal at byte "
+            "32 and texcoord at byte 44 — derived from the same stride",
+            "nelem = 4;" in glvirgl_c
+            and "VIRGL_PIPE_FORMAT_R32G32B32_FLOAT" in glvirgl_c
+            and "44;                /* tex s" in glvirgl_c))
+        # The tests the plan asks for actually exist and are wired in.
+        checks.append((
+            "H5: the eligibility table is ENUMERATED as tests — each of the "
+            "four removals paired with the state that still declines",
+            "t_h5_depth_declines_without_backend_support" in glbe_test
+            and "t_h5_blend_with_constant_colour_declines" in glbe_test
+            and "t_h5_cull_cw_winding_declines" in glbe_test
+            and "t_h5_texture_second_unit_declines" in glbe_test
+            and "t_h5_still_declines" in glbe_test))
+        checks.append((
+            "H5: the nine that stayed are enumerated by the test too, not "
+            "left implicit",
+            "GL_LINES" in glbe_test and "GL_TRIANGLES, 4" in glbe_test
+            and "c->fog = 1;" in glbe_test))
+        checks.append((
+            "H5: format 0 vs 1 byte-identity is asserted on the SETUP stream",
+            "test_h5_format_versioning" in glvirgl_test
+            and "BYTE-IDENTICAL to the GL2 L6 stream" in glvirgl_test))
+        checks.append((
+            "H5: the state words are asserted in the stream — depth as "
+            "PIPE_FUNC_LESS, blend factors src|dst<<16, cull as PIPE_FACE_*",
+            "test_h5_state_in_stream" in glvirgl_test
+            and "VIRGL_PIPE_FUNC_LESS << 2" in glvirgl_test))
+
+    # --- H6: the frame oracle -----------------------------------------
+    if h6:
+        checks.append((
+            "H6: the deterministic scene lives in libgl, not in a test binary, "
+            "so both lanes render the SAME scene",
+            "int gloracle_render" in goracle_c
+            and "gloracle_render" in goracle_t and "gloracle_render" in gltest_c))
+        checks.append((
+            "H6: the hash is the kernel's own SHA-256, not a private checksum",
+            "ksha256(" in goracle_c
+            and '#include "../../../kernel/lib/sha256.h"' in goracle_c))
+        # The stated tolerance is in the header AND in the plan; the checker is
+        # what stops the two drifting apart.
+        checks.append((
+            "H6: the tolerance is a stated number in the code (5 permille, "
+            "epsilon 1/255) and the plan quotes the same pair",
+            "GLORACLE_TOLERANCE_PERMILLE 5u" in goracle_h
+            and "GLORACLE_CHANNEL_EPSILON 1u" in goracle_h
+            and "5 pixels per thousand" in plan
+            and "1/255" in plan))
+        checks.append((
+            "H6: the oracle's own test carries MUTATION cases -- an oracle "
+            "that cannot see a regression is worse than none",
+            "t_hash_sees_one_pixel" in goracle_t
+            and "t_hash_sees_flipped_rows" in goracle_t
+            and "t_compare_band_is_rejected" in goracle_t
+            and "t_compare_shifted_scene_rejected" in goracle_t
+            and "t_compare_swapped_channels_rejected" in goracle_t))
+        checks.append((
+            "H6: the tolerance is asserted in BOTH directions -- an epsilon is "
+            "accepted and a band rejected, at the exact budget boundary",
+            "t_compare_epsilon_is_tolerated" in goracle_t
+            and "t_compare_budget_boundary" in goracle_t))
+        # The three defects the oracle found, each with the test that pins it.
+        checks.append((
+            "H6: the dangling-current-context defect is pinned by its own "
+            "regression test",
+            "t_render_restores_caller_context" in goracle_t
+            and "aglxGetCurrentContext()" in goracle_c))
+        checks.append((
+            "H6: the guest lane prints the hash the host lane can diff",
+            "H6 software frame sha256" in gltest_c
+            and "h6_software_hash_stable" in gltest_c))
+        checks.append((
+            "H6: the integration case asserts the oracle ran AND says plainly "
+            "that a hardware frame cannot be read back",
+            "h6_software_render" in virgl_case
+            and "upload-only" in virgl_case))
+        # The measured reference hash, recorded rather than implied.
+        checks.append((
+            "H6: the software reference hash is a recorded measurement",
+            "93ea06fd" in plan and "e87cb" in plan))
 
     # --- opener pin 4: the canned TGSI arrays are still hand-written ----
     if not h4:
@@ -278,10 +468,170 @@ def claims():
         "GL_LIGHTING" in glcube and "GL_TEXTURE_2D" in glcube and
         "GL_DEPTH_TEST" in glcube))
     checks.append((
-        "Fact 6: docs/opengl.md still refuses the hardware-drawing claim "
-        "and both docs name RES-54 (the plan must not have weakened them)",
-        "RES-54" in opengl and "RES-54" in gstatus and
-        "Hardware-accelerated" in opengl))
+        "Fact 6: both docs name RES-54 and opengl.md keeps an explicit "
+        "hardware-drawing boundary row (the plan must not have weakened them "
+        "into silence -- H7 rewrites the row's CONTENT, not its existence)",
+        "RES-54" in opengl and "RES-54" in gstatus
+        and "Hardware-accelerated" in opengl))
+
+    # --- H7: the docs tell the truth about what H0-H6 did -------------
+    if h7:
+        gdoc = read("docs", "GPU_ACCELERATION.md")
+        ledger = read("docs", "residue_ledger.md")
+        changelog = read("CHANGELOG.md")
+        checks.append((
+            "H7: docs/opengl.md's hardware-drawing row describes what H5 "
+            "ACTUALLY admits, and no longer promises a successor plan it now has",
+            "thirteen→nine states" in opengl
+            and "Lighting stays on the CPU" in opengl
+            and "GPU_ACCEL_PLAN H4 ships the retarget" in opengl))
+        checks.append((
+            "H7: the architecture doc exists and names the four things a "
+            "reader must not assume",
+            gdoc.count("must not assume") >= 1
+            and "upload-only" in gdoc and "PIPE_FUNC_LESS" in gdoc
+            and "GL_BATCH_FMT_FULL" in gdoc))
+        checks.append((
+            "H7: the doc states the batch format's arithmetic honestly "
+            "(twelve floats, thirteen fields, and where the extra went)",
+            "sum to thirteen" in gdoc and "Twelve won" in gdoc))
+        checks.append((
+            "H7: docs/status.md carries the series' numbers AND keeps the "
+            "test glyph, because no gate has seen a hardware frame",
+            "GPU_ACCEL_PLAN H0–H7 complete" in gstatus
+            and "upload-only" in gstatus and "93ea06fd" in gstatus))
+        checks.append((
+            "H7: RES-54 is DONE and the two honest survivors are OPEN rows",
+            "| RES-54 | S | DONE@H5 |" in ledger
+            and "| RES-63 | S | OPEN |" in ledger
+            and "| RES-64 | M | OPEN |" in ledger))
+        checks.append((
+            "H7: the ledger's arithmetic names the new class pins, so a "
+            "later row cannot be added without moving them",
+            "Rows: 64." in ledger and "W 36 · M 9 · N 4 · S 15" in ledger))
+        checks.append((
+            "H7: CHANGELOG carries one entry per phase for H3 through H7",
+            all(f"## [GPU {p} —" in changelog for p in
+                ("H3", "H4", "H5", "H6", "H7"))))
+
+    # --- H2's guard: upstream's SIMD path has an oracle --------------
+    # 4628af0 vectorised the MSDF renderer with no test and no number.
+    # H2's gate supplies both; this pins that the gate exists, links the
+    # real file, and that the kernels' hooks stay out of the kernel.
+    sdf_rs = read("kernel", "gui", "sdf", "sdf.rs")
+    sdf_test = read("tests", "unit", "test_sdf_simd.rs")
+    checks.append((
+        "H2 guard: the SSE4.1 MSDF path is gated by a host test that links "
+        "the REAL sdf.rs (not a copy) and compares it to the scalar path",
+        sdf_test != ""
+        and '#[path = "../../kernel/gui/sdf/sdf.rs"]' in sdf_test
+        and "coverage4" in sdf_test.replace(" ", "")
+        and "test_sdf_simd.sh" in makefile))
+    checks.append((
+        "H2 guard: the test hooks compile to nothing in the kernel "
+        "(`cfg(test_sdf_host)` only), so `make iso` gains no symbol",
+        sdf_rs.count("#[cfg(test_sdf_host)]") == 4
+        and '--cfg test_sdf_host' in read("tools", "test_sdf_simd.sh")))
+    checks.append((
+        "H2 guard: the commit is titled `perf` with no number -- the plan "
+        "records the measured ratio rather than inheriting the adjective",
+        "4628af0" in plan and "ns/quad" in plan
+        and ("1.07" in plan or "1.13" in plan)))
+
+    # --- H3's pins: the texture path, and the split that keeps one -----
+    # definition of the wire format ---------------------------------------
+    # H3 moved the packet builders into virgl_cmd.c so libgl links the same
+    # encoders the kernel drives.  These pins keep the split honest: a
+    # builder drifting back into glvirgl.c would pass every test here and
+    # still be the second copy the G13 lesson forbids.
+    virgl_cmd_c = read("drivers", "gpu", "virgl_cmd.c")
+    glvirgl_c = read("lib", "libgl", "src", "glvirgl.c")
+    if phase_done(plan, "H3"):
+        checks.append((
+            "H3: the VirGL packet builders live in a transport-free file that "
+            "BOTH the kernel and libgl link (the G13 one-definition lesson)",
+            virgl_cmd_c.count("int virgl_cmd_") >= 16
+            and "virtio_gpu" not in virgl_cmd_c
+            and "virgl_cmd.c" in makefile))
+        checks.append((
+            "H3: libgl does NOT restate the encoding -- glvirgl.c calls the "
+            "builders and contains no VIRGL_CMD0 header of its own for a "
+            "sampler packet",
+            "virgl_cmd_create_sampler_view" in glvirgl_c
+            and "virgl_cmd_create_sampler_state" in glvirgl_c
+            and "virgl_cmd_set_sampler_views" in glvirgl_c))
+        checks.append((
+            "H3: the builders are walked against the REAL kernel validator "
+            "on the host, and a wrong length is refused",
+            read("tests", "unit", "test_tex_packets.c") != ""
+            and "gpu_validate_cmd_stream" in read("tests", "unit", "test_tex_packets.c")
+            and "test_tex_packets" in makefile))
+        checks.append((
+            "H3: the dirty discipline is a per-texture flag cleared only "
+            "AFTER a successful transfer (a failed upload retries)",
+            "t->dirty = 0;" in glvirgl_c
+            and "return -1;\n    }\n    t->dirty = 0;" in glvirgl_c))
+        checks.append((
+            "H3: a mip chain is ONE resource carrying last_level -- the "
+            "driver's RESOURCE_CREATE_3D already takes it",
+            "rc.last_level" in glvirgl_c and "last_level" in read("kernel", "gpu", "gpu_syscalls.h")))
+        checks.append((
+            "H3: sizeof(aglx_context) did not grow (the pool is backend "
+            "static state; G10's re-measure rule is met by not growing)",
+            "240328" in read("tests", "unit", "test_glvirgl.c")))
+        checks.append((
+            "H3: test_glvirgl carries the texture inventory (>=90 checks)",
+            "texture inventory" in read("tests", "unit", "test_glvirgl.c")))
+
+    # --- H4's pins: the retarget, and the finding it made --------------
+    tgsi_hdr = read("lib", "libgl", "src", "tgsi.h")
+    tgsi_src = read("lib", "libgl", "src", "tgsi.c")
+    tgsi_test = read("tests", "unit", "test_tgsi.c")
+    if phase_done(plan, "H4"):
+        checks.append((
+            "H4: the retarget exists as a consumer of the typed AST, and says "
+            "so (a back end, not a new compiler)",
+            "tgsi_retarget" in tgsi_hdr and
+            "a back end, not a new compiler" in tgsi_hdr and
+            "tgsi_retarget" in tgsi_src and "tgsi.c" in makefile))
+        checks.append((
+            "H4: the test carries an INDEPENDENT disassembler written from the "
+            "spec, not from the emitter's constants (a test that reuses the "
+            "emitter cannot catch a wrong constant)",
+            "disasm(" in tgsi_test and
+            "transcribed from the spec" in tgsi_test.replace("\n", " ")))
+        checks.append((
+            "H4: the finding is PINNED — the canned arrays are asserted to be "
+            "invalid TGSI (swapped processors, token types 1/3, bad src index)",
+            "test_canned_is_not_valid" in tgsi_test and
+            "gl_virgl_canned_vs_tokens" in tgsi_test and
+            "PROC_FRAGMENT" in tgsi_test and
+            "canned" in plan.lower()))
+        checks.append((
+            "H4: the header RECORDS that the canned arrays are not an "
+            "authority and must not be made consistent with",
+            "must never be" in tgsi_hdr and "authority" in tgsi_hdr))
+        checks.append((
+            "H4: refusals NAME the construct (the G11a rule) — a diagnostic "
+            "carries the built-in's name, not just 'unsupported'",
+            "has no exact TGSI opcode" in tgsi_src and
+            "built-in '%s'" in tgsi_src))
+        checks.append((
+            "H4: the interpreter stays — a refusal leaves the unit compiled",
+            "u->compiled" in tgsi_test or "stays compiled" in tgsi_test))
+        checks.append((
+            "H4: NrTokens is COMPUTED from the operand count, never typed "
+            "(H3's length-lie lesson applied to TGSI)",
+            "nr_tokens" in tgsi_hdr and "TGSI_INSN(opcode, nr, " in tgsi_src.replace(" ", "")or
+            "1u + (has_dst" in tgsi_src))
+        checks.append((
+            "H4: the IMMEDIATE Size semantics are recorded (Size counts the "
+            "whole token — the trap that caught the first walker)",
+            "Size = 1 + N" in tgsi_hdr and "Size = 1 + N" in tgsi_test))
+        checks.append((
+            "H4: the plan states the emitted subset honestly and does NOT "
+            "claim /glshade's Lambert shader retargets",
+            "arithmetic subset" in plan and "matrices" in plan.lower()))
 
     # --- structural: status header vs table ---------------------------
     done_rows = len(re.findall(

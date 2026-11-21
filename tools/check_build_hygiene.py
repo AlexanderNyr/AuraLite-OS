@@ -215,8 +215,14 @@ def selftest():
             ("unquoted guard",
              'if [ -s "$(W32C8_SO_EXE)" ]',
              'if [ -s $(W32C8_SO_EXE) ]', "unquoted guard"),
+            # The needle must be the FULL command word: check_command_words
+            # only inspects the first word of a recipe line, so when the
+            # w32_static_slice rule gained an `AURALITE_BUILD_DIR=... `
+            # prefix the old "\tpython3 $< > /dev/null" needle stopped
+            # matching (SETUP: 0 times) and the whole self-test went red
+            # while the live tree was clean.  Anchor on the real recipe.
             ("undefined command word",
-             "\tpython3 $< > /dev/null",
+             "\tAURALITE_BUILD_DIR=$(abspath $(BUILD_DIR)) python3 $< > /dev/null",
              "\t$(PYTHON_UNDEFINED_FOR_THE_SELFTEST) $< > /dev/null",
              "recipe command starts with undefined"),
             ("guard on an undefined name",

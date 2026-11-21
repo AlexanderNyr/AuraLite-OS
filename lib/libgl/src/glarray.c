@@ -553,7 +553,13 @@ static int try_backend_triangles(struct aglx_context *ctx, GLenum mode,
     /* Gather into the context's bounce buffer, growing it once if needed.
      * read_element applies the array's type/size/stride rules, and a missing
      * element (buffer too short) is a decline rather than a guess. */
-    size_t need = (size_t)count * 8u * sizeof(GLfloat);
+    /* H5: the width comes from the backend's declared capability, and the
+     * packing below is the same loop for both widths -- the narrow fields
+     * land at the same offsets, which is the byte-identity the test gate
+     * asks for. */
+    const unsigned fmt    = gl_backend_draw_format(ctx);
+    const unsigned stride = GL_BATCH_STRIDE(fmt);
+    size_t need = (size_t)count * stride * sizeof(GLfloat);
     if (ctx->draw_bounce_cap < need) {
         GLfloat *nb = realloc(ctx->draw_bounce, need);
         if (!nb) return -1;
@@ -576,15 +582,42 @@ static int try_backend_triangles(struct aglx_context *ctx, GLenum mode,
         gl_vertex_t v;
         gl_transform_vertex(ctx, p[0], p[1], p[2],
                             ctx->array_vertex.size == 4 ? p[3] : 1.0f, &v);
-        out[k * 8 + 0] = v.clip.x; out[k * 8 + 1] = v.clip.y;
-        out[k * 8 + 2] = v.clip.z; out[k * 8 + 3] = v.clip.w;
-        out[k * 8 + 4] = c[0];     out[k * 8 + 5] = c[1];
-        out[k * 8 + 6] = c[2];     out[k * 8 + 7] = c[3];
+        GLfloat *v8 = out + (size_t)k * stride;
+        v8[0] = v.clip.x; v8[1] = v.clip.y;
+        v8[2] = v.clip.z; v8[3] = v.clip.w;
+        v8[4] = c[0];     v8[5] = c[1];
+        v8[6] = c[2];     v8[7] = c[3];
+
+        if (fmt == GL_BATCH_FMT_FULL) {
+            /* The widened lanes.  A draw with no normal array carries
+             * (0,0,1): the fixed-function default normal, i.e. "facing the
+             * viewer", which is exactly what the transform stage lights with
+             * when no normal was ever supplied. */
+            GLfloat nrm[4] = { 0.0f, 0.0f, 1.0f, 0.0f };
+            if (ctx->array_normal.enabled &&
+                !read_element(ctx, &ctx->array_normal, first + k, nrm, 2))
+                return -1;
+            v8[8]  = nrm[0]; v8[9] = nrm[1]; v8[10] = nrm[2];
+
+            GLfloat t[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            if (ctx->array_texcoord[0].enabled &&
+                !read_element(ctx, &ctx->array_texcoord[0], first + k, t, 0))
+                return -1;
+            v8[11] = t[0];
+            /* Lane 11 carries texcoord0.s, and that is the whole texture
+             * story of this format: H5's scope is one 2D unit, so `t` is not
+             * carried.  A draw whose texture needs `t` to be anything but
+             * its array form still declines in the eligibility screen; the
+             * width was chosen as 12 to stay 4-float aligned (see
+             * glbackend.h), and the lane the field list would have used for
+             * `t` is v8[11]'s neighbour that does not exist. */
+        }
     }
 
     gl_draw_batch_t batch;
-    batch.data  = out;
-    batch.count = count;
+    batch.data   = out;
+    batch.count  = count;
+    batch.format = fmt;
     return gl_backend_try_draw(ctx, &batch);
 }
 

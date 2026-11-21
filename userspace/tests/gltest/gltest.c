@@ -33,6 +33,7 @@
  * Legitimate here: /gltest is libgl's own regression suite, not an
  * application, and the front end has no public entry point until G11c. */
 #include "glsl.h"
+#include "gloracle.h"   /* GPU_ACCEL H6: the frame oracle */
 #include "GL/glbackend.h"
 
 static int checks = 0, fails = 0;
@@ -2734,7 +2735,9 @@ static int l6_decline(struct aglx_context *ctx, const gl_draw_batch_t *b) {
 }
 static const gl_backend_t l6_test_backend = {
     "gltest canned-screen backend", GL_BACKEND_HARDWARE,
-    l6_init_once, 0, 0, l6_decline, 0,
+    l6_init_once, 0, 0, l6_decline,
+    0,                          /* H3 tex_image: this backend stores nothing */
+    0,
 };
 
 static void test_gl_l6_canned(int wid) {
@@ -2787,7 +2790,17 @@ static void test_gl_l6_canned(int wid) {
           "l6_ineligible_depth_test");
     glDisable(GL_DEPTH_TEST);
 
+    /* GPU_ACCEL H5 moved blending from "always refused" to "refused unless
+     * the factors map 1:1".  The default factors are GL_ONE/GL_ZERO -- which
+     * ARE in the set -- so enabling blend alone is now eligible, and the
+     * refusal has to come from a factor outside it.  Both halves are asserted
+     * because the interesting property is that the refusal MOVED rather than
+     * vanished. */
     glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 1,
+          "l6_eligible_blend_src_alpha");
+    glBlendFunc(GL_DST_COLOR, GL_ZERO);
     check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
           "l6_ineligible_blend");
     glDisable(GL_BLEND);
@@ -2797,9 +2810,17 @@ static void test_gl_l6_canned(int wid) {
           "l6_ineligible_scissor");
     glDisable(GL_SCISSOR_TEST);
 
+    /* Same shape as blend: H5 admits the cull modes the rasterizer object
+     * carries (GL_BACK -- the default -- and GL_FRONT, with CCW winding), and
+     * still refuses a winding flip, because that would cull the other side. */
     glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+    check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 1,
+          "l6_eligible_cull_back_ccw");
+    glFrontFace(GL_CW);
     check(gl_backend_draw_eligible(ctx, GL_TRIANGLES, 3) == 0,
           "l6_ineligible_cull");
+    glFrontFace(GL_CCW);
     glDisable(GL_CULL_FACE);
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -2818,7 +2839,130 @@ static void test_gl_l6_canned(int wid) {
     check(glGetError() == GL_NO_ERROR, "l6_no_pending_error");
 
     gl_backend_force(honest_backend);    /* back to the honest selection */
+
+    /* Unbind BEFORE destroying.  aglxDestroyContext() only clears the current
+     * slot when the dying context IS current -- which it was -- but leaving
+     * the destruction to do it means any check that runs between the destroy
+     * and the next aglxMakeCurrent() sees the half-torn state, and the H6
+     * block's own glGetError() did exactly that (the oracle's first guest run
+     * reported 0x502 for a context that no longer existed).  Unbinding first
+     * makes the invariant explicit at the call site rather than transferring
+     * it to every future test that runs after this one. */
+    aglxMakeCurrent(NULL);
     aglxDestroyContext(ctx);
+}
+
+/* ---- GPU_ACCEL_PLAN H6: the frame oracle, in the guest ----
+ *
+ * The oracle's job is to turn "the GPU path is correct" into a machine-checked
+ * statement.  In the guest there are exactly two things it can do, and this
+ * block does both, saying plainly which is which:
+ *
+ *   1. ALWAYS: render the deterministic scene through whichever backend is
+ *      active and print its SHA-256.  With no GPU that is the software
+ *      reference; with a device it is the hardware result.  Printing the hash
+ *      unconditionally is what makes a later run comparable -- a refactor that
+ *      changes the software path changes the hash, and a hash that silently
+ *      changed across two boots is a regression nobody asked for.
+ *
+ *   2. WITH A DEVICE: the two hashes would be comparable only if the guest
+ *      could READ the hardware frame.  It cannot: this tree's GPU ABI has an
+ *      upload transfer (GPU_OP_TRANSFER is one-way, virtio_gpu_resource_upload)
+ *      and no download, so a GPU-drawn frame lives on the host and never comes
+ *      back through a path the guest can hash.  Rather than invent a readback
+ *      the ABI does not have, the block renders the scene under the SOFTWARE
+ *      backend and then again under the ACTIVE one when they differ, prints
+ *      BOTH hashes, and lets the host lane compare them (test_virgl_gpu.sh
+ *      looks for the pair).  When the backends agree about which one is
+ *      active, there is one hash and the log says so instead of printing the
+ *      same number twice and implying a comparison happened.
+ *
+ * What this block therefore CAN catch on a device: a GPU path whose own frame
+ * differs between two renders in one boot (non-determinism), and a renderer
+ * that reports a hardware backend while the software scene is what actually
+ * drew.  What it cannot catch is a hardware frame being wrong, because it
+ * cannot see one.  That is stated here and in the plan's H6 Results rather
+ * than papered over with a hash of something else.
+ */
+static void test_gl_oracle_h6(int wid) {
+    (void)wid;    /* the oracle builds its own context: the scene must not
+                   * depend on the window whose tests are running */
+    printf("[gl] --- GPU_ACCEL H6: the frame oracle ---\n");
+
+    const char *honest = gl_backend_info()->name;
+    char honest_copy[64];
+    strncpy(honest_copy, honest ? honest : "?", sizeof honest_copy - 1);
+    honest_copy[sizeof honest_copy - 1] = '\0';
+
+    static uint32_t frame[GLORACLE_W * GLORACLE_H];
+    char hex[65];
+
+    /* The software reference.  It must always succeed -- a failure to build a
+     * context is a defect, not a skip. */
+    gl_backend_force("AuraLite Software Rasterizer");
+    /* Clear the error state BEFORE, so a failure below can only be ours.  The
+     * L6 block leaves the backend forced and the context destroyed; without
+     * this the first glGetError() below could be reporting its debris. */
+    aglxMakeCurrent(NULL);
+    (void)glGetError();
+    int ok_sw = gloracle_render(frame) == 0;
+
+    check(ok_sw, "h6_software_render");
+    if (ok_sw) {
+        gloracle_hash_hex(frame, hex);
+        printf("[gl] H6 software frame sha256 %s\n", hex);
+    }
+
+    /* Determinism, in the guest: the same scene twice must hash the same. */
+    if (ok_sw) {
+        static uint32_t again[GLORACLE_W * GLORACLE_H];
+        char hex2[65];
+        int ok2 = gloracle_render(again) == 0;
+        check(ok2, "h6_software_render_repeat");
+        if (ok2) {
+            gloracle_hash_hex(again, hex2);
+            check(strcmp(hex, hex2) == 0, "h6_software_hash_stable");
+        }
+    }
+
+    /* The active backend, whatever it is.  When it is not software this is a
+     * second, independent render and its hash goes to the log for the host
+     * lane to compare. */
+    gl_backend_force(NULL);
+    const char *active = gl_backend_info()->name;
+    if (active && strcmp(active, "AuraLite Software Rasterizer") != 0) {
+        static uint32_t hw[GLORACLE_W * GLORACLE_H];
+        int ok_hw = gloracle_render(hw) == 0;
+        check(ok_hw, "h6_active_render");
+        if (ok_hw) {
+            char hwhex[65];
+            gloracle_hash_hex(hw, hwhex);
+            printf("[gl] H6 active (%s) frame sha256 %s\n", active, hwhex);
+
+        }
+    } else {
+        printf("[gl] H6 NOTE: no hardware backend active -- the software hash "
+               "above is the whole oracle this boot (see the phase's Results; "
+               "the guest cannot read a hardware frame, the GPU ABI is "
+               "upload-only)\n");
+    }
+
+    /* glGetError() with NO current context returns GL_INVALID_OPERATION by
+     * design (glstate.c: "calling glGetError() without a context is itself a
+     * misuse").  The oracle deliberately leaves the current context as it
+     * found it -- and when it was called after L6 had torn its context down,
+     * "as it found it" is NULL.  So the honest check here is on a context the
+     * test owns: create one, ask it, destroy it.  Asserting on the ambient
+     * one would be asserting on another test's debris. */
+    aglx_context_t *probe = aglxCreateContext(wid, 32, 32, 0);
+    check(probe != NULL, "h6_probe_context");
+    if (probe) {
+        aglxMakeCurrent(probe);
+        check(glGetError() == GL_NO_ERROR, "h6_no_pending_error");
+        aglxMakeCurrent(NULL);
+        aglxDestroyContext(probe);
+    }
+    gl_backend_force(honest_copy);
 }
 
 /* ---- Phase G12: framebuffer objects, renderbuffers, glReadPixels ----
@@ -3995,6 +4139,7 @@ int main(void) {
     test_gl_glu(wid);
     test_gl_backend(wid);
     test_gl_l6_canned(wid);
+    test_gl_oracle_h6(wid);
     test_gl_glsl();
     test_gl_glsl_exec();
     test_gl_shader_pipeline(wid);
