@@ -1,12 +1,18 @@
-//! Kernel GUI dirty-rectangle tracker.
+//! Dynamic screen damage tracker.
 //!
-//! The public C ABI is intentionally unchanged. Rectangles are kept as a
-//! bounded list and overlapping or nearby rectangles are merged before the
-//! compositor snapshots them.
+//! Damage is represented by a screen-sized tile bitmap rather than a bounded
+//! array of rectangles.  The number of independent invalidations therefore
+//! does not have an artificial ceiling.  Dirty tiles are compacted into
+//! dynamically allocated rectangles when the compositor drains the tracker.
 
+use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-#[derive(Copy, Clone)]
+use crate::kvec::{AllocError, KVec};
+
+const TILE_SIZE: u32 = 16;
+
+#[derive(Copy, Clone, Debug)]
 #[repr(C)]
 pub struct DirtyRect {
     pub x: i32,
@@ -15,180 +21,318 @@ pub struct DirtyRect {
     pub h: u32,
 }
 
-const MAX_DIRTY_RECTS: usize = 64;
-const MERGE_PAD: i64 = 4;
+#[derive(Copy, Clone)]
+pub(crate) struct Run {
+    first: u32,
+    end: u32,
+    rect_index: usize,
+}
+
+struct DirtyGrid {
+    width: u32,
+    height: u32,
+    columns: usize,
+    rows: usize,
+    bits: KVec<u64>,
+    spare_bits: KVec<u64>,
+}
+
+impl DirtyGrid {
+    fn new(width: u32, height: u32) -> Result<Self, AllocError> {
+        if width == 0 || height == 0
+            || width > i32::MAX as u32
+            || height > i32::MAX as u32
+        {
+            return Err(AllocError);
+        }
+        let columns = ((width as u64 + TILE_SIZE as u64 - 1) / TILE_SIZE as u64) as usize;
+        let rows = ((height as u64 + TILE_SIZE as u64 - 1) / TILE_SIZE as u64) as usize;
+        let tile_count = columns.checked_mul(rows).ok_or(AllocError)?;
+        let word_count = tile_count.checked_add(63).ok_or(AllocError)? / 64;
+
+        let mut bits = KVec::new();
+        let mut spare_bits = KVec::new();
+        bits.try_resize(word_count, 0)?;
+        spare_bits.try_resize(word_count, 0)?;
+
+        Ok(Self { width, height, columns, rows, bits, spare_bits })
+    }
+
+    #[inline]
+    fn clear(&mut self) {
+        self.bits.as_mut_slice().fill(0);
+    }
+
+    fn mark_rect(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        if w == 0 || h == 0 {
+            return;
+        }
+
+        let left = (x as i64).max(0);
+        let top = (y as i64).max(0);
+        let right = (x as i64 + w as i64).min(self.width as i64);
+        let bottom = (y as i64 + h as i64).min(self.height as i64);
+        if right <= left || bottom <= top {
+            return;
+        }
+
+        let first_x = left as u32 / TILE_SIZE;
+        let first_y = top as u32 / TILE_SIZE;
+        let last_x = ((right - 1) as u32) / TILE_SIZE;
+        let last_y = ((bottom - 1) as u32) / TILE_SIZE;
+
+        for ty in first_y..=last_y {
+            let row_base = ty as usize * self.columns;
+            for tx in first_x..=last_x {
+                let bit = row_base + tx as usize;
+                self.bits.as_mut_slice()[bit / 64] |= 1u64 << (bit % 64);
+            }
+        }
+    }
+}
+
+struct Global<T>(UnsafeCell<T>);
+unsafe impl<T: Send> Sync for Global<T> {}
+
+extern "C" {
+    // Tiny C wrappers call the kernel's arch_irq_save/restore inline API.
+    // This avoids depending on whether the architecture helpers are exported
+    // as linker-visible symbols.
+    fn gui_dirty_irq_save() -> u64;
+    fn gui_dirty_irq_restore(flags: u64);
+}
 
 static DIRTY_LOCK: AtomicBool = AtomicBool::new(false);
+static DIRTY_GRID: Global<Option<DirtyGrid>> = Global(UnsafeCell::new(None));
 
-static mut DIRTY_RECTS: [DirtyRect; MAX_DIRTY_RECTS] = [
-    DirtyRect { x: 0, y: 0, w: 0, h: 0 }; MAX_DIRTY_RECTS
-];
-static mut DIRTY_COUNT: usize = 0;
-static mut DIRTY_OVERFLOW: bool = false;
+struct DirtyGuard {
+    irq_flags: u64,
+}
 
 #[inline]
-fn dirty_lock() {
+fn lock() -> DirtyGuard {
+    // Match the kernel's irq-save spinlock discipline. Without this, a local
+    // interrupt/preempting context could spin forever on a lock held by the
+    // interrupted compositor thread.
+    let irq_flags = unsafe { gui_dirty_irq_save() };
     while DIRTY_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
     }
+    DirtyGuard { irq_flags }
 }
 
-#[inline]
-fn dirty_unlock() {
-    DIRTY_LOCK.store(false, Ordering::Release);
+impl Drop for DirtyGuard {
+    #[inline]
+    fn drop(&mut self) {
+        DIRTY_LOCK.store(false, Ordering::Release);
+        unsafe { gui_dirty_irq_restore(self.irq_flags) };
+    }
 }
 
-/// Clear all pending rectangles. Called before a full-screen redraw.
+/// Initialise/reinitialise the damage bitmap for the active display mode.
+/// Call after gfx_init() and before the compositor thread starts.
+#[no_mangle]
+pub extern "C" fn gui_dirty_init(width: u32, height: u32) -> i32 {
+    let next = match DirtyGrid::new(width, height) {
+        Ok(grid) => grid,
+        Err(_) => return -1,
+    };
+
+    let _guard = lock();
+    unsafe { *DIRTY_GRID.0.get() = Some(next) };
+    0
+}
+
+/// Clear pending damage. The grid allocation is retained for reuse.
 #[no_mangle]
 pub extern "C" fn gui_dirty_reset() {
-    dirty_lock();
+    let _guard = lock();
     unsafe {
-        DIRTY_COUNT = 0;
-        DIRTY_OVERFLOW = false;
+        if let Some(grid) = (&mut *DIRTY_GRID.0.get()).as_mut() {
+            grid.clear();
+        }
     }
-    dirty_unlock();
 }
 
-/// Add a screen-space rectangle. Returns -1 on bounded-list overflow.
+/// Mark a screen-space rectangle. No allocation occurs on this path.
 #[no_mangle]
 pub extern "C" fn gui_dirty_add(x: i32, y: i32, w: u32, h: u32) -> i32 {
     if w == 0 || h == 0 {
         return 0;
     }
 
-    dirty_lock();
-    let result = unsafe { add_locked(x, y, w, h) };
-    dirty_unlock();
+    let _guard = lock();
+    let result = unsafe {
+        match (&mut *DIRTY_GRID.0.get()).as_mut() {
+            Some(grid) => {
+                grid.mark_rect(x, y, w, h);
+                0
+            }
+            None => -1,
+        }
+    };
     result
 }
 
-unsafe fn add_locked(x: i32, y: i32, w: u32, h: u32) -> i32 {
-    if DIRTY_OVERFLOW {
-        return -1;
-    }
-
-    let nx1 = x as i64 + w as i64;
-    let ny1 = y as i64 + h as i64;
-
-    let mut i = 0;
-    while i < DIRTY_COUNT {
-        let rect = &mut DIRTY_RECTS[i];
-        let rx1 = rect.x as i64 + rect.w as i64;
-        let ry1 = rect.y as i64 + rect.h as i64;
-
-        if x as i64 <= rx1 + MERGE_PAD
-            && nx1 + MERGE_PAD >= rect.x as i64
-            && y as i64 <= ry1 + MERGE_PAD
-            && ny1 + MERGE_PAD >= rect.y as i64
-        {
-            let mx = (rect.x as i64).min(x as i64);
-            let my = (rect.y as i64).min(y as i64);
-            let mx1 = rx1.max(nx1);
-            let my1 = ry1.max(ny1);
-
-            rect.x = mx as i32;
-            rect.y = my as i32;
-            rect.w = (mx1 - mx) as u32;
-            rect.h = (my1 - my) as u32;
-
-            merge_all_locked();
-            return 0;
-        }
-        i += 1;
-    }
-
-    if DIRTY_COUNT >= MAX_DIRTY_RECTS {
-        DIRTY_OVERFLOW = true;
-        DIRTY_COUNT = 0;
-        return -1;
-    }
-
-    DIRTY_RECTS[DIRTY_COUNT] = DirtyRect { x, y, w, h };
-    DIRTY_COUNT += 1;
-    0
-}
-
-unsafe fn merge_all_locked() {
-    let mut changed = true;
-
-    while changed {
-        changed = false;
-        let mut i = 0;
-
-        while i < DIRTY_COUNT {
-            let mut j = i + 1;
-
-            while j < DIRTY_COUNT {
-                let a = DIRTY_RECTS[i];
-                let b = DIRTY_RECTS[j];
-
-                let ax = a.x as i64;
-                let ay = a.y as i64;
-                let ax1 = ax + a.w as i64;
-                let ay1 = ay + a.h as i64;
-
-                let bx = b.x as i64;
-                let by = b.y as i64;
-                let bx1 = bx + b.w as i64;
-                let by1 = by + b.h as i64;
-
-                if ax <= bx1 + MERGE_PAD
-                    && ax1 + MERGE_PAD >= bx
-                    && ay <= by1 + MERGE_PAD
-                    && ay1 + MERGE_PAD >= by
-                {
-                    let mx = ax.min(bx);
-                    let my = ay.min(by);
-                    let mx1 = ax1.max(bx1);
-                    let my1 = ay1.max(by1);
-
-                    DIRTY_RECTS[i] = DirtyRect {
-                        x: mx as i32,
-                        y: my as i32,
-                        w: (mx1 - mx) as u32,
-                        h: (my1 - my) as u32,
-                    };
-
-                    DIRTY_COUNT -= 1;
-                    DIRTY_RECTS[j] = DIRTY_RECTS[DIRTY_COUNT];
-                    changed = true;
-                } else {
-                    j += 1;
-                }
-            }
-            i += 1;
-        }
-    }
-}
-
-/// Copy up to `max` pending rectangles to `out`, then clear the list.
-#[no_mangle]
-pub unsafe extern "C" fn gui_dirty_snapshot(out: *mut DirtyRect, max: usize) -> usize {
-    if out.is_null() || max == 0 {
-        return 0;
-    }
-
-    dirty_lock();
-    let count = DIRTY_COUNT.min(max);
-
-    for i in 0..count {
-        core::ptr::write(out.add(i), DIRTY_RECTS[i]);
-    }
-
-    DIRTY_COUNT = 0;
-    DIRTY_OVERFLOW = false;
-    dirty_unlock();
-    count
-}
-
-/// Returns 1 when there are no pending rectangles, otherwise 0.
 #[no_mangle]
 pub extern "C" fn gui_dirty_is_empty() -> i32 {
-    dirty_lock();
-    let empty = unsafe { DIRTY_COUNT == 0 };
-    dirty_unlock();
+    let _guard = lock();
+    let empty = unsafe {
+        match (&*DIRTY_GRID.0.get()).as_ref() {
+            Some(grid) => grid.bits.as_slice().iter().all(|word| *word == 0),
+            None => true,
+        }
+    };
     if empty { 1 } else { 0 }
 }
+
+/// Drain dirty tiles and compact them into rectangles. This is a Rust-internal
+/// API used by compositor.rs; there is no caller-provided fixed-size output
+/// array and no 64-rectangle limit.
+pub(crate) fn take_dirty_rects_into(
+    output: &mut KVec<DirtyRect>,
+    previous: &mut KVec<Run>,
+    current: &mut KVec<Run>,
+) -> Result<(), AllocError> {
+    output.clear();
+    previous.clear();
+    current.clear();
+
+    // Detach the previous bitmap under the lock, then compress it without
+    // blocking producers. The spare bitmap becomes the new live bitmap.
+    let (width, height, columns, rows, mut snapshot) = {
+        let detached = {
+            let _guard = lock();
+            unsafe {
+                match (&mut *DIRTY_GRID.0.get()).as_mut() {
+                    Some(grid) => {
+                        core::mem::swap(&mut grid.bits, &mut grid.spare_bits);
+                        grid.bits.as_mut_slice().fill(0);
+                        let old = core::mem::replace(&mut grid.spare_bits, KVec::new());
+                        Some((grid.width, grid.height, grid.columns, grid.rows, old))
+                    }
+                    None => None,
+                }
+            }
+        };
+        match detached {
+            Some(value) => value,
+            None => return Err(AllocError),
+        }
+    };
+
+    let result = compress_tiles(
+        width,
+        height,
+        columns,
+        rows,
+        &snapshot,
+        output,
+        previous,
+        current,
+    );
+
+    // Recycle the detached bitmap for the next drain. Always clear it, even
+    // after OOM: the compositor will promote that frame to a full redraw.
+    snapshot.as_mut_slice().fill(0);
+    {
+        let _guard = lock();
+        unsafe {
+            if let Some(grid) = (&mut *DIRTY_GRID.0.get()).as_mut() {
+                if grid.width == width && grid.height == height {
+                    grid.spare_bits = snapshot;
+                }
+            }
+        }
+    }
+
+    result
+}
+
+#[inline]
+fn tile_is_dirty(
+    columns: usize,
+    snapshot: &KVec<u64>,
+    x: usize,
+    y: usize,
+) -> bool {
+    let index = y * columns + x;
+    let word = index / 64;
+    let bit = index % 64;
+
+    snapshot
+        .get(word)
+        .map_or(false, |value| (*value & (1u64 << bit)) != 0)
+}
+
+fn compress_tiles(
+    width: u32,
+    height: u32,
+    columns: usize,
+    rows: usize,
+    snapshot: &KVec<u64>,
+    output: &mut KVec<DirtyRect>,
+    previous: &mut KVec<Run>,
+    current: &mut KVec<Run>,
+) -> Result<(), AllocError> {
+    previous.try_reserve_exact(columns)?;
+    current.try_reserve_exact(columns)?;
+
+    for row in 0..rows {
+        current.clear();
+        let mut x = 0usize;
+
+        while x < columns {
+            if !tile_is_dirty(columns, snapshot, x, row) {
+                x += 1;
+                continue;
+            }
+
+            let first = x;
+            while x < columns && tile_is_dirty(columns, snapshot, x, row) {
+                x += 1;
+            }
+            let end = x;
+
+            let previous_rect = previous.as_slice().binary_search_by(|run| {
+                (run.first, run.end).cmp(&(first as u32, end as u32))
+            }).ok().map(|index| previous.as_slice()[index].rect_index);
+
+            let y = row as u32 * TILE_SIZE;
+            let row_height = TILE_SIZE.min(height - y);
+            if let Some(rect_index) = previous_rect {
+                if let Some(rect) = output.get_mut(rect_index) {
+                    rect.h = rect.h.saturating_add(row_height);
+                }
+                current.try_push(Run {
+                    first: first as u32,
+                    end: end as u32,
+                    rect_index,
+                })?;
+            } else {
+                let left = first as u32 * TILE_SIZE;
+                let right = (end as u32 * TILE_SIZE).min(width);
+                let rect_index = output.len();
+                output.try_push(DirtyRect {
+                    x: left as i32,
+                    y: y as i32,
+                    w: right - left,
+                    h: row_height,
+                })?;
+                current.try_push(Run {
+                    first: first as u32,
+                    end: end as u32,
+                    rect_index,
+                })?;
+            }
+        }
+
+        core::mem::swap(previous, current);
+    }
+
+    Ok(())
+}
+

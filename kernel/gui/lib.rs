@@ -6,8 +6,11 @@ use core::panic::PanicInfo;
 
 mod drawing;
 mod dirty;
+mod framebuffer;
 mod render;
 mod desktop;
+mod compositor;
+mod kvec;
 
 #[path = "sdf/sdf.rs"]
 mod sdf;
