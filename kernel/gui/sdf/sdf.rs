@@ -3,9 +3,16 @@
 //! The atlas is shared by every GUI surface. The rasterizer only knows the
 //! destination kind and its geometry; it never receives a window ID or reads
 //! Window Manager state.
+//!
+//! On x86_64 CPUs with SSE4.1, four horizontal MSDF samples are interpolated
+//! together using integer SIMD. The scalar path remains available for older
+//! CPUs and produces the same fixed-point interpolation results.
 
 use core::ffi::{c_char, CStr};
 use core::sync::atomic::{AtomicU8, Ordering};
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
 
 extern "C" {
     fn gfx_blend_pixel(x: i32, y: i32, color: u32, alpha: u8);
@@ -52,6 +59,73 @@ const INIT_FAILED: u8 = 2;
 const INIT_BUSY: u8 = 3;
 
 static mut ATLAS: Option<Atlas> = None;
+
+// CPUID leaf 1, ECX bit 19 advertises SSE4.1. Detection is cached because
+// text can be drawn many times per frame.
+static SSE41_STATE: AtomicU8 = AtomicU8::new(0);
+const SSE41_SUPPORTED: u8 = 1;
+const SSE41_UNSUPPORTED: u8 = 2;
+
+#[inline]
+fn sse41_available() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let cpu_supported = match SSE41_STATE.load(Ordering::Relaxed) {
+            SSE41_SUPPORTED => true,
+            SSE41_UNSUPPORTED => false,
+            _ => {
+                let supported = unsafe {
+                    (core::arch::x86_64::__cpuid(1).ecx & (1 << 19)) != 0
+                };
+                SSE41_STATE.store(
+                    if supported {
+                        SSE41_SUPPORTED
+                    } else {
+                        SSE41_UNSUPPORTED
+                    },
+                    Ordering::Relaxed,
+                );
+                supported
+            }
+        };
+
+        if !cpu_supported {
+            return false;
+        }
+
+        // CPUID reports hardware capability, not whether the kernel has
+        // enabled SSE execution. Avoid #UD/#NM when the OS has not enabled
+        // XMM state or is using lazy FPU switching. The scheduler must still
+        // preserve SIMD/FPU state across task and interrupt context switches.
+        let (cr0, cr4): (u64, u64);
+        unsafe {
+            core::arch::asm!(
+                "mov {}, cr0",
+                out(reg) cr0,
+                options(nomem, nostack, preserves_flags),
+            );
+            core::arch::asm!(
+                "mov {}, cr4",
+                out(reg) cr4,
+                options(nomem, nostack, preserves_flags),
+            );
+        }
+
+        const CR0_EM: u64 = 1 << 2;
+        const CR0_TS: u64 = 1 << 3;
+        const CR4_OSFXSR: u64 = 1 << 9;
+        const CR4_OSXMMEXCPT: u64 = 1 << 10;
+
+        (cr0 & (CR0_EM | CR0_TS)) == 0
+            && (cr4 & (CR4_OSFXSR | CR4_OSXMMEXCPT))
+                == (CR4_OSFXSR | CR4_OSXMMEXCPT)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
 
 #[inline]
 fn floor_f(x: f32) -> f32 {
@@ -322,8 +396,10 @@ impl GlyphSampler<'_> {
         let i11 = y1 * pitch + x1 * 3;
         let p = self.atlas.pixels;
         let channel = |c: usize| {
-            let top = i64::from(p[i00 + c]) * (WEIGHT_ONE - tx) + i64::from(p[i10 + c]) * tx;
-            let bot = i64::from(p[i01 + c]) * (WEIGHT_ONE - tx) + i64::from(p[i11 + c]) * tx;
+            let top = i64::from(p[i00 + c]) * (WEIGHT_ONE - tx)
+                + i64::from(p[i10 + c]) * tx;
+            let bot = i64::from(p[i01 + c]) * (WEIGHT_ONE - tx)
+                + i64::from(p[i11 + c]) * tx;
             (top * (WEIGHT_ONE - ty) + bot * ty) >> 16
         };
         let r = channel(0);
@@ -334,6 +410,239 @@ impl GlyphSampler<'_> {
         // 127.5 to coverage, bias by 127.5 and round to the nearest byte.
         let delta = median - (255 * WEIGHT_ONE / 2);
         (((delta * self.range) + (128 << 28)) >> 28).clamp(0, 255) as u8
+    }
+
+    // Four consecutive output pixels share the same pair of source rows.
+    // The SSE4.1 path gathers their texels and performs all RGB interpolation
+    // and the median operation in four 32-bit lanes. The fallback preserves
+    // the original scalar calculation exactly.
+    #[inline]
+    fn coverage4(
+        &self,
+        first_x: i64,
+        dx: i64,
+        y: (usize, usize, i64),
+        use_sse41: bool,
+        output: &mut [u8; 4],
+    ) {
+        #[cfg(target_arch = "x86_64")]
+        if use_sse41 {
+            unsafe {
+                coverage4_sse41(self, first_x, dx, y, output);
+            }
+            return;
+        }
+
+        #[cfg(not(target_arch = "x86_64"))]
+        let _ = use_sse41;
+
+        let mut x = first_x;
+        for alpha in output.iter_mut() {
+            *alpha = self.coverage(x, y);
+            x += dx;
+        }
+    }
+}
+
+// Exact Q16 vertical interpolation using only 32-bit SSE4.1 operations.
+//
+// `top` and `bottom` are Q16 values in [0, 255 * 65536]. A direct
+// multiplication by the Q16 weights needs 48 bits. Split each value into
+// integer and fractional halves:
+//
+//   v = (v_hi * 65536) + v_lo
+//
+// Then:
+//
+//   floor((top * inv + bottom * t) / 65536)
+//     = top_hi * inv + bottom_hi * t
+//       + floor((top_lo * inv + bottom_lo * t) / 65536)
+//
+// Since `inv + t == 65536` and each low half is <= 65535, the fractional
+// numerator is <= 65535 * 65536 and therefore fits in an unsigned 32-bit
+// lane. PMULLD keeps its low 32 bits, which are the exact value here.
+// This avoids 64-bit SIMD multiplication and the associated lane shuffles.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn vertical_lerp_sse41(
+    top: __m128i,
+    bottom: __m128i,
+    inv_ty: __m128i,
+    ty: __m128i,
+) -> __m128i {
+    unsafe {
+        let mask = _mm_set1_epi32(0xFFFF);
+
+        let top_hi = _mm_srli_epi32::<16>(top);
+        let bottom_hi = _mm_srli_epi32::<16>(bottom);
+        let top_lo = _mm_and_si128(top, mask);
+        let bottom_lo = _mm_and_si128(bottom, mask);
+
+        let integer = _mm_add_epi32(
+            _mm_mullo_epi32(top_hi, inv_ty),
+            _mm_mullo_epi32(bottom_hi, ty),
+        );
+        let fractional = _mm_add_epi32(
+            _mm_mullo_epi32(top_lo, inv_ty),
+            _mm_mullo_epi32(bottom_lo, ty),
+        );
+
+        _mm_add_epi32(integer, _mm_srli_epi32::<16>(fractional))
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn bilinear_channel_sse41(
+    p00: __m128i,
+    p10: __m128i,
+    p01: __m128i,
+    p11: __m128i,
+    tx: __m128i,
+    inv_tx: __m128i,
+    ty: __m128i,
+    inv_ty: __m128i,
+) -> __m128i {
+    unsafe {
+        // Horizontal weighted sums are bounded by 255 * 65536 and therefore
+        // fit exactly in signed 32-bit lanes.
+        let top = _mm_add_epi32(
+            _mm_mullo_epi32(p00, inv_tx),
+            _mm_mullo_epi32(p10, tx),
+        );
+        let bottom = _mm_add_epi32(
+            _mm_mullo_epi32(p01, inv_tx),
+            _mm_mullo_epi32(p11, tx),
+        );
+        vertical_lerp_sse41(top, bottom, inv_ty, ty)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.1")]
+unsafe fn coverage4_sse41(
+    sampler: &GlyphSampler<'_>,
+    first_x: i64,
+    dx: i64,
+    y: (usize, usize, i64),
+    output: &mut [u8; 4],
+) {
+    let (y0, y1, ty_fixed) = y;
+    let ty_scalar = ty_fixed as i32;
+    let inv_ty_scalar = (WEIGHT_ONE - ty_fixed) as i32;
+
+    let mut tx_lanes = [0i32; 4];
+    let mut inv_tx_lanes = [0i32; 4];
+
+    let mut r00 = [0i32; 4];
+    let mut g00 = [0i32; 4];
+    let mut b00 = [0i32; 4];
+    let mut r10 = [0i32; 4];
+    let mut g10 = [0i32; 4];
+    let mut b10 = [0i32; 4];
+    let mut r01 = [0i32; 4];
+    let mut g01 = [0i32; 4];
+    let mut b01 = [0i32; 4];
+    let mut r11 = [0i32; 4];
+    let mut g11 = [0i32; 4];
+    let mut b11 = [0i32; 4];
+
+    let pitch = sampler.atlas.width as usize * 3;
+    let pixels = sampler.atlas.pixels;
+    let row0 = y0 * pitch;
+    let row1 = y1 * pitch;
+    let mut sample_x = first_x;
+
+    // SSE4.1 has no general gather instruction, so texel addresses are
+    // gathered scalarly while all interpolation arithmetic is vectorized.
+    for lane in 0..4 {
+        let (x0, x1, tx_fixed) = sample_axis(
+            sample_x,
+            sampler.min_x,
+            sampler.max_x,
+        );
+        sample_x += dx;
+
+        let tx = tx_fixed as i32;
+        tx_lanes[lane] = tx;
+        inv_tx_lanes[lane] = (WEIGHT_ONE as i32) - tx;
+
+        let i00 = row0 + x0 * 3;
+        let i10 = row0 + x1 * 3;
+        let i01 = row1 + x0 * 3;
+        let i11 = row1 + x1 * 3;
+
+        r00[lane] = pixels[i00] as i32;
+        g00[lane] = pixels[i00 + 1] as i32;
+        b00[lane] = pixels[i00 + 2] as i32;
+        r10[lane] = pixels[i10] as i32;
+        g10[lane] = pixels[i10 + 1] as i32;
+        b10[lane] = pixels[i10 + 2] as i32;
+        r01[lane] = pixels[i01] as i32;
+        g01[lane] = pixels[i01 + 1] as i32;
+        b01[lane] = pixels[i01 + 2] as i32;
+        r11[lane] = pixels[i11] as i32;
+        g11[lane] = pixels[i11 + 1] as i32;
+        b11[lane] = pixels[i11 + 2] as i32;
+    }
+
+    let mut median_lanes = [0i32; 4];
+
+    unsafe {
+        let tx = _mm_loadu_si128(tx_lanes.as_ptr() as *const __m128i);
+        let inv_tx = _mm_loadu_si128(inv_tx_lanes.as_ptr() as *const __m128i);
+        let ty = _mm_set1_epi32(ty_scalar);
+        let inv_ty = _mm_set1_epi32(inv_ty_scalar);
+
+        let r = bilinear_channel_sse41(
+            _mm_loadu_si128(r00.as_ptr() as *const __m128i),
+            _mm_loadu_si128(r10.as_ptr() as *const __m128i),
+            _mm_loadu_si128(r01.as_ptr() as *const __m128i),
+            _mm_loadu_si128(r11.as_ptr() as *const __m128i),
+            tx,
+            inv_tx,
+            ty,
+            inv_ty,
+        );
+        let g = bilinear_channel_sse41(
+            _mm_loadu_si128(g00.as_ptr() as *const __m128i),
+            _mm_loadu_si128(g10.as_ptr() as *const __m128i),
+            _mm_loadu_si128(g01.as_ptr() as *const __m128i),
+            _mm_loadu_si128(g11.as_ptr() as *const __m128i),
+            tx,
+            inv_tx,
+            ty,
+            inv_ty,
+        );
+        let b = bilinear_channel_sse41(
+            _mm_loadu_si128(b00.as_ptr() as *const __m128i),
+            _mm_loadu_si128(b10.as_ptr() as *const __m128i),
+            _mm_loadu_si128(b01.as_ptr() as *const __m128i),
+            _mm_loadu_si128(b11.as_ptr() as *const __m128i),
+            tx,
+            inv_tx,
+            ty,
+            inv_ty,
+        );
+
+        // Equivalent to min(r,g).max(max(r,g).min(b)), lane by lane.
+        let min_rg = _mm_min_epu32(r, g);
+        let max_rg = _mm_max_epu32(r, g);
+        let median = _mm_max_epu32(min_rg, _mm_min_epu32(max_rg, b));
+        _mm_storeu_si128(
+            median_lanes.as_mut_ptr() as *mut __m128i,
+            median,
+        );
+    }
+
+    // Keep the final signed-distance conversion bit-identical to the scalar
+    // path. The three-channel interpolation and median are already computed
+    // in SIMD; only the final four coverage conversions remain scalar.
+    let half = 255 * WEIGHT_ONE / 2;
+    for lane in 0..4 {
+        let delta = i64::from(median_lanes[lane]) - half;
+        output[lane] = (((delta * sampler.range) + (128 << 28)) >> 28)
+            .clamp(0, 255) as u8;
     }
 }
 
@@ -384,7 +693,6 @@ unsafe fn blend_one(
     }
 }
 
-
 fn draw_glyph(
     target: TextTarget,
     atlas: &Atlas,
@@ -393,6 +701,7 @@ fn draw_glyph(
     baseline_y: f32,
     color: u32,
     px_size: f32,
+    use_sse41: bool,
 ) {
     if !glyph.drawable {
         return;
@@ -538,13 +847,11 @@ fn draw_glyph(
         let mut fx = fx0 + dx * i64::from(first_x);
         let mut px = first_x;
         while px + 4 <= end_x {
-            for alpha in &mut alpha_buf {
-                *alpha = sampler.coverage(fx, y);
-                fx += dx;
-            }
+            sampler.coverage4(fx, dx, y, use_sse41, &mut alpha_buf);
             if alpha_buf != [0; 4] {
                 unsafe { blend_four(target, left + px, top + py, color, &alpha_buf); }
             }
+            fx += dx * 4;
             px += 4;
         }
         while px < end_x {
@@ -557,7 +864,6 @@ fn draw_glyph(
         }
     }
 }
-
 
 fn draw_text(
     target: TextTarget,
@@ -573,6 +879,7 @@ fn draw_text(
     let ascender = px_size_f * ATLAS_ASCENT_EM;
     let mut pen_x = x as f32;
     let mut baseline_y = y as f32 + ascender;
+    let use_sse41 = sse41_available();
 
     for ch in text.chars() {
         if ch == '\n' {
@@ -582,7 +889,16 @@ fn draw_text(
         }
 
         if let Some(glyph) = glyph_for_char(atlas, ch) {
-            draw_glyph(target, atlas, &glyph, pen_x, baseline_y, color, px_size_f);
+            draw_glyph(
+                target,
+                atlas,
+                &glyph,
+                pen_x,
+                baseline_y,
+                color,
+                px_size_f,
+                use_sse41,
+            );
             pen_x += glyph.advance * px_size_f;
         }
     }
