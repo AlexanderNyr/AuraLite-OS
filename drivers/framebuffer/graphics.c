@@ -1692,3 +1692,11 @@ uint32_t gfx_get_width(void) {
 uint32_t gfx_get_height(void) {
     return fb_height;
 }
+
+uint32_t *gfx_get_back_buffer(void) {
+    return back_fb;
+}
+
+uint32_t gfx_get_pitch_bytes(void) {
+    return fb_pitch;
+}

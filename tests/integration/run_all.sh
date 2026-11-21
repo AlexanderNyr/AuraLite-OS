@@ -381,7 +381,7 @@ group_re() {
         # step exits 2), independently of any Rust build break.  The
         # partition is self-checked precisely so an orphan case cannot be
         # silent; this line is that check doing its job.
-        gui)   echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui|office_shell|office_font|office_writer|office_container|office_docx|office_xlsx|office_writer_layout|office_sheet_core|office_sheet_gui|office_sheet_perf|office_slide)$' ;;
+        gui) echo '^test_(gui|gui_acl|gui_theme|gui_apps|gui_dirty_uefi|gui_lane_smoke|gui_resolution_browser|gui_usb|gui_bad_pointers|opengl|graphics|3d_render|virgl_gpu|gbrowser|doom|doom_w32|i386_gui|office_shell|office_font|office_writer|office_container|office_docx|office_xlsx|office_writer_layout|office_sheet_core|office_sheet_gui|office_sheet_perf|office_slide)$' ;;
         # ---- the Win32 personality: THREE shards (2026-09-30) ----
         #
         # It used to be one `w32` group and it had become the critical path

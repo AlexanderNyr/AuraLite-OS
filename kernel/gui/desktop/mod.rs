@@ -2,8 +2,8 @@
 //! kernel/gui/desktop/mod.rs
 //! The desktop owns taskbar, start-menu, desktop-icon, notification,
 //! wallpaper and cursor state.
-//! Window management, input routing and compositor orchestration
-//! remain in gui.c for now.
+//! Window management and input routing remain in gui.c during the
+//! incremental migration. Frame orchestration lives in compositor.rs.
 
 pub mod apps;
 pub mod icons;
