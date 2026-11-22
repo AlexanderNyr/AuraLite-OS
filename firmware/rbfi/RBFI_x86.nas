@@ -1,4 +1,4 @@
-;RawBootFirmwareInterface RBFI v0.2.18
+;RawBootFirmwareInterface RBFI v0.4.19
 ;Copiright (c) 2026 $yscall-(Syscall1dev)
 ;More info : By default, RBFI looks for the kernel at address 0x00100000,
 ;exactly one megabyte of memory in 64-bit mode.
@@ -442,50 +442,74 @@ mov esi,0xFED08400
 mov bl,[esi]
 or bl,0x03
 mov [esi],bl
-;======GPU======
+;======DEVISE_SEARCHING======
 mov esi,0xE0000000
 mov edi,0xE00FFFFF
 loopm:
     cmp esi,edi
-    jge gpu_not_found
+    jge devise_not_found
     mov ax,[esi]
     cmp ax,0xFFFF
-    je .next_devise
-    mov bl,[esi+0x0C]
+    je next_devise
+    mov bl,[esi+0x0B]
     cmp bl,0x03
-    je enable
-.next_devise:
+    je enablegpu
+   mov bl,[esi+0x0B]
+   cmp bl,0x02
+   je enablenetwork
+next_devise:
     add esi,0x1000
     jmp loopm
-gpu_not_found:
-    hlt
-enable:
+devise_not_found:
+   jmp conf
+enablegpu:
     mov dword [esi+0x10],0xD0000000
     mov ax,[esi+0x04]
     or ax,0x0006
     mov [esi+0x04],ax
-;THIS GPU CONF BY @DennisVol-[TG]
+jmp next_devise
+enablenetwork:
+    mov dword [esi+0x10],0xD1000000
+    mov ax,[esi+0x04]
+    or ax,0x0006
+    mov [esi+0x04],ax
+    jmp next_devise
 ;======CONF======
 conf:
    mov eax,cr4
    or eax,0x30
    mov cr4,eax
-   mov edi,0x00010000
-   xor eax,eax
-   mov ecx,0x1000
-   rep stosd
-   mov dword [0x00010000],0x00011003
-   mov dword [0x00010004],0x00000000
-   mov dword [0x00011000],0x00012003
-   mov dword [0x00011004],0x00000000
-   mov dword [0x00012000],0x0000019B
-   mov dword [0x00012FB0],0xFEC0019B
-   mov dword [0x00012FB8],0xFEE0019B
-   mov dword [0x00012004],0x00000000
-   mov dword [0x00011FF8],0xFFC00083
-   mov dword [0x00011FFC],0x00000000
-   mov dword [0x00011018],0xE000019B
-   mov dword [0x0001101C],0x00000000
+;======PAGING======
+   mov edi, 0x00010000
+xor eax,eax
+mov ecx, 0x6000
+rep stosd
+mov dword [0x00010000], 0x00011003
+mov dword [0x00011000], 0x00012003
+mov dword [0x00011008], 0x00013003
+mov dword [0x00011010], 0x00014003
+mov dword [0x00011018], 0x00015003
+jmp paging_setting
+mmio_sector:
+mov ebx,eax
+or ebx,0x18
+mov eax,ebx
+jmp loopcf
+paging_setting:
+mov edi,0x00012000
+mov eax,0x00000083
+mov ecx,2048
+loopag:
+cmp eax,0xD0000000
+jae mmio_sector
+loopcf:
+ mov [edi],eax
+ add eax,0x00200000
+ add edi,8
+dec ecx
+cmp ecx,0
+jne loopag
+;======CONF======
    mov eax,0x00010000
    mov cr3,eax
    mov ecx,0xC0000080
@@ -621,6 +645,26 @@ mov [rax+0x7200C],dword 0x80000000
 mov [rax+0x72008],dword 0x80000000
 mov [rax+0xE1140],dword 0x84000000
 mov [rax+0xC400C],dword 0x00000200
+;======DISPLAY_640x480======
+mov r8,0x60000
+mov rbx,0x03F027F
+mov [rsi+r8],rbx
+
+mov r8,0x60010
+mov rbx,0x02C01DF
+mov [rsi+r8],rbx
+
+mov r8,0x70180
+mov rbx,0x86100000
+mov [rsi+r8],rbx
+
+mov r8,0x70184
+mov rbx,0x01000000
+mov [rsi+r8],rbx
+
+mov r8,0x7008
+or rbx,1<<31
+mov [rsi+r8],rbx
 ;======USB-2======
 uiis:
 mov dx,0x0CF8
@@ -702,27 +746,26 @@ mov [r14+0x00],r12
     test eax,0x80
     je .loop_ff
 ;======BOOTING======
-;mov al,'B'        ;+
-;call engine       ;=
-;mov al,'o'        ;+ 
-;call engine       ;=
-;mov al,'o'        ;+ 
-;call engine       ;= 
-;mov al,'t'        ;+ 
-;call engine       ;=
-;mov al,'i'        ;+ 
-;call engine       ;=
-;mov al,'n'        ;+
-;call engine       ;=
-;mov al,'g'        ;+
-;call engine       ;=
-;mov al,'.'        ;+
-;call engine       ;=
-;mov al,'.'        ;+
-;call engine       ;=
-;mov al,'.'        ;+
-;call engine       ;=
-;===================
+mov al,'B'
+call engine   
+mov al,'o'         
+call engine      
+mov al,'o'         
+call engine        
+mov al,'t'         
+call engine       
+mov al,'i'         
+call engine       
+mov al,'n'        
+call engine       
+mov al,'g'        
+call engine       
+mov al,'.'        
+call engine       
+mov al,'.'
+call engine       
+mov al,'.'
+call engine
 mov [0x20040],dword 0x20060
 mov [0x20060],dword 0x1
 mov [0x20064],dword 0x1
@@ -759,7 +802,6 @@ fault:
     jmp fault
 ;+=+=+=+=+=+=+=+=+=+=+=+=+=+=+
 start:
-mov rax,0x00100000
 call launch
 hlt
 align 8 
@@ -775,9 +817,41 @@ launch:
     ret
 ;======BOOT======
 launch64bit:
-    mov rax,0x00100000
-    jmp rax
+lea rsi, [rel acpi_rsdp]
+mov rdi, 0x0009E000
+mov ecx, 36
+cld
+rep movsb
+lea rsi, [rel acpi_rsdt]
+mov rdi, 0x0009E030
+mov ecx, 40
+cld
+rep movsb
+lea rsi,[rel acpi_madt]
+mov rdi, 0x0009E060
+mov ecx, 64
+cld
+rep movsb
+mov rdi,0x0009E000
+    mov rax, 0x00100000
+    jmp [rax+0x08]
 launch32bit:
+lea rsi, [rel acpi_rsdp]
+mov rdi, 0x0009E000
+mov ecx, 36
+cld
+rep movsb
+lea rsi, [rel acpi_rsdt]
+mov rdi, 0x0009E030
+mov ecx, 40
+cld
+rep movsb
+lea rsi,[rel acpi_madt]
+mov rdi, 0x0009E060
+mov ecx, 64
+cld
+rep movsb
+mov rdi,0x0009E000
 hlt
 jmp launch32bit
 ;This part of code is  doesn`t ended
@@ -789,7 +863,6 @@ jmp launch32bit
 ;and eax,0x7FFFFFFF
 ;mov cr0,eax
 ;jmp far dword [gdt_poiii]
-
 ;mov ecx,0xC0000080
 ;rdmsr 
 ;mov eax,cr4
@@ -828,14 +901,9 @@ CODE32 equ 0x18
 gdt_gg_ptr:
     dw gdt_gg_ptr - gdt_gg -1 
     dq gdt_gg
-; gdt_poiii was a far-pointer stub for the unfinished 32-bit rollback
-; path (compat322 exists only inside the commented-out block above).
-; It is never the operand of any lgdt/ljmp, so it is neutralised rather
-; than wired up: the rollback feature is out of scope until it is written.
-gdt_poiii:
-    dd 0
-    dw 0x18
-
+;gdt_poiii:
+;    dd compat322
+;    dw 0x18
 [bits 16]
     align 4
     gdt2:
@@ -846,6 +914,46 @@ gdt_poiii:
     gdt_pointer2:
     dw gdt_end2 - gdt2 - 1
     dd gdt2
+[bits 64]
+acpi_rsdp:
+db 'RSD PTR '
+db 0x63
+db 'RBFI  '
+db 2
+dd 0x0009E030
+dd 36
+dq 0x0009E030
+db 0xC3
+db 0, 0, 0 
+acpi_rsdt:
+db 'RSDT'
+dd 40
+db 1
+db 0x31
+db 'RBFI  '
+db 'RBFI org'
+dd 1
+db 'SYS1'
+dd 1
+dd 0x0009E060
+
+acpi_madt:
+db 'APIC'
+dd 64
+db 3
+db 0xCD
+db 'RBFI  '
+db 'RBFI org'
+dd 1
+db 'SYS1'
+dd 1
+dd 0xFEE00000
+dd 1
+db 0, 8, 0, 0
+dd 1
+db 1, 12, 0, 0
+dd 0xFEC00000
+dd 0 
 ;=============================
 [bits 16]
 TIMES 131072-16-($-$$) db 0
