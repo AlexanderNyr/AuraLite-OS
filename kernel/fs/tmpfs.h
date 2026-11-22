@@ -19,9 +19,14 @@ void *tmpfs_volume_tmp(void);
 void *tmpfs_volume_opt(void);
 void *tmpfs_volume_shm(void);
 void *tmpfs_volume_doc(void);   /* OF0: /documents */
+void *tmpfs_volume_home(void);  /* HOME_PLAN H0: /home */
 
 extern const struct vfs_ops tmpfs_ops;
 extern const struct vfs_ops optfs_ops;
 extern const struct vfs_ops shmfs_ops;
+/* HOME_PLAN H0: /home's own ops address, so vfs_vnode_path() can tell a
+ * home from /tmp, /opt, /dev/shm and /documents -- the same reason optfs_ops
+ * and shmfs_ops exist. */
+extern const struct vfs_ops homefs_ops;
 
 #endif /* AURALITE_FS_TMPFS_H */

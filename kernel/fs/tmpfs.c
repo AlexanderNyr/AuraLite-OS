@@ -63,6 +63,7 @@ static struct tmpfs_volume tmp_vol;
 static struct tmpfs_volume opt_vol;
 static struct tmpfs_volume shm_vol;   /* Q12: /dev/shm (POSIX shared memory) */
 static struct tmpfs_volume doc_vol;   /* OF0: /documents (user documents) */
+static struct tmpfs_volume home_vol;  /* HOME_PLAN H0: /home (one per user) */
 
 /* The VFS passes fs_data straight through from vfs_mount(); a NULL means an
  * older caller that predates volumes, which can only mean /tmp. */
@@ -152,6 +153,13 @@ void tmpfs_init(void) {
      * by the mount table for both, so create works.  Mode 0755: documents are
      * the user's, not world-writable scratch. */
     vol_init(&doc_vol, "/documents", &tmpfs_ops);
+    /* HOME_PLAN H0: /home.  Its own volume for the same reason /opt has
+     * one: scratch traffic in /tmp must not be able to evict a user's file,
+     * and /home must not be able to crowd out /opt's package payload.  The
+     * volume root is 0755 root-owned -- it is the parent of every home, not
+     * a place to write; kernel/fs/home.c creates each <user> directory and
+     * proves the first one writable at boot. */
+    vol_init(&home_vol, "/home", &homefs_ops);
     /* RESIDUE2 T1: /tmp is the world-writable scratch directory POSIX (and
      * every Unix) requires: mode 01777, so ANY process can create files
      * there, and the sticky bit documents that only the owner unlinks its
@@ -173,6 +181,7 @@ void *tmpfs_volume_tmp(void) { return &tmp_vol; }
 void *tmpfs_volume_opt(void) { return &opt_vol; }
 void *tmpfs_volume_shm(void) { return &shm_vol; }
 void *tmpfs_volume_doc(void) { return &doc_vol; }   /* OF0: /documents */
+void *tmpfs_volume_home(void) { return &home_vol; } /* HOME_PLAN H0: /home */
 
 static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path) {
     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
@@ -418,6 +427,12 @@ static struct tmpfs_volume *vol_of_vnode(struct vnode *vn) {
      * (vfs_list has fallbacks) but aura_readdir() from userspace -- the OF2
      * file dialog's listing -- could never list a single document. */
     if (vn == &doc_vol.root) return &doc_vol;
+    /* HOME_PLAN H0: /home is a volume too, and it repeats the /documents
+     * lesson exactly: without this line `ls /home` returned -1 (the root
+     * fell through to the self branch with NULL fs_data) while everything
+     * else about the volume worked -- the same omission OF2's closure fixed
+     * for doc_vol.  A directory you cannot LIST is not a home. */
+    if (vn == &home_vol.root) return &home_vol;
     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
     if (f && f->vol) return f->vol;
     return &tmp_vol;
@@ -618,6 +633,25 @@ const struct vfs_ops shmfs_ops = {
     .rename   = tmpfs_rename,
     .link     = tmpfs_link,    /* Q13 */
     .settimes = tmpfs_settimes,/* Q13 */
+    .stat     = tmpfs_stat,
+    .truncate = tmpfs_truncate,
+};
+
+/* HOME_PLAN H0: /home volume.  Identical to tmpfs_ops by design; the
+ * distinct ADDRESS is the point (see the file header): vfs_vnode_path()
+ * identifies a vnode's mount by its ops pointer. */
+const struct vfs_ops homefs_ops = {
+    .lookup   = tmpfs_lookup,
+    .create   = tmpfs_create,
+    .read     = tmpfs_read,
+    .write    = tmpfs_write,
+    .readdir  = tmpfs_readdir,
+    .mkdir    = tmpfs_mkdir,
+    .rmdir    = tmpfs_rmdir,
+    .unlink   = tmpfs_unlink,
+    .rename   = tmpfs_rename,
+    .link     = tmpfs_link,
+    .settimes = tmpfs_settimes,
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
 };

@@ -2,6 +2,78 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [HOME H0 — the home directory and the user database] 2026-11-22
+
+`HOME_PLAN.md` phase H0: the tree gets a home directory and a user database,
+and the shell stops pretending. Both gaps were real: `grep -rn '"/home'` over
+the tree was **empty** (a saved note had exactly three writable places, and
+none of them was "the user's"), and `getpwuid()` was a compile-time stub that
+answered root and NULL. This phase closes both with one construction each.
+
+- **`kernel/fs/home.{c,h}` (new).** `/home` mounts as its own tmpfs volume —
+  the same mount-point construction `/documents` proved (a symlink into /tmp
+  resolves on lookup but not on create, so `open("~/x", O_CREAT)` would fail
+  EROFS). The volume carries its own 256-file table, so scratch traffic in
+  /tmp cannot evict a user's file and a home cannot crowd out /opt. The
+  second half of the file is the **user database**: `/etc/passwd` from the
+  initrd is parsed once at boot into a 16-record table, with the grammar
+  documented at the parser (`name:pass:uid:gid:gecos:dir:shell`, 6-field
+  records defaulting the shell, blank/`#` lines skipped, malformed lines
+  REFUSED and counted rather than truncated into a wrong home). The boot
+  bring-up creates each record's directory and **proves the first one
+  writable** — a home that cannot be written to is not a home, and the
+  receipt says so instead of letting the first save surprise a user.
+- **Durability is stated, not pretended.** `/home` is tmpfs: it survives
+  until the machine is switched off. The receipt carries `storage=tmpfs
+  (volatile: HOME_PLAN H4 makes it durable)`; H4 (a home on a writable disk
+  filesystem, on-disk `/etc/passwd`) is the named successor phase.
+- **`SYS_GETPWENT` (546) / `SYS_GETHOME` (547)** — the two arms libc needs.
+  Both validate the caller's buffer with `validate_user_range()` (a hostile
+  pointer is `-EFAULT`, not a panic) and return the record in the
+  `/etc/passwd` grammar itself, so libc parses ONE format instead of
+  mirroring a kernel struct.
+- **`lib/libc/src/pwd.c` rewritten** from the stub: `getpwuid`/`getpwnam`
+  walk the kernel table, `getpwent`/`setpwent`/`endpwent` and
+  `getpwuid_r` are new. The pre-H0 answer is kept as an explicit **fallback**
+  when the table is empty (an initrd built before H0, or a missing file), so
+  an older image still answers root instead of suddenly and confusingly
+  returning NULL for uid 0.
+- **The shell stops pretending**: `pwd` printed a constant `"/"`; it now
+  prints the real cwd. `cd [dir]` is new (bare `cd` goes home), `~` expands
+  in arguments but **not** when quoted (the raw token decides), and `$HOME` /
+  `$USER` are exported at startup from `getpwuid(getuid())`. The first draft
+  called `getpwuid()` three times inside one expression and shipped `USER=`
+  empty for exactly one build — the static-record contract means ONE lookup.
+- **`ls /` now shows the mount table.** It listed the initrd's entries only,
+  so `/tmp`, `/dev`, `/proc`, `/documents` and the new `/home` were all
+  invisible to a user. `vfs_readdir()` unions in the mount points that live
+  directly under the listed path (direct children only; a mount the backing
+  filesystem already lists is skipped, not duplicated). `ls /home` also
+  needed `vol_of_vnode()` to know `home_vol` — the identical omission OF2's
+  closure fixed for `doc_vol`, and it would have made a home unlistable.
+- **`/etc/passwd`** ships two records from the Makefile, and root's home is
+  `/home/root`, **not** `/root`: /root lives on the read-only initrd (EROFS on
+  the first save) and the shell runs as uid 0, so `cd ~` would have landed in
+  a directory that cannot hold a note. The EROFS-shaped failure now prints a
+  sentence naming the path and the fix instead of a bare -30.
+- **Tests.** `tests/unit/test_home_passwd.c` compiles the SHIPPED parser a
+  second time on the host: 26 grammar checks (canonical/6-field/5-field/
+  8-field, non-numeric and overflowing ids, blank/comment lines, CRLF,
+  no-trailing-newline, uid 2^32-1 boundary, whole-file path) plus a
+  **mutation lane** that removes the default-shell rule and REQUIRES exit 1.
+  `tests/integration/cases/test_home.sh` (registered in `ALL_CASES`, `fs`
+  shard) proves it end to end in QEMU: 13/13.
+- **Ratchets moved in the same change, because they are the point**:
+  `check_width_sweep`'s `(uint64_t)` counter would have risen 449 → 460 from
+  this file's index arithmetic — rewritten to carry offsets as `size_t`
+  (the paddr.h rule), so the counter did not move; `check_parity_claims`
+  `FS_FILE_COUNT` 26 → 27 (and the new file compiles at rv64/a64/i386 with
+  `-Wshorten-64-to-32`, which caught three `long`/`int64_t` conversions);
+  SH8's in-guest source pin 152 → 153 in all four places
+  (`gen_kernel_build.sh`, `test_selfhost_kernel_guest.sh`,
+  `test_sh5c_kernel_tcc.sh`, the hygiene docstring), cross-checked by
+  `check_build_hygiene.py` check 4.
+
 ## [GPU H7 — the close-out] 2026-11-21
 
 The series leaves the tree able to say what it did and what it did not. Three

@@ -1332,6 +1332,13 @@ type, parse, sema, exec) produces an interpreted AST with no back end;
 `gl_backend_t.draw` is wired and `test_glvirgl` (73 checks) pins the
 seam.
 
+**Named here, owned elsewhere:** ledger **RES-65** (S) — the home
+directory's four open debts (per-record ownership, `/root` as a real
+home, runtime `adduser`/`passwd` tooling, durability) — was opened by
+`HOME_PLAN.md` H0 and is tracked phase by phase there (H1–H5). The row
+is counted in this ledger and named here so the debt stays
+machine-visible; the exit gates are HOME_PLAN's.
+
 - [x] AST → TGSI: declarations, temporaries, ALU ops for the subset the
       sema already proves, `DCL`/`MOV`/`MAD`/`DP4` lowering, and a
       text+dword emitter with a round-trip test. *(GPU_ACCEL H4:

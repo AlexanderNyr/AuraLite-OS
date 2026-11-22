@@ -4330,6 +4330,20 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 	         $(INITRD_DIR)/tests/u32bad.exe
 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
 	    > $(INITRD_DIR)/etc/motd
+# HOME_PLAN H0: the user database.  A text file, not code -- adding a user
+# is editing this file.  The kernel parses it once at boot (kernel/fs/home.c)
+# and getpwuid()/getpwnam() answer from the parsed table.  The home
+# directories under /home are created at boot by the same file, so this
+# recipe only has to ship the records.
+# root's home is /home/root, NOT /root, and the difference is load-bearing:
+# /root would live on the read-only initrd (EROFS on the first save), and
+# the shell runs as uid 0 -- so a user typing `cd ~` would land in a
+# directory that cannot hold a note.  The /root path is H1's migration
+# (an alias or a symlink once the initrd root is writable).
+	@printf 'root:x:0:0:root:/home/root:/bin/sh\n' \
+	    > $(INITRD_DIR)/etc/passwd
+	@printf 'user:x:1000:1000:AuraLite user:/home/user:/bin/sh\n' \
+	    >> $(INITRD_DIR)/etc/passwd
 # I386_PLAN I5: the 32-bit userland, in the SAME archive under /bin32.
 # One initrd serves both kernels; each kernel's ELF loader refuses the
 # other's class, and the path split means neither can even try.
@@ -4459,7 +4473,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_ipv6_addr \
                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
-                $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno \
+                $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno $(BUILD_DIR)/test_home_passwd \
                 $(BUILD_DIR)/test_ctype $(BUILD_DIR)/test_open_flags \
                 $(BUILD_DIR)/test_lseek \
                 $(BUILD_DIR)/test_signals \
@@ -6550,6 +6564,26 @@ $(BUILD_DIR)/test_ctype: tests/unit/test_ctype.c lib/libc/include/ctype.h \
                          lib/libc/include/limits.h lib/libc/include/stdbool.h
 	@mkdir -p $(BUILD_DIR)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+
+# HOME_PLAN H0: the /etc/passwd parser gate.  Compiles the SHIPPED parser
+# body (kernel/fs/home.c) a second time on the host, so the grammar is
+# tested at unit speed instead of one boot per case.  The second lane builds
+# a mutation (the 6-field default-shell rule removed) and REQUIRES exit 1 --
+# a gate that cannot fail is indistinguishable from a clean tree.
+TEST_HOME_PASSWD_DEPS := tests/unit/test_home_passwd.c kernel/fs/home.c \
+                         kernel/fs/home.h kernel/fs/vfs.h kernel/fs/tmpfs.h
+$(BUILD_DIR)/test_home_passwd: $(TEST_HOME_PASSWD_DEPS)
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I kernel \
+	           tests/unit/test_home_passwd.c -o $@
+	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I kernel \
+	           -DTEST_MUTATE_PARSE=1 tests/unit/test_home_passwd.c \
+	           -o $@.mut
+	@if ./$@.mut >/dev/null 2>&1; then \
+	    echo "test_home_passwd: mutation lane PASSED -- the gate cannot fail"; \
+	    exit 1; \
+	fi
+	@echo "[home] mutation lane red as required (planted defect detected)"
 
 $(BUILD_DIR)/test_open_flags: tests/unit/test_open_flags.c lib/libc/include/fcntl.h
 	@mkdir -p $(BUILD_DIR)

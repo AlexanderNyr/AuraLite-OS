@@ -1648,6 +1648,71 @@ int vfs_fsettimes(int fd, uint64_t atime, uint64_t mtime) {
     return vnode_settimes(vn, atime, mtime);
 }
 
+/* HOME_PLAN H0: append the mount points that live DIRECTLY under `path`.
+ *
+ * This is what makes `/home` visible to `ls /`.  Before this, a directory
+ * listing came from the backing filesystem only: the initrd answers /, so
+ * `ls /` listed the initrd's own entries and NOT the mount table's -- /tmp,
+ * /home, /dev, /proc, /documents were all invisible, and a user had no way
+ * to discover the writable space the tree had just given them.  The
+ * filesystems themselves are unchanged (an entry in the initrd is still
+ * listed exactly once); this only unions in the mount points, which is what
+ * every Unix's `ls /` shows.
+ *
+ * Only direct children are synthesized: with `path` = "/", a mount at
+ * "/dev/shm" contributes nothing (it is not directly under /), and `ls
+ * /dev` adds "shm" on its own call.  A mount point that the backing
+ * filesystem ALSO lists is skipped rather than duplicated by name. */
+static int append_mount_dirents(const char *path, struct vfs_dirent *out,
+                                int count, int max) {
+    size_t plen = strlen(path);
+    if (plen == 0) return count;
+    int root = (plen == 1 && path[0] == '/');
+
+    for (int i = 0; i < vfsm_slots(); i++) {
+        const struct vfs_mount *m = mnt(i);
+        if (!m) continue;
+        const char *mp = m->mount_path;
+        /* Skip the mount being listed itself. */
+        if (strcmp(mp, path) == 0) continue;
+
+        const char *child;
+        if (root) {
+            child = (mp[0] == '/') ? mp + 1 : mp;
+        } else {
+            /* path + "/" prefix, then the remainder must be one component. */
+            if (strncmp(mp, path, plen) != 0) continue;
+            if (mp[plen] != '/') continue;
+            child = mp + plen + 1;
+        }
+        if (!*child) continue;
+        /* Direct child only: no further '/', and not "." or "..". */
+        {
+            int direct = 1;
+            for (const char *q = child; *q; q++) {
+                if (*q == '/') { direct = 0; break; }
+            }
+            if (!direct) continue;
+            if (strcmp(child, ".") == 0 || strcmp(child, "..") == 0) continue;
+        }
+
+        int dup = 0;
+        for (int k = 0; k < count; k++) {
+            if (strcmp(out[k].name, child) == 0) { dup = 1; break; }
+        }
+        if (dup) continue;
+        if (count >= max) return count;   /* caller's array is full */
+
+        strncpy(out[count].name, child, VFS_PATH_MAX - 1);
+        out[count].name[VFS_PATH_MAX - 1] = '\0';
+        out[count].type  = VFS_TYPE_DIR;
+        out[count].size  = 0;
+        out[count].inode = 0;
+        count++;
+    }
+    return count;
+}
+
 int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
     if (!out) return -EFAULT;
     if (max <= 0) return -EINVAL;
@@ -1657,7 +1722,9 @@ int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
     if (err != 0) return err;
     if (vn->type != VFS_TYPE_DIR) return -ENOTDIR;
     if (!vn->ops->readdir) return -ENOSYS;
-    return (int)vfs_wrap_err(vn->ops->readdir(vn, out, max), EIO);
+    int n = (int)vfs_wrap_err(vn->ops->readdir(vn, out, max), EIO);
+    if (n < 0) return n;
+    return append_mount_dirents(path, out, n, max);
 }
 
 void vfs_list(const char *path) {

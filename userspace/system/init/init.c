@@ -28,6 +28,7 @@
 #include "sh_expand.h"
 #include "sh_parse.h"
 #include "time.h"   /* struct timespec for cmd_settimes */
+#include "pwd.h"    /* HOME_PLAN H0: HOME comes from /etc/passwd, not a constant */
 
 /* OTA_PLAN O2: the shell banner and `uname` print the BUILD's version
  * identity.  The Makefile passes -DAURALITE_VERSION='"x.y.z"' down to
@@ -641,8 +642,100 @@ static void cmd_write_file(int argc, char **argv) {
     fflush(stdout);
 }
 
+/* HOME_PLAN H0: the shell's idea of $HOME.  It is the real record's home
+ * directory (getpwuid(getuid())), not a constant: a user added to
+ * /etc/passwd gets the right home everywhere -- in `cd`, in `~` expansion,
+ * and in the HOME variable children inherit.  The fallback chain is
+ * explicit so a boot without /etc/passwd behaves exactly as before. */
+static const char *sh_home_dir(void) {
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_dir && pw->pw_dir[0] == '/') return pw->pw_dir;
+    return "/root";
+}
+
+/* Write the home directory into the shell variable table once, at startup,
+ * so `echo $HOME` and every child's environment see it. */
+static void sh_home_export(void) {
+    /* ONE lookup, one result: getpwuid() answers a pointer into a static
+     * record that the NEXT call overwrites, so an expression that calls it
+     * three times in a row is reading three different (and possibly empty)
+     * buffers -- the exact bug this function shipped with for one boot
+     * (USER came out empty).  Copy the name out before touching anything
+     * else that can call back into <pwd.h>. */
+    const char *home = sh_home_dir();
+    const char *user = "root";
+    struct passwd *pw = getpwuid(getuid());
+    if (pw && pw->pw_name && pw->pw_name[0]) user = pw->pw_name;
+
+    sh_var_set("HOME", home);
+    sh_var_set("USER", user);
+}
+
+/* `~` and `~/...` at the start of a word expand to $HOME.  One leading
+ * tilde only: `~user` needs a lookup that is H1's job (HOME_PLAN), and
+ * pretending `~alice` means `~` is the kind of silent wrongness this
+ * project's docs call out.  Returns the word with the expansion applied
+ * in place (dst may equal src). */
+static void sh_expand_tilde(const char *src, char *dst, size_t cap) {
+    if (src[0] != '~' || (src[1] != '\0' && src[1] != '/')) {
+        strncpy(dst, src, cap - 1);
+        dst[cap - 1] = '\0';
+        return;
+    }
+    const char *home = sh_home_dir();
+    size_t hl = strlen(home);
+    if (hl >= cap) hl = cap - 1;
+    memcpy(dst, home, hl);
+    /* "~/x" -> home "/x"; a home that already ends in '/' must not double it. */
+    const char *rest = src + 1;
+    if (rest[0] == '/' && hl > 0 && dst[hl - 1] == '/') rest++;
+    size_t rl = strlen(rest);
+    if (hl + rl >= cap) rl = cap - 1 - hl;
+    memcpy(dst + hl, rest, rl);
+    dst[hl + rl] = '\0';
+}
+
+/* Apply ~ expansion to an already-expanded argument, in place.  Called from
+ * sh_expand_stage() for every WORD whose ORIGINAL token began with an
+ * unquoted '~' -- the quoting test is on the raw token, so "~" stays a
+ * literal tilde, which is what every POSIX shell does. */
+static void sh_tilde_inplace(char *buf, size_t cap) {
+    if (buf[0] != '~') return;
+    char tmp[SH_ARG_MAX_EXP];
+    sh_expand_tilde(buf, tmp, sizeof(tmp));
+    strncpy(buf, tmp, cap - 1);
+    buf[cap - 1] = '\0';
+}
+
+/* `cd [dir]` -- the working directory is a per-process property the kernel
+ * already tracks (tcb->cwd, joined onto relative paths by the syscall
+ * dispatcher); the shell simply never exposed it.  `cd` with no argument
+ * goes home, which is the behaviour every user expects of the bare form. */
+static void cmd_cd(const char *path) {
+    const char *target = path;
+    char expanded[256];
+    if (!target || !target[0]) target = sh_home_dir();
+    if (target[0] == '~') {
+        sh_expand_tilde(target, expanded, sizeof(expanded));
+        target = expanded;
+    }
+    if (chdir(target) != 0) {
+        printf("cd: %s: no such directory\n", target);
+    }
+    fflush(stdout);
+}
+
 static void cmd_pwd(void) {
-    puts("/");
+    /* HOME_PLAN H0: this used to print a constant "/" -- it now prints the
+     * process's real cwd.  getcwd() answering NULL falls back to "/", and
+     * the fallback is visible rather than silent: an empty cwd is "/" by
+     * the kernel's own convention (syscall.c joins "/" for an empty cwd). */
+    char buf[256];
+    if (getcwd(buf, sizeof(buf))) {
+        puts(buf);
+    } else {
+        puts("/");
+    }
     fflush(stdout);
 }
 
@@ -675,6 +768,7 @@ static void cmd_help(void) {
     puts("  write <file> <text> - create/overwrite writable file (/tmp, /disk, /fat)");
     puts("  run <prog>  - run a program in its own address space");
     puts("  pwd         - print working directory");
+    puts("  cd [dir]    - change directory (no arg = $HOME; ~ expands to $HOME)");
     puts("  uname       - print OS information");
     puts("  free        - print memory usage");
     puts("  nslookup    - resolve a hostname via DNS");
@@ -1474,6 +1568,8 @@ static int sh_run_command(int argc)
         cmd_echo(argc, cmd_argv);
     } else if (strcmp(cmd, "write") == 0) {
         cmd_write_file(argc, cmd_argv);
+    } else if (strcmp(cmd, "cd") == 0) {
+        cmd_cd(argc >= 2 ? cmd_argv[1] : NULL);
     } else if (strcmp(cmd, "pwd") == 0) {
         cmd_pwd();
     } else if (strcmp(cmd, "uname") == 0) {
@@ -1624,6 +1720,9 @@ static int sh_expand_stage(const struct sh_tok *toks, int start, int end,
                        argc, SH_ARG_MAX_EXP - 1);
                 last_status = 2;
                 return 2;
+            }
+            if (toks[i].text[0] == '~') {
+                sh_tilde_inplace(sh_expbuf[argc], SH_ARG_MAX_EXP);
             }
             cmd_argv[argc] = sh_expbuf[argc];
             argc++;
@@ -2659,6 +2758,11 @@ int main(int argc, char **argv) {
         dup2(0, 1);
         dup2(0, 2);
     }
+
+    /* HOME_PLAN H0: $HOME and $USER from the user database, before the
+     * prompt can expand anything.  A missing /etc/passwd leaves the
+     * sh_home_dir() fallbacks in place and sets nothing it cannot know. */
+    sh_home_export();
 
     printf("\n");
     printf("==============================================\n");

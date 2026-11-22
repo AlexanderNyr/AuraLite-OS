@@ -35,7 +35,7 @@ question they answer is the CI question: "is this variable still there on a
 runner that has none of the optional toolchains?"
 
 Check 4 is separate and specific: the SELFHOST SH8 closure pins the exact
-number of kernel/driver C and asm files it will compile in-guest (149 / 9).
+number of kernel/driver C and asm files it will compile in-guest (153 / 9).
 Nothing bumps that pin when a phase adds kernel sources, and the drift only
 shows when the self-host closure is staged -- which no local build did.  The
 generator, the SH5d guest case and the SH5c host gate all carry the number, so

@@ -38,6 +38,7 @@
 #include "kernel/fs/tmpfs.h"
 #include "kernel/fs/diskfs.h"
 #include "kernel/fs/documents.h"
+#include "kernel/fs/home.h"      /* HOME_PLAN H0: /home + user database */
 #include "kernel/fs/fat32.h"
 #include "kernel/fs/ext2.h"
 #include "kernel/fs/usbfs.h"
@@ -720,6 +721,16 @@ void kmain(boot_info_t *boot_info) {
      * does not follow symlinks when creating a file. */
     vfs_mount("/documents", &tmpfs_ops, tmpfs_volume_doc());
     tmpfs_self_test();
+
+    /* HOME_PLAN H0: /home and the user database.  Runs right after the
+     * tmpfs volumes are live and before anything can open a user file: it
+     * mounts /home as its own volume, parses /etc/passwd from the initrd
+     * into the kernel's user table (so getpwuid() answers with a real
+     * record), creates each record's home directory and proves the first
+     * one writable.  Never fatal -- a missing passwd or an unwritable
+     * volume prints its reason and the system boots on. */
+    home_init();
+    home_self_test();
 
     /* Mount usbfs at "/usb". It shows the active hotplug USB mass-storage device. */
     usbfs_init();

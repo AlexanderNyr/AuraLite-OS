@@ -20,12 +20,16 @@ F4 (the source tree) and F5 (aliases removed).
 | `/tmp` | tmpfs | yes | in-memory, lost on reboot |
 | `/opt` | tmpfs (second volume) | yes | installed packages; see below |
 | `/dev/shm` | tmpfs (third volume) | yes | POSIX shared-memory volume |
+| `/home` | tmpfs (fifth volume) | yes | one directory per `/etc/passwd` record; **volatile** (HOME_PLAN H0, durable in H4) |
 | `/disk` | diskfs | yes | small persistent store on AHCI |
 | `/fat` | FAT32 | yes | full FAT32 with LFN and subdirectories |
 | `/ext2` | ext2 | yes | full ext2 with indirect blocks |
 | `/usb` | usbfs | partly | hotplugged USB mass storage; FAT32 under `/usb/fat` takes in-place overwrites (no new-cluster allocation yet); ext2 is read-only under `/usb/ext2` |
 
 Resolution is by longest-prefix mount match, then the filesystem's own lookup.
+`ls` on a directory unions the mount points that live directly under it, so
+`ls /` lists `/home`, `/tmp`, `/dev`, `/proc`, `/documents`, `/opt` and `/usb`
+even though the initrd backing `/` knows nothing about them (HOME_PLAN H0).
 
 ---
 
@@ -112,6 +116,60 @@ An installer that enforces its own rules constrains only itself. The check
 lives in `vfs_open()` and `vfs_chmod()`, where every path goes through it.
 The predicate itself is in `kernel/fs/execpolicy.c`, separate so the host unit
 test compiles the shipping code rather than a copy.
+
+### `/home` and the user database (HOME_PLAN H0)
+
+`/home` is a tmpfs volume of its own, and the users are DATA: `/etc/passwd`
+ships in the initrd and `kernel/fs/home.c` parses it once at boot into a
+16-record table.
+
+```
+root:x:0:0:root:/home/root:/bin/sh
+user:x:1000:1000:AuraLite user:/home/user:/bin/sh
+```
+
+Grammar: `name:pass:uid:gid:gecos:dir:shell`. Blank and `#` lines are skipped;
+a **6-field** record defaults the shell to `/bin/sh`; **five or fewer** fields
+is malformed and refused (a record with no home is the shape that walks users
+into `/` by accident); a field too long for its column, an 8-field line, or a
+non-numeric/overflowing uid are refused too. The boot receipt counts the
+refusals instead of letting them disappear:
+
+```
+[home] 2 user record(s) from /etc/passwd
+[home] PASS: 2 home(s) ready under /home, first writable (2 record(s) from
+       /etc/passwd, 2 dir(s) created, 0 refused); storage=tmpfs
+       (volatile: HOME_PLAN H4 makes it durable)
+```
+
+Two syscalls expose the table — `SYS_GETPWENT` (546, record by index) and
+`SYS_GETHOME` (547, uid → directory) — and `lib/libc/src/pwd.c` implements
+`getpwuid`/`getpwnam`/`getpwent`/`getpwuid_r` on top of them. When the table
+is empty (an initrd built before H0), libc keeps its old built-in root answer
+rather than suddenly returning NULL for uid 0.
+
+**root's home is `/home/root`, not `/root`** — and that is deliberate. `/root`
+lives on the read-only initrd, and the shell runs as uid 0; with `pw_dir` set
+to `/root`, `cd ~` would land a user in a directory that returns EROFS on the
+first save, which is the exact problem `/home` exists to solve. The boot
+receipt says so in words when it happens:
+
+```
+[home] FAIL: /root lies on a read-only filesystem (EROFS): /etc/passwd names
+a home the initrd owns; on this tree the durable-looking place for a user who
+must save notes is /home/<name> (tmpfs, writable until power-off)
+```
+
+HOME_PLAN H1 is the phase that makes `/root` real.
+
+**The shell follows the database.** `pwd` prints the real cwd (it used to
+print a constant `/`), `cd [dir]` exists (bare `cd` goes home), `~` expands at
+the start of an argument but **not** inside quotes (`echo "~"` prints `~`),
+and `$HOME`/`$USER` are exported at startup from `getpwuid(getuid())`.
+
+**Durability is not yet true**: `/home` is tmpfs and survives until power-off.
+H4 moves it (and `/etc/passwd`, and `/opt`) onto a writable disk filesystem;
+the receipt carries `storage=tmpfs` until then.
 
 ### Why /opt is a separate volume
 

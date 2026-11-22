@@ -508,7 +508,7 @@ def claims():
         checks.append((
             "H7: the ledger's arithmetic names the new class pins, so a "
             "later row cannot be added without moving them",
-            "Rows: 64." in ledger and "W 36 · M 9 · N 4 · S 15" in ledger))
+            "Rows: 65." in ledger and "W 36 · M 9 · N 4 · S 16" in ledger))
         checks.append((
             "H7: CHANGELOG carries one entry per phase for H3 through H7",
             all(f"## [GPU {p} —" in changelog for p in

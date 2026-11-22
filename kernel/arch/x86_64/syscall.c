@@ -12,6 +12,7 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/home.h"   /* HOME_PLAN H0: getpwent/getdir arms */
 #include "kernel/lx/lx.h"
 #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
 #include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
@@ -208,6 +209,8 @@ typedef struct {
 #define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 receipt */
 #define SYS_SYNC           611   /* non-standard: whole-cache flush (bc_flush_all) */
 #define SYS_REBOOT         612   /* non-standard: flush + 8042 reset pulse (OTA O2) */
+#define SYS_GETPWENT       546   /* HOME_PLAN H0: /etc/passwd record by index */
+#define SYS_GETHOME        547   /* HOME_PLAN H0: uid -> home directory */
 #define SYS_WAITID         247   /* Linux x86-64 number (RESIDUE2 T1) */
 #define SYS_GETPPID        110   /* Linux x86-64 number (RESIDUE2 T1) */
 
@@ -2768,6 +2771,27 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
      * No vfs_errno() anywhere near this: -ENOENT is -2, but keyboard_set_-
      * layout() may gain -EPERM-class returns later (write protection), and
      * EPERM == 1 == the generic sentinel — return values verbatim. */
+    /* HOME_PLAN H0: the user database, read from /etc/passwd at boot.
+     * Both arms copy into a caller buffer validated by
+     * validate_user_range() so a hostile pointer is -EFAULT, not a panic;
+     * the packed field format is documented in kernel/fs/home.h and
+     * lib/libc/src/pwd.c is the only consumer. */
+    case SYS_GETPWENT: {
+        if (a3 == 0) return (uint64_t)-EINVAL;
+        if (!validate_user_range((void *)(uintptr_t)a2, a3, 1)) {
+            return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)home_getpwent((uint32_t)a1,
+                                       (char *)(uintptr_t)a2, a3);
+    }
+    case SYS_GETHOME: {
+        if (a3 == 0) return (uint64_t)-EINVAL;
+        if (!validate_user_range((void *)(uintptr_t)a2, a3, 1)) {
+            return (uint64_t)-EFAULT;
+        }
+        return (uint64_t)home_getdir((uint32_t)a1,
+                                     (char *)(uintptr_t)a2, a3);
+    }
     case SYS_F2FS_FSCK: {   /* 602 */
         /* F4: run the internal f2fs structural fsck.  Returns 0 if the
          * volume is consistent, negative otherwise. */
