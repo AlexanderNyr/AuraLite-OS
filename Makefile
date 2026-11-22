@@ -2050,9 +2050,18 @@ $(USER_GL_APPS): $(USER_BUILD)/%.elf: $(USER_BUILD)/%.o $(USER_COMMON) \
 
 $(USER_BUILD)/gcalc.o:   userspace/apps/gui-calc/gcalc.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-$(USER_BUILD)/gedit.o:   userspace/apps/gui-edit/gedit.c     lib/libauragui/include/auragui.h $(USER_CFLAGS_INC)
-	@mkdir -p $(dir $@); $(HOST_CC) $(USER_CFLAGS) -c $< -o $@
-### RUST: compile gfiles.rs with RSBR
+
+### RUST: compile gui apps with RSBR (gterm, gfiles, gedit)
+$(USER_BUILD)/gedit.o: userspace/apps/gui-edit/gedit.rs $(RSBR_RLIB)
+	@mkdir -p $(dir $@)
+	$(RUSTC) $(RUSTFLAGS) \
+		--edition=2021 \
+		--crate-type lib \
+		--emit obj \
+		--extern rsbr=$(RSBR_RLIB) \
+		-o $@ $<
+	@echo "[rustc] $@"
+
 $(USER_BUILD)/gfiles.o: userspace/apps/gui-files/gfiles.rs $(RSBR_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) $(RUSTFLAGS) \
@@ -2063,16 +2072,6 @@ $(USER_BUILD)/gfiles.o: userspace/apps/gui-files/gfiles.rs $(RSBR_RLIB)
 		-o $@ $<
 	@echo "[rustc] $@"
 
-$(USER_BUILD)/gfiles.elf: $(USER_BUILD)/gfiles.o $(RSBR_RLIB) lib/libc/user.ld
-	@mkdir -p $(dir $@)
-	$(LD) $(USER_LDFLAGS) \
-		$(USER_BUILD)/gfiles.o \
-		$(RSBR_RLIB) \
-		$(RUST_CORE_RLIB) \
-		$(RUST_COMPILER_BUILTINS_RLIB) \
-		-o $@
-	@echo "[link] $@"
-### RUST: compile gterm.rs with RSBR
 $(USER_BUILD)/gterm.o: userspace/apps/gui-term/gterm.rs $(RSBR_RLIB)
 	@mkdir -p $(dir $@)
 	$(RUSTC) $(RUSTFLAGS) \
@@ -2082,6 +2081,28 @@ $(USER_BUILD)/gterm.o: userspace/apps/gui-term/gterm.rs $(RSBR_RLIB)
 		--extern rsbr=$(RSBR_RLIB) \
 		-o $@ $<
 	@echo "[rustc] $@"
+
+
+### RUST: link rsbr apps
+$(USER_BUILD)/gedit.elf: $(USER_BUILD)/gedit.o $(RSBR_RLIB) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) \
+		$(USER_BUILD)/gedit.o \
+		$(RSBR_RLIB) \
+		$(RUST_CORE_RLIB) \
+		$(RUST_COMPILER_BUILTINS_RLIB) \
+		-o $@
+	@echo "[link] $@"
+
+$(USER_BUILD)/gfiles.elf: $(USER_BUILD)/gfiles.o $(RSBR_RLIB) lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) \
+		$(USER_BUILD)/gfiles.o \
+		$(RSBR_RLIB) \
+		$(RUST_CORE_RLIB) \
+		$(RUST_COMPILER_BUILTINS_RLIB) \
+		-o $@
+	@echo "[link] $@"
 
 $(USER_BUILD)/gterm.elf: $(USER_BUILD)/gterm.o $(RSBR_RLIB) lib/libc/user.ld
 	@mkdir -p $(dir $@)
