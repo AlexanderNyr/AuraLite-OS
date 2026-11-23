@@ -647,25 +647,12 @@ mov [rax+0xE1140],dword 0x84000000
 mov [rax+0xC400C],dword 0x00000200
 ;======DISPLAY_640x480======
 mov rsi,rax
-mov r8,0x60000
-mov rbx,0x031F027F
-mov dword [rsi+r8],rbx
-
-mov r8,0x60010
-mov rbx,0x02C01DF
-mov dword [rsi+r8],rbx
-
-mov r8,0x70180
-mov rbx,0x86100000
-mov dword [rsi+r8],rbx
-
-mov r8,0x70184
-mov rbx,0x01000000
-mov dword [rsi+r8],rbx
-
-mov r8,0x70008
-or rbx,1<<31
-mov dword [rsi+r8],rbx
+mov dword [rsi+0x60000],0x031F027F
+mov dword [rsi+0x60010],0x020C01DF
+mov dword [rsi+0x70180],0x86100000
+mov dword [rsi+0x70184],0x01000000
+or ebx,1<<31
+mov dword [rsi+0x70008],ebx
 ;======USB-2======
 uiis:
 mov dx,0x0CF8
