@@ -638,7 +638,7 @@ mov rsi,0xE0018014
     ret
 ;======HDMI======
 HDMI:
-xor rax,rax
+mov rax,0xD0000000
 mov [rax+0x06014],dword 0x80000000
 mov [rax+0x6000C],dword 0x800C0000
 mov [rax+0x7200C],dword 0x80000000
@@ -646,25 +646,26 @@ mov [rax+0x72008],dword 0x80000000
 mov [rax+0xE1140],dword 0x84000000
 mov [rax+0xC400C],dword 0x00000200
 ;======DISPLAY_640x480======
+mov rsi,rax
 mov r8,0x60000
-mov rbx,0x03F027F
-mov [rsi+r8],rbx
+mov rbx,0x031F027F
+mov dword [rsi+r8],rbx
 
 mov r8,0x60010
 mov rbx,0x02C01DF
-mov [rsi+r8],rbx
+mov dword [rsi+r8],rbx
 
 mov r8,0x70180
 mov rbx,0x86100000
-mov [rsi+r8],rbx
+mov dword [rsi+r8],rbx
 
 mov r8,0x70184
 mov rbx,0x01000000
-mov [rsi+r8],rbx
+mov dword [rsi+r8],rbx
 
-mov r8,0x7008
+mov r8,0x70008
 or rbx,1<<31
-mov [rsi+r8],rbx
+mov dword [rsi+r8],rbx
 ;======USB-2======
 uiis:
 mov dx,0x0CF8
