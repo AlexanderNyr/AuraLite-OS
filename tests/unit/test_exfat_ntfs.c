@@ -54,15 +54,25 @@ void bc_release(struct buffer *buf) { (void)buf; }
 
 /* F2 (FSFULL_PLAN.md): the drivers now read the boot region through the
  * shared cache-backed helpers, so the host lane provides them (mirroring
- * the real buffer_cache.c implementations over the same fake cache). */
+ * the real buffer_cache.c implementations over the same fake cache).
+ *
+ * FSMODERN M2: the loop below copies ONE 512-BYTE SECTOR per iteration
+ * because that is what `count` counts.  It used to copy BC_BLOCK_SIZE
+ * per iteration, which was harmless while the cache block WAS a sector
+ * and became a 4 KiB stack-buffer overflow the moment M2 made it 4 KiB
+ * (ASan caught it: "WRITE of size 4096" into a 512-byte caller buffer).
+ * The fake cache keeps a whole BC_BLOCK_SIZE block and hands out the
+ * sector inside it, so the mock matches the shipped translation. */
 int fs_read_block(int dev, uint64_t lba, uint32_t count, void *buf) {
     uint8_t *p = (uint8_t *)buf;
     for (uint32_t i = 0; i < count; i++) {
-        struct buffer *b = bc_get((uint32_t)dev, lba + i);
+        uint64_t blk = lba / BC_SECTORS_PER_BLOCK;
+        uint32_t off = (uint32_t)((lba + i) % BC_SECTORS_PER_BLOCK) * 512u;
+        struct buffer *b = bc_get((uint32_t)dev, blk);
         if (!b) return -1;
-        memcpy(p, b->data, BC_BLOCK_SIZE);
+        memcpy(p, b->data + off, 512);
         bc_release(b);
-        p += BC_BLOCK_SIZE;
+        p += 512;
     }
     return 0;
 }
@@ -73,6 +83,13 @@ int fs_write_block(int dev, uint64_t lba, uint32_t count, const void *buf) {
 }
 
 int fs_cache_sync(void *fs_data) { (void)fs_data; return 0; }
+
+/* FSMODERN M1: the formatter now asks the block seam for the device's own
+ * capacity instead of writing a constant 64 MiB geometry onto every disk.
+ * The host lane has no block device, so it answers 0 -- which is exactly
+ * what a backend that does not report capacity answers -- and the refusal
+ * path is what this stub exercises. */
+uint64_t blkdev_sector_count(int dev) { (void)dev; return 0; }
 
 /* F1 gate stubs: the format knob defaults OFF in the host lane, so a
  * foreign / blank boot sector is refused rather than auto-formatted. */

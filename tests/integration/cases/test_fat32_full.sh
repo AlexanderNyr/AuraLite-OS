@@ -20,7 +20,8 @@ trap il_dump_on_error EXIT
 
 MARK="FULLFAT_$$_$(date +%s)"
 
-il_send_delay 8
+# No leading delay: the feeder gates on the shell's own prompt, and a sleep
+# here just ate the QEMU budget (8 s of 35 s, with the prompt at ~20 s).
 # 1. mkdir + ls (should show MYDIR/)
 il_send "mkdir /fat/MYDIR"
 il_send_delay 1
@@ -51,7 +52,7 @@ il_send "ls /fat"
 il_send_delay 1
 il_send "exit"
 
-il_run_qemu "$LOG" 35 \
+il_run_qemu "$LOG" 75 \
     -drive "file=$DISK,format=raw,if=none,id=ahcidisk" \
     -device "ahci,id=ahci0" \
     -device "ide-hd,drive=ahcidisk,bus=ahci0.0"

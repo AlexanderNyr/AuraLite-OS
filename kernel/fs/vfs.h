@@ -99,6 +99,61 @@ struct vfs_stat {
     uint64_t atime;         /* access time */
 };
 
+/* ============================================================================
+ * FSMODERN M3 — the durability contract.
+ *
+ * Before M3 "is my data safe?" had no answer a caller could act on: every
+ * filesystem flushed something at some point, and the only thing keeping a
+ * write alive was a 1 Hz timer tick.  Measured on this tree: with the write
+ * syscall returning success, killing the machine 0.5 s later lost the file
+ * (test_fs_crash.sh, docs/filesystems_perf.md).
+ *
+ * The contract, in one sentence: SYNC_DATA means "this file's contents are on
+ * the medium now", and a filesystem that cannot promise that says so ONCE, in
+ * its ops table, instead of failing silently at the moment it matters.
+ * ==========================================================================*/
+
+/* What a sync request actually needs to put on the medium. */
+enum fs_sync_mode {
+    SYNC_DATA = 1,   /* everything: this file's bytes AND the metadata that
+                      * names them.  What fsync() means. */
+    SYNC_META = 2,   /* only the index: directory entries, allocation, the
+                      * superblock.  What a rename() needs to survive. */
+};
+
+/* FSMODERN M3: how much a filesystem is willing to promise.
+ *
+ * FS_DURABILITY_EXACT  -- a successful write() followed by .sync(SYNC_DATA)
+ *                         leaves the file readable on the next boot.  FAT32
+ *                         and diskfs are here: their state IS the cache, so
+ *                         flushing the cache is the whole job.
+ * FS_DURABILITY_WEAK   -- the filesystem cannot make that promise and knows
+ *                         why.  btrfs keeps its tree index in RAM and ext2
+ *                         writes its inode table lazily; on both, a power cut
+ *                         can lose a write that returned success.  The mount
+ *                         receipt says so -- honest degradation, named.
+ * FS_DURABILITY_VOLATILE -- there is no medium to be durable ON (tmpfs, and
+ *                         the volumes built on it).  sync() succeeds because
+ *                         there is nothing pending, but NO amount of syncing
+ *                         makes the file survive a power cut, and a receipt
+ *                         that told the reader "call sync before relying on
+ *                         it" would be advising the impossible.  Separating
+ *                         this from WEAK is what keeps that advice true for
+ *                         the filesystems where it IS true.
+ *
+ * The point of the declaration is NOT to excuse the behaviour; it is to make
+ * `sync` mean something checkable, and to give M6 a list of drivers to move
+ * from WEAK to EXACT one at a time.
+ */
+enum fs_durability {
+    FS_DURABILITY_EXACT = 0,
+    FS_DURABILITY_WEAK  = 1,
+    FS_DURABILITY_VOLATILE = 2,
+};
+
+/* Human-readable name for a durability class (for receipts). */
+const char *fs_durability_name(enum fs_durability d);
+
 /* Filesystem operations.  All paths passed in are relative to the mount root,
  * without a leading slash (e.g. "subdir/file.txt").  Optional ops can be NULL. */
 struct vfs_ops {
@@ -151,6 +206,24 @@ struct vfs_ops {
     /* Optional P7: chmod and chown persistence. */
     int (*chmod)(struct vnode *vn, uint32_t mode);
     int (*chown)(struct vnode *vn, uint32_t uid, uint32_t gid);
+
+    /* FSMODERN M3: per-INODE durability.
+     *
+     * `sync(fs_data)` above is the mount-wide flush SYS_SYNC uses; this is
+     * the fsync() shape -- "make THIS file's data durable" -- and it is what
+     * a caller reaches for when it needs the promise rather than a timeline.
+     * NULL means the filesystem has no per-file notion of the operation: the
+     * VFS then falls back to the mount-wide `.sync` (correct for anything
+     * whose state is the cache) and datasync reports success only if that
+     * fallback exists.
+     *
+     * `mode` is enum fs_sync_mode. */
+    int (*fsync)(struct vnode *vn, int mode);
+
+    /* FSMODERN M3: the declaration.  Absent (0) means FS_DURABILITY_EXACT --
+     * the default a driver gets by not knowing it is weak, which is why the
+     * weak ones below are the ones that say so out loud. */
+    enum fs_durability durability;
 };
 
 /* A virtual inode. */
@@ -216,6 +289,27 @@ struct wait_queue *vfs_get_read_wq(struct ofd *o);
 struct wait_queue *vfs_get_write_wq(struct ofd *o);
 
 /* Readiness helpers for select()/poll() — understand pipes/FIFOs (BUG-28). */
+/* FSMODERN M3: make one open file durable.
+ *
+ * The contract this implements (see enum fs_sync_mode above):
+ *
+ *   1. flush the page cache for this open file description (mapped pages);
+ *   2. if the filesystem implements per-inode .fsync, call it with `mode`
+ *      and report ITS answer -- that is the fsync() promise;
+ *   3. otherwise fall back to the mount-wide .sync, which is exactly right
+ *      for a filesystem whose on-disk state IS the cache (FAT32, diskfs,
+ *      ext4, f2fs) and is the best a filesystem without a better answer can
+ *      do (btrfs's .sync persists its tree root, so the fallback is also
+ *      correct there);
+ *   4. if the filesystem has neither, report -EOPNOTSUPP instead of
+ *      pretending.
+ *
+ * Returns 0 when the caller may now believe the data is on the medium, or a
+ * negative errno.  Before M3 this whole function was three lines that
+ * ignored every return value. */
+int vfs_fsync(struct ofd *o, int mode);
+int vfs_fdatasync(struct ofd *o);
+
 int vfs_ofd_is_readable(struct ofd *o);
 int vfs_ofd_is_writable(struct ofd *o);
 

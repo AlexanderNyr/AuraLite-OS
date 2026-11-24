@@ -83,11 +83,12 @@ ASM_COUNT=${#ASM_SRCS[@]}
 # geometry somewhere fs can read it.  Same ratchet, same reason: the
 # in-guest build compiles exactly what the tree has, or it refuses.
 # 152 -> 153 (HOME_PLAN H0): kernel/fs/home.c -- /home and the user
+# 153 -> 154 (FSMODERN M1): kernel/fs/datavol.c -- /data, the persistent
 # database.  Same ratchet, same reason as every bump above it: the in-guest
 # build compiles exactly what the tree has, or it refuses.  The number is
 # cross-checked against the tree by tools/check_build_hygiene.py check 4.
-if [ "$C_COUNT" -ne 153 ] || [ "$ASM_COUNT" -ne 9 ]; then
-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 153 / 9)" >&2
+if [ "$C_COUNT" -ne 154 ] || [ "$ASM_COUNT" -ne 9 ]; then
+    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 154 / 9)" >&2
     exit 2
 fi
 

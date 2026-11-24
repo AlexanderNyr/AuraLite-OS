@@ -1262,6 +1262,60 @@ static void cmd_stat(const char *path) {
     fflush(stdout);
 }
 
+/* FSMODERN M3: crashbytes <path>
+ *
+ * The crash test needs one answer a `stat` cannot give: are the bytes that
+ * are THERE the bytes that were WRITTEN?  fsbench --crash-loop fills its
+ * payload with a known arithmetic sequence ((i*7+1) & 0xff), so a file is
+ * "whole" when every byte read matches that sequence for its offset, and it
+ * is torn the moment one byte does not.  Printing the count of matching
+ * bytes lets the host case tell "absent" (legal for an unsynced write) from
+ * "short but consistent" (legal: an earlier whole length) from "torn"
+ * (never legal).
+ *
+ * The expected byte is a property of the payload, not of the file, so this
+ * is deliberately narrow: it checks the crash-loop file shape and says so,
+ * rather than pretending to be a general checksum tool. */
+static void cmd_crashbytes(int argc, char **argv) {
+    const char *path = argc > 1 ? argv[1] : 0;
+    if (!path) { puts("usage: crashbytes <path> [period]"); fflush(stdout); return; }
+    /* `period` is the payload length: the crash loop writes the SAME block
+     * repeatedly (write, rewrite at 0, append at the end), so a file of N
+     * whole blocks is the payload tiled N times and the expected byte at
+     * offset k is the payload's byte at (k % period) -- NOT at k.  The
+     * first version of this check used k and reported a perfectly good
+     * 16000-byte file as torn at offset 8000, which is what a check that
+     * assumes one layout looks like when the file has three. */
+    uint64_t period = argc > 2 ? (uint64_t)strtoull(argv[2], (char **)NULL, 10) : 0;
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        printf("crashbytes %s: absent\n", path);
+        fflush(stdout);
+        return;
+    }
+    char buf[512];
+    uint64_t off = 0;
+    int64_t n;
+    int64_t bad_at = -1;
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        for (int64_t i = 0; i < n; i++) {
+            uint64_t k = off + (uint64_t)i;
+            uint64_t src = (period && k >= period) ? (k % period) : k;
+            unsigned char want = (unsigned char)((src * 7u + 1u) & 0xffu);
+            if ((unsigned char)buf[i] != want) { bad_at = (int64_t)k; break; }
+        }
+        off += (uint64_t)n;
+        if (bad_at >= 0) break;
+    }
+    close(fd);
+    /* whole=1 only when every byte present matches; the host case compares
+     * `bytes` against the payload multiples it allowed. */
+    printf("crashbytes %s: %llu bytes, whole=%d%s%lld\n", path,
+           (unsigned long long)off, bad_at < 0 ? 1 : 0,
+           bad_at < 0 ? "" : " first-bad-offset=", bad_at < 0 ? 0 : bad_at);
+    fflush(stdout);
+}
+
 static void cmd_touch(const char *path) {
     if (!path) { puts("touch: missing path"); return; }
     int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
@@ -1627,6 +1681,8 @@ static int sh_run_command(int argc)
         cmd_mv(argc, cmd_argv);
     } else if (strcmp(cmd, "stat") == 0) {
         cmd_stat(argc > 1 ? cmd_argv[1] : 0);
+    } else if (strcmp(cmd, "crashbytes") == 0) {
+        cmd_crashbytes(argc, cmd_argv);
     } else if (strcmp(cmd, "touch") == 0) {
         cmd_touch(argc > 1 ? cmd_argv[1] : 0);
     } else if (strcmp(cmd, "link") == 0) {

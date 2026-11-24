@@ -58,12 +58,18 @@ D0="$IL_BUILD/exfat-d0.img"; D1="$IL_BUILD/exfat-d1.img"
 D2="$IL_BUILD/exfat-d2.img"; D3="$IL_BUILD/exfat-d3.img"
 D4="$IL_BUILD/exfat-d4.img"; D5="$IL_BUILD/exfat-d5.img"
 for d in "$D0" "$D1" "$D2" "$D3" "$D4" "$D5"; do rm -f "$d"; done
+# FSMODERN M1 moved exFAT from the 3rd slot to the 5th: the 3rd disk is now
+# /data, the persistent volume (kernel/kernel.c mounts exFAT on blkdev 5).
+# A harness that keeps putting the exFAT image on ahci0.2 now hands it to
+# /data, which finds no exFAT filesystem on it and reports "no free disk".
+# The other five slots stay at 16 MiB so no other filesystem finds room to
+# format itself in this lane.
 il_make_disk "$D0" 16 "AURALHCI"
 il_make_disk "$D1" 16 "AURALHCI"
-il_make_disk "$D2" 64 "AURALHCI"     # exFAT volume (blkdev 2 -> /exfat)
+il_make_disk "$D2" 16 "AURALHCI"
 il_make_disk "$D3" 16 "AURALHCI"
 il_make_disk "$D4" 16 "AURALHCI"
-il_make_disk "$D5" 16 "AURALHCI"
+il_make_disk "$D5" 64 "AURALHCI"     # exFAT volume (blkdev 5 -> /exfat)
 
 QEMU_DISKS=(
     -drive "file=$D0,format=raw,if=none,id=d0" -device "ide-hd,drive=d0,bus=ahci0.0"
@@ -125,16 +131,16 @@ il_assert_grep_fixed "$LOG1" "multi.bin  (37 bytes)"     "ls shows real file siz
 
 # Host-side structural gate: the kernel-formatted volume must be fsck-clean.
 FSCK_LOG="$IL_LOGDIR/exfat_p1_fsck.log"
-"$FSCK_EXFAT" -n "$D2" > "$FSCK_LOG" 2>&1 || true
+"$FSCK_EXFAT" -n "$D5" > "$FSCK_LOG" 2>&1 || true
 il_assert_grep "$FSCK_LOG" "clean" \
     "host fsck.exfat reports the kernel-formatted volume CLEAN"
 
 # ---- Pass 2: external lane — read a host mkfs.exfat volume (fsformat=0) ----
 LOG2="$IL_LOGDIR/exfat_p2.log"
-rm -f "$D2"; il_make_disk "$D2" 64 "AURALHCI"
-"$MKFS_EXFAT" -n EXT "$D2" >/dev/null 2>&1 || true
-python3 "tests/exfat/seed_exfat.py" "$D2" greeting.txt "Hello-from-Linux-exFAT" || true
-python3 "tests/exfat/seed_exfat.py" "$D2" alpha.bin "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" || true
+rm -f "$D5"; il_make_disk "$D5" 64 "AURALHCI"
+"$MKFS_EXFAT" -n EXT "$D5" >/dev/null 2>&1 || true
+python3 "tests/exfat/seed_exfat.py" "$D5" greeting.txt "Hello-from-Linux-exFAT" || true
+python3 "tests/exfat/seed_exfat.py" "$D5" alpha.bin "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" || true
 
 il_send_delay 9
 il_send "ls /exfat"
@@ -158,13 +164,13 @@ il_assert_grep "$LOG2" "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" "kernel reads seco
 
 # Host-side gate for the external volume too.
 FSCK2_LOG="$IL_LOGDIR/exfat_p2_fsck.log"
-"$FSCK_EXFAT" -n "$D2" > "$FSCK2_LOG" 2>&1 || true
+"$FSCK_EXFAT" -n "$D5" > "$FSCK2_LOG" 2>&1 || true
 il_assert_grep "$FSCK2_LOG" "clean" \
     "host fsck.exfat reports the host-created volume CLEAN"
 
 # ---- Pass 3: persistence — kernel volume remounts without reformat ----
 LOG3="$IL_LOGDIR/exfat_p3.log"
-rm -f "$D2"; il_make_disk "$D2" 64 "AURALHCI"
+rm -f "$D5"; il_make_disk "$D5" 64 "AURALHCI"
 il_send_delay 9
 il_send "write /exfat/keep.txt persisted-data"
 il_send_delay 1

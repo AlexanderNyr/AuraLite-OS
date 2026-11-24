@@ -12,6 +12,7 @@
 #include "kernel/arch/x86_64/isr.h"
 #include "kernel/proc/usercopy.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/fs/vfsmount.h"   /* FSMODERN M1: vfs_sync_all */
 #include "kernel/fs/home.h"   /* HOME_PLAN H0: getpwent/getdir arms */
 #include "kernel/lx/lx.h"
 #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
@@ -177,6 +178,7 @@ typedef struct {
 #define SYS_LINK          90
 #define SYS_FTRUNCATE     77
 #define SYS_FSYNC         74
+#define SYS_FDATASYNC     75   /* FSMODERN M3: fdatasync(fd) */
 #define SYS_GETDENTS64   217
 #define SYS_GETCWD       540
 #define SYS_CHDIR        541
@@ -1296,17 +1298,27 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
         if (a1 >= VFS_MAX_FDS || !fc->fdtab || fc->fdtab->slots[a1] == NULL)
             return (uint64_t)-EBADF;
         struct ofd *fo = fc->fdtab->slots[a1];
-        page_cache_flush(fo);
-        /* F2 (FSFULL_PLAN.md): after the page cache, give the
-         * filesystem a chance to flush its own cache (the five
-         * experimental FSes route block I/O through the shared buffer
-         * cache and set `.sync` to fs_cache_sync).  A filesystem with
-         * no `.sync` (NULL) is left untouched. */
-        struct vnode *vn = fo->vn;
-        if (vn && vn->ops && vn->ops->sync) {
-            vn->ops->sync(vn->fs_data);
-        }
-        return 0;
+        /* FSMODERN M3: the durability contract, not a best-effort flush.
+         *
+         * This arm used to call page_cache_flush() and then .sync(), and
+         * return 0 regardless of what either said.  That made fsync() a
+         * rumour: the caller could not tell a flushed file from a lost one.
+         * vfs_fsync() asks the filesystem's per-inode .fsync first (the real
+         * fsync promise), falls back to the mount-wide .sync for the drivers
+         * whose on-disk state IS the cache, and returns -EOPNOTSUPP when a
+         * filesystem has neither -- which is information the caller needs. */
+        return (uint64_t)(int64_t)vfs_fsync(fo, SYNC_DATA);
+    }
+    case SYS_FDATASYNC: {
+        /* FSMODERN M3: fdatasync(fd).  Same contract as fsync on this tree
+         * -- there is no separate "metadata only" write path yet, so the
+         * honest implementation is "make this file durable", not a cheaper
+         * variant that might not. */
+        tcb_t *fd_t = sched_current();
+        if (!fd_t) return (uint64_t)-EBADF;
+        if (a1 >= VFS_MAX_FDS || !fd_t->fdtab || fd_t->fdtab->slots[a1] == NULL)
+            return (uint64_t)-EBADF;
+        return (uint64_t)(int64_t)vfs_fdatasync(fd_t->fdtab->slots[a1]);
     }
     case SYS_SYNC: {
         /* RESIDUE2 CI fix: whole-system sync() — flush the shared
@@ -1318,6 +1330,12 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
          * persisted volume instead of whatever the 1 Hz writeback tick
          * happened to push out. */
         fs_cache_sync(NULL);
+        /* FSMODERN M1: then let every filesystem persist its own index.
+         * fs_cache_sync() only drains dirty buffers; btrfs's tree root
+         * lives in RAM (bm.tree_root_lba) and only btrfs_sync() writes it
+         * to the superblock.  Without this line `write`+`sync`+power-off
+         * lost the file -- measured, twice, before it was believed. */
+        vfs_sync_all();
         return 0;
     }
     case SYS_REBOOT: {

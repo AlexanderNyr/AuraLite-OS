@@ -18,6 +18,7 @@
 #include "kernel/lib/string.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/mm/kheap.h"
+#include "kernel/mm/page_cache.h"   /* FSMODERN M3: vfs_fsync flushes mapped pages */
 #include "kernel/mm/slab.h"
 #include "kernel/proc/scheduler.h"
 #include "kernel/proc/thread.h"
@@ -1083,6 +1084,52 @@ int vfs_close(int fd) {
     ofd_put(o);
     return 0;
 }
+/* ============================================================================
+ * FSMODERN M3 — the durability contract, implemented once.
+ * ============================================================================
+ *
+ * Measured before this existed (test_fs_crash.sh, 2026-11-22): write() to
+ * /fat returned success, the machine was killed 0.5 s later, and the file was
+ * GONE on the next boot.  That is not a bug in a driver -- it is the absence
+ * of a promise.  The cache is write-back by design, the only thing pushing it
+ * out was a 1 Hz timer, so "the write returned" meant "somewhere in the next
+ * second, probably".
+ *
+ * fsync() is the promise.  It is deliberately NOT a mount-wide flush when the
+ * filesystem can do better: a per-inode .fsync is asked first, and its answer
+ * is the answer.
+ */
+int vfs_fsync(struct ofd *o, int mode)
+{
+    if (!o || !o->vn) return -EINVAL;
+
+    /* 1. Mapped pages: a MAP_SHARED write lives in the page cache, not in
+     *    the filesystem's own buffers. */
+    page_cache_flush(o);
+
+    /* 2. The filesystem's own per-inode sync, if it has one. */
+    if (o->vn->ops && o->vn->ops->fsync)
+        return o->vn->ops->fsync(o->vn, mode);
+
+    /* 3. The mount-wide fallback, resolved through the MOUNT TABLE rather
+     *    than through vnode->mount_data: that field is declared but nothing
+     *    in the tree ever fills it, so using it would have called .sync(NULL)
+     *    on every filesystem whose .sync dereferences its argument.  Correct
+     *    for every filesystem whose state IS the cache (FAT32, diskfs, ext4,
+     *    f2fs) and still the right thing for btrfs, whose .sync persists the
+     *    tree root it keeps in RAM. */
+    int rc = vfsm_sync_owner_of(o->vn);
+    if (rc == 0)                  return 0;
+    if (rc == VFSM_SYNC_NO_HOOK)  return -EOPNOTSUPP; /* no .sync: cannot promise */
+    if (rc == VFSM_SYNC_NO_OWNER) return 0;           /* not mounted: nothing owns it */
+    return rc;                                        /* .sync FAILED: say so */
+}
+
+int vfs_fdatasync(struct ofd *o)
+{
+    return vfs_fsync(o, SYNC_DATA);
+}
+
 
 /* ---- dup / dup2 / pipe / cloexec ---- */
 

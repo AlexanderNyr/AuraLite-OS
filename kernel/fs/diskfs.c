@@ -336,6 +336,10 @@ const struct vfs_ops diskfs_ops = {
     .unlink  = diskfs_unlink,
     .stat    = diskfs_stat,
     .sync    = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
+    /* FSMODERN M3: EXACT, for the same structural reason as FAT32 -- the
+     * entry table and the file bytes are both cache-resident, and .sync
+     * drains the cache. */
+    .durability = FS_DURABILITY_EXACT,
 };
 
 void diskfs_list(void) {

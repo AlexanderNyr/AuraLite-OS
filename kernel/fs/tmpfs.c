@@ -585,6 +585,28 @@ static int tmpfs_stat(struct vnode *vn, struct vfs_stat *out) {
     return 0;
 }
 
+/* FSMODERN M3: tmpfs is an in-memory filesystem, so there is nothing to put
+ * on a medium -- but "nothing to do" is a DIFFERENT answer from "I cannot".
+ *
+ * Before M3, fsync() on /tmp wrote back the page cache and returned 0
+ * unconditionally, so nobody noticed that tmpfs declares no .sync at all.
+ * Under M3's contract that absence is -EOPNOTSUPP, and test_mmap_file
+ * correctly failed: a program that mapped /tmp/mmapfile.dat, stored through
+ * the mapping and called fsync() got an error for a file that was never
+ * going to be lost (it lives in RAM until the machine dies -- the caller's
+ * own assumption for /tmp).
+ *
+ * The honest declaration is therefore .sync = tmpfs_sync returning 0, with
+ * durability FS_DURABILITY_EXACT... which would be a lie in the other
+ * direction: EXACT means "survives a power cut" and tmpfs does not.  So
+ * tmpfs declares FS_DURABILITY_WEAK *and* implements .sync: the sync
+ * succeeds (there is no medium to reach), while the mount receipt tells the
+ * reader that /tmp does not survive a power cut -- which is exactly true. */
+static int tmpfs_sync(void *fs_data) {
+    (void)fs_data;      /* state IS the allocation; no medium, no write */
+    return 0;
+}
+
 const struct vfs_ops tmpfs_ops = {
     .lookup   = tmpfs_lookup,
     .create   = tmpfs_create,
@@ -599,6 +621,9 @@ const struct vfs_ops tmpfs_ops = {
     .settimes = tmpfs_settimes,/* Q13 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
+    .sync     = tmpfs_sync,          /* M3: nothing to persist, but not a refusal */
+    .durability = FS_DURABILITY_VOLATILE, /* RAM: no medium, no power-cut
+                                        * survival -- and sync cannot help */
 };
 
 /* Identical by design — see the header comment.  The distinct address is the
@@ -617,6 +642,9 @@ const struct vfs_ops optfs_ops = {
     .settimes = tmpfs_settimes,/* Q13 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
+    .sync     = tmpfs_sync,          /* M3: nothing to persist, but not a refusal */
+    .durability = FS_DURABILITY_VOLATILE, /* RAM: no medium, no power-cut
+                                        * survival -- and sync cannot help */
 };
 
 /* Q12: /dev/shm volume (POSIX shared memory / named-semaphore home).  Same
@@ -635,6 +663,9 @@ const struct vfs_ops shmfs_ops = {
     .settimes = tmpfs_settimes,/* Q13 */
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
+    .sync     = tmpfs_sync,          /* M3: nothing to persist, but not a refusal */
+    .durability = FS_DURABILITY_VOLATILE, /* RAM: no medium, no power-cut
+                                        * survival -- and sync cannot help */
 };
 
 /* HOME_PLAN H0: /home volume.  Identical to tmpfs_ops by design; the
@@ -654,6 +685,9 @@ const struct vfs_ops homefs_ops = {
     .settimes = tmpfs_settimes,
     .stat     = tmpfs_stat,
     .truncate = tmpfs_truncate,
+    .sync     = tmpfs_sync,          /* M3: nothing to persist, but not a refusal */
+    .durability = FS_DURABILITY_VOLATILE, /* RAM: no medium, no power-cut
+                                        * survival -- and sync cannot help */
 };
 
 static void vol_list(const struct tmpfs_volume *v) {

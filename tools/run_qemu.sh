@@ -14,6 +14,12 @@ ISO="${1:?usage: $0 <auralite.iso>}"
 BUILD="$(dirname "$ISO")"
 DISK0="$BUILD/disk.img"
 DISK1="$BUILD/ext2.img"
+# FSMODERN M1: the persistent volume's own disk.  Its own image, its own
+# AHCI port, always attached -- so /data is durable on EVERY boot of `make
+# run` instead of on the boots where the user happened to attach enough
+# disks.  Before M1 nothing a user would call storage (/home, /opt,
+# /documents) survived a reboot, and /btrfs needed a 5th disk nobody had.
+DISK2="$BUILD/data.img"
 
 RESOLUTION="${2:-}"
 DISPLAY_ARGS=(-display none)
@@ -68,6 +74,11 @@ if [ ! -f "$DISK1" ]; then
     done
 fi
 
+if [ ! -f "$DISK2" ]; then
+    echo "[qemu] creating persistent-volume disk: $DISK2" >&2
+    dd if=/dev/zero of="$DISK2" bs=1M count=64 status=none
+fi
+
 exec qemu-system-x86_64 \
     -drive "file=$ISO,format=raw,if=ide,snapshot=on" \
     -m 512M \
@@ -89,4 +100,7 @@ exec qemu-system-x86_64 \
     -device ahci,id=ahci0 \
     -device ide-hd,drive=ahcidisk,bus=ahci0.0 \
     -drive file="$DISK1",format=raw,if=none,id=ext2disk \
-    -device ide-hd,drive=ext2disk,bus=ahci0.1
+    -device ide-hd,drive=ext2disk,bus=ahci0.1 \
+    -drive file="$DISK2",format=raw,if=none,id=datadisk \
+    -device ide-hd,drive=datadisk,bus=ahci0.2 \
+    -fw_cfg "name=opt/auralite.fsformat,string=1"

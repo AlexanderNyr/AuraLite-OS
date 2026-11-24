@@ -37,6 +37,27 @@ struct vnode *vfsm_lookup(const char *path);
  * cannot create. */
 struct vnode *vfsm_create(const char *path);
 
+/* FSMODERN M1: call .sync on every mounted filesystem that has one.
+ * Returns how many answered success.  SYS_SYNC calls this AFTER flushing
+ * the buffer cache, because a cache flush cannot persist a filesystem whose
+ * index lives in RAM (btrfs) -- only its own sync can. */
+int vfs_sync_all(void);
+
+/* FSMODERN M3: the mount that owns a vnode (by ops identity), and its
+ * .sync.  See vfsmount.c for why identity works where mount_data does not.
+ *
+ * vfsm_sync_owner_of() answers with POSITIVE sentinels, never with a
+ * sentinel that could be an errno:
+ *   VFSM_SYNC_NO_OWNER  no mount owns this vnode -- nothing to flush
+ *   VFSM_SYNC_NO_HOOK   the owner has no .sync -- caller reports EOPNOTSUPP
+ *   0                   .sync ran and succeeded
+ *   negative errno      .sync ran and failed (a bare -1 becomes -EIO)
+ */
+#define VFSM_SYNC_NO_OWNER  1
+#define VFSM_SYNC_NO_HOOK   2
+int vfsm_owner_of(const struct vnode *vn);
+int vfsm_sync_owner_of(const struct vnode *vn);
+
 /* Table access for vfs.c's reverse mapping (vnode → path). */
 int vfsm_slots(void);
 const struct vfs_mount *vfsm_get(int idx);

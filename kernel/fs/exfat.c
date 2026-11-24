@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include "kernel/fs/exfat.h"
 #include "kernel/fs/buffer_cache.h"
+#include "kernel/fs/blkdev.h"   /* FSMODERN M1: device capacity */
 #include "kernel/fs/fsformat.h"
 #include "kernel/lib/kprintf.h"
 #include "kernel/lib/string.h"
@@ -893,7 +894,26 @@ const struct vfs_ops exfat_ops = {
 static int format_exfat(void) {
     kprintf("[exfat] formatting...\n");
     uint32_t bps = 512, spc = 8, cluster_size = 4096;
-    uint64_t vol_sectors = 131072;
+
+    /* FSMODERN M1: the volume's sector count is the DEVICE's answer.
+     *
+     * This used to be the constant 131072 (64 MiB) for every disk, so
+     * formatting a 16 MiB device wrote a geometry describing 64 MiB and a
+     * 1 GiB device got 1/16 of itself.  Measured on a 64 MiB image the two
+     * agreed, which is exactly why nobody noticed.  A device that does not
+     * report capacity is refused instead of assumed. */
+    uint64_t vol_sectors = blkdev_sector_count(em.bdev);
+    if (vol_sectors == 0) {
+        kprintf("[exfat] device %d does not report its capacity; refusing to "
+                "format\n", em.bdev);
+        return -1;
+    }
+    if (vol_sectors < 2048) {
+        kprintf("[exfat] device %d is only %llu sectors; too small for exFAT "
+                "(needs 2048)\n", em.bdev,
+                (unsigned long long)vol_sectors);
+        return -1;
+    }
     uint32_t fat_offset = 128;
     /* Solve the geometry fixpoint: fat_length depends on cluster_count,
      * and cluster_count depends on heap_offset = fat_offset + fat_length. */

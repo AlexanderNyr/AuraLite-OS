@@ -20,6 +20,7 @@ F4 (the source tree) and F5 (aliases removed).
 | `/tmp` | tmpfs | yes | in-memory, lost on reboot |
 | `/opt` | tmpfs (second volume) | yes | installed packages; see below |
 | `/dev/shm` | tmpfs (third volume) | yes | POSIX shared-memory volume |
+| `/data` | btrfs-style CoW (own disk) | yes | **the persistent volume**: `/data` survives a power-off; mounted from `build/data.img` in the default recipe (FSMODERN M1) |
 | `/home` | tmpfs (fifth volume) | yes | one directory per `/etc/passwd` record; **volatile** (HOME_PLAN H0, durable in H4) |
 | `/disk` | diskfs | yes | small persistent store on AHCI |
 | `/fat` | FAT32 | yes | full FAT32 with LFN and subdirectories |
@@ -116,6 +117,43 @@ An installer that enforces its own rules constrains only itself. The check
 lives in `vfs_open()` and `vfs_chmod()`, where every path goes through it.
 The predicate itself is in `kernel/fs/execpolicy.c`, separate so the host unit
 test compiles the shipping code rather than a copy.
+
+### `/data` — the persistent volume (FSMODERN M1)
+
+`/data` is the tree's first filesystem that is **both mounted on a default
+boot and durable**. It lives on its own disk (`build/data.img`, created by
+`tools/run_qemu.sh` on first run) and carries the CoW filesystem — every
+block copy-on-write, every block SHA-256 checked — because that is the
+substrate the AuraFS work (M6) evolves from.
+
+```
+[data] PASS: btrfs(CoW+SHA-256) mounted at /data on blk2, 64 MiB,
+       write/read/unlink verified -- PERSISTENT
+```
+
+With no spare disk the receipt says so instead of pretending:
+
+```
+[data] no free disk for a persistent volume; /data not mounted
+       (attach one: -drive file=data.img,format=raw,if=none,id=d ...)
+```
+
+**M1 changed four things that were silently wrong**, all found by making the
+durability claim testable:
+
+- The block layer's `sector_count` hook was never implemented for AHCI, so
+  **btrfs wrote `total_bytes = 256 MiB` into the superblock of a 64 MiB disk**
+  (and `ext2` formatted 4 MiB onto any size, `exFAT` a fixed 64 MiB geometry).
+  AHCI now answers ATA IDENTIFY, and each formatter asks instead of assuming.
+- `SYS_SYNC` flushed the cache and stopped, so a filesystem whose index lives
+  in RAM (btrfs) never persisted its tree: `write` + `sync` + power-off lost
+  the file. `vfs_sync_all()` fixes that for every filesystem at once.
+- `btrfs_readdir` reported every file as 0 bytes.
+- exFAT was taking the third disk on every boot; it moves to the fifth (it is
+  an exchange format) and `/data` takes the slot.
+
+Gate: `tests/integration/cases/test_data_volume.sh` — write, **power off**,
+boot again, read back. 9/9.
 
 ### `/home` and the user database (HOME_PLAN H0)
 

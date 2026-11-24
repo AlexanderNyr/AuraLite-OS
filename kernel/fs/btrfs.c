@@ -830,6 +830,16 @@ static int dir_emit(uint64_t o, uint32_t t, uint64_t off, const uint8_t *d,
     de->name[nl] = 0;
     de->inode = r64(d + 0);
     de->type = (r32(d + 8) == BTRFS_FT_DIR) ? VFS_TYPE_DIR : VFS_TYPE_FILE;
+
+    /* FSMODERN M1: a listing that reports every file as 0 bytes is worse
+     * than no listing -- `ls /data` said "(0 bytes)" for a file that `cat`
+     * then read correctly, which reads like corruption and is only an
+     * unfilled field.  The size lives in the inode record (offset 24, the
+     * same one btrfs_read uses), so read it.  The directory item itself
+     * carries ino + type + name and never had a size to give. */
+    uint8_t irec[INODE_REC_SIZE];
+    if (inode_get(de->inode, irec) == 0) de->size = r64(irec + 24);
+
     e->count++;
     return 0;
 }
@@ -1068,6 +1078,14 @@ const struct vfs_ops btrfs_ops = {
     .stat     = btrfs_stat,
     .truncate = btrfs_truncate,
     .sync     = btrfs_sync,
+    /* FSMODERN M3: WEAK, and the reason is specific.  btrfs keeps its
+     * tree index in RAM (bm.tree_root_lba) and only writes it on .sync, so
+     * between a write() and a sync() the DATA blocks are in the buffer
+     * cache and the INDEX that names them does not exist on disk at all.
+     * A power cut in that window does not corrupt the volume -- the old
+     * tree is still valid -- it silently loses the write.  M1 taught this
+     * the hard way; M3's job is to stop pretending otherwise. */
+    .durability = FS_DURABILITY_WEAK,
 };
 
 /* ============================================================================
@@ -1078,7 +1096,32 @@ static int format_btrfs(void) {
     kprintf("[btrfs] formatting CoW filesystem...\n");
     bm.nodesize = BTRFS_NODE_SIZE;
     bm.sectorsize = BTRFS_NODE_SIZE;
-    bm.total_bytes = 256ULL * 1024 * 1024;
+
+    /* FSMODERN M1: the volume's size is the DEVICE's answer, not ours.
+     *
+     * This line used to read 256 MiB unconditionally.  On a 64 MiB disk that
+     * wrote an allocation ceiling four times the hardware into the
+     * superblock, and `bm.max_block = bm.total_bytes` made the allocator
+     * willing to place blocks past the end of the device -- writes that the
+     * block layer silently truncated or that landed outside the image
+     * entirely.  It went unnoticed because /btrfs only mounts as the FIFTH
+     * disk, which no default boot attaches; M1 attaches one, and the
+     * receipt said "268435456 bytes" for a 64 MiB image on the first run.
+     *
+     * Now: ask the seam.  A backend that does not report a capacity (0) is
+     * refused rather than guessed at -- a filesystem that invents its own
+     * size is the same class of bug as a parser that invents a home. */
+    uint64_t sectors = blkdev_sector_count(bm.bdev);
+    if (sectors == 0) {
+        kprintf("[btrfs] device %d does not report its capacity; refusing to "
+                "format (a filesystem must not invent its own size)\n",
+                bm.bdev);
+        return -1;
+    }
+    bm.total_bytes = sectors * BLKDEV_SECTOR_SIZE;
+    kprintf("[btrfs] device %d reports %llu sectors (%llu MiB)\n",
+            bm.bdev, (unsigned long long)sectors,
+            (unsigned long long)(bm.total_bytes / (1024 * 1024)));
     bm.generation = 1;
     bm.next_free_block = BTRFS_FIRST_FREE;
     bm.max_block = bm.total_bytes;

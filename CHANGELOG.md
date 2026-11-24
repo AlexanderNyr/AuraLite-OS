@@ -2,6 +2,244 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FSMODERN M3 — the durability contract: fsync means something] 2026-11-22
+
+`FSMODERN_PLAN.md` M3. Before M3 "is my data safe?" had no answer a caller
+could act on. Measured on this tree: `write()` returned success, the machine
+was killed 0.5 s later, and **the file was gone** — the only thing keeping a
+write alive was the 1 Hz `bc_tick` writeback. The window was ~1 s wide and
+nothing in the system said so.
+
+- **`kernel/fs/vfs.h`** — the contract. `enum fs_sync_mode { SYNC_DATA,
+  SYNC_META }`, `enum fs_durability { EXACT, WEAK, VOLATILE }`, a per-inode
+  `ops->fsync(vnode, mode)` and a per-filesystem `ops->durability`
+  declaration. A driver that says nothing is EXACT; the ones that cannot
+  promise say so ONCE, in their ops table, instead of failing silently at the
+  moment it matters.
+- **`kernel/fs/vfs.c`** — `vfs_fsync()`/`vfs_fdatasync()`: flush mapped
+  pages → the filesystem's own `.fsync` (its answer is THE answer) →
+  mount-wide `.sync` → `-EOPNOTSUPP` when neither exists. Before M3 this was
+  three lines that ignored every return value.
+- **`kernel/fs/vfsmount.c`** — `vfsm_owner_of()` resolves a vnode's mount by
+  **ops-table identity** (`vnode->mount_data` is declared but nothing in the
+  tree ever fills it — using it would have called `.sync(NULL)`).
+  `vfsm_sync_owner_of()` answers with POSITIVE sentinels
+  (`VFSM_SYNC_NO_OWNER`, `VFSM_SYNC_NO_HOOK`) so a driver's error can never
+  be mistaken for "nothing to do" — the first draft did exactly that and
+  `fsync()` reported success for a failed flush.
+- **`kernel/arch/x86_64/syscall.c`** — `SYS_FSYNC` now returns
+  `vfs_fsync(fo, SYNC_DATA)` instead of 0 unconditionally; `SYS_FDATASYNC`
+  (75) added.
+- **`kernel/fs/tmpfs.c`** — `.sync` implemented (returns 0: there is no
+  medium) and `FS_DURABILITY_VOLATILE` declared. Under the contract's first
+  draft tmpfs had neither, so `fsync()` on a mapped `/tmp` file returned
+  `-EOPNOTSUPP` and `test_mmap_file` failed. The third class exists because
+  "call sync before relying on it" is TRUE for btrfs and FALSE for tmpfs:
+  sync there succeeds and changes nothing.
+
+**The classes:** `/fat` and `/disk` are **EXACT** (their state IS the cache).
+`/data` (btrfs) and `/ext2` are **WEAK** — both print a mount receipt saying
+a successful write may be lost on a power cut. `/tmp`, `/opt`, `/dev/shm`,
+`/documents`, `/home` are **VOLATILE**.
+
+**Measured (QEMU, SIGKILL, same disk rebooted):**
+
+| case | result |
+|---|---|
+| kill ≤ 0.5 s after `write()` to `/fat` | **file LOST** (the M3 baseline) |
+| kill 1–20 s after `write()` | survived (1 Hz writeback) |
+| `write` → `fsync` → kill **immediately** | **survived, whole and byte-correct** |
+
+**New tests:** `tests/integration/cases/test_fs_crash.sh` (15/15) kills a
+random 0–1200 ms after an in-guest write+fsync and then reboots twice;
+`tests/unit/test_fsync_m3.c` (7/7) links the SHIPPED `vfsmount.c` to check
+the routing — and found the "failed sync reported as success" defect above.
+`tools/fsbench/fsbench.c` grew `--crash-loop` so the guest does
+write → fsync → receipt in ONE process: driving that from the host measures
+the 200 ms serial poll, not the filesystem.
+
+**Three integration cases were repaired, not because M3 broke them but
+because M3's stricter timing exposed them:** `test_fat32_persistence`,
+`test_fat32_full` and `test_bc_writeback` each slept 6–8 s at the start of a
+20–35 s QEMU budget while the consumption-gated feeder ALREADY waits for the
+shell's own prompt (which arrives at ~20 s). Their commands were typed after
+QEMU had been sent SIGTERM, so they had been failing on the pristine tree
+too. Also found and documented: the kernel Makefile has no header dependency
+tracking, so editing `vfs.h` leaves stale objects whose `vfs_ops` layout no
+longer matches — which showed up as a page fault inside `tmpfs_lookup` until
+`make clean`.
+
+## [FSMODERN M2 — the block layer: 4 KiB blocks, batch fetch, coalescing] 2026-11-22
+
+`FSMODERN_PLAN.md` M2. Every filesystem in the tree paid the buffer cache's
+structure on every 512-byte sector: a 64 KiB file read was 128 separate
+`bc_get()` walks of the whole LRU, 128 lock acquisitions and 128 device
+commands, and a FAT cluster of 8 sectors asked for 8 slots to hold one
+contiguous run on disk. The device seam has always accepted a sector COUNT —
+one `blkdev_read` of 8 sectors is one AHCI command — so the cache was the
+only thing forcing one command per 512 bytes.
+
+- **`kernel/fs/buffer_cache.{c,h}`** — the cache block is 4 KiB
+  (`BC_BLOCK_SHIFT` 9 → 12). Not an on-disk format change: filesystems still
+  address 512-byte sectors through `fs_read_block`/`fs_write_block`, which
+  translate. `bc_get_many()` fetches a sequential run in ONE device command.
+  `bc_prefetch()` readaheads after a single-block read. `bc_flush_all()`
+  merges adjacent dirty blocks of the same device into one transfer (up to
+  256 KiB) and reports the commands saved as `merged=` in the writeback
+  receipt. The pool is sized from RAM — ~0.2% of usable memory, clamped to
+  [512, 2048] blocks — and the boot receipt says so.
+- **`kernel/arch/i386/fsglue32.c`** — `pmm_get_usable_frames()` for the i386
+  kernel, which links the cache as a `KERNEL32_SHARED` row but no 64-bit PMM.
+- **`tests/unit/test_bcache_m2.c`** (new, 261/261 host gates) and
+  **`tests/integration/cases/test_bcache_m2.sh`** (new, 10/10) — the three
+  acceptance criteria, asserted on the live kernel.
+
+**Result against the plan's own threshold (2x the M0 baseline):**
+
+| metric | before | after |
+|---|---|---|
+| `/fat` seq_read | 2.19 MiB/s | **16.31–17.82 MiB/s** (7.4–8.1x) |
+| `/fat` sync | 109 774 µs | **17 503 µs** (6.3x faster) |
+| `/fat` seq_write | 3.16 MiB/s | 4.20 MiB/s |
+| cache | 1024 x 512 B, hardcoded | 512 x 4 KiB, from RAM |
+| commands merged | — | `merged=121-126` |
+
+**One honest regression, recorded rather than hidden:** `unlink` fell from
+2613 to 405 ops/s. A 4 KiB block means a directory-entry update pulls a whole
+block through the cache, and unlink touches the FAT and the directory once per
+file. If that number is still 405 at the end of M6, M6 failed.
+
+**Four defects found, three of them by the new host test rather than by a
+boot:**
+
+1. **Sector/block divisor confusion** — `(lba + count) >> BC_BLOCK_SHIFT`
+   treated a SECTOR count as a byte offset, so a 4 KiB request rounded down to
+   ZERO blocks. Every filesystem write went nowhere and reported success; the
+   kernel booted, formatted disks, and lost the files. Caught by the host test
+   in 300 ms (`misses=0` on a write that should have missed once).
+2. **`bc_flush_all` called `bc_sync` after clearing the dirty flag**, and
+   `bc_sync` opens with `if (!buf->dirty) return 0` — so the flush wrote
+   nothing and returned success. Measured: `device writes == 0` after flush.
+3. **`bc_get_many` read a multi-block run into `out[0]->data`**, but pool slots
+   are separate structs: slot[i].data is followed by slot[i]'s own bookkeeping,
+   not by slot[i+1].data. The multi-block read destroyed the neighbours'
+   LRU links and dirty flags. Fixed with a bounce buffer.
+4. **Coalescing walked the LRU, not the block numbers.** `bc_get` reorders the
+   LRU on every access, so after a sequential write the coldest slot is not the
+   first block of the run: four adjacent dirty blocks flushed as 2 commands.
+   The flush now finds the lowest dirty block per device and grows upward.
+
+Also fixed forward: `test_exfat_ntfs`'s mock cache copied `BC_BLOCK_SIZE` per
+SECTOR — harmless while the block was a sector, a 4 KiB stack overflow the
+moment it was not (ASan caught it), and `check_width_sweep`'s cast ratchet
+held at 449 by naming the "no block" sentinel `BC_NO_BLOCK` instead of
+spelling the cast ten times.
+
+## [FSMODERN M1 — a filesystem that survives the power going off] 2026-11-22
+
+`FSMODERN_PLAN.md` M1. The tree had no filesystem that was **both mounted on
+a default boot and durable**: `/disk`, `/fat` and `/ext2` were reachable but
+flat or exchange-shaped, `/home`, `/opt` and `/documents` were tmpfs, and the
+interesting filesystems (`/btrfs`, `/ext4`, `/f2fs`) mounted only as the
+4th/5th/6th disk, which no default boot attached. The best work was
+unreachable and the important directories were volatile.
+
+- **`kernel/fs/datavol.{c,h}`** — `/data`, the persistent volume. It takes the
+  lowest disk id that no other filesystem claimed (computed from the live
+  mount table, not a hardcoded slot), mounts the CoW filesystem on it, and
+  proves the mount by writing, reading back and unlinking a probe file.
+  Never fatal, never formats a device it cannot identify, and the receipt says
+  which of three states it found.
+- **`tools/run_qemu.sh`** attaches `build/data.img` as a third AHCI disk and
+  opens the format gate, so `make run` has durable storage on **every** boot
+  rather than on the boots where the user attached enough disks.
+- **`tests/integration/cases/test_data_volume.sh`** — the first durability
+  proof in this tree: write a marker, **power the machine off**, boot from
+  scratch, read it back. Two `il_run_qemu` calls; the marker is minted per
+  run so a stale disk cannot pass. 9/9.
+
+**Four defects found by making it work, each of which would have made the
+durability claim false:**
+
+1. **Nothing told the block layer how big a device was.** `blkdev_ops` has a
+   `sector_count` hook; AHCI registered `NULL` with the honest comment that it
+   never read capacity. Consequence: **btrfs formatted a 64 MiB disk with a
+   superblock claiming 256 MiB** and `bm.max_block` matched it, so the
+   allocator was willing to place blocks past the end of the device.
+   `ext2` formatted "4096 blocks" (4 MiB) onto any disk -- 1/16 of a 64 MiB
+   image; `exFAT` formatted a fixed 131072-sector geometry everywhere. All
+   three agreed with 64 MiB images, which is why nobody noticed. Now AHCI
+   answers with an ATA IDENTIFY (LBA48, then LBA28), and all three
+   formatters **ask** -- a backend that does not report capacity is refused
+   rather than guessed at.
+2. **`sync()` could not persist a filesystem whose index lives in RAM.**
+   `SYS_SYNC` flushed the buffer cache and stopped. btrfs keeps its tree root
+   in `bm.tree_root_lba` and only `btrfs_sync()` writes it to the superblock,
+   so `write` + `sync` + power-off **lost the file** -- measured twice before
+   it was believed. Fixed with `vfs_sync_all()`, which gives every mounted
+   filesystem its own `.sync`, so `sync` means the whole VFS and any
+   filesystem added tomorrow gets it for free.
+3. **`btrfs_readdir` reported every file as 0 bytes.** `dir_emit()` never
+   filled `de->size`, so `ls /data` said "(0 bytes)" for a file `cat` then
+   read correctly -- a listing that looks like corruption and is only an
+   unfilled field. The size is in the inode record; it is now read.
+4. **exFAT was claiming the third disk on every default boot**, splitting it
+   into 4 KiB clusters while the machine had no durable storage at all. exFAT
+   is an *exchange* format; it does not need to mount on a boot where nobody
+   plugged a card in. It moves to the 5th slot and `/data` takes the 3rd.
+
+- **Ratchets moved in the same change**: `test_data_volume` registered
+  (242 cases, `fs` shard); SH8's in-guest source pin 153 → 154 in all four
+  places (`datavol.c` is the 154th C file); `FS_FILE_COUNT` 27 → 28;
+  `check_width_sweep`'s cast ratchet held at 449 by writing the IDENTIFY
+  widening through `uintptr_t` instead of the counted spelling.
+
+## [FSMODERN M0 — the benchmark, and the first honest numbers] 2026-11-22
+
+`FSMODERN_PLAN.md` M0. Before this phase, **not one of the tree's thirteen
+filesystems had a single number attached to it**, which made the plan's own
+premise ("make our own filesystem very fast") unfalsifiable. This phase ships
+the instrument and the first table, and the table is allowed to be
+unflattering.
+
+- **`tests/unit/test_fsbench.c`** — the host lane. It links the SHIPPED
+  `buffer_cache.c`, `blkdev.c` and `diskfs.c` (not copies) against a
+  RAM-backed `blkdev_ops` that counts every sector, and drives the real
+  `vfs_ops` table. It measures what a RAM device can honestly measure:
+  correctness, **write amplification** (sectors committed per user sector —
+  `1.016×` for diskfs) and device call counts. Every MiB/s it prints is
+  RAM-to-RAM and the tool says so in its own output, on purpose.
+- **`tools/fsbench/fsbench.c` → `/bin/fsbench`** — the in-guest lane, where
+  the numbers are real. Create → write → `sync()` → read back and **verify**
+  → unlink, printing one stable `[fsbench] label=value` line per metric.
+- **`tests/integration/cases/test_fsbench.sh`** (registered, `fs` shard,
+  13/13) drives both lanes with `test_diskfs.sh`'s AHCI recipe so `/disk` is
+  really mounted, and pins **shape, not speed** (a throughput floor would be
+  a lie on a CI host of unknown speed).
+- **`docs/filesystems_perf.md`** — the table, with the date and the hardware.
+  M0's numbers: tmpfs `16.98 MiB/s` write / `36.55 MiB/s` read; diskfs
+  `1.15 MiB/s` write / `5.12 MiB/s` read, `sync` `14 930 µs` for 16 KiB.
+
+**Three findings that came out of building the instrument:**
+
+1. **`bc_evict()` does not evict.** It frees a buffer by setting
+   `block_num = -1` but leaves it linked in the LRU, so a loop over it frees
+   the same buffer forever (measured: 4096 calls, then a full re-read gave
+   204 hits / **0** misses). A real block-layer defect; recorded for M2.
+2. **diskfs has no cold path.** Its whole volume is 128 KiB and the cache is
+   512 KiB, so the entire filesystem is permanently cache-resident. The host
+   lane asserts `reread_misses == 0` instead of inventing a throughput.
+3. **The first in-guest run reported `31 250 MiB/s`, and it was a lie.**
+   `clock_gettime(CLOCK_MONOTONIC)` on this tree is PIT-driven at **99 Hz**;
+   a 32 KiB run finishes inside one 10.1 ms tick, so every delta was zero and
+   `sync=0 us`. Fixed by timing with `RDTSC` (`CR4.TSD` is never set, so ring
+   3 may read the TSC), calibrated against the tick clock — and the receipt
+   now prints `clock=tsc` so a reader never has to guess.
+
+- **Ratchets**: `test_fsbench` joined `make test-unit` (260 gates, exit 0);
+  the integration registry is 241 cases and `test_fsbench` matches exactly
+  one shard.
+
 ## [HOME H0 — the home directory and the user database] 2026-11-22
 
 `HOME_PLAN.md` phase H0: the tree gets a home directory and a user database,

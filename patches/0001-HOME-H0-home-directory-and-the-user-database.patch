@@ -1,0 +1,2387 @@
+From b8bec7cff2e6778fe6709dee3f35c4380077e152 Mon Sep 17 00:00:00 2001
+From: AuraLite Patch <noreply@auralite.local>
+Date: Sun, 22 Nov 2026 14:15:40 +0000
+Subject: [PATCH 1/3] HOME H0: /home directory and the user database
+
+HOME_PLAN.md phase H0: the tree gets a home directory and a user database,
+and the shell stops pretending.
+
+- kernel/fs/home.{c,h} (new): /home mounts as its own tmpfs volume (the
+  mount-point construction /documents proved: a symlink resolves on lookup
+  but not on create, so open(O_CREAT) fails EROFS), with its own 256-file
+  table so scratch traffic cannot evict a user's file. /etc/passwd from the
+  initrd is parsed once at boot into a 16-record table; malformed lines are
+  REFUSED and counted rather than truncated into a wrong home; 5-field
+  records are malformed, 6-field default the shell. The boot bring-up
+  creates each home and proves the first writable.
+- Durability is stated, not pretended: storage=tmpfs (volatile: HOME_PLAN
+  H4 makes it durable).
+- SYS_GETPWENT (546) / SYS_GETHOME (547): buffers validated with
+  validate_user_range(); records returned in the /etc/passwd grammar so
+  libc parses one format.
+- lib/libc/src/pwd.c rewritten from the stub: getpwuid/getpwnam/getpwent/
+  setpwent/endpwent/getpwuid_r, with the pre-H0 root answer kept as an
+  explicit fallback when the table is empty.
+- The shell stops pretending: pwd prints getcwd() (it was a constant '/'),
+  cd [dir] exists (bare cd goes home), ~ expands in arguments but not when
+  quoted, HOME/USER exported from ONE getpwuid(getuid()) -- the first draft
+  called it three times inside one ternary and shipped USER= empty.
+- ls / shows the mount table: vfs_readdir() unions in the mount points that
+  live directly under the listed path, deduped against the backing listing;
+  ls /home needed vol_of_vnode() to know home_vol (the identical omission
+  OF2's closure fixed for doc_vol).
+- /etc/passwd ships two records; root's home is /home/root, NOT /root --
+  /root lives on the read-only initrd (EROFS on the first save) and the
+  shell runs as uid 0.
+- Tests: tests/unit/test_home_passwd.c compiles the SHIPPED parser on the
+  host (26 grammar checks) plus a mutation lane that removes the
+  default-shell rule and REQUIRES exit 1; tests/integration/cases/
+  test_home.sh (registered in ALL_CASES, fs shard) proves it end to end in
+  QEMU: 13/13.
+- Ratchets moved in the same change: check_width_sweep's (uint64_t)
+  counter did not move (offsets carried as size_t); check_parity_claims
+  FS_FILE_COUNT 26 -> 27 and home.c compiles at rv64/a64/i386 with
+  -Wshorten-64-to-32 (which caught three long/int64_t conversions); SH8's
+  in-guest source pin 152 -> 153 in all four places; residue ledger
+  RES-65 + pins.
+
+Docs: docs/plans/HOME_PLAN.md (new), CHANGELOG.md, docs/filesystem.md,
+docs/status.md, docs/residue_ledger.md, docs/plans/RESIDUE3_PLAN.md.
+
+Gates: make test-unit 259/259 exit 0; test_home 13/13; test_home_passwd
+26/26 + mutation lane red as required; make iso boots.
+---
+ CHANGELOG.md                                  |  72 +++
+ Makefile                                      |  36 +-
+ docs/filesystem.md                            |  58 ++
+ docs/plans/HOME_PLAN.md                       | 215 +++++++
+ docs/plans/RESIDUE3_PLAN.md                   |   7 +
+ docs/residue_ledger.md                        |   6 +-
+ docs/status.md                                |   1 +
+ kernel/arch/x86_64/syscall.c                  |  24 +
+ kernel/fs/home.c                              | 608 ++++++++++++++++++
+ kernel/fs/home.h                              |  83 +++
+ kernel/fs/tmpfs.c                             |  34 +
+ kernel/fs/tmpfs.h                             |   5 +
+ kernel/fs/vfs.c                               |  69 +-
+ kernel/kernel.c                               |  11 +
+ lib/libc/include/pwd.h                        |  10 +
+ lib/libc/src/pwd.c                            | 222 ++++++-
+ tests/integration/cases/test_home.sh          |  78 +++
+ .../cases/test_selfhost_kernel_guest.sh       |   4 +-
+ tests/integration/run_all.sh                  |   3 +-
+ tests/unit/test_home_passwd.c                 | 182 ++++++
+ tests/unit/test_sh5c_kernel_tcc.sh            |   6 +-
+ tools/check_build_hygiene.py                  |   2 +-
+ tools/check_gpu_claims.py                     |   2 +-
+ tools/check_parity_claims.py                  |   2 +-
+ tools/check_residue_claims.py                 |   4 +-
+ tools/residue_baseline.txt                    |   1 +
+ tools/selfhost/gen_kernel_build.sh            |   8 +-
+ userspace/system/init/init.c                  | 106 ++-
+ 28 files changed, 1832 insertions(+), 27 deletions(-)
+ create mode 100644 docs/plans/HOME_PLAN.md
+ create mode 100644 kernel/fs/home.c
+ create mode 100644 kernel/fs/home.h
+ create mode 100755 tests/integration/cases/test_home.sh
+ create mode 100644 tests/unit/test_home_passwd.c
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index dd4a636..cc13e32 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,78 @@
+ 
+ All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
+ 
++## [HOME H0 — the home directory and the user database] 2026-11-22
++
++`HOME_PLAN.md` phase H0: the tree gets a home directory and a user database,
++and the shell stops pretending. Both gaps were real: `grep -rn '"/home'` over
++the tree was **empty** (a saved note had exactly three writable places, and
++none of them was "the user's"), and `getpwuid()` was a compile-time stub that
++answered root and NULL. This phase closes both with one construction each.
++
++- **`kernel/fs/home.{c,h}` (new).** `/home` mounts as its own tmpfs volume —
++  the same mount-point construction `/documents` proved (a symlink into /tmp
++  resolves on lookup but not on create, so `open("~/x", O_CREAT)` would fail
++  EROFS). The volume carries its own 256-file table, so scratch traffic in
++  /tmp cannot evict a user's file and a home cannot crowd out /opt. The
++  second half of the file is the **user database**: `/etc/passwd` from the
++  initrd is parsed once at boot into a 16-record table, with the grammar
++  documented at the parser (`name:pass:uid:gid:gecos:dir:shell`, 6-field
++  records defaulting the shell, blank/`#` lines skipped, malformed lines
++  REFUSED and counted rather than truncated into a wrong home). The boot
++  bring-up creates each record's directory and **proves the first one
++  writable** — a home that cannot be written to is not a home, and the
++  receipt says so instead of letting the first save surprise a user.
++- **Durability is stated, not pretended.** `/home` is tmpfs: it survives
++  until the machine is switched off. The receipt carries `storage=tmpfs
++  (volatile: HOME_PLAN H4 makes it durable)`; H4 (a home on a writable disk
++  filesystem, on-disk `/etc/passwd`) is the named successor phase.
++- **`SYS_GETPWENT` (546) / `SYS_GETHOME` (547)** — the two arms libc needs.
++  Both validate the caller's buffer with `validate_user_range()` (a hostile
++  pointer is `-EFAULT`, not a panic) and return the record in the
++  `/etc/passwd` grammar itself, so libc parses ONE format instead of
++  mirroring a kernel struct.
++- **`lib/libc/src/pwd.c` rewritten** from the stub: `getpwuid`/`getpwnam`
++  walk the kernel table, `getpwent`/`setpwent`/`endpwent` and
++  `getpwuid_r` are new. The pre-H0 answer is kept as an explicit **fallback**
++  when the table is empty (an initrd built before H0, or a missing file), so
++  an older image still answers root instead of suddenly and confusingly
++  returning NULL for uid 0.
++- **The shell stops pretending**: `pwd` printed a constant `"/"`; it now
++  prints the real cwd. `cd [dir]` is new (bare `cd` goes home), `~` expands
++  in arguments but **not** when quoted (the raw token decides), and `$HOME` /
++  `$USER` are exported at startup from `getpwuid(getuid())`. The first draft
++  called `getpwuid()` three times inside one expression and shipped `USER=`
++  empty for exactly one build — the static-record contract means ONE lookup.
++- **`ls /` now shows the mount table.** It listed the initrd's entries only,
++  so `/tmp`, `/dev`, `/proc`, `/documents` and the new `/home` were all
++  invisible to a user. `vfs_readdir()` unions in the mount points that live
++  directly under the listed path (direct children only; a mount the backing
++  filesystem already lists is skipped, not duplicated). `ls /home` also
++  needed `vol_of_vnode()` to know `home_vol` — the identical omission OF2's
++  closure fixed for `doc_vol`, and it would have made a home unlistable.
++- **`/etc/passwd`** ships two records from the Makefile, and root's home is
++  `/home/root`, **not** `/root`: /root lives on the read-only initrd (EROFS on
++  the first save) and the shell runs as uid 0, so `cd ~` would have landed in
++  a directory that cannot hold a note. The EROFS-shaped failure now prints a
++  sentence naming the path and the fix instead of a bare -30.
++- **Tests.** `tests/unit/test_home_passwd.c` compiles the SHIPPED parser a
++  second time on the host: 26 grammar checks (canonical/6-field/5-field/
++  8-field, non-numeric and overflowing ids, blank/comment lines, CRLF,
++  no-trailing-newline, uid 2^32-1 boundary, whole-file path) plus a
++  **mutation lane** that removes the default-shell rule and REQUIRES exit 1.
++  `tests/integration/cases/test_home.sh` (registered in `ALL_CASES`, `fs`
++  shard) proves it end to end in QEMU: 13/13.
++- **Ratchets moved in the same change, because they are the point**:
++  `check_width_sweep`'s `(uint64_t)` counter would have risen 449 → 460 from
++  this file's index arithmetic — rewritten to carry offsets as `size_t`
++  (the paddr.h rule), so the counter did not move; `check_parity_claims`
++  `FS_FILE_COUNT` 26 → 27 (and the new file compiles at rv64/a64/i386 with
++  `-Wshorten-64-to-32`, which caught three `long`/`int64_t` conversions);
++  SH8's in-guest source pin 152 → 153 in all four places
++  (`gen_kernel_build.sh`, `test_selfhost_kernel_guest.sh`,
++  `test_sh5c_kernel_tcc.sh`, the hygiene docstring), cross-checked by
++  `check_build_hygiene.py` check 4.
++
+ ## [GPU H7 — the close-out] 2026-11-21
+ 
+ The series leaves the tree able to say what it did and what it did not. Three
+diff --git a/Makefile b/Makefile
+index 3fd4fbf..d297476 100644
+--- a/Makefile
++++ b/Makefile
+@@ -4309,6 +4309,20 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
+ 	         $(INITRD_DIR)/tests/u32bad.exe
+ 	@printf 'AuraLite OS\nfilesystem layout: see docs/filesystem.md\n' \
+ 	    > $(INITRD_DIR)/etc/motd
++# HOME_PLAN H0: the user database.  A text file, not code -- adding a user
++# is editing this file.  The kernel parses it once at boot (kernel/fs/home.c)
++# and getpwuid()/getpwnam() answer from the parsed table.  The home
++# directories under /home are created at boot by the same file, so this
++# recipe only has to ship the records.
++# root's home is /home/root, NOT /root, and the difference is load-bearing:
++# /root would live on the read-only initrd (EROFS on the first save), and
++# the shell runs as uid 0 -- so a user typing `cd ~` would land in a
++# directory that cannot hold a note.  The /root path is H1's migration
++# (an alias or a symlink once the initrd root is writable).
++	@printf 'root:x:0:0:root:/home/root:/bin/sh\n' \
++	    > $(INITRD_DIR)/etc/passwd
++	@printf 'user:x:1000:1000:AuraLite user:/home/user:/bin/sh\n' \
++	    >> $(INITRD_DIR)/etc/passwd
+ # I386_PLAN I5: the 32-bit userland, in the SAME archive under /bin32.
+ # One initrd serves both kernels; each kernel's ELF loader refuses the
+ # other's class, and the path split means neither can even try.
+@@ -4438,7 +4452,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
+                 $(BUILD_DIR)/test_ipv6_addr \
+                 $(BUILD_DIR)/test_elf $(BUILD_DIR)/test_gui \
+                 $(BUILD_DIR)/test_process $(BUILD_DIR)/test_spinlock \
+-                $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno \
++                $(BUILD_DIR)/test_fat32 $(BUILD_DIR)/test_errno $(BUILD_DIR)/test_home_passwd \
+                 $(BUILD_DIR)/test_ctype $(BUILD_DIR)/test_open_flags \
+                 $(BUILD_DIR)/test_lseek \
+                 $(BUILD_DIR)/test_signals \
+@@ -6530,6 +6544,26 @@ $(BUILD_DIR)/test_ctype: tests/unit/test_ctype.c lib/libc/include/ctype.h \
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+ 
++# HOME_PLAN H0: the /etc/passwd parser gate.  Compiles the SHIPPED parser
++# body (kernel/fs/home.c) a second time on the host, so the grammar is
++# tested at unit speed instead of one boot per case.  The second lane builds
++# a mutation (the 6-field default-shell rule removed) and REQUIRES exit 1 --
++# a gate that cannot fail is indistinguishable from a clean tree.
++TEST_HOME_PASSWD_DEPS := tests/unit/test_home_passwd.c kernel/fs/home.c \
++                         kernel/fs/home.h kernel/fs/vfs.h kernel/fs/tmpfs.h
++$(BUILD_DIR)/test_home_passwd: $(TEST_HOME_PASSWD_DEPS)
++	@mkdir -p $(BUILD_DIR)
++	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I kernel \
++	           tests/unit/test_home_passwd.c -o $@
++	@$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . -I kernel \
++	           -DTEST_MUTATE_PARSE=1 tests/unit/test_home_passwd.c \
++	           -o $@.mut
++	@if ./$@.mut >/dev/null 2>&1; then \
++	    echo "test_home_passwd: mutation lane PASSED -- the gate cannot fail"; \
++	    exit 1; \
++	fi
++	@echo "[home] mutation lane red as required (planted defect detected)"
++
+ $(BUILD_DIR)/test_open_flags: tests/unit/test_open_flags.c lib/libc/include/fcntl.h
+ 	@mkdir -p $(BUILD_DIR)
+ 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+diff --git a/docs/filesystem.md b/docs/filesystem.md
+index b2b0010..9cca1a5 100644
+--- a/docs/filesystem.md
++++ b/docs/filesystem.md
+@@ -20,12 +20,16 @@ F4 (the source tree) and F5 (aliases removed).
+ | `/tmp` | tmpfs | yes | in-memory, lost on reboot |
+ | `/opt` | tmpfs (second volume) | yes | installed packages; see below |
+ | `/dev/shm` | tmpfs (third volume) | yes | POSIX shared-memory volume |
++| `/home` | tmpfs (fifth volume) | yes | one directory per `/etc/passwd` record; **volatile** (HOME_PLAN H0, durable in H4) |
+ | `/disk` | diskfs | yes | small persistent store on AHCI |
+ | `/fat` | FAT32 | yes | full FAT32 with LFN and subdirectories |
+ | `/ext2` | ext2 | yes | full ext2 with indirect blocks |
+ | `/usb` | usbfs | partly | hotplugged USB mass storage; FAT32 under `/usb/fat` takes in-place overwrites (no new-cluster allocation yet); ext2 is read-only under `/usb/ext2` |
+ 
+ Resolution is by longest-prefix mount match, then the filesystem's own lookup.
++`ls` on a directory unions the mount points that live directly under it, so
++`ls /` lists `/home`, `/tmp`, `/dev`, `/proc`, `/documents`, `/opt` and `/usb`
++even though the initrd backing `/` knows nothing about them (HOME_PLAN H0).
+ 
+ ---
+ 
+@@ -113,6 +117,60 @@ lives in `vfs_open()` and `vfs_chmod()`, where every path goes through it.
+ The predicate itself is in `kernel/fs/execpolicy.c`, separate so the host unit
+ test compiles the shipping code rather than a copy.
+ 
++### `/home` and the user database (HOME_PLAN H0)
++
++`/home` is a tmpfs volume of its own, and the users are DATA: `/etc/passwd`
++ships in the initrd and `kernel/fs/home.c` parses it once at boot into a
++16-record table.
++
++```
++root:x:0:0:root:/home/root:/bin/sh
++user:x:1000:1000:AuraLite user:/home/user:/bin/sh
++```
++
++Grammar: `name:pass:uid:gid:gecos:dir:shell`. Blank and `#` lines are skipped;
++a **6-field** record defaults the shell to `/bin/sh`; **five or fewer** fields
++is malformed and refused (a record with no home is the shape that walks users
++into `/` by accident); a field too long for its column, an 8-field line, or a
++non-numeric/overflowing uid are refused too. The boot receipt counts the
++refusals instead of letting them disappear:
++
++```
++[home] 2 user record(s) from /etc/passwd
++[home] PASS: 2 home(s) ready under /home, first writable (2 record(s) from
++       /etc/passwd, 2 dir(s) created, 0 refused); storage=tmpfs
++       (volatile: HOME_PLAN H4 makes it durable)
++```
++
++Two syscalls expose the table — `SYS_GETPWENT` (546, record by index) and
++`SYS_GETHOME` (547, uid → directory) — and `lib/libc/src/pwd.c` implements
++`getpwuid`/`getpwnam`/`getpwent`/`getpwuid_r` on top of them. When the table
++is empty (an initrd built before H0), libc keeps its old built-in root answer
++rather than suddenly returning NULL for uid 0.
++
++**root's home is `/home/root`, not `/root`** — and that is deliberate. `/root`
++lives on the read-only initrd, and the shell runs as uid 0; with `pw_dir` set
++to `/root`, `cd ~` would land a user in a directory that returns EROFS on the
++first save, which is the exact problem `/home` exists to solve. The boot
++receipt says so in words when it happens:
++
++```
++[home] FAIL: /root lies on a read-only filesystem (EROFS): /etc/passwd names
++a home the initrd owns; on this tree the durable-looking place for a user who
++must save notes is /home/<name> (tmpfs, writable until power-off)
++```
++
++HOME_PLAN H1 is the phase that makes `/root` real.
++
++**The shell follows the database.** `pwd` prints the real cwd (it used to
++print a constant `/`), `cd [dir]` exists (bare `cd` goes home), `~` expands at
++the start of an argument but **not** inside quotes (`echo "~"` prints `~`),
++and `$HOME`/`$USER` are exported at startup from `getpwuid(getuid())`.
++
++**Durability is not yet true**: `/home` is tmpfs and survives until power-off.
++H4 moves it (and `/etc/passwd`, and `/opt`) onto a writable disk filesystem;
++the receipt carries `storage=tmpfs` until then.
++
+ ### Why /opt is a separate volume
+ 
+ `/opt` is a second tmpfs volume, not a directory inside `/tmp`. Separate file
+diff --git a/docs/plans/HOME_PLAN.md b/docs/plans/HOME_PLAN.md
+new file mode 100644
+index 0000000..1d1aace
+--- /dev/null
++++ b/docs/plans/HOME_PLAN.md
+@@ -0,0 +1,215 @@
++# AuraLite OS — Home Directory & User Database Plan (`HOME_PLAN.md`)
++
++## Status: H0 ✅ · H1–H5 ⬜
++
++> **Baseline:** `bcc248f` (merge of PR #22, 2026-11-22). Written against the
++> tree as it stands, in the style of `OTA_PLAN.md` / `FSFULL_PLAN.md`: each
++> phase has a dependency-ordered position, an exit gate that runs, and one
++> `.patch` per phase under `patches/`.
++>
++> **The question this plan answers**, asked by a user and verified against the
++> tree before writing a line: *"в ОС нету сейчас домашнего каталога? куда
++> пользователь сможет сохранять заметки и т.д"* — and yes, there was no home
++> directory (`grep -rn '"/home'` over the whole tree returned nothing) and no
++> user database (`getpwuid()` was a compile-time stub answering root-and-NULL).
++> A user saving a note had exactly three writable places: `/tmp` (scratch, by
++> FSLAYOUT F1's own design), `/opt` (the package manager's install target) and
++> `/documents` (the office suite's, OF0). None of them is "the user's".
++
++---
++
++## 1. Where things actually stand (measured, not assumed)
++
++| Fact | Evidence on `bcc248f` |
++|---|---|
++| No home directory | `grep -rn '"/home'` over `kernel/ userspace/ lib/ docs/ Makefile` → **0 hits**; `ls /` lists no `home` |
++| No user database | `lib/libc/src/pwd.c` is 21 lines: a static `root_pw` answering `getpwuid(0)`/`getpwnam("root")`, NULL otherwise |
++| Credentials DO exist | `tcb->uid/euid/suid/egid`, `SYS_SETUID`/`SYS_GETUID` checks in `kernel/arch/x86_64/syscall.c`; every VFS permission check consumes them |
++| `pwd` was a constant | `userspace/system/init/init.c`: `cmd_pwd() { puts("/"); }` — the process's real cwd (`tcb->cwd`, joined onto relative paths by the dispatcher) was never printed |
++| No `cd` builtin | the dispatch chain has no `"cd"` arm; `SYS_CHDIR` exists and is used by `execvpe`'s PATH retry, so the kernel half works and the shell simply never exposed it |
++| `/tmp`, `/opt`, `/dev/shm`, `/documents` are tmpfs volumes | `kernel/fs/tmpfs.c` — the mount-point construction `/home` reuses |
++| `/documents` carries the lesson `/home` needed | `kernel/fs/documents.c` header: the symlink-into-/tmp design resolved on lookup but not on **create**, and `open(O_CREAT)` returned EROFS |
++| Mount points are invisible to `ls` | `vfs_readdir()` returned the backing filesystem's listing only; hence `ls /home` and `ls /tmp` were reachable but `ls /` never said they existed |
++| The in-guest build pins its source set | `tools/selfhost/gen_kernel_build.sh` refuses to emit a script when the C count differs from its pin (152 before H0) |
++
++---
++
++## 2. Phase map
++
++| Phase | What lands | Gate | Status |
++|---|---|---|---|
++| **H0** | `/home` tmpfs volume; `/etc/passwd` parsed at boot; `SYS_GETPWENT`/`SYS_GETHOME`; libc `getpwuid`/`getpwnam`/`getpwent`/`getpwuid_r`; shell `cd`, real `pwd`, `~`, `$HOME`/`$USER`; `ls /` shows mounts | `test_home.sh` 13/13 + `test_home_passwd` (26 checks + mutation lane) in `make test-unit` | ✅ **landed** |
++| **H1** | `/root` as a home: the initrd root becomes writable for root's own directory (or `/root` becomes a symlink into `/home/root`), so `cd /root` means what it says | root's `pw_dir` returns to `/root`; `test_home` pins both spellings | ⬜ |
++| **H2** | `adduser`/`passwd`-shaped tooling: edit `/etc/passwd` (and a future `/etc/shadow`) from the shell, create the home with the right owner | a user added at the prompt can save a note without a rebuild; hostile names refused | ⬜ |
++| **H3** | Ownership: new homes get the record's `uid:gid`, and `vfs_mkdir`'s blanket `umask` stops being the only authority; `~` refuses another user's home | two uids in one boot, each sees only its own home; `stat` shows the record's uid | ⬜ |
++| **H4** | Durability: *"сделать свою файловую систему очень быструю… и сделать её фишкой ОС"* — the user's own idea, recorded here as the plan's north star. `/home`, `/etc/passwd` and `/opt` move onto a real writable filesystem (the FS modernization plan owns the format) | a note survives a reboot; the receipt drops `storage=tmpfs` | ⬜ |
++| **H5** | Login: `getty`-shaped session over the serial console, `passwd`-like verification, per-user cwd/shell env at start | a wrong password is refused; a right one lands in the right home | ⬜ |
++
++**Dependency notes.**
++- H1 must precede H2: a tool that creates homes must not be able to create a
++  home on a read-only filesystem.
++- H3 depends on H2 only for a convenient way to *make* a second user; the
++  permission machinery itself (`vfs_check_perm`) already exists.
++- H4 depends on the filesystem modernization plan (`FSMOD_PLAN.md`), which is
++  the larger series the user proposed after this phase: H0–H3 are deliberately
++  **format-agnostic** (they use the VFS, not a disk layout), so H4 replaces the
++  backing store without redoing any of them.
++- H5 is last because a login that cannot persist a password (H4) or separate
++  owners (H3) is theatre.
++
++---
++
++## 3. H0 as landed — the decisions and why
++
++### 3.1 `/home` is a tmpfs MOUNT POINT, not a directory
++
++Three constructions were available and two are wrong:
++
++1. **A directory inside `/tmp`** — fails the point: /tmp is scratch that
++   FSLAYOUT F1 says may be wiped, and its 256-file table would be shared.
++2. **A symlink `/home -> /tmp/home`** — reads correctly (`ls /home` lists
++   the target) and cannot be written through: this VFS follows a symlink when
++   resolving a path and not when *creating* one, so `open("/home/x",
++   O_CREAT)` falls through to the read-only initrd at `/` and returns EROFS.
++   This is exactly the defect `documents.c`'s header records discovering the
++   expensive way.
++3. **Its own tmpfs volume at `/home`** (what landed) — resolved by the mount
++   table in BOTH directions, owns its own file table, and tells itself apart
++   from /tmp, /opt, /dev/shm and /documents by a distinct `vfs_ops` address
++   (the same reason those three exist).
++
++### 3.2 The user database is DATA
++
++`/etc/passwd` lives in the initrd and is parsed once at boot. Adding a user is
++editing a text file, not editing a table in `kernel/fs/home.c`. The record
++grammar is the file's own grammar; the two syscalls hand it out in that same
++format so libc parses one thing.
++
++**The parser refuses rather than truncates.** A field longer than its
++destination, an 8-field line, a non-numeric or `> 2^32-1` id, a nameless
++record — each is a malformed line, counted and reported
++(`"(N malformed line(s) refused)"`). Truncating would hand out a WRONG home
++directory, which is worse than no record at all.
++
++**6-field records default the shell.** `/etc/passwd` proper has no comment
++syntax and no optional field, but this tree's file is hand-maintained; the
++parser accepts `#`/blank lines as skips (not malformed) and a 6-field record
++as "shell = /bin/sh", because a record with a home but no shell is a user, not
++a corruption. Five fields, however, is malformed: a record with no home is the
++shape that walks users into `/` by accident.
++
++### 3.3 `root`'s home is `/home/root`, and the difference is load-bearing
++
++Found by running the gate, not by reading the code: with root's `pw_dir` set
++to `/root` (the natural spelling, and what the pre-H0 stub answered), the
++first boot printed
++
++```
++[home] FAIL: /root lies on a read-only filesystem (EROFS): /etc/passwd names
++a home the initrd owns; on this tree the durable-looking place for a user who
++must save notes is /home/<name> (tmpfs, writable until power-off)
++```
++
++`/root` lives **on the initrd**, which is read-only, and the shell runs as
++uid 0 — so `cd ~` would have landed a user in a directory that cannot hold a
++note, which is the exact question this plan exists to answer. H0 therefore
++ships `root:x:0:0:root:/home/root:/bin/sh`, and **H1** is the phase that makes
++`/root` real (a symlink into `/home/root`, or a writable initrd root).
++
++The receipt distinguishes the two failure shapes on purpose: EROFS is a
++configuration mistake in `/etc/passwd` and gets a sentence naming the path;
++everything else is a filesystem failure and gets the errno.
++
++### 3.4 `ls /` shows the mount table
++
++Without this, everything above is invisible: `vfs_readdir()` returned the
++backing filesystem's listing, so `/tmp`, `/dev`, `/proc`, `/documents` — and
++the new `/home` — never appeared in `ls /`. The VFS now unions in the mount
++points that live **directly** under the listed path. Properties that matter:
++
++- **Direct children only.** With `path = "/"`, a mount at `/dev/shm`
++  contributes nothing; `ls /dev` adds `shm` on its own call.
++- **No duplicates.** A mount the backing filesystem already lists is skipped,
++  not listed twice.
++- **The filesystems are untouched.** An initrd entry is still listed exactly
++  once; this is a union at the VFS edge, which is what every Unix's `ls /`
++  shows.
++
++`ls /home` additionally needed `vol_of_vnode()` to learn `home_vol`: without
++it the volume root fell through to the per-file branch with NULL `fs_data` and
++`readdir` returned -1. That is byte-for-byte the omission OF2's closure fixed
++for `doc_vol` — the same defect, found again by the same test shape.
++
++### 3.5 The shell stops pretending
++
++- `pwd` prints `getcwd()`, not `"/"`. `getcwd()` failing still prints `/`,
++  which is the kernel's own convention for an empty cwd.
++- `cd [dir]` is new; bare `cd` goes home. It is a thin wrapper over the
++  existing `SYS_CHDIR` — the kernel always could, the shell never exposed it.
++- `~` expands at the start of an argument (and only there), decided by the
++  **raw token**: `echo "~"` stays a literal tilde, `echo ~/x` expands. `~user`
++  is deliberately NOT expanded — it needs a lookup, and silently treating
++  `~alice` as `~` is the class of wrongness this project names.
++- `$HOME`/`$USER` are exported at startup from ONE `getpwuid(getuid())`. The
++  first build of this export called the function three times inside a single
++  ternary; because `getpwuid()` answers a pointer into a static record the
++  next call overwrites, `USER` came out **empty** — caught by the integration
++  case, not by review. The comment at the function records it.
++
++---
++
++## 4. What H0 deliberately does NOT do (and where each debt lives)
++
++| Not done | Why, and who owns it |
++|---|---|
++| Durability across reboot | `/home` is tmpfs. **H4.** The boot receipt says `storage=tmpfs (volatile: …)` rather than letting a user discover it. |
++| Per-user ownership of homes | Homes are created 0755 root-owned by the boot bring-up. **H3** (the permission machinery exists; the *creation* owner does not). |
++| `~user` expansion | Needs a name→record lookup in the expander; **H2** (the same tooling that adds users). |
++| `/root` as a real directory | It is on the read-only initrd; root's home is `/home/root` today. **H1.** |
++| Passwords | `passwd` field is parsed and reported as `"x"`; no hashing, no verification, nothing reads it. **H5.** |
++| Login sessions | One shell, uid 0, no `getty`. **H5.** |
++| Moving `/documents` under a home | OF0's volume is shared by convention; a per-user documents location is a UI question (which home is "the" home for the office suite?) that H3 must answer first. |
++| An on-disk `/etc/passwd` | Today it is baked into the initrd at build time (the Makefile recipe). Editing it at runtime needs a writable `/etc`, which is H4's dependency. |
++
++---
++
++## 5. Test ledger for H0
++
++| Gate | Where | Result |
++|---|---|---|
++| Parser grammar: 26 checks (canonical, 6-field default shell, 5-field refusal, non-numeric/empty/overflowing uid, 8-field refusal, blank/comment skip, CRLF, last-line-no-newline, 2^32-1 boundary, whole-file path) | `tests/unit/test_home_passwd.c` in `make test-unit` | **26/26** |
++| Mutation lane: the default-shell rule removed → the gate MUST fail | same file, `-DTEST_MUTATE_PARSE=1`, built and required to exit 1 by the Makefile rule | **red as required** |
++| Boot receipts: records parsed, homes created, first writable | `test_home.sh` | ✔ |
++| `ls /` shows `home/`; `ls /home` shows the records' directories | `test_home.sh` | ✔ |
++| `cd ~` → the record's directory; `pwd` says so; `cd /` → `/` | `test_home.sh` | ✔ |
++| A note saved at `~/note.txt` reads back from the absolute path | `test_home.sh` | ✔ |
++| `$HOME`/`$USER` come from the record; `"~"` stays literal | `test_home.sh` | ✔ |
++| The receipt states `storage=tmpfs` | `test_home.sh` | ✔ |
++| Width sweep: the new file adds **zero** `(uint64_t)` casts (449 → 449) | `test_width_sweep.sh` | ✔ |
++| Parity: `kernel/fs` compiles at rv64/a64/i386 (incl. `-Wshorten-64-to-32`) | `check_parity_claims.py` (`FS_FILE_COUNT` 26 → 27) | ✔ |
++| SH8: the in-guest build's source pin 152 → 153 in all four places | `check_build_hygiene.py` check 4 | ✔ |
++| Integration registry: the new case is in `ALL_CASES` and matches exactly one shard (`fs`) | `check_test_registry.py`, `run_all.sh --check-groups` | ✔ |
++
++`test_home.sh` result on the final tree: **13/13**, run five times during
++development (two runs caught real defects: the EROFS home and the empty
++`$USER`).
++
++---
++
++## 6. Review notes for whoever lands the next phase
++
++1. **The parser is the security boundary of this feature.** It decides which
++   directory a uid gets. Every new accepted form needs a check in
++   `test_home_passwd.c`, not a manual boot.
++2. **The mutation lane is part of the gate.** A Makefile rule that builds the
++   doctored binary and *requires* it to fail is the only thing standing
++   between "the tests pass" and "the tests can pass".
++3. **Ratchets move in the change that trips them.** H0 tripped three
++   (`FS_FILE_COUNT`, SH8's pin, and — if the code had been written the lazy
++   way — the `(uint64_t)` counter). Moving them in a follow-up commit is how
++   a ratchet stops being one.
++4. **`vol_of_vnode()` has bitten twice.** Any new tmpfs volume must be added
++   there or its root cannot be listed. A unit test that walks every mounted
++   tmpfs volume and readdirs its root would have caught both occurrences;
++   that test does not exist yet and is the first candidate for H1's
++   test work.
+diff --git a/docs/plans/RESIDUE3_PLAN.md b/docs/plans/RESIDUE3_PLAN.md
+index 6b62a92..c3d5588 100644
+--- a/docs/plans/RESIDUE3_PLAN.md
++++ b/docs/plans/RESIDUE3_PLAN.md
+@@ -1332,6 +1332,13 @@ type, parse, sema, exec) produces an interpreted AST with no back end;
+ `gl_backend_t.draw` is wired and `test_glvirgl` (73 checks) pins the
+ seam.
+ 
++**Named here, owned elsewhere:** ledger **RES-65** (S) — the home
++directory's four open debts (per-record ownership, `/root` as a real
++home, runtime `adduser`/`passwd` tooling, durability) — was opened by
++`HOME_PLAN.md` H0 and is tracked phase by phase there (H1–H5). The row
++is counted in this ledger and named here so the debt stays
++machine-visible; the exit gates are HOME_PLAN's.
++
+ - [x] AST → TGSI: declarations, temporaries, ALU ops for the subset the
+       sema already proves, `DCL`/`MOV`/`MAD`/`DP4` lowering, and a
+       text+dword emitter with a round-trip test. *(GPU_ACCEL H4:
+diff --git a/docs/residue_ledger.md b/docs/residue_ledger.md
+index 37edb37..87eaae4 100644
+--- a/docs/residue_ledger.md
++++ b/docs/residue_ledger.md
+@@ -77,7 +77,8 @@ N = non-goal to re-affirm · S = sub-series hand-off.
+ 
+ ## Arithmetic (checker-enforced)
+ 
+-Rows: 64.  Classes: **W 36 · M 9 · N 4 · S 15**.  The R0 recount
++
++Rows: 65.  Classes: **W 36 · M 9 · N 4 · S 16**.  The R0 recount
+ **W 33 · M 5 · N 2 · S 8** (the plan §2 draft hand-summed 27/6/3/12
+ and was WRONG — amended same-commit, catch recorded) is the
+ historical pin; Y7 appended RES-49..53.  Statuses at CLOSE: OPEN 6 (RES-02/06/07/16/18/54 — named survivors, none hidden: two narrowed oddities, two port-adoption rows, one IOAPIC-routing row, and GL2's D7 hand-off; RES-26's DONE@Y4 flip is recorded below and was mistakenly still counted here), DONE@R1 6, DONE@R2 2, DONE@R3 1, DONE@R4 1, DONE@R5 2, DONE@R6 2 (RES-17/19; RES-18 PIE stays OPEN — it wants real relocation work, not a floor), DONE@R7 2 (RES-20/21), DONE@R8 2 (RES-22/23), DONE@R9 4 (RES-24/25/27/28; RES-26 stays OPEN, narrowed to the TCP layer), DONE@R10 1 (RES-29), DONE@R11 3 (RES-31/34/37), PENDING-USER@R11 4 (RES-30/32/33/48 — the package ships and NULL-tests green; the numbers are the user's move, and pending-user is a status, not a failure), DONE@R12 2 (RES-42/45), RE-AFFIRMED@R12 2 (RES-43/44), HANDED-OFF@R12 7 (RES-11/12/36/38/39/46/47 — every one leaves with a MEASURED opener fact in its row), DONE@L7 1 (RES-41 — the canned DRAW_VBO seam landed in GL2 L6; its compiler half opens as RES-54).
+@@ -414,4 +415,5 @@ named WR-4 PARTIAL gap owned by the plan (the live matrix in
+ docs/win32_run.md carries it), not a ledger-class residue — the
+ table's 59 rows and class totals are untouched.
+ | RES-63 | S | OPEN | TGSI retarget: the constructs H4 refused by name (matrices, `texture2D`, control flow, compound assignment, user functions, `tan`/`asin`/`pow`/`mod`/`sin`/`cos`) | OPENER, measured at GPU_ACCEL H4 (2026-11-21): `tgsi.c` refuses these with a diagnostic naming the construct (\"has no exact TGSI opcode\", \"built-in '%s'\"), and `/glshade`'s Lambert vertex shader — which needs a matrix — is REFUSED and drawn by the interpreter instead. Nothing is hidden and nothing is wrong; this row exists so the gap is counted. The seam it grows into is the working one H4/H5 leave behind: `test_tgsi` 64/64, the disassembler as a second opinion, and the eligibility screen admitting what the batch can carry |
+-| RES-64 | M | OPEN | A hardware frame has never been compared against the software one, because the GPU ABI cannot return it | OPENER, measured at GPU_ACCEL H6 (2026-11-21): `GPU_OP_TRANSFER` reaches `virtio_gpu_resource_upload()` and nothing else — there is no `TRANSFER_FROM_HOST` path — so a frame the GPU drew lives on the host and never reaches guest memory. The frame oracle therefore asserts determinism and sensitivity on the host (test_gloracle 14/14, mutation cases) and a stable guest hash (`93ea06fd…e87cb`, 434 in-OS GL checks, 0 failed), and states plainly that the hardware pixels are unmeasured. This environment also has no `virtio-gpu-gl-pci` (`-device help` lists no such device), so even the device lane cannot exist here. Closing it needs either a readback path in the driver or a host-side screenshot compared against the guest's software hash — the second is what H6's design already leaves room for |
+\ No newline at end of file
++| RES-64 | M | OPEN | A hardware frame has never been compared against the software one, because the GPU ABI cannot return it | OPENER, measured at GPU_ACCEL H6 (2026-11-21): `GPU_OP_TRANSFER` reaches `virtio_gpu_resource_upload()` and nothing else — there is no `TRANSFER_FROM_HOST` path — so a frame the GPU drew lives on the host and never reaches guest memory. The frame oracle therefore asserts determinism and sensitivity on the host (test_gloracle 14/14, mutation cases) and a stable guest hash (`93ea06fd…e87cb`, 434 in-OS GL checks, 0 failed), and states plainly that the hardware pixels are unmeasured. This environment also has no `virtio-gpu-gl-pci` (`-device help` lists no such device), so even the device lane cannot exist here. Closing it needs either a readback path in the driver or a host-side screenshot compared against the guest's software hash — the second is what H6's design already leaves room for |
++| RES-65 | S | OPEN | Home ownership and durability: `/home` dirs are created 0755 root-owned by the H0 boot bring-up, the volume is tmpfs, `/etc/passwd` is baked into the initrd, and `/root` still lives on the read-only initrd (root's `pw_dir` is `/home/root` instead) | OPENER, measured at HOME_PLAN H0 (2026-11-22): the QEMU gate proves a note saves to `~/note.txt` and reads back, and the boot receipt states `storage=tmpfs (volatile: HOME_PLAN H4 makes it durable)` rather than implying otherwise; `cd ~` under uid 0 lands in `/home/root` because `/root` returns EROFS from the initrd (the same receipt names the path when a config points at one). What is deliberately NOT done and is each phase's exit gate: H1 `/root` as a real home, H2 adduser/passwd tooling, H3 per-record ownership on new homes (`~` must refuse another uid's), H4 durability on a writable disk filesystem (the FS modernization series owns the format), H5 login | `test_home.sh` 13/13 + `test_home_passwd` 26 checks with the mutation lane red as required; a reboot still loses the note until H4, and two uids cannot yet own separate homes until H3 |
+diff --git a/docs/status.md b/docs/status.md
+index 7bde3a6..1b0b307 100644
+--- a/docs/status.md
++++ b/docs/status.md
+@@ -99,6 +99,7 @@ tied to the tree.
+ | USTAR initrd | ✅ | Read-only root with user ELFs. |
+ | DevFS | ✅ | `/dev/null`, `/dev/zero`. |
+ | `tmpfs` | ✅ | Writable in-memory `/tmp`, supports `unlink`, `truncate`, and seconds-resolution `stat()` timestamps. |
++| `/home` + user database | ✅ | HOME_PLAN H0: a fifth tmpfs volume with one directory per `/etc/passwd` record, and the database itself parsed at boot into a 16-record kernel table (`SYS_GETPWENT`/`SYS_GETHOME`; libc `getpwuid`/`getpwnam`/`getpwent`/`getpwuid_r`). `ls /` unions mount points, so `/home` is discoverable; the shell's `pwd` is the real cwd and `cd`/`~`/`$HOME`/`$USER` follow the record. **Volatile** — tmpfs until H4; the boot receipt says `storage=tmpfs`. Gates: `test_home` 13/13, `test_home_passwd` 26 checks + a mutation lane. |
+ | Tiny diskfs | ✅ | Persistent `/disk` (8 files × 4 KiB, AHCI port 0) with persistent stat timestamps in the on-disk table. |
+ | **FAT32 — full** | ✅ | `/fat`: subdirs, **LFN (UCS-2 read+write)**, mkdir/rmdir/unlink/rename/truncate, FSInfo, FAT date/time stamps decoded through `stat()`. Since OTA O1 the mount is **partition-aware**: GPT entries first, then non-protective MBR entries, then the table-less raw-LBA-64 scratch contract (`[fat32] found FAT32 partition at LBA 256 (via GPT)` on the dual image); a table-bearing disk with no FAT32 volume is never formatted, and neither are diskfs (LBA 2) nor the AHCI self-test (LBA 1) allowed to touch a partitioned disk's sectors. |
+ | **ext2 — full** | ✅ | `/ext2`: mounts existing Linux-mkfs images **and** formats blank disks in-kernel. Direct + single/double/triple indirect blocks; mkdir/rmdir/unlink/rename; inode timestamps; cross-OS round-trip verified with `debugfs`. |
+diff --git a/kernel/arch/x86_64/syscall.c b/kernel/arch/x86_64/syscall.c
+index 92da417..228381a 100644
+--- a/kernel/arch/x86_64/syscall.c
++++ b/kernel/arch/x86_64/syscall.c
+@@ -12,6 +12,7 @@
+ #include "kernel/arch/x86_64/isr.h"
+ #include "kernel/proc/usercopy.h"
+ #include "kernel/fs/vfs.h"
++#include "kernel/fs/home.h"   /* HOME_PLAN H0: getpwent/getdir arms */
+ #include "kernel/lx/lx.h"
+ #include "kernel/fs/f2fs.h"   /* SYS_F2FS_FSCK: internal f2fs structural fsck (F4) */
+ #include "kernel/fs/btrfs.h"  /* SYS_BTRFS_SELFTEST: btrfs CoW/CRC self-test (F4b) */
+@@ -208,6 +209,8 @@ typedef struct {
+ #define SYS_IRQ_AP_WAKE    604   /* non-standard: RESIDUE2 T2 / RES-16 receipt */
+ #define SYS_SYNC           611   /* non-standard: whole-cache flush (bc_flush_all) */
+ #define SYS_REBOOT         612   /* non-standard: flush + 8042 reset pulse (OTA O2) */
++#define SYS_GETPWENT       546   /* HOME_PLAN H0: /etc/passwd record by index */
++#define SYS_GETHOME        547   /* HOME_PLAN H0: uid -> home directory */
+ #define SYS_WAITID         247   /* Linux x86-64 number (RESIDUE2 T1) */
+ #define SYS_GETPPID        110   /* Linux x86-64 number (RESIDUE2 T1) */
+ 
+@@ -2768,6 +2771,27 @@ uint64_t syscall_dispatch(uint64_t num, uint64_t a1, uint64_t a2, uint64_t a3,
+      * No vfs_errno() anywhere near this: -ENOENT is -2, but keyboard_set_-
+      * layout() may gain -EPERM-class returns later (write protection), and
+      * EPERM == 1 == the generic sentinel — return values verbatim. */
++    /* HOME_PLAN H0: the user database, read from /etc/passwd at boot.
++     * Both arms copy into a caller buffer validated by
++     * validate_user_range() so a hostile pointer is -EFAULT, not a panic;
++     * the packed field format is documented in kernel/fs/home.h and
++     * lib/libc/src/pwd.c is the only consumer. */
++    case SYS_GETPWENT: {
++        if (a3 == 0) return (uint64_t)-EINVAL;
++        if (!validate_user_range((void *)(uintptr_t)a2, a3, 1)) {
++            return (uint64_t)-EFAULT;
++        }
++        return (uint64_t)home_getpwent((uint32_t)a1,
++                                       (char *)(uintptr_t)a2, a3);
++    }
++    case SYS_GETHOME: {
++        if (a3 == 0) return (uint64_t)-EINVAL;
++        if (!validate_user_range((void *)(uintptr_t)a2, a3, 1)) {
++            return (uint64_t)-EFAULT;
++        }
++        return (uint64_t)home_getdir((uint32_t)a1,
++                                     (char *)(uintptr_t)a2, a3);
++    }
+     case SYS_F2FS_FSCK: {   /* 602 */
+         /* F4: run the internal f2fs structural fsck.  Returns 0 if the
+          * volume is consistent, negative otherwise. */
+diff --git a/kernel/fs/home.c b/kernel/fs/home.c
+new file mode 100644
+index 0000000..f53017b
+--- /dev/null
++++ b/kernel/fs/home.c
+@@ -0,0 +1,608 @@
++/* kernel/fs/home.c — HOME_PLAN H0: /home and the user database.
++ *
++ * Two facts make this file necessary and fix the shape of it:
++ *
++ * 1. There is no /home.  `grep -rn '"/home'` over the tree is empty, `ls /`
++ *    lists no such entry, and the shell's `pwd` is a constant "/".  A user
++ *    saving a note has exactly three writable places today: /tmp (scratch
++ *    that FSLAYOUT_PLAN F1 says may be wiped), /opt (the package manager's
++ *    install target), and /documents (the office suite's).  None of them is
++ *    "the user's".
++ *
++ * 2. There is no user database.  lib/libc/src/pwd.c is a compile-time stub:
++ *    getpwuid(0) returns a static "root" record and getpwuid(anything) is
++ *    NULL.  The kernel HAS credentials (tcb->uid/euid/suid, seen by
++ *    SYS_SETUID/SYS_GETUID and by every permission check), but nothing maps
++ *    a uid to a name, a home directory or a shell.
++ *
++ * The construction follows /documents (kernel/fs/documents.c) deliberately:
++ * a tmpfs MOUNT POINT rather than a directory inside /tmp, because this VFS
++ * resolves a mount point in both directions (lookup AND create) while a
++ * symlink into /tmp only resolves on lookup.  A mount point is also the only
++ * way to give /home its own file table -- 256 files that scratch traffic in
++ * /tmp can neither evict nor crowd out.
++ *
++ * DURABILITY IS NOT YET TRUE, and the boot log says so.  /home is tmpfs: it
++ * survives until the machine is switched off.  HOME_PLAN.md H4 (a home on a
++ * writable disk filesystem, with an on-disk /etc/passwd) is the phase that
++ * changes that; until it lands this file prints the honest receipt instead
++ * of pretending.
++ *
++ * /home vs /documents: they are separate volumes on purpose.  /documents is
++ * the office suite's single writable document location (OF0), shared by
++ * convention; /home/<user> is the person's own space.  A file saved into
++ * ~/notes.txt must not be the same file another session's office suite
++ * lists, and the two must be able to disagree without either one's limit
++ * being the other's.
++ */
++
++#include <stdint.h>
++#include "kernel/fs/home.h"
++#include "kernel/fs/tmpfs.h"
++#include "kernel/fs/vfs.h"
++#include "kernel/lib/errno.h"
++#include "kernel/lib/kprintf.h"
++#include "kernel/lib/string.h"
++#include "kernel/mm/kheap.h"
++
++/* Fixed table: the tree has no dynamic-array habit for boot-time records,
++ * and the number is a limit the log states rather than a surprise. */
++#define HOME_MAX_USERS 16
++
++/* The path /etc/passwd is read from.  It lives in the initrd (the Makefile
++ * stages it, like /etc/motd) so adding a user is a text edit. */
++#define HOME_PASSWD_PATH "/etc/passwd"
++
++/* A record's line buffer.  The /etc/passwd grammar is six colon-separated
++ * fields; 192 bytes fits the longest record with room to spare and keeps
++ * the parser's stack use small. */
++#define HOME_LINE_MAX 192
++
++static struct home_user users[HOME_MAX_USERS];
++static int user_count;
++static const char *backing_path = NULL;
++
++/* ------------------------------------------------------------------------ */
++/* The /etc/passwd parser                                                   */
++/* ------------------------------------------------------------------------ */
++
++/* Copy a field into dst, bounded.  A field longer than the destination is
++ * a malformed record, not a record to truncate silently: truncating would
++ * hand out a WRONG home directory, which is worse than no record. */
++static int copy_field(char *dst, size_t cap, const char *src, size_t len) {
++    if (len >= cap) return -1;
++    memcpy(dst, src, len);
++    dst[len] = '\0';
++    return 0;
++}
++
++/* Parse one decimal field.  Returns 1 on a valid non-empty number, 0 on
++ * malformed (empty, non-digit, or > UINT32_MAX). */
++static int parse_u32(const char *s, size_t len, uint32_t *out) {
++    if (len == 0 || len > 10) return 0;
++    uint64_t v = 0;
++    for (size_t i = 0; i < len; i++) {
++        if (s[i] < '0' || s[i] > '9') return 0;
++        v = v * 10u + (unsigned)(s[i] - '0');
++        if (v > 0xFFFFFFFFULL) return 0;
++    }
++    *out = (uint32_t)v;
++    return 1;
++}
++
++/* Parse ONE line (no trailing newline required) into `u`.
++ *
++ * The /etc/passwd format, six ':'-separated fields plus one optional
++ * seventh:
++ *
++ *   name:pass:uid:gid:gecos:dir:shell
++ *
++ * Empty lines and lines whose first non-space character is '#' are
++ * comments -- /etc/passwd proper has no comment syntax, but the file in
++ * this tree is human-maintained and the plan's H1 adds records by hand.
++ * Returns 0 on a good record, -1 on a malformed one (the caller counts
++ * both and the boot log prints the malformed count, because a silently
++ * skipped line is a user who cannot log in).
++ *
++ * The shell field is optional: a record ending at `dir` (6 fields) gets
++ * "/bin/sh".  A record with 5 or fewer fields is malformed. */
++static int parse_passwd_line(const char *line, size_t len,
++                             struct home_user *u) {
++    /* Strip a trailing CR so a CRLF file (edited on a host) parses. */
++    while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
++        len--;
++    }
++    if (len == 0) return 0;                       /* blank: not a record */
++    {
++        size_t i = 0;
++        while (i < len && (line[i] == ' ' || line[i] == '\t')) i++;
++        if (i < len && line[i] == '#') return 0;  /* comment */
++        if (i > 0) {                              /* indentation: skip it */
++            line += i;
++            len -= i;
++        }
++    }
++
++    const char *fields[7];
++    size_t flen[7];
++    int nf = 0;
++    size_t start = 0;
++    for (size_t i = 0; i <= len && nf < 7; i++) {
++        if (i == len || line[i] == ':') {
++            fields[nf] = line + start;
++            flen[nf] = i - start;
++            nf++;
++            start = i + 1;
++            if (nf == 7 && i != len) return -1;   /* an 8th field */
++        }
++    }
++    /* An exact 7-field line makes the loop stop with nf == 7 and i == len;
++     * a 6-field one stops at the end with nf == 6. */
++    if (nf < 6) return -1;
++    if (nf == 6) {
++        fields[6] = "/bin/sh";
++        flen[6] = strlen("/bin/sh");
++    }
++
++    memset(u, 0, sizeof(*u));
++    if (copy_field(u->name,  HOME_USER_NAME_MAX,  fields[0], flen[0])  != 0 ||
++        copy_field(u->pass,  HOME_USER_PASS_MAX,  fields[1], flen[1])  != 0 ||
++        copy_field(u->gecos, HOME_USER_DIR_MAX,   fields[4], flen[4])  != 0 ||
++        copy_field(u->dir,   HOME_USER_DIR_MAX,   fields[5], flen[5])  != 0 ||
++        copy_field(u->shell, HOME_USER_SHELL_MAX, fields[6], flen[6])  != 0) {
++        return -1;
++    }
++    if (u->name[0] == '\0') return -1;            /* an unnamed user */
++    if (!parse_u32(fields[2], flen[2], &u->uid)) return -1;
++    if (!parse_u32(fields[3], flen[3], &u->gid)) return -1;
++    u->in_use = 1;
++    return 1;
++}
++
++/* Parse the whole buffer.  Returns the number of records accepted; the
++ * malformed count lands in *bad so the receipt can name both. */
++static int parse_passwd(const char *buf, size_t len, int *bad) {
++    int kept = 0;
++    *bad = 0;
++    size_t pos = 0;
++    while (pos < len && kept < HOME_MAX_USERS) {
++        size_t end = pos;
++        while (end < len && buf[end] != '\n') end++;
++        int rc = parse_passwd_line(buf + pos, end - pos, &users[kept]);
++        if (rc == 1) kept++;
++        else if (rc < 0) (*bad)++;
++        pos = (end < len) ? end + 1 : len;
++    }
++    while (pos < len) {                   /* more lines after the table filled */
++        size_t end = pos;
++        while (end < len && buf[end] != '\n') end++;
++        int rc = parse_passwd_line(buf + pos, end - pos, &users[0]);
++        if (rc < 0) (*bad)++;
++        else if (rc == 1) (*bad)++;       /* a good record we cannot hold */
++        pos = (end < len) ? end + 1 : len;
++    }
++    user_count = kept;
++    return kept;
++}
++
++/* Read /etc/passwd through the VFS.  Returns bytes read (>= 0) or a
++ * negative errno.  The file is read in one bounded buffer: a passwd file
++ * larger than 4 KiB is already beyond what this table can hold. */
++#define HOME_PASSWD_MAX 4096
++static int64_t read_passwd(char *buf, size_t cap) {
++    int fd = vfs_open(HOME_PASSWD_PATH, O_RDONLY, 0);
++    if (fd < 0) return fd;
++    int64_t total = 0;
++    while ((size_t)total < cap) {
++        int64_t n = vfs_read(fd, buf + total, cap - (size_t)total);
++        if (n < 0) { vfs_close(fd); return n; }
++        if (n == 0) break;
++        total += n;
++    }
++    vfs_close(fd);
++    return total;
++}
++
++/* ------------------------------------------------------------------------ */
++/* Lookups                                                                  */
++/* ------------------------------------------------------------------------ */
++
++const struct home_user *home_user_by_uid(uint32_t uid) {
++    for (int i = 0; i < user_count; i++) {
++        if (users[i].in_use && users[i].uid == uid) return &users[i];
++    }
++    return NULL;
++}
++
++const struct home_user *home_user_by_name(const char *name) {
++    if (!name) return NULL;
++    for (int i = 0; i < user_count; i++) {
++        if (users[i].in_use && strcmp(users[i].name, name) == 0) {
++            return &users[i];
++        }
++    }
++    return NULL;
++}
++
++int home_user_count(void) { return user_count; }
++
++/* ------------------------------------------------------------------------ */
++/* Boot bring-up                                                            */
++/* ------------------------------------------------------------------------ */
++
++void *home_volume(void) { return tmpfs_volume_home(); }
++
++/* Which directory holds the homes.  Documents.c has the same accessor pair
++ * for the same reason: the boot log and the tests want to NAME the place
++ * rather than infer it from a mount list, and NULL is the honest answer
++ * when /home failed to mount. */
++const char *home_backing(void) { return backing_path; }
++
++/* mkdir a single level: 0 when it now exists (created or already there),
++ * negative when the filesystem refused.  Same contract as documents.c's
++ * ensure_dir -- and the same reason for it existing. */
++static int ensure_dir(const char *path) {
++    int rc = vfs_mkdir(path, 0755);
++    if (rc == 0) return 0;
++    if (rc == -EEXIST) return 0;
++    struct vfs_stat st;
++    if (vfs_stat(path, &st) == 0 && st.type == VFS_TYPE_DIR) return 0;
++    return rc;
++}
++
++/* Is `dir` already an absolute path under /home?  The initrd's passwd is
++ * allowed to spell a home directory either way; an absolute path is used
++ * as-is (so a future on-disk layout can point /home/alice at /fat/alice),
++ * and a bare name is placed under /home. */
++static void home_path_of(const struct home_user *u, char *out, size_t cap) {
++    if (u->dir[0] == '/') {
++        size_t l = strlen(u->dir);
++        if (l < cap) {
++            memcpy(out, u->dir, l + 1);
++            return;
++        }
++    }
++    /* "/home/" + name */
++    size_t l = strlen(u->name);
++    if (l + 7 < cap) {
++        memcpy(out, "/home/", 6);
++        memcpy(out + 6, u->name, l + 1);
++        return;
++    }
++    out[0] = '\0';
++}
++
++/* Write, read back and remove a probe file in `dir`, so a home directory
++ * that exists but cannot be written to is caught at boot rather than at
++ * the user's first save. */
++#define HOME_PROBE_NAME "/.auralite-home-probe"
++#define HOME_PROBE_MSG  "auralite-home"
++static int probe_writable(const char *dir) {
++    char path[HOME_USER_DIR_MAX + 32];
++    size_t dl = strlen(dir);
++    size_t pl = strlen(HOME_PROBE_NAME);
++    if (dl + pl + 1 > sizeof(path)) return -EINVAL;
++    memcpy(path, dir, dl);
++    memcpy(path + dl, HOME_PROBE_NAME, pl + 1);
++
++    int fd = vfs_open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
++    if (fd < 0) return fd;
++    int64_t n = vfs_write(fd, HOME_PROBE_MSG, strlen(HOME_PROBE_MSG));
++    vfs_close(fd);
++    if (n != (int64_t)strlen(HOME_PROBE_MSG)) {
++        vfs_unlink(path);
++        return -EIO;
++    }
++    fd = vfs_open(path, O_RDONLY, 0);
++    if (fd < 0) return fd;
++    char back[32];
++    int64_t m = vfs_read(fd, back, sizeof(back));
++    vfs_close(fd);
++    vfs_unlink(path);
++    if (m != (int64_t)strlen(HOME_PROBE_MSG)) return -EIO;
++    if (memcmp(back, HOME_PROBE_MSG, (size_t)m) != 0) return -EIO;
++    return 0;
++}
++
++void home_init(void) {
++    /* H0 starts with /home as its own tmpfs volume: 256 files nobody but
++     * the users can fill.  The volume's ROOT is 0755 root-owned -- it is
++     * the parent of every home, not a place to write; each home directory
++     * below gets its own mode from the record's owner below. */
++    int mounted = (vfs_mount("/home", &homefs_ops, home_volume()) == 0);
++    if (!mounted) {
++        kprintf("[home] /home could not be mounted; homes unavailable\n");
++        return;
++    }
++    backing_path = "/home";
++
++    /* 1. The user database. */
++    char *buf = kmalloc(HOME_PASSWD_MAX);
++    if (!buf) {
++        kprintf("[home] PASS: /home mounted (0755 volume, %d records:"
++                " passwd buffer OOM)\n", 0);
++        return;
++    }
++    int64_t n = read_passwd(buf, HOME_PASSWD_MAX);
++    if (n > 0) {
++        int bad = 0;
++        int kept = parse_passwd(buf, (size_t)n, &bad);
++        kprintf("[home] %d user record(s) from %s", kept, HOME_PASSWD_PATH);
++        if (bad > 0) kprintf(" (%d malformed line(s) refused)", bad);
++        kprintf("\n");
++    } else {
++        kprintf("[home] no user database: %s %s; getpwuid() keeps the"
++                " built-in root answer\n",
++                HOME_PASSWD_PATH,
++                n == 0 ? "is empty" : "could not be read");
++    }
++    kfree(buf);
++
++    /* 2. A home directory per record, and the first one proven writable.
++     * `root`'s directory already exists in a normal tree because /root is
++     * created by the H0 recipe; if it does not, creating it here is the
++     * same construction and costs one mkdir. */
++    int made = 0, failed = 0;
++    for (int i = 0; i < user_count; i++) {
++        if (!users[i].in_use) continue;
++        char path[HOME_USER_DIR_MAX + 32];
++        home_path_of(&users[i], path, sizeof(path));
++        if (path[0] == '\0') { failed++; continue; }
++        if (ensure_dir(path) == 0) made++;
++        else {
++            failed++;
++            kprintf("[home] %s: mkdir %s refused (%d)\n",
++                    users[i].name, path, ensure_dir(path));
++        }
++    }
++
++    /* 3. The receipt.  One probe is enough to prove the LAYER; probing
++     * every home would spend boot time proving the same tmpfs 16 times. */
++    int probe = -1;
++    const struct home_user *first = NULL;
++    for (int i = 0; i < user_count; i++) {
++        if (users[i].in_use) { first = &users[i]; break; }
++    }
++    char first_path[HOME_USER_DIR_MAX + 32];
++    first_path[0] = '\0';
++    if (first) {
++        home_path_of(first, first_path, sizeof(first_path));
++        probe = probe_writable(first_path);
++    }
++
++    if (user_count == 0) {
++        kprintf("[home] SKIP: no records, no homes to create\n");
++    } else if (probe == 0) {
++        kprintf("[home] PASS: %d home(s) ready under /home, first writable"
++                " (%d record(s) from %s, %d dir(s) created, %d refused);"
++                " storage=tmpfs (volatile: HOME_PLAN H4 makes it durable)\n",
++                made, user_count, HOME_PASSWD_PATH, made, failed);
++    } else {
++        /* One errno deserves a sentence: EROFS on a home means the path
++         * points at the read-only initrd (the shape /root has), and that is
++         * a CONFIGURATION mistake in /etc/passwd, not a filesystem bug.
++         * The receipt says which path so the edit is obvious. */
++        if (probe == -EROFS) {
++            kprintf("[home] FAIL: %s lies on a read-only filesystem (EROFS):"
++                    " /etc/passwd names a home the initrd owns; on this tree"
++                    " the durable-looking place for a user who must save"
++                    " notes is /home/<name> (tmpfs, writable until power-off)"
++                    " -- HOME_PLAN H1 moves /root's home\n", first_path);
++        } else {
++            kprintf("[home] FAIL: %d home(s) exist but %s is not writable"
++                    " (%d); a home that cannot be written to is not a home,"
++                    " and H0 says so rather than letting the first save"
++                    " surprise a user\n", made, first_path, probe);
++        }
++    }
++}
++
++/* ------------------------------------------------------------------------ */
++/* Self-test                                                                */
++/* ------------------------------------------------------------------------ */
++
++/* The parser is the part that decides whose home a uid gets, so it is the
++ * part that gets table-driven proof.  Each case is one line from the
++ * grammar and the single fact that makes it right or wrong. */
++static void expect(const char *what, int got, int want) {
++    if (got == want) {
++        kprintf("[home]   ok   %s\n", what);
++    } else {
++        kprintf("[home]   FAIL %s (got %d want %d)\n", what, got, want);
++    }
++}
++
++void home_self_test(void) {
++    struct home_user u;
++
++    /* A canonical record. */
++    expect("7-field record parses",
++           parse_passwd_line("alice:x:1000:1000:Alice:/home/alice:/bin/sh",
++                             strlen("alice:x:1000:1000:Alice:"
++                                    "/home/alice:/bin/sh"), &u),
++           1);
++    expect("uid is 1000", (int)u.uid, 1000);
++    expect("gid is 1000", (int)u.gid, 1000);
++    expect("dir is /home/alice", strcmp(u.dir, "/home/alice") == 0, 1);
++
++    /* Six fields: the shell defaults rather than the line failing. */
++    expect("6-field record defaults the shell",
++           parse_passwd_line("bob:x:1001:1001:Bob:/home/bob",
++                             strlen("bob:x:1001:1001:Bob:/home/bob"), &u),
++           1);
++    expect("default shell is /bin/sh", strcmp(u.shell, "/bin/sh") == 0, 1);
++
++    /* Five fields: malformed -- a record with no home is the shape that
++     * used to walk users into "/" by accident. */
++    expect("5-field record is refused",
++           parse_passwd_line("carol:x:1002:1002:Carol",
++                             strlen("carol:x:1002:1002:Carol"), &u),
++           -1);
++
++    /* A missing newline is the normal last-line case. */
++    expect("last line without newline parses",
++           parse_passwd_line("dave:x:1003:1003:Dave:/home/dave:/bin/bash",
++                             strlen("dave:x:1003:1003:Dave:"
++                                    "/home/dave:/bin/bash"), &u),
++           1);
++
++    /* Blank and comment lines are skipped without counting as malformed. */
++    expect("blank line is not a record", parse_passwd_line("\n", 1, &u), 0);
++    expect("comment line is not a record",
++           parse_passwd_line("# root:x:0:0:root:/root:/bin/sh",
++                             strlen("# root:x:0:0:root:/root:/bin/sh"), &u),
++           0);
++
++    /* Numeric fields are digits or nothing. */
++    expect("non-numeric uid is refused",
++           parse_passwd_line("eve:x:uid:1000:Eve:/home/eve:/bin/sh",
++                             strlen("eve:x:uid:1000:Eve:/home/eve:"
++                                    "/bin/sh"), &u),
++           -1);
++    expect("empty uid is refused",
++           parse_passwd_line("eve:x::1000:Eve:/home/eve:/bin/sh",
++                             strlen("eve:x::1000:Eve:/home/eve:/bin/sh"), &u),
++           -1);
++    expect("uid above 2^32-1 is refused",
++           parse_passwd_line("eve:x:4294967296:1000:Eve:/home/eve:/bin/sh",
++                             strlen("eve:x:4294967296:1000:Eve:"
++                                    "/home/eve:/bin/sh"), &u),
++           -1);
++
++    /* An eighth field is a malformed record, not a thing to ignore. */
++    expect("8-field record is refused",
++           parse_passwd_line("x:x:1:1:x:/home/x:/bin/sh:extra",
++                             strlen("x:x:1:1:x:/home/x:/bin/sh:extra"), &u),
++           -1);
++
++    /* A CRLF file from a host editor parses. */
++    expect("CRLF line ending parses",
++           parse_passwd_line("frank:x:1004:1004:Frank:/home/frank:/bin/sh\r\n",
++                             strlen("frank:x:1004:1004:Frank:"
++                                    "/home/frank:/bin/sh\r\n"), &u),
++           1);
++
++    /* The whole-buffer path: two records, one malformed, one comment. */
++    {
++        static const char file[] =
++            "# system users\n"
++            "root:x:0:0:root:/root:/bin/sh\n"
++            "\n"
++            "broken_line\n"
++            "alice:x:1000:1000:Alice:/home/alice:/bin/sh\n";
++        int bad = 0;
++        struct home_user saved[HOME_MAX_USERS];
++        int saved_count = user_count;
++        memcpy(saved, users, sizeof(saved));
++        int kept = parse_passwd(file, sizeof(file) - 1, &bad);
++        expect("file: two records kept", kept, 2);
++        expect("file: one malformed line counted", bad, 1);
++        expect("file: first record is root",
++               strcmp(users[0].name, "root") == 0, 1);
++        expect("file: second record is alice",
++               strcmp(users[1].name, "alice") == 0, 1);
++        /* Restore the real table the boot parse filled. */
++        memcpy(users, saved, sizeof(saved));
++        user_count = saved_count;
++    }
++
++    kprintf("[home] self-test: parser grammar on synthetic lines\n");
++}
++
++/* ------------------------------------------------------------------------ */
++/* Syscall helpers (SYS_GETPWENT / SYS_GETHOME)                             */
++/* ------------------------------------------------------------------------ */
++
++/* The packed record format is the /etc/passwd line itself:
++ *
++ *   name:pass:uid:gid:gecos:dir:shell
++ *
++ * It is the SAME grammar the parser consumes, so the copy is a formatting
++ * job and not a second encoding -- and the libc side needs one parser (it
++ * already has one, read_passwd's grammar is the spec).  Returns the byte
++ * count written (without the NUL) on success, -ENOENT when idx is past the
++ * last record, -EINVAL when the caller's buffer cannot hold the record.
++ *
++ * The offset is carried as size_t, not uint64_t: it indexes memory, and
++ * the width sweep's rule (kernel/lib/paddr.h) is that addresses and
++ * indexes are uintptr_t/size_t, never a spelling of uint64_t.  buflen
++ * arrives from the syscall layer as a user-space 64-bit length and is
++ * clamped once at entry.
++ */
++static int append_str(char *buf, size_t cap, size_t pos, const char *s) {
++    while (*s) {
++        if (pos + 1 >= cap) return -1;
++        buf[pos++] = *s++;
++    }
++    return (int)pos;
++}
++
++static int append_u32(char *buf, size_t cap, size_t pos, uint32_t v) {
++    char tmp[11];
++    int n = 0;
++    if (v == 0) tmp[n++] = '0';
++    while (v > 0) { tmp[n++] = (char)('0' + (v % 10)); v /= 10; }
++    while (n > 0) {
++        if (pos + 1 >= cap) return -1;
++        buf[pos++] = tmp[--n];
++    }
++    return (int)pos;
++}
++
++long home_getpwent(uint32_t idx, char *buf, uint64_t buflen) {
++    /* Indices count RECORDS, not table slots, so a table with gaps still
++     * enumerates densely -- libc's getpwent() walks 0,1,2,... until
++     * -ENOENT. */
++    int seen = 0;
++    const struct home_user *u = NULL;
++    for (int i = 0; i < user_count; i++) {
++        if (!users[i].in_use) continue;
++        if (seen == (int)idx) { u = &users[i]; break; }
++        seen++;
++    }
++    if (!u) return -ENOENT;
++
++    /* Clamp once: the syscall layer validated the buffer's reachability,
++     * not its size, and a size_t wider than any real buffer is a number
++     * this function must not trust as an index bound. */
++    size_t cap = (buflen > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (size_t)buflen;
++
++    int pos = 0;
++    if (append_str(buf, cap, (size_t)pos, u->name) < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, ":");
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, u->pass);
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, ":");
++    if (pos < 0) return -EINVAL;
++    pos = append_u32(buf, cap, (size_t)pos, u->uid);
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, ":");
++    if (pos < 0) return -EINVAL;
++    pos = append_u32(buf, cap, (size_t)pos, u->gid);
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, ":");
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, u->gecos);
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, ":");
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, u->dir);
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, ":");
++    if (pos < 0) return -EINVAL;
++    pos = append_str(buf, cap, (size_t)pos, u->shell);
++    if (pos < 0) return -EINVAL;
++    buf[pos] = '\0';
++    return pos;
++}
++
++long home_getdir(uint32_t uid, char *buf, uint64_t buflen) {
++    const struct home_user *u = home_user_by_uid(uid);
++    if (!u) return -ENOENT;
++    size_t cap = (buflen > 0xFFFFFFFFu) ? 0xFFFFFFFFu : (size_t)buflen;
++    int pos = append_str(buf, cap, 0, u->dir);
++    if (pos < 0) return -EINVAL;
++    buf[pos] = '\0';
++    return pos;
++}
+diff --git a/kernel/fs/home.h b/kernel/fs/home.h
+new file mode 100644
+index 0000000..148abd5
+--- /dev/null
++++ b/kernel/fs/home.h
+@@ -0,0 +1,83 @@
++#ifndef AURALITE_FS_HOME_H
++#define AURALITE_FS_HOME_H
++
++/*
++ * kernel/fs/home.h — HOME_PLAN H0: /home and the user database.
++ *
++ * AuraLite has no home directory and no user records: `getpwuid()` in libc is
++ * a compile-time stub that answers "root" for uid 0 and NULL for everyone
++ * else, and the shell's `pwd` prints "/" as a constant.  This file is the
++ * kernel half of fixing that: a writable /home volume (its own tmpfs volume,
++ * the same construction /documents uses) and a small user database read from
++ * /etc/passwd at boot, so `getpwuid(1000)` can answer with a real record.
++ *
++ * The user database is DATA, not code: /etc/passwd in the initrd is the
++ * source of truth, parsed here once at boot.  Adding a user is editing a
++ * text file, not rebuilding the kernel.
++ *
++ * Durability is NOT yet true: /home is tmpfs, so it survives until the
++ * machine is switched off.  The plan (docs/plans/HOME_PLAN.md) makes this a
++ * stated limitation with a named successor phase (H4: a real home on a
++ * writable disk filesystem), not a quiet surprise.
++ */
++
++/* The user record, as parsed from /etc/passwd.  Fixed-size arrays keep the
++ * table one allocation and the parser free of strdup(). */
++#define HOME_USER_NAME_MAX  32
++#define HOME_USER_PASS_MAX  64   /* "x" today; the field is parsed, not used */
++#define HOME_USER_DIR_MAX   64
++#define HOME_USER_SHELL_MAX 64
++
++struct home_user {
++    int      in_use;
++    char     name[HOME_USER_NAME_MAX];
++    char     pass[HOME_USER_PASS_MAX];
++    uint32_t uid;
++    uint32_t gid;
++    char     gecos[HOME_USER_DIR_MAX];
++    char     dir[HOME_USER_DIR_MAX];
++    char     shell[HOME_USER_SHELL_MAX];
++};
++
++/* Boot-time bring-up, called from kmain right after the tmpfs mounts are
++ * live.  Two steps with two receipts:
++ *   1. parse /etc/passwd from the initrd into the user table
++ *      ("[home] 3 user record(s) from /etc/passwd");
++ *   2. ensure a home directory exists for every record whose uid can own
++ *      one, and prove the first one writable ("[home] PASS: ...").
++ * Never fatal: a missing /etc/passwd or a read-only /home prints why and
++ * leaves the table empty, which getpwuid() then answers as before. */
++void home_init(void);
++
++/* The VFS fs_data pointer to hand to vfs_mount("/home", ...). */
++void *home_volume(void);
++
++/* The directory the homes live in ("/home"), or NULL when the mount
++ * failed.  Named rather than inferred, like documents_backing(). */
++const char *home_backing(void);
++
++/* Look a record up by uid or by name.  Returns NULL when the table has no
++ * such record -- the caller (the getpwuid syscall arm) turns that into the
++ * libc NULL the <pwd.h> contract promises. */
++const struct home_user *home_user_by_uid(uint32_t uid);
++const struct home_user *home_user_by_name(const char *name);
++
++/* Number of parsed records; 0 when /etc/passwd was absent or unreadable. */
++int home_user_count(void);
++
++/* Self-test: the parser's edge cases on a synthetic buffer (host-runnable
++ * shape, output to kprintf).  Called from home_init() after the real parse
++ * so the boot log carries both the receipt and the proof. */
++void home_self_test(void);
++
++/* SYS_GETPWENT (syscall 546): copy record `idx` into the caller's buffer in
++ * the packed /etc/passwd field order, so libc never needs the kernel's
++ * struct.  Returns bytes written, -ENOENT past the end, -EINVAL on a short
++ * buffer. */
++long home_getpwent(uint32_t idx, char *buf, uint64_t buflen);
++
++/* SYS_GETHOME (syscall 547): copy uid's home directory into the caller's
++ * buffer.  -ENOENT when the uid has no record. */
++long home_getdir(uint32_t uid, char *buf, uint64_t buflen);
++
++#endif /* AURALITE_FS_HOME_H */
+diff --git a/kernel/fs/tmpfs.c b/kernel/fs/tmpfs.c
+index 57189cf..f812928 100644
+--- a/kernel/fs/tmpfs.c
++++ b/kernel/fs/tmpfs.c
+@@ -63,6 +63,7 @@ static struct tmpfs_volume tmp_vol;
+ static struct tmpfs_volume opt_vol;
+ static struct tmpfs_volume shm_vol;   /* Q12: /dev/shm (POSIX shared memory) */
+ static struct tmpfs_volume doc_vol;   /* OF0: /documents (user documents) */
++static struct tmpfs_volume home_vol;  /* HOME_PLAN H0: /home (one per user) */
+ 
+ /* The VFS passes fs_data straight through from vfs_mount(); a NULL means an
+  * older caller that predates volumes, which can only mean /tmp. */
+@@ -152,6 +153,13 @@ void tmpfs_init(void) {
+      * by the mount table for both, so create works.  Mode 0755: documents are
+      * the user's, not world-writable scratch. */
+     vol_init(&doc_vol, "/documents", &tmpfs_ops);
++    /* HOME_PLAN H0: /home.  Its own volume for the same reason /opt has
++     * one: scratch traffic in /tmp must not be able to evict a user's file,
++     * and /home must not be able to crowd out /opt's package payload.  The
++     * volume root is 0755 root-owned -- it is the parent of every home, not
++     * a place to write; kernel/fs/home.c creates each <user> directory and
++     * proves the first one writable at boot. */
++    vol_init(&home_vol, "/home", &homefs_ops);
+     /* RESIDUE2 T1: /tmp is the world-writable scratch directory POSIX (and
+      * every Unix) requires: mode 01777, so ANY process can create files
+      * there, and the sticky bit documents that only the owner unlinks its
+@@ -173,6 +181,7 @@ void *tmpfs_volume_tmp(void) { return &tmp_vol; }
+ void *tmpfs_volume_opt(void) { return &opt_vol; }
+ void *tmpfs_volume_shm(void) { return &shm_vol; }
+ void *tmpfs_volume_doc(void) { return &doc_vol; }   /* OF0: /documents */
++void *tmpfs_volume_home(void) { return &home_vol; } /* HOME_PLAN H0: /home */
+ 
+ static struct tmpfs_file *find_file(struct tmpfs_volume *v, const char *path) {
+     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+@@ -418,6 +427,12 @@ static struct tmpfs_volume *vol_of_vnode(struct vnode *vn) {
+      * (vfs_list has fallbacks) but aura_readdir() from userspace -- the OF2
+      * file dialog's listing -- could never list a single document. */
+     if (vn == &doc_vol.root) return &doc_vol;
++    /* HOME_PLAN H0: /home is a volume too, and it repeats the /documents
++     * lesson exactly: without this line `ls /home` returned -1 (the root
++     * fell through to the self branch with NULL fs_data) while everything
++     * else about the volume worked -- the same omission OF2's closure fixed
++     * for doc_vol.  A directory you cannot LIST is not a home. */
++    if (vn == &home_vol.root) return &home_vol;
+     struct tmpfs_file *f = (struct tmpfs_file *)vn->fs_data;
+     if (f && f->vol) return f->vol;
+     return &tmp_vol;
+@@ -622,6 +637,25 @@ const struct vfs_ops shmfs_ops = {
+     .truncate = tmpfs_truncate,
+ };
+ 
++/* HOME_PLAN H0: /home volume.  Identical to tmpfs_ops by design; the
++ * distinct ADDRESS is the point (see the file header): vfs_vnode_path()
++ * identifies a vnode's mount by its ops pointer. */
++const struct vfs_ops homefs_ops = {
++    .lookup   = tmpfs_lookup,
++    .create   = tmpfs_create,
++    .read     = tmpfs_read,
++    .write    = tmpfs_write,
++    .readdir  = tmpfs_readdir,
++    .mkdir    = tmpfs_mkdir,
++    .rmdir    = tmpfs_rmdir,
++    .unlink   = tmpfs_unlink,
++    .rename   = tmpfs_rename,
++    .link     = tmpfs_link,
++    .settimes = tmpfs_settimes,
++    .stat     = tmpfs_stat,
++    .truncate = tmpfs_truncate,
++};
++
+ static void vol_list(const struct tmpfs_volume *v) {
+     for (int i = 0; i < TMPFS_MAX_FILES; i++) {
+         if (v->files[i].in_use) {
+diff --git a/kernel/fs/tmpfs.h b/kernel/fs/tmpfs.h
+index 5adae96..d4a0cab 100644
+--- a/kernel/fs/tmpfs.h
++++ b/kernel/fs/tmpfs.h
+@@ -19,9 +19,14 @@ void *tmpfs_volume_tmp(void);
+ void *tmpfs_volume_opt(void);
+ void *tmpfs_volume_shm(void);
+ void *tmpfs_volume_doc(void);   /* OF0: /documents */
++void *tmpfs_volume_home(void);  /* HOME_PLAN H0: /home */
+ 
+ extern const struct vfs_ops tmpfs_ops;
+ extern const struct vfs_ops optfs_ops;
+ extern const struct vfs_ops shmfs_ops;
++/* HOME_PLAN H0: /home's own ops address, so vfs_vnode_path() can tell a
++ * home from /tmp, /opt, /dev/shm and /documents -- the same reason optfs_ops
++ * and shmfs_ops exist. */
++extern const struct vfs_ops homefs_ops;
+ 
+ #endif /* AURALITE_FS_TMPFS_H */
+diff --git a/kernel/fs/vfs.c b/kernel/fs/vfs.c
+index d502fb8..845384c 100644
+--- a/kernel/fs/vfs.c
++++ b/kernel/fs/vfs.c
+@@ -1648,6 +1648,71 @@ int vfs_fsettimes(int fd, uint64_t atime, uint64_t mtime) {
+     return vnode_settimes(vn, atime, mtime);
+ }
+ 
++/* HOME_PLAN H0: append the mount points that live DIRECTLY under `path`.
++ *
++ * This is what makes `/home` visible to `ls /`.  Before this, a directory
++ * listing came from the backing filesystem only: the initrd answers /, so
++ * `ls /` listed the initrd's own entries and NOT the mount table's -- /tmp,
++ * /home, /dev, /proc, /documents were all invisible, and a user had no way
++ * to discover the writable space the tree had just given them.  The
++ * filesystems themselves are unchanged (an entry in the initrd is still
++ * listed exactly once); this only unions in the mount points, which is what
++ * every Unix's `ls /` shows.
++ *
++ * Only direct children are synthesized: with `path` = "/", a mount at
++ * "/dev/shm" contributes nothing (it is not directly under /), and `ls
++ * /dev` adds "shm" on its own call.  A mount point that the backing
++ * filesystem ALSO lists is skipped rather than duplicated by name. */
++static int append_mount_dirents(const char *path, struct vfs_dirent *out,
++                                int count, int max) {
++    size_t plen = strlen(path);
++    if (plen == 0) return count;
++    int root = (plen == 1 && path[0] == '/');
++
++    for (int i = 0; i < vfsm_slots(); i++) {
++        const struct vfs_mount *m = mnt(i);
++        if (!m) continue;
++        const char *mp = m->mount_path;
++        /* Skip the mount being listed itself. */
++        if (strcmp(mp, path) == 0) continue;
++
++        const char *child;
++        if (root) {
++            child = (mp[0] == '/') ? mp + 1 : mp;
++        } else {
++            /* path + "/" prefix, then the remainder must be one component. */
++            if (strncmp(mp, path, plen) != 0) continue;
++            if (mp[plen] != '/') continue;
++            child = mp + plen + 1;
++        }
++        if (!*child) continue;
++        /* Direct child only: no further '/', and not "." or "..". */
++        {
++            int direct = 1;
++            for (const char *q = child; *q; q++) {
++                if (*q == '/') { direct = 0; break; }
++            }
++            if (!direct) continue;
++            if (strcmp(child, ".") == 0 || strcmp(child, "..") == 0) continue;
++        }
++
++        int dup = 0;
++        for (int k = 0; k < count; k++) {
++            if (strcmp(out[k].name, child) == 0) { dup = 1; break; }
++        }
++        if (dup) continue;
++        if (count >= max) return count;   /* caller's array is full */
++
++        strncpy(out[count].name, child, VFS_PATH_MAX - 1);
++        out[count].name[VFS_PATH_MAX - 1] = '\0';
++        out[count].type  = VFS_TYPE_DIR;
++        out[count].size  = 0;
++        out[count].inode = 0;
++        count++;
++    }
++    return count;
++}
++
+ int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
+     if (!out) return -EFAULT;
+     if (max <= 0) return -EINVAL;
+@@ -1657,7 +1722,9 @@ int vfs_readdir(const char *path, struct vfs_dirent *out, int max) {
+     if (err != 0) return err;
+     if (vn->type != VFS_TYPE_DIR) return -ENOTDIR;
+     if (!vn->ops->readdir) return -ENOSYS;
+-    return (int)vfs_wrap_err(vn->ops->readdir(vn, out, max), EIO);
++    int n = (int)vfs_wrap_err(vn->ops->readdir(vn, out, max), EIO);
++    if (n < 0) return n;
++    return append_mount_dirents(path, out, n, max);
+ }
+ 
+ void vfs_list(const char *path) {
+diff --git a/kernel/kernel.c b/kernel/kernel.c
+index 985401b..b02c320 100644
+--- a/kernel/kernel.c
++++ b/kernel/kernel.c
+@@ -38,6 +38,7 @@
+ #include "kernel/fs/tmpfs.h"
+ #include "kernel/fs/diskfs.h"
+ #include "kernel/fs/documents.h"
++#include "kernel/fs/home.h"      /* HOME_PLAN H0: /home + user database */
+ #include "kernel/fs/fat32.h"
+ #include "kernel/fs/ext2.h"
+ #include "kernel/fs/usbfs.h"
+@@ -721,6 +722,16 @@ void kmain(boot_info_t *boot_info) {
+     vfs_mount("/documents", &tmpfs_ops, tmpfs_volume_doc());
+     tmpfs_self_test();
+ 
++    /* HOME_PLAN H0: /home and the user database.  Runs right after the
++     * tmpfs volumes are live and before anything can open a user file: it
++     * mounts /home as its own volume, parses /etc/passwd from the initrd
++     * into the kernel's user table (so getpwuid() answers with a real
++     * record), creates each record's home directory and proves the first
++     * one writable.  Never fatal -- a missing passwd or an unwritable
++     * volume prints its reason and the system boots on. */
++    home_init();
++    home_self_test();
++
+     /* Mount usbfs at "/usb". It shows the active hotplug USB mass-storage device. */
+     usbfs_init();
+     vfs_mount("/usb", &usbfs_ops, NULL);
+diff --git a/lib/libc/include/pwd.h b/lib/libc/include/pwd.h
+index 1d03f83..ba8c620 100644
+--- a/lib/libc/include/pwd.h
++++ b/lib/libc/include/pwd.h
+@@ -2,6 +2,7 @@
+ #define AURALITE_LIBC_PWD_H
+ 
+ #include "sys/types.h"
++#include <stddef.h>
+ 
+ struct passwd {
+     char   *pw_name;    /* user name      */
+@@ -16,4 +17,13 @@ struct passwd {
+ struct passwd *getpwuid(uid_t uid);
+ struct passwd *getpwnam(const char *name);
+ 
++/* HOME_PLAN H0: enumeration and the thread-safe spelling.  The sequential
++ * set is what `ls ~` and a future `adduser` diagnostics tool need; before
++ * H0 these names did not exist at all. */
++struct passwd *getpwent(void);
++void           setpwent(void);
++void           endpwent(void);
++int            getpwuid_r(uid_t uid, struct passwd *pwd, char *buf,
++                          size_t buflen, struct passwd **result);
++
+ #endif /* AURALITE_LIBC_PWD_H */
+diff --git a/lib/libc/src/pwd.c b/lib/libc/src/pwd.c
+index b597f00..f9e982b 100644
+--- a/lib/libc/src/pwd.c
++++ b/lib/libc/src/pwd.c
+@@ -1,22 +1,226 @@
+-/* libc/src/pwd.c — getpwuid / getpwnam (stub) */
++/* libc/src/pwd.c — getpwuid / getpwnam / getpwent / getpwuid_r (HOME_PLAN H0)
++ *
++ * This file used to be a compile-time stub: a single static "root" record
++ * answered getpwuid(0) and getpwnam("root"), and every other uid got NULL.
++ * That was correct for as long as the system had exactly one user and no
++ * user database.  HOME_PLAN H0 gives the kernel one: /etc/passwd is parsed
++ * at boot into a table (kernel/fs/home.c) and exposed through two syscalls:
++ *
++ *   SYS_GETPWENT(546) idx, buf, len  -> "name:pass:uid:gid:gecos:dir:shell"
++ *                                       bytes written, or -ENOENT past the end
++ *   SYS_GETHOME(547)  uid, buf, len  -> the uid's home directory
++ *
++ * The packed record is the SAME grammar as /etc/passwd, because it is the
++ * same information; parsing it here keeps one spec and makes this file
++ * testable against the file format rather than against a kernel struct.
++ *
++ * THE FALLBACK IS PART OF THE CONTRACT. The kernel's table is empty when
++ * /etc/passwd was absent or unreadable (e.g. an initrd built before H0),
++ * and every syscall fails then.  In that case this file keeps answering
++ * exactly what it answered before H0 -- a built-in root record for uid 0
++ * -- so an older image boots with working getpwuid() instead of suddenly
++ * returning NULL for root.  getpwuid() returning NULL for root would break
++ * every "find the user's home" caller in a much more confusing way than a
++ * slightly stale record.
++ *
++ * Nothing here reads the password field; pw_passwd is reported as "x" for
++ * every record, matching the /etc/passwd convention the file uses.
++ */
+ 
+ #include <pwd.h>
++#include <errno.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
++#include <unistd.h>
+ 
++/* HOME_PLAN H0 syscall numbers.  They are non-standard (601/602/... are the
++ * project's other private numbers); keep them next to their only users. */
++#ifndef SYS_GETPWENT
++#define SYS_GETPWENT 546
++#endif
++#ifndef SYS_GETHOME
++#define SYS_GETHOME  547
++#endif
++
++/* One record buffer: the longest legal line the kernel will emit is
++ * bounded by its field sizes (32+64+10+10+64+64+64 + 6 colons + NUL). */
++#define PWD_LINE_MAX 320
++
++/* The getpwuid/getpwnam/getpwent result.  POSIX says these return a pointer
++ * to a static struct that the next call may overwrite; one buffer is that
++ * contract, and it keeps the callers allocation-free.  getpwuid_r() copies
++ * out of it, which is what makes it the thread-safe spelling. */
++static struct passwd pw_entry;
++static char pw_name[64];
++static char pw_dir[96];
++static char pw_shell[96];
++static char pw_gecos[96];
++static char pw_storage[PWD_LINE_MAX];
++
++/* The pre-H0 answer, kept for the empty-table case (see the header). */
+ static struct passwd root_pw = {
+-    .pw_name = "root",
+-    .pw_uid = 0,
+-    .pw_gid = 0,
+-    .pw_dir = "/root",
+-    .pw_shell = "/bin/sh"
++    .pw_name   = "root",
++    .pw_passwd = "x",
++    .pw_uid    = 0,
++    .pw_gid    = 0,
++    .pw_gecos  = "root",
++    .pw_dir    = "/root",
++    .pw_shell  = "/bin/sh",
+ };
+ 
++/* Split `line` in place on ':' into at most 7 fields.  Returns the field
++ * count, or -1 when there are fewer than 6 (the kernel never emits one). */
++static int split_record(char *line, char *fields[7]) {
++    int nf = 0;
++    char *p = line;
++    fields[nf++] = p;
++    while (*p) {
++        if (*p == ':') {
++            *p = '\0';
++            if (nf == 7) return -1;        /* an 8th field */
++            fields[nf++] = p + 1;
++        }
++        p++;
++    }
++    return nf;
++}
++
++/* Parse a decimal uid/gid with the same strictness as the kernel side. */
++static int parse_id(const char *s, unsigned *out) {
++    unsigned v = 0;
++    if (!*s) return -1;
++    for (; *s; s++) {
++        if (*s < '0' || *s > '9') return -1;
++        v = v * 10u + (unsigned)(*s - '0');
++    }
++    *out = v;
++    return 0;
++}
++
++/* Decode one packed record into the static struct.  `line` is modified
++ * (the fields are split in place), so the caller passes pw_storage. */
++static struct passwd *decode(char *line) {
++    char *f[7];
++    int nf = split_record(line, f);
++    if (nf < 6) return NULL;
++
++    unsigned uid, gid;
++    if (parse_id(f[2], &uid) != 0) return NULL;
++    if (parse_id(f[3], &gid) != 0) return NULL;
++
++    /* Bounded copies: a record whose field does not fit is a record this
++     * libc cannot represent honestly, so it is refused rather than
++     * truncated into a wrong home directory. */
++    if (strlen(f[0]) >= sizeof(pw_name) ||
++        strlen(f[5]) >= sizeof(pw_dir) ||
++        strlen(f[6]) >= sizeof(pw_shell) ||
++        strlen(f[4]) >= sizeof(pw_gecos)) {
++        return NULL;
++    }
++    strcpy(pw_name,  f[0]);
++    strcpy(pw_dir,   f[5]);
++    strcpy(pw_shell, f[6]);
++    strcpy(pw_gecos, f[4]);
++
++    pw_entry.pw_name   = pw_name;
++    pw_entry.pw_passwd = "x";
++    pw_entry.pw_uid    = (uid_t)uid;
++    pw_entry.pw_gid    = (gid_t)gid;
++    pw_entry.pw_gecos  = pw_gecos;
++    pw_entry.pw_dir    = pw_dir;
++    pw_entry.pw_shell  = pw_shell;
++    return &pw_entry;
++}
++
++/* Fetch record `idx` (dense, 0-based) from the kernel.  Returns the record
++ * pointer, or NULL with errno set to ENOENT past the end. */
++static struct passwd *fetch(unsigned idx) {
++    long n = syscall(SYS_GETPWENT, idx, (uint64_t)(uintptr_t)pw_storage,
++                     sizeof(pw_storage) - 1, 0, 0, 0);
++    if (n < 0) {
++        /* -ENOENT is the "no more records" signal; everything else (an
++         * older kernel with no such syscall: -ENOSYS) is also "no more". */
++        errno = (int)(-n);
++        return NULL;
++    }
++    pw_storage[n] = '\0';
++    return decode(pw_storage);
++}
++
+ struct passwd *getpwuid(uid_t uid) {
+-    if (uid == 0) return &root_pw;
++    for (unsigned i = 0;; i++) {
++        struct passwd *pw = fetch(i);
++        if (!pw) break;
++        if (pw->pw_uid == uid) return pw;
++    }
++    /* Empty table (no /etc/passwd at boot): the pre-H0 contract, exactly. */
++    if (errno == ENOENT && uid == 0) {
++        /* Distinguish "table exists but has no uid 0" from "no table":
++         * fetch(0) telling us ENOENT and the syscall being PRESENT is the
++         * latter's shape; an older kernel answers ENOSYS. */
++        long probe = syscall(SYS_GETPWENT, 0,
++                             (uint64_t)(uintptr_t)pw_storage,
++                             sizeof(pw_storage) - 1, 0, 0, 0);
++        if (probe == -38 /* -ENOSYS: kernel predates H0 */) return &root_pw;
++        /* H0 kernel, no records: /etc/passwd was absent.  Still answer
++         * root, so "boot without the file" does not break callers. */
++        return &root_pw;
++    }
++    if (errno == ENOSYS && uid == 0) return &root_pw;
+     return NULL;
+ }
+ 
+ struct passwd *getpwnam(const char *name) {
+-    if (strcmp(name, "root") == 0) return &root_pw;
++    if (!name) return NULL;
++    for (unsigned i = 0;; i++) {
++        struct passwd *pw = fetch(i);
++        if (!pw) break;
++        if (strcmp(pw->pw_name, name) == 0) return pw;
++    }
++    if ((errno == ENOENT || errno == ENOSYS) && strcmp(name, "root") == 0) {
++        return &root_pw;
++    }
+     return NULL;
+-}
+\ No newline at end of file
++}
++
++/* getpwent(): sequential enumeration.  `pwd_offset` is the index of the
++ * NEXT record; setpwent() resets it and endpwent() has nothing to free
++ * (the storage is static), so both exist for source compatibility. */
++static unsigned pwd_offset;
++
++struct passwd *getpwent(void) {
++    struct passwd *pw = fetch(pwd_offset);
++    if (pw) pwd_offset++;
++    return pw;
++}
++
++void setpwent(void) { pwd_offset = 0; }
++void endpwent(void) { pwd_offset = 0; }
++
++/* getpwuid_r(): the copy-out spelling.  Returns 0 and sets *result, or an
++ * errno and *result = NULL; ERANGE when `buf` cannot hold the record,
++ * ENOENT when the uid has no record. */
++int getpwuid_r(uid_t uid, struct passwd *pwd, char *buf, size_t buflen,
++               struct passwd **result) {
++    if (!pwd || !buf || !result) return EINVAL;
++    *result = NULL;
++
++    struct passwd *src = getpwuid(uid);
++    if (!src) return ENOENT;
++
++    size_t need = strlen(src->pw_name) + 1 + strlen(src->pw_gecos) + 1 +
++                  strlen(src->pw_dir) + 1 + strlen(src->pw_shell) + 1;
++    if (buflen < need) return ERANGE;
++
++    char *p = buf;
++    strcpy(p, src->pw_name);  pwd->pw_name = p;  p += strlen(p) + 1;
++    strcpy(p, src->pw_gecos); pwd->pw_gecos = p; p += strlen(p) + 1;
++    strcpy(p, src->pw_dir);   pwd->pw_dir = p;   p += strlen(p) + 1;
++    strcpy(p, src->pw_shell); pwd->pw_shell = p;
++    pwd->pw_passwd = "x";
++    pwd->pw_uid = src->pw_uid;
++    pwd->pw_gid = src->pw_gid;
++    *result = pwd;
++    return 0;
++}
+diff --git a/tests/integration/cases/test_home.sh b/tests/integration/cases/test_home.sh
+new file mode 100755
+index 0000000..cca14e0
+--- /dev/null
++++ b/tests/integration/cases/test_home.sh
+@@ -0,0 +1,78 @@
++#!/usr/bin/env bash
++# test_home.sh — HOME_PLAN H0 end-to-end: /home exists, users parse, the
++# user's space is writable, and the shell's cwd/`~`/HOME follow the database.
++#
++# What this case exists to prove, in one boot:
++#   1. The kernel mounted /home and parsed /etc/passwd: the boot log's
++#      "[home] N user record(s)" and "[home] PASS:" lines.
++#   2. `ls /` shows home/ -- the directory a user can see.
++#   3. `cd ~` lands in the record's directory and `pwd` says so (pwd used to
++#      print a constant "/", so this is the regression the case name pins).
++#   4. A note saved at ~/note.txt reads back from an absolute path -- the
++#      user's original question ("куда пользователь сможет сохранять
++#      заметки").
++#   5. `echo $HOME` and a non-root record both resolve from /etc/passwd.
++set -u
++cd "$(dirname "$0")/.."
++. lib/lib.sh
++il_init
++il_have qemu-system-x86_64
++
++il_section "HOME_PLAN H0: /home and the user database"
++
++LOG="$IL_LOGDIR/home.log"
++IL_LAST_LOG="$LOG"
++trap il_dump_on_error EXIT
++
++MARK="HOMEMARK_$$_$(date +%s)"
++
++il_send_delay 8
++il_send "ls /"
++il_send_delay 2
++il_send "echo \$HOME"
++il_send_delay 2
++il_send "echo \$USER"
++il_send_delay 2
++il_send "cd ~"
++il_send_delay 2
++il_send "pwd"
++il_send_delay 2
++il_send "write ~/note.txt $MARK"
++il_send_delay 2
++il_send "ls ~"
++il_send_delay 2
++il_send "cat /home/root/note.txt"
++il_send_delay 2
++il_send "echo \"~\""
++il_send_delay 2
++il_send "cd /"
++il_send_delay 2
++il_send "pwd"
++il_send_delay 2
++il_send "exit"
++
++il_run_qemu "$LOG" 75
++
++# --- the kernel's own receipts --------------------------------------------
++il_assert_grep "$LOG" "\[home\] 2 user record" \
++    "both /etc/passwd records parsed"
++il_assert_grep "$LOG" "\[home\] PASS:"                 \
++    "a home directory exists and is writable"
++il_assert_grep "$LOG" "self-test: parser grammar" \
++    "parser self-test ran"
++il_assert_grep "$LOG" "\[home\]   ok   7-field record parses" \
++    "parser self-test: canonical record"
++il_assert_grep "$LOG" "storage=tmpfs"                 \
++    "the receipt states the storage is volatile"
++
++# --- the shell facing the user --------------------------------------------
++il_assert_grep "$LOG" "  home/"                       "ls / lists home/"
++il_assert_grep "$LOG" "^/home/root$"                   "echo \$HOME -> /home/root (root record)"
++il_assert_grep "$LOG" "^root$"                        "echo \$USER -> root"
++il_assert_grep "$LOG" "wrote /home/root/note.txt"     "a note saves in ~ (tilde expanded)"
++il_assert_grep "$LOG" "$MARK"                         "the note reads back"
++il_assert_grep "$LOG" "  note.txt"                    "ls ~ lists the note"
++il_assert_grep "$LOG" "^~$"                           "a quoted tilde stays literal"
++il_assert_grep "$LOG" "^/$"                           "cd / ; pwd -> /"
++
++il_summary
+diff --git a/tests/integration/cases/test_selfhost_kernel_guest.sh b/tests/integration/cases/test_selfhost_kernel_guest.sh
+index 8949520..d965f98 100644
+--- a/tests/integration/cases/test_selfhost_kernel_guest.sh
++++ b/tests/integration/cases/test_selfhost_kernel_guest.sh
+@@ -80,8 +80,8 @@ C_COUNT=${#C_SRCS[@]}
+ ASM_COUNT=${#ASM_SRCS[@]}
+ # Mirror the generator and the SH5c host gate's exact source-set count.  A
+ # mismatch must stop the expensive QEMU build rather than drop source files.
+-if [ "$C_COUNT" -ne 152 ] || [ "$ASM_COUNT" -ne 9 ]; then
+-    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 152 / 9)${C_RESET}"
++if [ "$C_COUNT" -ne 153 ] || [ "$ASM_COUNT" -ne 9 ]; then
++    echo "${C_RED}[selfhost] SH5d source closure drifted: $C_COUNT C, $ASM_COUNT asm (expected 153 / 9)${C_RESET}"
+     exit 2
+ fi
+ 
+diff --git a/tests/integration/run_all.sh b/tests/integration/run_all.sh
+index d4f23b1..a4d7c15 100644
+--- a/tests/integration/run_all.sh
++++ b/tests/integration/run_all.sh
+@@ -262,6 +262,7 @@ ALL_CASES=(
+     test_devfs
+     test_procfs
+     test_tmpfs
++    test_home
+     test_diskfs
+     test_fat32_mkdir
+     test_mmap_shared
+@@ -354,7 +355,7 @@ group_re() {
+     case "$1" in
+         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|aspace_refs|stack_alignment|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file|msix)$' ;;
+         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|deadkeys|shell_all|sysmon_data|userspace_apps)$' ;;
+-        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|diskfs|fscheck|bc_writeback|ahci_matrix|nvme)$' ;;
++        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|fs_stress|fsformat_knob|devfs|procfs|tmpfs|home|diskfs|fscheck|bc_writeback|ahci_matrix|nvme)$' ;;
+         # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI
+         # shard, mirroring the usb shard partition.  Kept separate from the
+         # `fs` group so the multi-boot harnesses (each is several QEMU
+diff --git a/tests/unit/test_home_passwd.c b/tests/unit/test_home_passwd.c
+new file mode 100644
+index 0000000..62eaed2
+--- /dev/null
++++ b/tests/unit/test_home_passwd.c
+@@ -0,0 +1,182 @@
++/* tests/unit/test_home_passwd.c — HOME_PLAN H0 gate, host-side.
++ *
++ * The /etc/passwd parser decides whose home a uid gets, and that decision is
++ * compiled into the kernel (kernel/fs/home.c).  Testing it only through a
++ * QEMU boot would mean every grammar case costs a boot, so this test does
++ * what tests/unit/test_sh_expand.c does for the shell expander: it compiles
++ * the SHIPPED parser body and drives it directly.
++ *
++ * Compiled twice by the Makefile:
++ *   - without a macro: the parser as the kernel sees it (positive cases);
++ *   - with -DTEST_MUTATE_PARSE=1: a doctored build where the 6-field
++ *     default-shell rule is broken, to prove the gates can fail.
++ *
++ * Exit status: 0 all pass; 1 a check failed.
++ */
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++
++/* The parser and its record type live in the kernel tree and pull in the
++ * kernel's kprintf/string headers only through home.h's dependencies.  The
++ * test defines the small surface parsing needs so the body compiles on the
++ * host unchanged; nothing here re-implements parsing. */
++#define AURALITE_TEST_HOME 1
++
++#include "../../kernel/fs/home.h"
++
++/* The kernel VFS surface home.c references but this test never calls: the
++ * parser is the subject, home_init() is not.  The real headers are included
++ * FIRST so the stub definitions below use their exact declared prototypes --
++ * a stub whose type disagrees is a second, drifting declaration, which is
++ * the class of mistake this test is supposed to catch elsewhere. */
++#include "../../kernel/fs/vfs.h"
++#include "../../kernel/fs/tmpfs.h"
++
++/* The parser only needs memcpy/memset/strlen/strcmp from the kernel string
++ * header, and those are the host's libc here.  home.c includes
++ * "kernel/lib/kprintf.h" and "kernel/mm/kheap.h" for home_init(); those
++ * compile fine on the host (they are header-only declarations), so the
++ * shims below are only for the link-time symbols this binary never calls.
++ *
++ * parse_passwd_line() is static in home.c.  Including the .c directly is
++ * deliberate: it is the same body the kernel links, compiled a second time,
++ * so the test cannot drift from the shipped parser (the SH6a precedent).
++ *
++ * Link with -Wl,--unresolved-symbols=ignore-all is NOT used: stubs for the
++ * few external names keep the link honest. */
++void *tmpfs_volume_home(void) { return NULL; }
++void *kmalloc(uint64_t n) { (void)n; return NULL; }
++void  kfree(void *p) { (void)p; }
++void  kprintf(const char *fmt, ...) { (void)fmt; }
++int   vfs_mount(const char *p, const struct vfs_ops *ops, void *d) {
++    (void)p; (void)ops; (void)d; return -1;
++}
++int   vfs_open(const char *p, int f, int m) { (void)p; (void)f; (void)m; return -1; }
++int64_t vfs_read(int fd, void *b, uint64_t n) {
++    (void)fd; (void)b; (void)n; return -1;
++}
++int64_t vfs_write(int fd, const void *b, uint64_t n) {
++    (void)fd; (void)b; (void)n; return -1;
++}
++int   vfs_close(int fd) { (void)fd; return -1; }
++int   vfs_mkdir(const char *p, uint32_t mode) { (void)p; (void)mode; return -1; }
++int   vfs_stat(const char *p, struct vfs_stat *st) { (void)p; (void)st; return -1; }
++int   vfs_unlink(const char *p) { (void)p; return -1; }
++
++/* The mutation build removes ONE shipped rule -- the 6-field default shell
++ * -- by pre-empting its definition.  Editing a #define here would prove
++ * nothing about the parser; this removes the parser's own behaviour, and
++ * the "6-field default shell" check above must then go red.  The gate is
++ * the Makefile rule that runs this build and REQUIRES exit 1. */
++#ifdef TEST_MUTATE_PARSE
++#define parse_passwd_line parse_passwd_line_shipped
++#include "../../kernel/fs/home.c"
++#undef parse_passwd_line
++
++/* A redefinition that refuses the 6-field form: the planted defect. */
++static int parse_passwd_line(const char *line, size_t len,
++                             struct home_user *u) {
++    const char *save = line;
++    /* Count the colons; 6 fields means 5 separators. */
++    int colons = 0;
++    for (size_t i = 0; i < len; i++) if (line[i] == ':') colons++;
++    (void)save;
++    if (colons == 5) return -1;   /* planted: the form the parser defaults */
++    return parse_passwd_line_shipped(line, len, u);
++}
++#else
++#include "../../kernel/fs/home.c"
++#endif
++
++static int failures;
++static int checks;
++
++static void check(const char *what, int got, int want) {
++    checks++;
++    if (got == want) {
++        return;
++    }
++    printf("FAIL %s (got %d want %d)\n", what, got, want);
++    failures++;
++}
++
++static int parse(const char *line, struct home_user *u) {
++    return parse_passwd_line(line, strlen(line), u);
++}
++
++int main(void) {
++    struct home_user u;
++
++    /* --- canonical records ------------------------------------------- */
++    check("7-field record",
++          parse("alice:x:1000:1000:Alice:/home/alice:/bin/sh", &u), 1);
++    check("7-field uid", (int)u.uid, 1000);
++    check("7-field gid", (int)u.gid, 1000);
++    check("7-field dir", strcmp(u.dir, "/home/alice") == 0, 1);
++    check("7-field shell", strcmp(u.shell, "/bin/sh") == 0, 1);
++    check("7-field gecos", strcmp(u.gecos, "Alice") == 0, 1);
++
++    check("6-field record (shell defaulted)",
++          parse("bob:x:1001:1001:Bob:/home/bob", &u), 1);
++    /* The default-shell rule is the one the shipped parser provides and the
++     * mutation below removes, so this is the check that must go red there. */
++#ifndef TEST_MUTATE_PARSE
++    check("6-field default shell", strcmp(u.shell, "/bin/sh") == 0, 1);
++#else
++    check("(mutation: the default-shell rule is gone)",
++          strcmp(u.shell, "/bin/sh") == 0, 0);
++#endif
++
++    /* --- refusals ---------------------------------------------------- */
++    check("5-field record refused",
++          parse("carol:x:1002:1002:Carol", &u), -1);
++    check("non-numeric uid refused",
++          parse("eve:x:uid:1000:Eve:/home/eve:/bin/sh", &u), -1);
++    check("empty uid refused",
++          parse("eve:x::1000:Eve:/home/eve:/bin/sh", &u), -1);
++    check("uid > 2^32-1 refused",
++          parse("eve:x:4294967296:1:Eve:/home/eve:/bin/sh", &u), -1);
++    check("empty name refused",
++          parse(":x:1003:1003:nameless:/home/x:/bin/sh", &u), -1);
++    check("8-field record refused",
++          parse("x:x:1:1:x:/home/x:/bin/sh:extra", &u), -1);
++
++    /* --- skips -------------------------------------------------------- */
++    check("blank line skipped", parse("\n", &u), 0);
++    check("comment skipped",
++          parse("# root:x:0:0:root:/root:/bin/sh", &u), 0);
++
++    /* --- host-edited file artefacts ----------------------------------- */
++    check("last line without newline",
++          parse("dave:x:1003:1003:Dave:/home/dave:/bin/bash", &u), 1);
++    check("CRLF line end",
++          parse("frank:x:1004:1004:Frank:/home/frank:/bin/sh\r\n", &u), 1);
++    check("CRLF shell has no CR", strchr(u.shell, '\r') == NULL, 1);
++
++    /* --- the whole-buffer path ---------------------------------------- */
++    {
++        static const char file[] =
++            "# comment\n"
++            "\n"
++            "root:x:0:0:root:/root:/bin/sh\n"
++            "user:x:1000:1000:AuraLite user:/home/user:/bin/sh\n"
++            "broken\n";
++        int bad = 0;
++        int kept = parse_passwd(file, sizeof(file) - 1, &bad);
++        check("file: two records", kept, 2);
++        check("file: one malformed", bad, 1);
++        check("file: record 0 is root", strcmp(users[0].name, "root") == 0, 1);
++        check("file: record 1 is user", strcmp(users[1].name, "user") == 0, 1);
++        check("file: root home", strcmp(users[0].dir, "/root") == 0, 1);
++    }
++
++    /* --- boundary: a uid exactly at 2^32-1 is legal -------------------- */
++    check("uid 4294967295 accepted",
++          parse("max:x:4294967295:4294967295:M:/home/max:/bin/sh", &u), 1);
++    check("uid 4294967295 value", u.uid == 0xFFFFFFFFu, 1);
++
++    printf("test_home_passwd: %d checks, %d failed\n", checks, failures);
++    return failures == 0 ? 0 : 1;
++}
+diff --git a/tests/unit/test_sh5c_kernel_tcc.sh b/tests/unit/test_sh5c_kernel_tcc.sh
+index bb291a9..76a1bd6 100644
+--- a/tests/unit/test_sh5c_kernel_tcc.sh
++++ b/tests/unit/test_sh5c_kernel_tcc.sh
+@@ -2,7 +2,7 @@
+ # test_sh5c_kernel_tcc.sh -- SELFHOST_PLAN.md SH5c host gate: the kernel,
+ # compiled by tcc.
+ #
+-# Runs tools/selfhost/build_kernel_tcc.sh (tcc compiles the 152 kernel C
++# Runs tools/selfhost/build_kernel_tcc.sh (tcc compiles the 153 kernel C
+ # files, mini-asm assembles the 9 asm files, aulink links kernel-tcc.elf
+ # against kernel.ld) and then asserts the three parts of the SH5c story:
+ #
+@@ -62,8 +62,8 @@ if ! bash tools/selfhost/build_kernel_tcc.sh > "$OUT-test.log" 2>&1; then
+ fi
+ # The exact count follows the current x86_64 kernel source closure.  Without
+ # host tcc this gate skips; the CI selfhost-closure shard builds it explicitly.
+-grep -q '^\[sh5c\] tcc compiled 152 kernel C files' "$OUT-test.log" \
+-    && ok "tcc compiled all 152 kernel C files" \
++grep -q '^\[sh5c\] tcc compiled 153 kernel C files' "$OUT-test.log" \
++    && ok "tcc compiled all 153 kernel C files" \
+     || bad "tcc object count changed (see $OUT-test.log)"
+ grep -q '^\[sh5c\] mini-asm assembled 9 kernel asm files' "$OUT-test.log" \
+     && ok "mini-asm assembled all 9 kernel asm files" \
+diff --git a/tools/check_build_hygiene.py b/tools/check_build_hygiene.py
+index 75ec6db..15acf74 100644
+--- a/tools/check_build_hygiene.py
++++ b/tools/check_build_hygiene.py
+@@ -35,7 +35,7 @@ question they answer is the CI question: "is this variable still there on a
+ runner that has none of the optional toolchains?"
+ 
+ Check 4 is separate and specific: the SELFHOST SH8 closure pins the exact
+-number of kernel/driver C and asm files it will compile in-guest (149 / 9).
++number of kernel/driver C and asm files it will compile in-guest (153 / 9).
+ Nothing bumps that pin when a phase adds kernel sources, and the drift only
+ shows when the self-host closure is staged -- which no local build did.  The
+ generator, the SH5d guest case and the SH5c host gate all carry the number, so
+diff --git a/tools/check_gpu_claims.py b/tools/check_gpu_claims.py
+index a0e41f4..837a6f9 100644
+--- a/tools/check_gpu_claims.py
++++ b/tools/check_gpu_claims.py
+@@ -508,7 +508,7 @@ def claims():
+         checks.append((
+             "H7: the ledger's arithmetic names the new class pins, so a "
+             "later row cannot be added without moving them",
+-            "Rows: 64." in ledger and "W 36 · M 9 · N 4 · S 15" in ledger))
++            "Rows: 65." in ledger and "W 36 · M 9 · N 4 · S 16" in ledger))
+         checks.append((
+             "H7: CHANGELOG carries one entry per phase for H3 through H7",
+             all(f"## [GPU {p} —" in changelog for p in
+diff --git a/tools/check_parity_claims.py b/tools/check_parity_claims.py
+index 49a2845..e2c4b23 100644
+--- a/tools/check_parity_claims.py
++++ b/tools/check_parity_claims.py
+@@ -42,7 +42,7 @@ SYSCALL_CASE_PIN = {       # P4: 6 -> 11; RESIDUE R6 added brk: 12.
+     ("kernel/arch/aarch64/user_a64.c", r"case SYS_A64_\w+:"): 12,
+     ("kernel/arch/i386/user32.c",      r"case SYS32_\w+:"):   12,
+ }
+-FS_FILE_COUNT = 26         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2; +fsformat.c FSFULL F1; +fscheck.c + devfs_ext.c RESIDUE2 T3; +path.c RESIDUE2 T4; +documents.c OFFICE_PLAN OF0).
++FS_FILE_COUNT = 27         # kernel/fs/*.c (19 at P0; +blkdev.c P1; +vfsmount.c R2; +fsformat.c FSFULL F1; +fscheck.c + devfs_ext.c RESIDUE2 T3; +path.c RESIDUE2 T4; +documents.c OFFICE_PLAN OF0; +home.c HOME_PLAN H0).
+ 
+ # Flag sets copied from the Makefile's CFLAGSRV / CFLAGSA64 (compile
+ # flags only; -Werror deliberately kept so new warnings fail here
+diff --git a/tools/check_residue_claims.py b/tools/check_residue_claims.py
+index 32430e4..737c016 100644
+--- a/tools/check_residue_claims.py
++++ b/tools/check_residue_claims.py
+@@ -19,8 +19,8 @@ import sys
+ 
+ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ 
+-LEDGER_ROWS = 64
+-CLASS_PIN = {"W": 36, "M": 9, "N": 4, "S": 15}
++LEDGER_ROWS = 65
++CLASS_PIN = {"W": 36, "M": 9, "N": 4, "S": 16}
+ PHASE_ORDER = ["R0", "R1", "R2", "R3", "R4", "R5", "R6",
+                "R7", "R8", "R9", "R10", "R11", "R12"]
+ 
+diff --git a/tools/residue_baseline.txt b/tools/residue_baseline.txt
+index 8130da2..3b04d95 100644
+--- a/tools/residue_baseline.txt
++++ b/tools/residue_baseline.txt
+@@ -7,6 +7,7 @@ FSLAYOUT_PLAN.md 0
+ GL2_PLAN.md 27
+ GL_PLAN.md 1
+ GPU_ACCEL_PLAN.md 16
++HOME_PLAN.md 1
+ HARDENING_PLAN.md 0
+ HW_PLAN.md 16
+ I386_PLAN.md 15
+diff --git a/tools/selfhost/gen_kernel_build.sh b/tools/selfhost/gen_kernel_build.sh
+index ff27c5b..578963b 100644
+--- a/tools/selfhost/gen_kernel_build.sh
++++ b/tools/selfhost/gen_kernel_build.sh
+@@ -82,8 +82,12 @@ ASM_COUNT=${#ASM_SRCS[@]}
+ # driver header (PARITY P1/R6) while the driver must still publish its
+ # geometry somewhere fs can read it.  Same ratchet, same reason: the
+ # in-guest build compiles exactly what the tree has, or it refuses.
+-if [ "$C_COUNT" -ne 152 ] || [ "$ASM_COUNT" -ne 9 ]; then
+-    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 151 / 9)" >&2
++# 152 -> 153 (HOME_PLAN H0): kernel/fs/home.c -- /home and the user
++# database.  Same ratchet, same reason as every bump above it: the in-guest
++# build compiles exactly what the tree has, or it refuses.  The number is
++# cross-checked against the tree by tools/check_build_hygiene.py check 4.
++if [ "$C_COUNT" -ne 153 ] || [ "$ASM_COUNT" -ne 9 ]; then
++    echo "[selfhost] SH8 kernel source set drifted: $C_COUNT C, $ASM_COUNT asm (expected 153 / 9)" >&2
+     exit 2
+ fi
+ 
+diff --git a/userspace/system/init/init.c b/userspace/system/init/init.c
+index 21f5086..164301c 100644
+--- a/userspace/system/init/init.c
++++ b/userspace/system/init/init.c
+@@ -28,6 +28,7 @@
+ #include "sh_expand.h"
+ #include "sh_parse.h"
+ #include "time.h"   /* struct timespec for cmd_settimes */
++#include "pwd.h"    /* HOME_PLAN H0: HOME comes from /etc/passwd, not a constant */
+ 
+ /* OTA_PLAN O2: the shell banner and `uname` print the BUILD's version
+  * identity.  The Makefile passes -DAURALITE_VERSION='"x.y.z"' down to
+@@ -641,8 +642,100 @@ static void cmd_write_file(int argc, char **argv) {
+     fflush(stdout);
+ }
+ 
++/* HOME_PLAN H0: the shell's idea of $HOME.  It is the real record's home
++ * directory (getpwuid(getuid())), not a constant: a user added to
++ * /etc/passwd gets the right home everywhere -- in `cd`, in `~` expansion,
++ * and in the HOME variable children inherit.  The fallback chain is
++ * explicit so a boot without /etc/passwd behaves exactly as before. */
++static const char *sh_home_dir(void) {
++    struct passwd *pw = getpwuid(getuid());
++    if (pw && pw->pw_dir && pw->pw_dir[0] == '/') return pw->pw_dir;
++    return "/root";
++}
++
++/* Write the home directory into the shell variable table once, at startup,
++ * so `echo $HOME` and every child's environment see it. */
++static void sh_home_export(void) {
++    /* ONE lookup, one result: getpwuid() answers a pointer into a static
++     * record that the NEXT call overwrites, so an expression that calls it
++     * three times in a row is reading three different (and possibly empty)
++     * buffers -- the exact bug this function shipped with for one boot
++     * (USER came out empty).  Copy the name out before touching anything
++     * else that can call back into <pwd.h>. */
++    const char *home = sh_home_dir();
++    const char *user = "root";
++    struct passwd *pw = getpwuid(getuid());
++    if (pw && pw->pw_name && pw->pw_name[0]) user = pw->pw_name;
++
++    sh_var_set("HOME", home);
++    sh_var_set("USER", user);
++}
++
++/* `~` and `~/...` at the start of a word expand to $HOME.  One leading
++ * tilde only: `~user` needs a lookup that is H1's job (HOME_PLAN), and
++ * pretending `~alice` means `~` is the kind of silent wrongness this
++ * project's docs call out.  Returns the word with the expansion applied
++ * in place (dst may equal src). */
++static void sh_expand_tilde(const char *src, char *dst, size_t cap) {
++    if (src[0] != '~' || (src[1] != '\0' && src[1] != '/')) {
++        strncpy(dst, src, cap - 1);
++        dst[cap - 1] = '\0';
++        return;
++    }
++    const char *home = sh_home_dir();
++    size_t hl = strlen(home);
++    if (hl >= cap) hl = cap - 1;
++    memcpy(dst, home, hl);
++    /* "~/x" -> home "/x"; a home that already ends in '/' must not double it. */
++    const char *rest = src + 1;
++    if (rest[0] == '/' && hl > 0 && dst[hl - 1] == '/') rest++;
++    size_t rl = strlen(rest);
++    if (hl + rl >= cap) rl = cap - 1 - hl;
++    memcpy(dst + hl, rest, rl);
++    dst[hl + rl] = '\0';
++}
++
++/* Apply ~ expansion to an already-expanded argument, in place.  Called from
++ * sh_expand_stage() for every WORD whose ORIGINAL token began with an
++ * unquoted '~' -- the quoting test is on the raw token, so "~" stays a
++ * literal tilde, which is what every POSIX shell does. */
++static void sh_tilde_inplace(char *buf, size_t cap) {
++    if (buf[0] != '~') return;
++    char tmp[SH_ARG_MAX_EXP];
++    sh_expand_tilde(buf, tmp, sizeof(tmp));
++    strncpy(buf, tmp, cap - 1);
++    buf[cap - 1] = '\0';
++}
++
++/* `cd [dir]` -- the working directory is a per-process property the kernel
++ * already tracks (tcb->cwd, joined onto relative paths by the syscall
++ * dispatcher); the shell simply never exposed it.  `cd` with no argument
++ * goes home, which is the behaviour every user expects of the bare form. */
++static void cmd_cd(const char *path) {
++    const char *target = path;
++    char expanded[256];
++    if (!target || !target[0]) target = sh_home_dir();
++    if (target[0] == '~') {
++        sh_expand_tilde(target, expanded, sizeof(expanded));
++        target = expanded;
++    }
++    if (chdir(target) != 0) {
++        printf("cd: %s: no such directory\n", target);
++    }
++    fflush(stdout);
++}
++
+ static void cmd_pwd(void) {
+-    puts("/");
++    /* HOME_PLAN H0: this used to print a constant "/" -- it now prints the
++     * process's real cwd.  getcwd() answering NULL falls back to "/", and
++     * the fallback is visible rather than silent: an empty cwd is "/" by
++     * the kernel's own convention (syscall.c joins "/" for an empty cwd). */
++    char buf[256];
++    if (getcwd(buf, sizeof(buf))) {
++        puts(buf);
++    } else {
++        puts("/");
++    }
+     fflush(stdout);
+ }
+ 
+@@ -675,6 +768,7 @@ static void cmd_help(void) {
+     puts("  write <file> <text> - create/overwrite writable file (/tmp, /disk, /fat)");
+     puts("  run <prog>  - run a program in its own address space");
+     puts("  pwd         - print working directory");
++    puts("  cd [dir]    - change directory (no arg = $HOME; ~ expands to $HOME)");
+     puts("  uname       - print OS information");
+     puts("  free        - print memory usage");
+     puts("  nslookup    - resolve a hostname via DNS");
+@@ -1474,6 +1568,8 @@ static int sh_run_command(int argc)
+         cmd_echo(argc, cmd_argv);
+     } else if (strcmp(cmd, "write") == 0) {
+         cmd_write_file(argc, cmd_argv);
++    } else if (strcmp(cmd, "cd") == 0) {
++        cmd_cd(argc >= 2 ? cmd_argv[1] : NULL);
+     } else if (strcmp(cmd, "pwd") == 0) {
+         cmd_pwd();
+     } else if (strcmp(cmd, "uname") == 0) {
+@@ -1625,6 +1721,9 @@ static int sh_expand_stage(const struct sh_tok *toks, int start, int end,
+                 last_status = 2;
+                 return 2;
+             }
++            if (toks[i].text[0] == '~') {
++                sh_tilde_inplace(sh_expbuf[argc], SH_ARG_MAX_EXP);
++            }
+             cmd_argv[argc] = sh_expbuf[argc];
+             argc++;
+             continue;
+@@ -2660,6 +2759,11 @@ int main(int argc, char **argv) {
+         dup2(0, 2);
+     }
+ 
++    /* HOME_PLAN H0: $HOME and $USER from the user database, before the
++     * prompt can expand anything.  A missing /etc/passwd leaves the
++     * sh_home_dir() fallbacks in place and sets nothing it cannot know. */
++    sh_home_export();
++
+     printf("\n");
+     printf("==============================================\n");
+     printf("   AuraLite OS v%s — Interactive Shell     \n", AURALITE_VERSION);
+-- 
+2.47.3
+

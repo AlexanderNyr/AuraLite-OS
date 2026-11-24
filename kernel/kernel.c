@@ -38,6 +38,7 @@
 #include "kernel/fs/tmpfs.h"
 #include "kernel/fs/diskfs.h"
 #include "kernel/fs/documents.h"
+#include "kernel/fs/datavol.h"
 #include "kernel/fs/home.h"      /* HOME_PLAN H0: /home + user database */
 #include "kernel/fs/fat32.h"
 #include "kernel/fs/ext2.h"
@@ -837,7 +838,23 @@ void kmain(boot_info_t *boot_info) {
      * unreadable volume).  A refused init must never be followed by
      * vfs_mount — a mounted-but-uninitialised driver is how /ext4 used
      * to resolve into garbage. */
-    int dev_exfat = (blkdev_count() > 2) ? 2 : -1;
+    /* FSMODERN M1: exFAT moves to the 5th slot (was the 3rd), and /data
+     * takes the 3rd.
+     *
+     * Why the swap rather than a flag: the default `make run` attaches three
+     * disks -- exchange FAT32 (blk0), ext2 (blk1) and now the persistent
+     * volume (blk2).  exFAT was claiming that third disk on every default
+     * boot and splitting it into 4 KiB clusters it did not need, while the
+     * machine had no durable storage for the user at all.  exFAT is an
+     * EXCHANGE format (it exists so a card written on one machine reads on
+     * another); it does not need to mount on a boot where nobody plugged a
+     * card in.  /data does: it holds the user's files.  So the priority
+     * order changes, and `[exfat] no 5th AHCI disk` on a default boot is
+     * the correct, expected line rather than a regression.
+     *
+     * The slot numbers are otherwise unchanged: ext4 4th, btrfs 6th, f2fs
+     * 7th (see the ladder below, whose text says which disk each wants). */
+    int dev_exfat = (blkdev_count() > 5) ? 5 : -1;
     if (dev_exfat >= 0) {
         if (exfat_init(dev_exfat) == 0) {
             vfs_mount("/exfat", &exfat_ops, NULL);
@@ -846,7 +863,9 @@ void kmain(boot_info_t *boot_info) {
                     dev_exfat);
         }
     } else {
-        kprintf("[exfat] no 3rd AHCI disk; /exfat not mounted\n");
+        kprintf("[exfat] no 6th AHCI disk (the 3rd is /data); /exfat not "
+                "mounted -- exFAT is an exchange format, attach a card image "
+                "as the 5th disk to use it\n");
     }
 
     int dev_ext4 = (blkdev_count() > 3) ? 3 : -1;
@@ -873,7 +892,7 @@ void kmain(boot_info_t *boot_info) {
         kprintf("[btrfs] no 5th AHCI disk; /btrfs not mounted\n");
     }
 
-    int dev_f2fs = (blkdev_count() > 5) ? 5 : -1;
+    int dev_f2fs = (blkdev_count() > 6) ? 6 : -1;
     if (dev_f2fs >= 0) {
         if (f2fs_init(dev_f2fs) == 0) {
             vfs_mount("/f2fs", &f2fs_ops, NULL);
@@ -893,6 +912,22 @@ void kmain(boot_info_t *boot_info) {
      * it cannot misclaim a dedicated slot (ext2/exfat/ext4/btrfs/f2fs each
      * refuse the foreign OEM first; diskfs/ext2, which may format their own
      * slots, only ever see non-NTFS bytes there). */
+    /* FSMODERN M1: /data, the persistent volume.
+     *
+     * Placed HERE, after the whole mount ladder above and before NTFS's
+     * auto-detect, for two reasons: /data takes the lowest disk id no other
+     * filesystem claimed (so it must run after every claimer has had its
+     * turn), and it must run before NTFS probes, because that probe walks
+     * every device and could otherwise claim the same free disk.
+     *
+     * Before M1 this tree had no filesystem that was both mounted on a
+     * default boot and survived a reboot: /disk,/fat,/ext2 are reachable
+     * but flat or exchange-shaped, and /home,/opt,/documents are tmpfs.
+     * /data is the CoW filesystem (every block copy-on-write, every block
+     * SHA-256 checked) on a disk of its own -- the substrate M6's AuraFS
+     * grows from.  Never fatal: with no spare disk the receipt says so. */
+    datavol_init();
+
     int dev_ntfs = -1;
     for (int d = 0; d < blkdev_count(); d++) {
         if (ntfs_init(d) == 0) { dev_ntfs = d; break; }

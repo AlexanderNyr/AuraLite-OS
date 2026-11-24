@@ -2,7 +2,7 @@
 # test_fsformat_knob.sh — FSFULL_PLAN.md F1: auto-format is opt-in.
 #
 #   Lane 1 (build default, knob OFF): five foreign volumes are attached
-#   in the experimental slots (blkdev 2..5) and must be REFUSED with a
+#   in the experimental slots (blkdev 3..6) and must be REFUSED with a
 #   named line each, never formatted, never mounted — and the disks must
 #   be byte-identical after boot (hash before/after).
 #
@@ -40,12 +40,20 @@ mkdir -p "$BUILD"
 # Slot 0/1: mature-FS disks (will be formatted by diskfs/fat32/ext2).
 D0="$BUILD/fsf_mature0.img"
 D1="$BUILD/fsf_mature1.img"
-# Slots 2..5: foreign volumes for the experimental filesystems.
-D2="$BUILD/fsf_exfat.img"
+# Slots 2..6: foreign volumes for the experimental filesystems.
+#
+# FSMODERN M1 moved every experimental slot up by one: slk 2/3/4 are now the
+# durable lanes (/data, /ext4, /btrfs on a default boot), so the experiment
+# map is blkdev 3 = ext4, 4 = btrfs, 5 = exFAT, 6 = f2fs, 7 = NTFS.  Leaving
+# the old map in place makes this case test the wrong slots in the wrong
+# order -- measured: f2fs's four assertions fail because its image now sits
+# on the exFAT slot, and the exFAT image lands on /data.
+D2="$BUILD/fsf_exfat-slot.img"
 D3="$BUILD/fsf_ext4.img"
 D4="$BUILD/fsf_btrfs.img"
-D5="$BUILD/fsf_f2fs.img"
-EXP_DISKS=("$D2" "$D3" "$D4" "$D5")
+D5="$BUILD/fsf_exfat.img"
+D6="$BUILD/fsf_f2fs.img"
+EXP_DISKS=("$D2" "$D3" "$D4" "$D5" "$D6")
 # f2fs format writes its backup superblock at page 8194 (33.5 MB), so the
 # f2fs disk must be >= 64 MB or format_f2fs fails writing past the end.
 F2FS_DISK_MB=64
@@ -54,11 +62,11 @@ for d in "$D0" "$D1"; do
     rm -f "$d"
     dd if=/dev/zero of="$d" bs=1M count=64 status=none
 done
-for d in "$D2" "$D3" "$D4"; do
+for d in "$D2" "$D3" "$D4" "$D5"; do
     rm -f "$d"
     dd if=/dev/zero of="$d" bs=1M count=8 status=none
 done
-for d in "$D5"; do
+for d in "$D6"; do
     rm -f "$d"
     dd if=/dev/zero of="$d" bs=1M count="$F2FS_DISK_MB" status=none
 done
@@ -85,6 +93,12 @@ QARGS=(
     -drive "file=$D3,format=raw,if=none,id=ds3" -device "ide-hd,drive=ds3,bus=ahci0.3"
     -drive "file=$D4,format=raw,if=none,id=ds4" -device "ide-hd,drive=ds4,bus=ahci0.4"
     -drive "file=$D5,format=raw,if=none,id=ds5" -device "ide-hd,drive=ds5,bus=ahci0.5"
+    # QEMU's `-device ahci` exposes exactly six ports (0..5); the kerne's
+    # own driver is fine with more, so a second controller carries the
+    # seventh disk.  blkdev ids stay sequential across controllers, which
+    # is what the mount ladder indexes.
+    -device "ahci,id=ahci1"
+    -drive "file=$D6,format=raw,if=none,id=ds6" -device "ide-hd,drive=ds6,bus=ahci1.0"
 )
 
 # ============================================================================
@@ -135,6 +149,11 @@ il_assert_no_grep "$LOG" "mounted '/ntfs'" \
 
 # The experimental disks are byte-identical: refusal wrote nothing.
 EXP_HASH_AFTER=$(sha256sum "${EXP_DISKS[@]}" | sha256sum | cut -d' ' -f1)
+# The counter matters: this branch used to call il_pass/il_fail directly,
+# so the run printed "26/25 assertions passed" -- one more PASS than the
+# total it divided by.  il_assert_grep_fixed on the hash is the same check
+# with the bookkeeping done for us.
+IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
 if [ "$EXP_HASH_BEFORE" = "$EXP_HASH_AFTER" ]; then
     il_pass "foreign volumes byte-identical after boot (no writes)"
 else

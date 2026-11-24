@@ -40,7 +40,9 @@ LOG1="$IL_LOGDIR/bc_wb_kill.log"
 IL_LAST_LOG="$LOG1"
 trap il_dump_on_error EXIT
 
-il_send_delay 6
+# The feeder already waits for the shell prompt; a leading sleep only eats
+# the QEMU budget (this case used 6 s of 20 s, and the prompt arrives at
+# ~19 s -- the commands were typed after the VM was already gone).
 il_send "write /fat/WB1.TXT hardkill_alpha"
 il_send_delay 1
 il_send "write /fat/WB2.TXT hardkill_beta"
@@ -53,7 +55,7 @@ il_send "cat /fat/WB2.TXT"
 # disk after the last write got there via bc_tick().
 il_send_delay 4
 
-IL_SELFTEST=off il_run_qemu "$LOG1" 20 "${QARGS[@]}"
+IL_SELFTEST=off il_run_qemu "$LOG1" 70 "${QARGS[@]}"
 
 il_assert_grep "$LOG1" "hardkill_alpha" "lane 1: file 1 served from boot 1"
 il_assert_grep "$LOG1" "hardkill_beta"  "lane 1: file 2 served from boot 1"
@@ -66,14 +68,13 @@ il_assert_grep "$LOG1" "\[bc\] writeback stores=" \
 LOG2="$IL_LOGDIR/bc_wb_reread.log"
 IL_LAST_LOG="$LOG2"
 
-il_send_delay 6
 il_send "cat /fat/WB1.TXT"
 il_send_delay 1
 il_send "cat /fat/WB2.TXT"
 il_send_delay 1
 il_send "exit"
 
-IL_SELFTEST=off il_run_qemu "$LOG2" 20 "${QARGS[@]}"
+IL_SELFTEST=off il_run_qemu "$LOG2" 60 "${QARGS[@]}"
 
 il_assert_grep "$LOG2" "hardkill_alpha" "lane 1: data survived the hard kill (1 Hz drain)"
 il_assert_grep "$LOG2" "hardkill_beta"  "lane 1: second file survived too"
@@ -84,7 +85,6 @@ il_assert_grep "$LOG2" "hardkill_beta"  "lane 1: second file survived too"
 LOG3="$IL_LOGDIR/bc_wb_burst.log"
 IL_LAST_LOG="$LOG3"
 
-il_send_delay 6
 for i in 1 2 3 4 5 6 7 8; do
     il_send "write /fat/BST${i}.TXT burst_payload_${i}"
     il_send_delay 0.2
@@ -94,7 +94,7 @@ il_send "ls /fat"
 il_send_delay 1
 il_send "exit"
 
-IL_SELFTEST=off il_run_qemu "$LOG3" 25 "${QARGS[@]}"
+IL_SELFTEST=off il_run_qemu "$LOG3" 70 "${QARGS[@]}"
 
 il_assert_grep "$LOG3" "burst_payload_8" "lane 2: burst files written"
 

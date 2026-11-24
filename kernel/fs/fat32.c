@@ -1668,6 +1668,13 @@ const struct vfs_ops fat32_ops = {
     .stat     = fat32_stat_op,
     .truncate = fat32_truncate_op,
     .sync     = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
+    /* FSMODERN M3: EXACT.  FAT32's in-memory state IS the cache: the FAT,
+     * the directory entry and the data all live in the shared buffer cache
+     * and .sync flushes it.  After a successful fsync() there is nothing
+     * left in RAM that the volume needs, so a power cut cannot lose the
+     * write.  Measured, not assumed: test_fs_crash.sh kills the VM inside
+     * the write path and the file is present after the reboot. */
+    .durability = FS_DURABILITY_EXACT,
 };
 
 /* ---- Public API ---- */

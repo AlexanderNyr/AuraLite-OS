@@ -30,6 +30,7 @@
 #include "kernel/arch/i386/ata32.h"
 #include "kernel/arch/i386/portio.h"
 #include "kernel/arch/i386/fsglue32.h"
+#include "kernel/arch/i386/pmm32.h"
 #include "kernel/lib/kprintf.h"
 
 /* ---- kprintf's three sinks ------------------------------------------ */
@@ -86,6 +87,17 @@ void *krealloc(void *ptr, uint64_t size)
     memcpy(np, ptr, (size_t)(old < size ? old : size));
     kfree(ptr);
     return np;
+}
+
+/* ---- FSMODERN M2: the buffer cache sizes itself from RAM ------------- */
+/* buffer_cache.c is a KERNEL32_SHARED row, so the i386 kernel links it
+ * too, but it links no 64-bit pmm.c.  M2 made bc_init() ask the PMM how
+ * much memory the machine has instead of hardcoding 1024 blocks; on this
+ * port the answer comes from pmm32, whose frame count is in 4 KiB units
+ * exactly like pmm_get_usable_frames(). */
+uint64_t pmm_get_usable_frames(void)
+{
+    return pmm32_total_frames();   /* uint32_t widens implicitly */
 }
 
 /* ---- timestamps ------------------------------------------------------ */

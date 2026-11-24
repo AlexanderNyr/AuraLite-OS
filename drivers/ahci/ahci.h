@@ -53,6 +53,11 @@ int ahci_write_sector(uint32_t port, uint64_t lba, const void *buf);
  * ahci_init(). */
 void ahci_register_blkdevs(void);
 
+/* FSMODERN M1: the device's own capacity in 512-byte sectors, from ATA
+ * IDENTIFY at port discovery.  0 means the device did not say -- callers
+ * that need a boundary must refuse rather than invent one. */
+uint64_t ahci_get_sector_count(uint32_t port);
+
 /* Cumulative sector counters across every AHCI port, maintained by
  * ahci_read()/ahci_write() (and therefore also by the single-sector
  * wrappers above, which call through them). Either output pointer may be

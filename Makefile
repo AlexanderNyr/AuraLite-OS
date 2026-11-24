@@ -1683,6 +1683,21 @@ $(USER_BUILD)/cryptotest.elf: $(USER_BUILD)/cryptotest.o $(USER_COMMON) \
 	      $(LIBATLS) -o $@
 	@echo "[link] $@ (libatls)"
 
+# ---- fsbench (FSMODERN_PLAN.md M0): the in-guest filesystem benchmark ----
+# The host lane (tests/unit/test_fsbench.c) links the shipped block layer
+# against a RAM array, so every MiB/s it prints is RAM-to-RAM.  This binary
+# is the lane where the numbers are real: it runs in the guest, through the
+# VFS, on an emulated disk.
+$(USER_BUILD)/fsbench.o: tools/fsbench/fsbench.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
+$(USER_BUILD)/fsbench.elf: $(USER_BUILD)/fsbench.o $(USER_COMMON) \
+                           lib/libc/user.ld
+	@mkdir -p $(dir $@)
+	$(LD) $(USER_LDFLAGS) $(USER_BUILD)/fsbench.o $(USER_COMMON_LNK) -o $@
+	@echo "[link] $@"
+
 # ---- sha256sum (SELFHOST_PLAN.md SH7a): in-guest hash tool ----
 # The first SH7 C twin (image-tooling-in-C).  It adds no hash implementation:
 # it calls the same libatls SHA-256 the TLS stack and cryptotest use, so the
@@ -3988,6 +4003,7 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
                          $(SHMAKE_ELF) $(SH6E_STAMP_ELF) \
                          $(USER_BUILD)/sha256sum.elf $(USER_BUILD)/mkinitrd.elf \
                          $(USER_BUILD)/bootoffsets.elf $(USER_BUILD)/mkiso.elf \
+                         $(USER_BUILD)/fsbench.elf \
                          $(SELFHOST_KERNEL_STAGE) \
                          $(RSBR_PARITY_RV_ELF) $(RSBR_PARITY_A64_ELF) \
                          kernel/arch/x86_64/isr_stubs.asm kernel/arch/x86_64/syscall_entry.asm \
@@ -4026,6 +4042,8 @@ $(BUILD_DIR)/initrd.tar: Makefile tools/mkinitrd.sh kernel/fs/initrd.h $(BUILD_D
 # SELFHOST SH7a: the in-guest hash tool lands on the search PATH as a normal
 # /bin program, so `sh build.sh` can verify build products by name.
 	@strip -s $(USER_BUILD)/sha256sum.elf -o $(INITRD_DIR)/bin/sha256sum
+# FSMODERN M0: the filesystem benchmark runs in-guest, where the disk is real.
+	@strip -s $(USER_BUILD)/fsbench.elf -o $(INITRD_DIR)/bin/fsbench
 # SELFHOST SH7b: the in-guest USTAR writer lands on the search PATH as
 # /bin/mkinitrd so `sh build.sh initrd` can re-pack the image with no host
 # tar in the loop.
@@ -4581,6 +4599,8 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a16_layout_icon \
                 $(BUILD_DIR)/test_shell_ns \
                 $(BUILD_DIR)/test_fsformat \
+                $(BUILD_DIR)/test_fsbench $(BUILD_DIR)/test_bcache_m2 \
+                $(BUILD_DIR)/test_fsync_m3 \
                 $(BUILD_DIR)/test_exfat_ntfs
 
 # WIN32_PLAN.md phases W32-1/W32-2: the w32 personality's host-side gates.
@@ -5929,6 +5949,45 @@ $(BUILD_DIR)/test_fscheck: tests/unit/test_fscheck.c kernel/fs/fscheck.c \
 # FSFULL_F1: the auto-format gate, compiled as-is.  Trivial state, but
 # the default value is the safety property — the test pins it so a
 # future `make FS_MOUNT_FORMAT=1` cannot silently become the default.
+# FSMODERN M0: the filesystem benchmark.  Links the SHIPPED block layer and
+# diskfs driver against a RAM-backed blkdev, so the numbers move when the
+# driver moves.  The floors are loose on purpose (a CI host of unknown speed
+# must not fail a benchmark); the numeric ratchet lives in-guest.
+$(BUILD_DIR)/test_fsbench: tests/unit/test_fsbench.c kernel/fs/buffer_cache.c \
+                           kernel/fs/blkdev.c kernel/fs/diskfs.c \
+                           kernel/fs/buffer_cache.h kernel/fs/blkdev.h \
+                           kernel/fs/diskfs.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -O2 \
+	          -I . tests/unit/test_fsbench.c kernel/fs/buffer_cache.c \
+	          kernel/fs/blkdev.c kernel/fs/diskfs.c -o $@
+
+# FSMODERN M2: the 4 KiB block cache.  Pure logic over the blkdev seam --
+# block/sector translation, the batch fetch, and write coalescing -- so a
+# wrong offset names itself here instead of costing a two-minute QEMU boot.
+# It earns its place twice over: the first M2 build passed every boot-time
+# check and still lost every write, because the sector-to-block divisor was
+# wrong (nothing reached the device at all).  This test catches exactly that
+# in 300 ms.
+$(BUILD_DIR)/test_bcache_m2: tests/unit/test_bcache_m2.c kernel/fs/buffer_cache.c \
+                             kernel/fs/blkdev.c kernel/fs/buffer_cache.h \
+                             kernel/fs/blkdev.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g \
+	          -I . tests/unit/test_bcache_m2.c kernel/fs/buffer_cache.c \
+	          kernel/fs/blkdev.c -o $@
+
+# FSMODERN M3: the durability contract's ROUTING half.  This links the
+# shipped vfsmount.c (mount table, owner-by-ops-identity, the WEAK receipt)
+# against a transcription of vfs_fsync's five lines, so the branch that
+# decides "per-inode / mount-wide / EOPNOTSUPP / nothing" is named when it
+# breaks instead of costing a two-minute boot and a misleading PASS.
+$(BUILD_DIR)/test_fsync_m3: tests/unit/test_fsync_m3.c kernel/fs/vfsmount.c \
+                            kernel/fs/vfsmount.h kernel/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g \
+	          -I . tests/unit/test_fsync_m3.c kernel/fs/vfsmount.c -o $@
+
 $(BUILD_DIR)/test_fsformat: tests/unit/test_fsformat.c kernel/fs/fsformat.c \
                             kernel/fs/fsformat.h
 	@mkdir -p $(BUILD_DIR)

@@ -1296,6 +1296,14 @@ const struct vfs_ops ext2_ops = {
     .chmod    = ext2_chmod_op,
     .chown    = ext2_chown_op,
     .sync     = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
+    /* FSMODERN M3: WEAK.  ext2's inode table and bitmap updates go
+     * through the shared cache, and .sync is the cache flush, which is
+     * enough for DATA.  What is not guaranteed is the ORDER: a kill
+     * between the data blocks and the inode update can leave an inode
+     * pointing at blocks that were never written (the classic ext2
+     * window).  fsck repairs it; the point of the declaration is that
+     * nobody has to discover that from fsck. */
+    .durability = FS_DURABILITY_WEAK,
 };
 
 /* ---- mkfs.ext2 (in-kernel formatter) ---- */
@@ -1486,11 +1494,37 @@ static int parse_or_format(void) {
                 es.sb.s_free_blocks_count, es.sb.s_free_inodes_count);
         return 0;
     }
-    /* No ext2 → format the whole disk (use whatever capacity AHCI exposed). */
-    /* We don't know the exact disk size cheaply; assume the disk image is
-     * sized for the volume and format it as 4 MiB / 1 KiB blocks. */
-    kprintf("[ext2] no ext2 magic at offset 1024; formatting fresh volume...\n");
-    return format_default(4096, 1024);
+    /* No ext2 -> format the whole disk.
+     *
+     * FSMODERN M1: the block count comes from the DEVICE, not from a guess.
+     * This used to read `format_default(4096, 1024)` with the comment "we
+     * don't know the exact disk size cheaply; assume the disk image is
+     * sized for the volume" -- i.e. it formatted 4 MiB of blocks into
+     * whatever disk it found.  On a 64 MiB disk that wastes 15/16 of the
+     * volume; on a 4 MiB disk it fits exactly by luck.  Now the seam is
+     * asked, and a backend that does not report capacity is refused rather
+     * than assumed. */
+    uint64_t cap_sectors = blkdev_sector_count(es.bdev);
+    if (cap_sectors == 0) {
+        kprintf("[ext2] device %d does not report its capacity; refusing to "
+                "format (a filesystem must not invent its own size)\n",
+                es.bdev);
+        return -1;
+    }
+    uint64_t cap_bytes = cap_sectors * BLKDEV_SECTOR_SIZE;
+    /* 1 KiB blocks, and the block count is the device's byte count rounded
+     * DOWN, so the last full block ends at or before the device end. */
+    uint32_t blocks = (uint32_t)(cap_bytes / 1024u);
+    if (blocks < 256) {
+        kprintf("[ext2] device %d is only %llu KiB; too small for ext2 "
+                "(needs 256 KiB)\n", es.bdev,
+                (unsigned long long)(cap_bytes / 1024));
+        return -1;
+    }
+    kprintf("[ext2] no ext2 magic at offset 1024; formatting fresh volume "
+            "(%u blocks of 1 KiB = %llu KiB, the device's own size)...\n",
+            blocks, (unsigned long long)(cap_bytes / 1024));
+    return format_default(blocks, 1024);
 }
 
 /* ---- Lifecycle ---- */
