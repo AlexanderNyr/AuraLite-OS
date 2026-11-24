@@ -266,6 +266,7 @@ ALL_CASES=(
     test_home
     test_diskfs
     test_fsbench
+    test_dir_scale
     test_bcache_m2
     test_fs_crash
     test_data_volume
@@ -340,7 +341,7 @@ ALL_CASES=(
 # is even slower: it runs the whole closure twice plus the QEMU idle that waits
 # out the closure's fixed budget, so it is the case "--fast" must never carry.
 # --fast skips both exactly like the other correctness-over-speed gates above.
-SLOW_CASES_RE='test_fat32_persistence|test_http_get|test_ext2|test_ext2_multigroup|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_gui_resolution_browser$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_wr3_npp_live$|test_wr4_putty_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
+SLOW_CASES_RE='test_dir_scale|test_fat32_persistence|test_http_get|test_ext2|test_ext2_multigroup|test_fs_stress|test_doom|test_ahci_large_read|test_gui_lane_smoke$|test_gui_resolution_browser$|test_wr2_7zip_launch$|test_wr2_7zip_live$|test_wr3_npp_live$|test_wr4_putty_live$|test_selfhost_kernel_guest$|test_selfhost_closure|test_(ext4|f2fs|btrfs|exfat|ntfs)$|test_ota_apply$'
 
 # ---- thematic CI shards (2026-08-21) ----
 #
@@ -360,7 +361,7 @@ group_re() {
     case "$1" in
         core)  echo '^test_(boot_to_shell|perf_smoke|metal_null|selftest|selftest_modes|shell_commands|syscalls|execve_args|execvpe_lanes|errno|tls_errno|socket_errno|init_array|stopped|spawn_argv|spawn_argv_hostile|process_cleanup|process_spawn_many|memory_reaping|fork_cow|aspace_refs|stack_alignment|elf_permissions|stack_guard|panic_diag|ist_double_fault|smp|smp_tss|smp_init_order|fpu_smp|smp_procstress|irq_ap_wake|siginfo|auxv|fdshare|fd_isolation|user_processes|uaccess|mmap_shared|mmap_file|msix)$' ;;
         posix) echo '^test_(posix_p10|posix2024_conf|open_flags|lseek|signals|termios|jobcontrol|permissions|timestamps|fifo_symlinks|initrd_dirs|install_dirs|search_path|sdk_examples|apm_packages|external_install|runtime_layout|keymaps|deadkeys|shell_all|sysmon_data|userspace_apps)$' ;;
-        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|ext2_multigroup|fs_stress|fsformat_knob|devfs|procfs|tmpfs|home|diskfs|fsbench|bcache_m2|fs_crash|data_volume|fscheck|bc_writeback|ahci_matrix|nvme)$' ;;
+        fs)    echo '^test_(ahci_large_read|ahci_rw|fat32_persistence|fat32_full|fat32_mkdir|ext2|ext2_multigroup|fs_stress|fsformat_knob|devfs|procfs|tmpfs|home|diskfs|fsbench|dir_scale|bcache_m2|fs_crash|data_volume|fscheck|bc_writeback|ahci_matrix|nvme)$' ;;
         # F7 (FSFULL_PLAN.md): the five F3–F5b filesystems as their own CI
         # shard, mirroring the usb shard partition.  Kept separate from the
         # `fs` group so the multi-boot harnesses (each is several QEMU

@@ -2,6 +2,117 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FSMODERN M5 — the directory stops being a single leaf] 2026-11-24
+
+`FSMODERN_PLAN.md` M5. The phase asked for hashed directories on the flagship
+and a **measured** crossover. Measuring first found that the flagship could not
+hold a directory at all: `fsbench --dir /data --files 64` died on the eleventh
+file (`fsb_10.dat`), because `tree_insert()` returned `-1` the moment the one
+leaf reached `MAX_LEAF_ITEMS = 48`. The tree was two blocks by construction —
+one root pointer, one leaf — so a directory stopped after a dozen-odd names, and
+no amount of hashing would have helped.
+
+**Three more bugs the measurement found, each worse than the cap.**
+
+- *A hash collision deleted a name.* The old directory item was keyed by
+  `name_hash() & 0xFFFF` and `tree_insert()` **replaced** an equal-key item's
+  data, so two names sharing a 16-bit hash silently dropped the first one. No
+  error, no message — the file just stopped existing.
+- *The CoW allocator wrapped and overwrote live metadata.* At 3000 files the
+  free pool ran out, `blk_alloc()` wrapped to the first block of the pool and
+  handed out tree blocks that were still in use. The first file
+  (`fsb_0.dat`) became unreachable while the other 2999 looked fine — a
+  corruption that reports success. A full pool now says so:
+  `[btrfs] ENOSPC: CoW block pool exhausted at LBA 67108864 (volume end 67108864)`,
+  and every caller turns it into a failed create instead of a write to block 0.
+- *A NULL vnode at the 65th file.* `bv_intern()` had a fixed 64-slot table and
+  no eviction, so it returned NULL and every caller did `&bv_intern(...)->vnode`
+  — a NULL dereference that took the kernel down (`CR2=0x224`, the offset of
+  `vnode.mode`). The table is now an LRU cache that never recycles a slot an
+  open file description still references, which needed the vnode to know that:
+  `struct vnode` gained `vfs_refs`, counted per OFD in `ofd_alloc()`/`ofd_put()`
+  (per OFD, not per fd — a dup()ed or mmap'd descriptor still holds the vnode).
+
+**What M5 actually changes.** `kernel/fs/btrfs.c`, block format **unchanged**:
+
+- The tree is as deep as it needs to be. Leaves split 50/50 when `leaf_room()`
+  says they must, the split walks up re-pointing parents, a full node splits
+  through `node_write_from()`, and a root that stays split grows a new root.
+  Lookup descends with a binary search at every level (`leaf_find` in the leaf,
+  `root_child_for` in a node). An existing one-leaf volume is a legal
+  degenerate tree and mounts unchanged.
+- A directory item is now a **bucket of chained entries**
+  (`child_ino(8) type(4) name_len(4) name[]`), keyed by the same 16-bit hash:
+  collisions chain instead of replacing, and a one-entry item from an old
+  volume is already a valid bucket.
+- `rename` creates the new name first and removes the old one after (with
+  rollback if the removal fails), so a crash can leave a file under two names
+  and never under none. Before M5 the order was the other way round.
+- `MAX_LEAF_ITEMS` 48 → 144 for array sizing only; the real gate is
+  `leaf_room()`, which counts bytes.
+
+**The crossover, measured inside one boot.** `fsbench --scale --dir /data
+--files 4096` builds three directories (256, 1024 and 4096 names) in the same
+process and looks each up until the TSC has run ≥ 250 ms:
+
+```
+[fsbench] scale: n=256  lookups=1280 passes=5 -> 4537.3 ops/s
+[fsbench] scale: n=1024 lookups=1024 passes=1 -> 3862.5 ops/s
+[fsbench] scale: n=4096 lookups=4096 passes=1 -> 2874.1 ops/s
+[fsbench] scale: ratio small/large = 1.58x for 16x the names
+```
+
+**16× the names cost 1.58× the lookup.** A linear scan would print 16.00×;
+`log2(4096)/log2(256) = 1.5` is what a balanced tree predicts, and 1.58 is
+what the tree does. The ratio is measured inside one boot on purpose: absolute
+ops/s on this host moved by **2.4×** between two boots of the same build
+(N=1024 gave 1218 then 2936 ops/s — TCG on shared CPUs), so an absolute number
+is a statement about the machine and only a within-boot ratio is a statement
+about the directory. That is also why `--scale` exists instead of two
+`--files` runs: the first attempt at this table compared boots and the
+comparison was noise.
+
+**The geometry, which is stable across boots** — the filesystem reports its own
+tree on every `fsync` and at mount, so the depth is read off the blocks rather
+than taken from the phase's word:
+
+| N | depth | leaves | items |
+|---|---|---|---|
+| 64 | 2 | 6 | 209 |
+| 1024 | 2 | 89 | 3077 |
+| 4096 | 3 | 357 | 11623 |
+
+`depth=2` is a root pointing at leaves (the pre-M5 shape, one pointer), and
+4096 files is what it takes to force `depth=3` — the root-growth path is
+therefore exercised by the measurement and not by inspection. The old code is
+off the chart entirely: it stopped at eleven names in the baseline run.
+
+**Also new in the instrument:** fsbench's `--files` cap went 64 → 4096 (the
+path array moved to the BSS — 256 KiB was too much stack), and the main run
+gained a `lookup=` phase (N × `stat()`, no I/O behind it) so the reported
+number is the name lookup and not the file read.
+
+**Stated, not hidden.** A 64 MiB `/data` fills at **1155 files** — every
+`tree_insert` copies the whole root-to-leaf path, so a 512-byte file costs
+~55 KiB of metadata — and there is no free-block reuse: `blk_alloc()` is still
+a bump allocator over a pool that only grows. Reclaiming CoW blocks is M6's
+log-structured allocator, and ENOSPC is the honest answer until it exists.
+Nothing above 4096 files is automated (that is fsbench's cap), and the
+split/root-growth path is exercised only through that measurement.
+
+**Tests:** new `tests/integration/cases/test_dir_scale.sh` — the crossover as a
+case: `fsbench --scale --files 1024` in one boot, asserting the ratio is a
+number under 3.0× (a linear scan prints 16×) and that the fsync receipt shows
+a tree with more than one leaf, which the pre-M5 code could not produce at all.
+It measured 1.12×–1.24× across four runs. `make test-unit` clean; all four
+kernel targets build (`kernel`, `kernel32`, `kernelrv`, `kernela64`). Green on
+this tree: `test_dir_scale` 9/9, `test_data_volume` 9/9, `test_btrfs` 19/19
+(self-test covers link/settimes/fsync plus the SHA-256 negative control),
+`test_fsbench` 13/13, `test_fs_crash` 15/15,
+`test_fs_stress` 13/12, `test_ext2_multigroup` 7/5, `test_fat32_full` 16/16,
+`test_tmpfs`, `test_procfs`, `test_devfs`, `test_ahci_rw` — the vfs refcount
+touches every filesystem, so the non-btrfs ones were re-run too.
+
 ## [FSMODERN M4 — ext2 and fat32 get their missing pieces] 2026-11-24
 
 `FSMODERN_PLAN.md` M4. The phase asked for two things: an ext2 consistency

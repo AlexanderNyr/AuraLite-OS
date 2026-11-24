@@ -246,6 +246,7 @@ static struct ofd *ofd_alloc(struct vnode *vn, int acc, int append, int nonblock
         o->path[i] = '\0';
     }
     o->vn          = vn;
+    if (vn) __sync_add_and_fetch(&vn->vfs_refs, 1);
     o->pos         = append ? vn->size : 0;
     o->access_mode = acc;
     o->append      = append;
@@ -305,6 +306,7 @@ int vfs_ofd_is_writable(struct ofd *o) {
 static void ofd_put(struct ofd *o) {
     if (!o) return;
     if (__sync_sub_and_fetch(&o->refcount, 1) <= 0) {
+        if (o->vn) __sync_sub_and_fetch(&o->vn->vfs_refs, 1);
         ofd_release_backing(o->vn);
         slab_free(ofd_cache, o);
     }

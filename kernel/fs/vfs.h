@@ -250,6 +250,7 @@ struct vnode {
      * block on disk I/O.  Zeroed vnode == unlocked, initialised queue. */
     volatile int wr_held;
     struct wait_queue wr_wq;
+    uint32_t vfs_refs;      /* active OFD references (for vnode cache LRU) */
 };
 
 /* An open file handle.  File tables live in tcb_t, so fd numbers are

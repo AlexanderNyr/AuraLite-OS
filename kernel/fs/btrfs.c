@@ -110,7 +110,8 @@
 /* extent rec: 0:disk_lba(8) 8:len(8) */
 /* dir item: 0:child_ino(8) 8:child_type(4) 12:name_len(4) 16:name[] */
 
-#define MAX_LEAF_ITEMS 48
+#define MAX_LEAF_ITEMS 144
+#define BTRFS_MAX_LEVELS 8
 #define MAX_ROOT_PTRS  120
 
 /* ============================================================================
@@ -203,8 +204,11 @@ static int btrfs_read_super(uint64_t lba, void *buf) {
 
 static uint64_t blk_alloc(void) {
     uint64_t lba = bm.next_free_block;
-    if (lba + bm.nodesize > bm.max_block)
-        lba = BTRFS_FIRST_FREE;                 /* wrap around free pool */
+    if (lba + bm.nodesize > bm.max_block) {
+        kprintf("[btrfs] ENOSPC: CoW block pool exhausted at LBA %llu (volume end %llu)\n",
+                (unsigned long long)lba, (unsigned long long)bm.max_block);
+        return 0;
+    }
     bm.next_free_block = lba + bm.nodesize;
     return lba;
 }
@@ -295,20 +299,27 @@ static int leaf_rebuild(uint8_t *leaf, struct leaf_slot *slots, int n,
     return 0;
 }
 
-/* Search a leaf for an exact item.  Returns index or -1. */
+/* Search a leaf for an exact item using binary search.  Returns index or -1. */
 static int leaf_find(const uint8_t *leaf, uint64_t obj, uint32_t typ, uint64_t off) {
-    int n = leaf_nslots(leaf);
-    for (int i = 0; i < n; i++) {
+    int lo = 0, hi = leaf_nslots(leaf) - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
         uint64_t o; uint32_t t, dd, ds; uint64_t f;
-        leaf_get(leaf, i, &o, &t, &f, &dd, &ds);
-        if (o == obj && t == typ && f == off) return i;
+        leaf_get(leaf, mid, &o, &t, &f, &dd, &ds);
+        int c = key_cmp(o, t, f, obj, typ, off);
+        if (c == 0) return mid;
+        if (c < 0) lo = mid + 1;
+        else       hi = mid - 1;
     }
     return -1;
 }
 
-/* ---- root operations ---- */
+/* ---- node / root operations ---- */
+
+#define MAX_NODE_PTRS 125
 
 static int root_nptrs(const uint8_t *root) { return (int)r32(root + 32); }
+static int blk_type_hdr(const uint8_t *blk) { return (int)r32(blk + 12); }
 
 static void root_get(const uint8_t *root, int i, uint64_t *obj, uint32_t *typ,
                      uint64_t *off, uint64_t *child) {
@@ -319,171 +330,354 @@ static void root_get(const uint8_t *root, int i, uint64_t *obj, uint32_t *typ,
     *child = r64(p + 24);
 }
 
-/* Find the child index that should hold the key (last ptr with key<=k). */
-static int root_child_for(const uint8_t *root, uint64_t obj, uint32_t typ, uint64_t off) {
-    int n = root_nptrs(root);
-    int best = -1;
+static void root_set_ptrs(uint8_t *root, int n, const struct root_ptr *ptrs) {
+    w32(root + 32, (uint32_t)n);
     for (int i = 0; i < n; i++) {
-        uint64_t o; uint32_t t; uint64_t f, c; (void)c;
-        root_get(root, i, &o, &t, &f, &c);
-        if (key_cmp(o, t, f, obj, typ, off) <= 0) best = i;
+        uint8_t *p = root + 36 + i * 32;
+        w64(p + 0, ptrs[i].obj);
+        w64(p + 8, ptrs[i].off);
+        w32(p + 16, ptrs[i].typ);
+        w32(p + 20, 0);
+        w64(p + 24, ptrs[i].child_lba);
     }
-    return best < 0 ? 0 : best;
 }
 
-/* Look up an item in the tree.  Copies up to cap bytes of data into out.
- * Returns 0 and sets *out_size / *lba on hit, -1 on miss. */
+/* Find the child index that should hold the key (last ptr with key<=k) via binary search. */
+static int root_child_for(const uint8_t *root, uint64_t obj, uint32_t typ, uint64_t off) {
+    int n = root_nptrs(root);
+    if (n <= 0) return 0;
+    int lo = 0, hi = n - 1, best = 0;
+    while (lo <= hi) {
+        int mid = (lo + hi) / 2;
+        uint64_t o; uint32_t t; uint64_t f, c; (void)c;
+        root_get(root, mid, &o, &t, &f, &c);
+        if (key_cmp(o, t, f, obj, typ, off) <= 0) {
+            best = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return best;
+}
+
+static int tree_descend(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
+                        uint64_t *path_lbas, int *path_ci, int *depth_out, uint8_t *leaf_buf) {
+    uint64_t cur = root_lba;
+    int depth = 0;
+    while (cur) {
+        if (blk_read(cur, leaf_buf) != 0) return -1;
+        if (blk_type_hdr(leaf_buf) == BTRFS_BLK_LEAF) {
+            *depth_out = depth;
+            return 0;
+        }
+        if (depth >= BTRFS_MAX_LEVELS) return -1;
+        int ci = root_child_for(leaf_buf, obj, typ, off);
+        path_lbas[depth] = cur;
+        path_ci[depth] = ci;
+        depth++;
+        uint64_t o, f, child; uint32_t t;
+        root_get(leaf_buf, ci, &o, &t, &f, &child);
+        cur = child;
+    }
+    return -1;
+}
+
+/* Look up an item in the tree.  Copies up to cap bytes of data into out. */
 static int tree_lookup(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
                        uint8_t *out, uint32_t cap, uint32_t *out_size) {
     if (!root_lba) return -1;
-    if (blk_read(root_lba, bscratch) != 0) return -1;
-    int i = root_child_for(bscratch, obj, typ, off);
-    if (i < 0) return -1;
-    uint64_t child;
-    uint64_t o; uint32_t t; uint64_t f;
-    root_get(bscratch, i, &o, &t, &f, &child);
-    if (blk_read(child, bscratch) != 0) return -1;
-    if (leaf_find(bscratch, obj, typ, off) < 0) return -1;
+    uint64_t path_lbas[BTRFS_MAX_LEVELS];
+    int path_ci[BTRFS_MAX_LEVELS];
+    int depth = 0;
+    if (tree_descend(root_lba, obj, typ, off, path_lbas, path_ci, &depth, bscratch) != 0)
+        return -1;
+    int idx = leaf_find(bscratch, obj, typ, off);
+    if (idx < 0) return -1;
     uint32_t dd = 0, ds = 0;
     uint64_t oo; uint32_t tt; uint64_t ff;
-    leaf_get(bscratch, leaf_find(bscratch, obj, typ, off), &oo, &tt, &ff, &dd, &ds);
+    leaf_get(bscratch, idx, &oo, &tt, &ff, &dd, &ds);
     if (ds > cap) ds = cap;
     if (out) memcpy(out, bscratch + dd, ds);
     if (out_size) *out_size = ds;
     return 0;
 }
 
-/* Insert into the tree with CoW.  Writes fresh leaf + root blocks and
- * returns the new root LBA in *new_root. */
+static int leaf_build(uint8_t *blk, int count, const struct leaf_slot *slots,
+                      const uint32_t *placed, const uint8_t *databuf) {
+    memset(blk, 0, BTRFS_NODE_SIZE);
+    w32(blk + 32, (uint32_t)count);
+    uint32_t dcur = 0;
+    for (int i = 0; i < count; i++) {
+        uint8_t *sp = blk + 36 + i * 24;
+        w64(sp + 0, slots[i].obj);
+        w64(sp + 8, slots[i].off);
+        w32(sp + 16, slots[i].typ);
+        w16(sp + 20, (uint16_t)dcur);
+        w16(sp + 22, (uint16_t)slots[i].size);
+        dcur += slots[i].size;
+    }
+    uint32_t data_base = 36 + (uint32_t)count * 24;
+    if (data_base + dcur > BTRFS_BLK_PAYLOAD) return -1;
+    for (int i = 0; i < count; i++) {
+        uint8_t *sp = blk + 36 + i * 24;
+        uint16_t off_in_data = r16(sp + 20);
+        w16(sp + 20, (uint16_t)(data_base + off_in_data));
+        memcpy(blk + data_base + off_in_data, databuf + placed[i], slots[i].size);
+    }
+    return 0;
+}
+
+/* Insert into the tree with CoW, 50/50 splits, and root growth. */
 static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
                        const uint8_t *data, uint32_t size, uint64_t *new_root) {
     if (!root_lba) return -1;
-    if (blk_read(root_lba, bscratch) != 0) return -1;
+    uint64_t path_lbas[BTRFS_MAX_LEVELS];
+    int path_ci[BTRFS_MAX_LEVELS];
+    int depth = 0;
+    if (tree_descend(root_lba, obj, typ, off, path_lbas, path_ci, &depth, bdatabuf) != 0)
+        return -1;
 
-    int ci = root_child_for(bscratch, obj, typ, off);
-    uint64_t old_child;
-    { uint64_t o; uint32_t t; uint64_t f; root_get(bscratch, ci, &o, &t, &f, &old_child); }
-
-    if (blk_read(old_child, bdatabuf) != 0) return -1;   /* existing leaf */
-
-    /* Collect existing leaf items + the new one into slots.  If an item
-     * with the same key already exists, replace its data in place instead
-     * of inserting a duplicate (CoW update, not append). */
     struct leaf_slot slots[MAX_LEAF_ITEMS + 1];
     uint32_t placed[MAX_LEAF_ITEMS + 1];
     int n = leaf_nslots(bdatabuf);
-    if (n >= MAX_LEAF_ITEMS) return -1;                   /* leaf full (unexpected) */
     uint8_t databuf[4096];
     uint32_t dcur = 0;
     int added = 0;
+    int out_n = 0;
     for (int i = 0; i < n; i++) {
         uint64_t o; uint32_t t; uint32_t dd, ds; uint64_t f;
         leaf_get(bdatabuf, i, &o, &t, &f, &dd, &ds);
-        if (!added && o == obj && t == typ && f == off) {
-            /* replace this item's data */
-            slots[i].obj = o; slots[i].typ = t; slots[i].off = f;
+        if (!added && key_cmp(o, t, f, obj, typ, off) == 0) {
+            slots[out_n].obj = o; slots[out_n].typ = t; slots[out_n].off = f;
+            slots[out_n].size = size;
+            placed[out_n] = dcur;
             memcpy(databuf + dcur, data, size);
-            slots[i].src = dcur; slots[i].dsz = size;
             dcur += size;
+            out_n++;
             added = 1;
             continue;
         }
-        slots[i].obj = o; slots[i].typ = t; slots[i].off = f;
+        if (!added && key_cmp(obj, typ, off, o, t, f) < 0) {
+            slots[out_n].obj = obj; slots[out_n].typ = typ; slots[out_n].off = off;
+            slots[out_n].size = size;
+            placed[out_n] = dcur;
+            memcpy(databuf + dcur, data, size);
+            dcur += size;
+            out_n++;
+            added = 1;
+        }
+        slots[out_n].obj = o; slots[out_n].typ = t; slots[out_n].off = f;
+        slots[out_n].size = ds;
+        placed[out_n] = dcur;
         memcpy(databuf + dcur, bdatabuf + dd, ds);
-        slots[i].src = dcur; slots[i].dsz = ds;
         dcur += ds;
+        out_n++;
     }
     if (!added) {
-        slots[n].obj = obj; slots[n].typ = typ; slots[n].off = off;
+        slots[out_n].obj = obj; slots[out_n].typ = typ; slots[out_n].off = off;
+        slots[out_n].size = size;
+        placed[out_n] = dcur;
         memcpy(databuf + dcur, data, size);
-        slots[n].src = dcur; slots[n].dsz = size; dcur += size;
-        n++;
+        dcur += size;
+        out_n++;
     }
 
-    /* Build the new leaf in bdatabuf, then move data blobs into it. */
-    uint8_t *newleaf = bdatabuf;
-    leaf_rebuild(newleaf, slots, n, placed);
-    for (int i = 0; i < n; i++)
-        memcpy(newleaf + placed[i], databuf + slots[i].src, slots[i].dsz);
-    uint64_t newleaf_lba = blk_alloc();
-    if (blk_write(newleaf_lba, newleaf, BT_LEAF, 0) != 0) return -1;
+    struct root_ptr up[2];
+    int n_up = 0;
 
-    /* CoW the root: copy, re-point the child, write a fresh root block. */
-    uint8_t *newroot = bscratch;   /* reuse after we already read it above */
-    if (blk_read(root_lba, newroot) != 0) return -1;   /* re-read clean copy */
-    w64(newroot + 36 + ci * 32 + 24, newleaf_lba);
-    uint64_t newroot_lba = blk_alloc();
-    if (blk_write(newroot_lba, newroot, BT_ROOT, 0) != 0) return -1;
-    *new_root = newroot_lba;
+    if (out_n <= MAX_LEAF_ITEMS && 36 + out_n * 24 + dcur <= BTRFS_BLK_PAYLOAD) {
+        uint64_t nl = blk_alloc();
+        if (!nl) return -1;
+        if (leaf_build(bscratch, out_n, slots, placed, databuf) != 0) return -1;
+        if (blk_write(nl, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+        up[0].obj = slots[0].obj; up[0].typ = slots[0].typ; up[0].off = slots[0].off;
+        up[0].child_lba = nl;
+        n_up = 1;
+    } else {
+        int mid = out_n / 2;
+        uint64_t l1 = blk_alloc();
+        uint64_t l2 = blk_alloc();
+        if (!l1 || !l2) return -1;
+        if (leaf_build(bscratch, mid, slots, placed, databuf) != 0) return -1;
+        if (blk_write(l1, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+        if (leaf_build(bscratch, out_n - mid, slots + mid, placed + mid, databuf) != 0) return -1;
+        if (blk_write(l2, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+        up[0].obj = slots[0].obj; up[0].typ = slots[0].typ; up[0].off = slots[0].off;
+        up[0].child_lba = l1;
+        up[1].obj = slots[mid].obj; up[1].typ = slots[mid].typ; up[1].off = slots[mid].off;
+        up[1].child_lba = l2;
+        n_up = 2;
+    }
+
+    for (int lvl = depth - 1; lvl >= 0; lvl--) {
+        if (blk_read(path_lbas[lvl], bscratch) != 0) return -1;
+        int np = root_nptrs(bscratch);
+        int ci = path_ci[lvl];
+        struct root_ptr ptrs[MAX_NODE_PTRS + 2];
+        int op = 0;
+        for (int i = 0; i < np; i++) {
+            uint64_t o, f, c; uint32_t t;
+            root_get(bscratch, i, &o, &t, &f, &c);
+            if (i == ci) {
+                for (int k = 0; k < n_up; k++) ptrs[op++] = up[k];
+            } else {
+                ptrs[op].obj = o; ptrs[op].typ = t; ptrs[op].off = f; ptrs[op].child_lba = c;
+                op++;
+            }
+        }
+        if (op <= MAX_NODE_PTRS) {
+            uint64_t nn = blk_alloc();
+            if (!nn) return -1;
+            memset(bscratch, 0, BTRFS_NODE_SIZE);
+            root_set_ptrs(bscratch, op, ptrs);
+            if (blk_write(nn, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+            up[0] = ptrs[0]; up[0].child_lba = nn;
+            n_up = 1;
+        } else {
+            int mid = op / 2;
+            uint64_t n1 = blk_alloc();
+            uint64_t n2 = blk_alloc();
+            if (!n1 || !n2) return -1;
+            memset(bscratch, 0, BTRFS_NODE_SIZE);
+            root_set_ptrs(bscratch, mid, ptrs);
+            if (blk_write(n1, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+            memset(bscratch, 0, BTRFS_NODE_SIZE);
+            root_set_ptrs(bscratch, op - mid, ptrs + mid);
+            if (blk_write(n2, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+            up[0] = ptrs[0]; up[0].child_lba = n1;
+            up[1] = ptrs[mid]; up[1].child_lba = n2;
+            n_up = 2;
+        }
+    }
+
+    if (n_up == 1) {
+        *new_root = up[0].child_lba;
+    } else {
+        uint64_t nr = blk_alloc();
+        if (!nr) return -1;
+        memset(bscratch, 0, BTRFS_NODE_SIZE);
+        root_set_ptrs(bscratch, 2, up);
+        if (blk_write(nr, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+        *new_root = nr;
+    }
     return 0;
 }
 
-/* Remove an item with CoW.  Returns the new root LBA in *new_root. */
-static int tree_remove(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
+static int tree_delete(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
                        uint64_t *new_root) {
     if (!root_lba) return -1;
-    if (blk_read(root_lba, bscratch) != 0) return -1;
-    int ci = root_child_for(bscratch, obj, typ, off);
-    uint64_t old_child;
-    { uint64_t o; uint32_t t; uint64_t f; root_get(bscratch, ci, &o, &t, &f, &old_child); }
-    if (blk_read(old_child, bdatabuf) != 0) return -1;
+    uint64_t path_lbas[BTRFS_MAX_LEVELS];
+    int path_ci[BTRFS_MAX_LEVELS];
+    int depth = 0;
+    if (tree_descend(root_lba, obj, typ, off, path_lbas, path_ci, &depth, bdatabuf) != 0)
+        return -1;
+    int idx = leaf_find(bdatabuf, obj, typ, off);
+    if (idx < 0) return -1;
 
-    int n = leaf_nslots(bdatabuf);
     struct leaf_slot slots[MAX_LEAF_ITEMS];
     uint32_t placed[MAX_LEAF_ITEMS];
+    int n = leaf_nslots(bdatabuf);
     uint8_t databuf[4096];
     uint32_t dcur = 0;
-    int found = 0, outn = 0;
+    int out_n = 0;
     for (int i = 0; i < n; i++) {
+        if (i == idx) continue;
         uint64_t o; uint32_t t; uint32_t dd, ds; uint64_t f;
         leaf_get(bdatabuf, i, &o, &t, &f, &dd, &ds);
-        if (o == obj && t == typ && f == off) { found = 1; continue; }
-        slots[outn].obj = o; slots[outn].typ = t; slots[outn].off = f;
+        slots[out_n].obj = o; slots[out_n].typ = t; slots[out_n].off = f;
+        slots[out_n].size = ds;
+        placed[out_n] = dcur;
         memcpy(databuf + dcur, bdatabuf + dd, ds);
-        slots[outn].src = dcur; slots[outn].dsz = ds;
-        dcur += ds; outn++;
+        dcur += ds;
+        out_n++;
     }
-    if (!found) return -1;
 
-    uint8_t *newleaf = bdatabuf;
-    leaf_rebuild(newleaf, slots, outn, placed);
-    for (int i = 0; i < outn; i++)
-        memcpy(newleaf + placed[i], databuf + slots[i].src, slots[i].dsz);
-    uint64_t newleaf_lba = blk_alloc();
-    if (blk_write(newleaf_lba, newleaf, BT_LEAF, 0) != 0) return -1;
+    uint64_t nl = blk_alloc();
+    if (!nl) return -1;
+    if (leaf_build(bscratch, out_n, slots, placed, databuf) != 0) return -1;
+    if (blk_write(nl, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
 
-    if (blk_read(root_lba, bscratch) != 0) return -1;
-    w64(bscratch + 36 + ci * 32 + 24, newleaf_lba);
-    uint64_t newroot_lba = blk_alloc();
-    if (blk_write(newroot_lba, bscratch, BT_ROOT, 0) != 0) return -1;
-    *new_root = newroot_lba;
+    uint64_t child_lba = nl;
+    for (int lvl = depth - 1; lvl >= 0; lvl--) {
+        if (blk_read(path_lbas[lvl], bscratch) != 0) return -1;
+        int np = root_nptrs(bscratch);
+        int ci = path_ci[lvl];
+        struct root_ptr ptrs[MAX_NODE_PTRS];
+        for (int i = 0; i < np; i++) {
+            uint64_t o, f, c; uint32_t t;
+            root_get(bscratch, i, &o, &t, &f, &c);
+            ptrs[i].obj = o; ptrs[i].typ = t; ptrs[i].off = f;
+            ptrs[i].child_lba = (i == ci) ? child_lba : c;
+        }
+        uint64_t nn = blk_alloc();
+        if (!nn) return -1;
+        memset(bscratch, 0, BTRFS_NODE_SIZE);
+        root_set_ptrs(bscratch, np, ptrs);
+        if (blk_write(nn, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+        child_lba = nn;
+    }
+    *new_root = child_lba;
     return 0;
 }
 
-/* Visit every item with the given objectid+type across all leaves.
- * cb returns 0 to continue, non-zero to stop (result is returned). */
 typedef int (*tree_visit_fn)(uint64_t obj, uint32_t typ, uint64_t off,
                              const uint8_t *data, uint32_t size, void *ctx);
-static int tree_visit(uint64_t root_lba, uint64_t obj, uint32_t typ,
-                      tree_visit_fn cb, void *ctx) {
-    if (!root_lba) return -1;
-    if (blk_read(root_lba, bscratch) != 0) return -1;
-    int n = root_nptrs(bscratch);
-    for (int i = 0; i < n; i++) {
-        uint64_t o; uint32_t t; uint64_t f, child;
-        root_get(bscratch, i, &o, &t, &f, &child);
-        if (blk_read(child, bscratch) != 0) continue;
-        int m = leaf_nslots(bscratch);
-        for (int j = 0; j < m; j++) {
-            uint64_t oo; uint32_t tt; uint32_t dd, ds; uint64_t ff;
-            leaf_get(bscratch, j, &oo, &tt, &ff, &dd, &ds);
-            if (oo == obj && tt == typ) {
-                int rc = cb(oo, tt, ff, bscratch + dd, ds, ctx);
+
+static int tree_visit_node(uint64_t lba, uint64_t obj, uint32_t typ,
+                           tree_visit_fn fn, void *ctx) {
+    uint8_t blk[4096];
+    if (blk_read(lba, blk) != 0) return 0;
+    if (blk_type_hdr(blk) == BTRFS_BLK_LEAF) {
+        int n = leaf_nslots(blk);
+        for (int i = 0; i < n; i++) {
+            uint64_t o; uint32_t t, dd, ds; uint64_t f;
+            leaf_get(blk, i, &o, &t, &f, &dd, &ds);
+            if (o == obj && t == typ) {
+                int rc = fn(o, t, f, blk + dd, ds, ctx);
                 if (rc) return rc;
             }
         }
+        return 0;
     }
-    return -1;
+    int np = root_nptrs(blk);
+    for (int i = 0; i < np; i++) {
+        uint64_t o, f, c; uint32_t t;
+        root_get(blk, i, &o, &t, &f, &c);
+        int rc = tree_visit_node(c, obj, typ, fn, ctx);
+        if (rc) return rc;
+    }
+    return 0;
+}
+
+static int tree_visit(uint64_t root_lba, uint64_t obj, uint32_t typ,
+                      tree_visit_fn fn, void *ctx) {
+    if (!root_lba) return -1;
+    return tree_visit_node(root_lba, obj, typ, fn, ctx);
+}
+
+static void tree_stats_node(uint64_t lba, int lvl, int *max_depth,
+                            uint32_t *leaves, uint32_t *items) {
+    uint8_t blk[4096];
+    if (blk_read(lba, blk) != 0) return;
+    if (blk_type_hdr(blk) == BTRFS_BLK_LEAF) {
+        if (lvl > *max_depth) *max_depth = lvl;
+        (*leaves)++;
+        *items += (uint32_t)leaf_nslots(blk);
+        return;
+    }
+    int np = root_nptrs(blk);
+    for (int i = 0; i < np; i++) {
+        uint64_t o, f, c; uint32_t t;
+        root_get(blk, i, &o, &t, &f, &c);
+        tree_stats_node(c, lvl + 1, max_depth, leaves, items);
+    }
+}
+
+static void tree_stats(uint64_t root_lba, int *depth, uint32_t *leaves, uint32_t *items) {
+    *depth = 0; *leaves = 0; *items = 0;
+    if (!root_lba) return;
+    tree_stats_node(root_lba, 1, depth, leaves, items);
 }
 
 /* ============================================================================
@@ -614,9 +808,30 @@ static struct btrfs_vinfo *bv_intern(const char *path, uint64_t objid, int is_di
             return &bv4pool[i];
         }
     }
+    static uint64_t bv_lru_seq = 0;
+    int slot = -1;
     for (int i = 0; i < BTRFS_MAX_OPEN_VNODES; i++) {
-        if (!bv4pool[i].in_use) {
-            struct btrfs_vinfo *v = &bv4pool[i];
+        if (!bv4pool[i].in_use) { slot = i; break; }
+    }
+    if (slot < 0) {
+        uint64_t best_seq = (uint64_t)-1;
+        for (int i = 0; i < BTRFS_MAX_OPEN_VNODES; i++) {
+            if (bv4pool[i].vnode.vfs_refs == 0 && bv4pool[i].size < best_seq) {
+                /* use slot index as simple round-robin if no timestamp */
+                slot = i;
+                best_seq = bv_lru_seq++;
+                break;
+            }
+        }
+        if (slot < 0) {
+            for (int i = 0; i < BTRFS_MAX_OPEN_VNODES; i++) {
+                if (bv4pool[i].vnode.vfs_refs == 0) { slot = i; break; }
+            }
+        }
+    }
+    if (slot >= 0) {
+        if (1) {
+            struct btrfs_vinfo *v = &bv4pool[slot];
             memset(v, 0, sizeof(*v));
             v->in_use = 1;
             strncpy(v->path, path, sizeof(v->path) - 1);
@@ -659,7 +874,8 @@ static struct vnode *btrfs_lookup(void *fs_data, const char *path) {
     uint64_t mode = r64(rec + 0);
     uint64_t size = r64(rec + 24);
     int is_dir = (mode & 0x4000) != 0;
-    return &bv_intern(path, ino, is_dir, size)->vnode;
+    struct btrfs_vinfo *vi = bv_intern(path, ino, is_dir, size);
+    return vi ? &vi->vnode : NULL;
 }
 
 static struct vnode *btrfs_create(void *fs_data, const char *path) {
@@ -693,7 +909,8 @@ static struct vnode *btrfs_create(void *fs_data, const char *path) {
 
     kprintf("[btrfs] create: ino %llu path '%s' parent=%llu\n",
             (unsigned long long)new_ino, base, (unsigned long long)parent);
-    return &bv_intern(path, new_ino, 0, 0)->vnode;
+    struct btrfs_vinfo *vi = bv_intern(path, new_ino, 0, 0);
+    return vi ? &vi->vnode : NULL;
 }
 
 /* Locate the data extent for (ino, off).  Returns disk LBA or 0 if absent. */
@@ -1057,9 +1274,11 @@ static int btrfs_sync(void *fs_data) {
     w32(sb + 8, (uint32_t)bm.generation);
     if (blk_write(BTRFS_SUPER_OFFSET, sb, BT_SUPER, 0) != 0) return -1;
     bm.generation++;
-    kprintf("[btrfs] fsync: persisted tree root LBA %llu gen %llu\n",
+    int td = 0; uint32_t tl = 0, ti = 0;
+    tree_stats(bm.tree_root_lba, &td, &tl, &ti);
+    kprintf("[btrfs] fsync: persisted tree root LBA %llu gen %llu (depth=%d leaves=%u items=%u)\n",
             (unsigned long long)bm.tree_root_lba,
-            (unsigned long long)bm.generation);
+            (unsigned long long)bm.generation, td, tl, ti);
     return 0;
 }
 

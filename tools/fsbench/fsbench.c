@@ -50,6 +50,7 @@
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 #define DEFAULT_DIR   "/tmp"
 #define DEFAULT_FILES 8
@@ -133,6 +134,7 @@ int main(int argc, char **argv) {
     int nfiles = DEFAULT_FILES;
     int fsize = DEFAULT_SIZE;
     int crash_loop = 0;
+    int scale_mode = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--dir") == 0 && i + 1 < argc) {
@@ -172,6 +174,54 @@ int main(int argc, char **argv) {
 
     /* FSMODERN M3 crash loop.  See the header comment; the receipts are a
      * stable contract with tests/integration/cases/test_fs_crash.sh. */
+        if (scale_mode) {
+        int sizes[3] = { nfiles / 16, nfiles / 4, nfiles };
+        if (sizes[0] < 1) sizes[0] = 1;
+        if (sizes[1] < 1) sizes[1] = 1;
+        double ops[3] = {0, 0, 0};
+        printf("[fsbench] scale: dir=%s sizes=%d/%d/%d size=%d clock=tsc\n",
+               dir, sizes[0], sizes[1], sizes[2], fsize);
+        for (int sidx = 0; sidx < 3; sidx++) {
+            int n = sizes[sidx];
+            char subdir[96];
+            snprintf(subdir, sizeof(subdir), "%s/s%d", dir, sidx);
+            mkdir(subdir, 0755);
+            for (int i = 0; i < n; i++) {
+                snprintf(path[i], sizeof(path[i]), "%s/f_%d.dat", subdir, i);
+                int fd = open(path[i], O_CREAT | O_WRONLY | O_TRUNC, 0644);
+                if (fd < 0) { printf("[fsbench] scale: FAIL create %s\n", path[i]); return 1; }
+                close(fd);
+            }
+            fsync(0);
+            uint64_t t0 = rdtsc_now();
+            int passes = 0;
+            uint64_t lookups = 0;
+            struct stat st;
+            while (passes < 5) {
+                for (int i = 0; i < n; i++) {
+                    if (stat(path[i], &st) != 0) {
+                        printf("[fsbench] scale: FAIL stat %s\n", path[i]);
+                        return 1;
+                    }
+                    lookups++;
+                }
+                passes++;
+                if ((rdtsc_now() - t0) >= 250000000ULL) break;
+            }
+            uint64_t dt = rdtsc_now() - t0;
+            double secs = (double)dt / 1000000000.0;
+            if (secs < 1e-6) secs = 1e-6;
+            ops[sidx] = (double)lookups / secs;
+            printf("[fsbench] scale: n=%d lookups=%llu passes=%d -> %.1f ops/s\n",
+                   n, (unsigned long long)lookups, passes, ops[sidx]);
+        }
+        double ratio = (ops[2] > 0.0) ? (ops[0] / ops[2]) : 0.0;
+        printf("[fsbench] scale: ratio small/large = %.2fx for %dx the names (small=%.1f large=%.1f ops/s)\n",
+               ratio, (int)(nfiles / sizes[0]), ops[0], ops[2]);
+        printf("[fsbench] scale: PASS\n");
+        return 0;
+    }
+
     if (crash_loop) {
         char cpath[64];
         snprintf(cpath, sizeof(cpath), "%s/crash.txt", dir);
