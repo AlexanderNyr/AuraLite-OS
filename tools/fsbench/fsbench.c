@@ -174,13 +174,15 @@ int main(int argc, char **argv) {
 
     /* FSMODERN M3 crash loop.  See the header comment; the receipts are a
      * stable contract with tests/integration/cases/test_fs_crash.sh. */
-        if (scale_mode) {
+    if (scale_mode) {
+        char path[MAX_FILES][128];
         int sizes[3] = { nfiles / 16, nfiles / 4, nfiles };
         if (sizes[0] < 1) sizes[0] = 1;
         if (sizes[1] < 1) sizes[1] = 1;
         double ops[3] = {0, 0, 0};
-        printf("[fsbench] scale: dir=%s sizes=%d/%d/%d size=%d clock=tsc\n",
-               dir, sizes[0], sizes[1], sizes[2], fsize);
+        printf("[fsbench] scale: dir=%s sizes=%d/%d/%d size=%d clock=%s\n",
+               dir, sizes[0], sizes[1], sizes[2], fsize,
+               g_using_tsc ? "tsc" : "kernel");
         for (int sidx = 0; sidx < 3; sidx++) {
             int n = sizes[sidx];
             char subdir[96];
@@ -193,7 +195,7 @@ int main(int argc, char **argv) {
                 close(fd);
             }
             fsync(0);
-            uint64_t t0 = rdtsc_now();
+            uint64_t t0 = now_us();
             int passes = 0;
             uint64_t lookups = 0;
             struct stat st;
@@ -206,10 +208,10 @@ int main(int argc, char **argv) {
                     lookups++;
                 }
                 passes++;
-                if ((rdtsc_now() - t0) >= 250000000ULL) break;
+                if ((now_us() - t0) >= 250000ULL) break;
             }
-            uint64_t dt = rdtsc_now() - t0;
-            double secs = (double)dt / 1000000000.0;
+            uint64_t dt = now_us() - t0;
+            double secs = (double)dt / 1000000.0;
             if (secs < 1e-6) secs = 1e-6;
             ops[sidx] = (double)lookups / secs;
             printf("[fsbench] scale: n=%d lookups=%llu passes=%d -> %.1f ops/s\n",

@@ -330,6 +330,12 @@ static void root_get(const uint8_t *root, int i, uint64_t *obj, uint32_t *typ,
     *child = r64(p + 24);
 }
 
+struct root_ptr {
+    uint64_t obj, off;
+    uint32_t typ;
+    uint64_t child_lba;
+};
+
 static void root_set_ptrs(uint8_t *root, int n, const struct root_ptr *ptrs) {
     w32(root + 32, (uint32_t)n);
     for (int i = 0; i < n; i++) {
@@ -367,7 +373,7 @@ static int tree_descend(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t 
     int depth = 0;
     while (cur) {
         if (blk_read(cur, leaf_buf) != 0) return -1;
-        if (blk_type_hdr(leaf_buf) == BTRFS_BLK_LEAF) {
+        if (blk_type_hdr(leaf_buf) == BT_LEAF) {
             *depth_out = depth;
             return 0;
         }
@@ -403,27 +409,33 @@ static int tree_lookup(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
     return 0;
 }
 
+/* Preserve the existing 28-byte item layout and checksum trailer. */
+static int leaf_room(int count, const struct leaf_slot *slots) {
+    uint32_t used = 36 + (uint32_t)count * 28;
+    if (count < 0 || count > MAX_LEAF_ITEMS || used > BTRFS_CSUM_OFFSET)
+        return 0;
+    for (int i = 0; i < count; i++) {
+        if (slots[i].dsz > BTRFS_CSUM_OFFSET - used) return 0;
+        used += slots[i].dsz;
+    }
+    return 1;
+}
+
 static int leaf_build(uint8_t *blk, int count, const struct leaf_slot *slots,
                       const uint32_t *placed, const uint8_t *databuf) {
+    if (!leaf_room(count, slots)) return -1;
     memset(blk, 0, BTRFS_NODE_SIZE);
     w32(blk + 32, (uint32_t)count);
-    uint32_t dcur = 0;
+    uint32_t dcur = BTRFS_CSUM_OFFSET;
     for (int i = 0; i < count; i++) {
-        uint8_t *sp = blk + 36 + i * 24;
+        uint8_t *sp = blk + 36 + i * 28;
+        dcur -= slots[i].dsz;
         w64(sp + 0, slots[i].obj);
         w64(sp + 8, slots[i].off);
         w32(sp + 16, slots[i].typ);
-        w16(sp + 20, (uint16_t)dcur);
-        w16(sp + 22, (uint16_t)slots[i].size);
-        dcur += slots[i].size;
-    }
-    uint32_t data_base = 36 + (uint32_t)count * 24;
-    if (data_base + dcur > BTRFS_BLK_PAYLOAD) return -1;
-    for (int i = 0; i < count; i++) {
-        uint8_t *sp = blk + 36 + i * 24;
-        uint16_t off_in_data = r16(sp + 20);
-        w16(sp + 20, (uint16_t)(data_base + off_in_data));
-        memcpy(blk + data_base + off_in_data, databuf + placed[i], slots[i].size);
+        w32(sp + 20, dcur);
+        w32(sp + 24, slots[i].dsz);
+        memcpy(blk + dcur, databuf + placed[i], slots[i].dsz);
     }
     return 0;
 }
@@ -431,17 +443,19 @@ static int leaf_build(uint8_t *blk, int count, const struct leaf_slot *slots,
 /* Insert into the tree with CoW, 50/50 splits, and root growth. */
 static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
                        const uint8_t *data, uint32_t size, uint64_t *new_root) {
-    if (!root_lba) return -1;
+    if (!root_lba || size > BTRFS_CSUM_OFFSET - 36 - 28) return -1;
     uint64_t path_lbas[BTRFS_MAX_LEVELS];
     int path_ci[BTRFS_MAX_LEVELS];
     int depth = 0;
     if (tree_descend(root_lba, obj, typ, off, path_lbas, path_ci, &depth, bdatabuf) != 0)
         return -1;
 
-    struct leaf_slot slots[MAX_LEAF_ITEMS + 1];
-    uint32_t placed[MAX_LEAF_ITEMS + 1];
+    static struct leaf_slot slots[MAX_LEAF_ITEMS + 1];
+    static uint32_t placed[MAX_LEAF_ITEMS + 1];
     int n = leaf_nslots(bdatabuf);
-    uint8_t databuf[4096];
+    /* Like bscratch/bdatabuf, staging is shared by the serialized FS path.
+     * Keep it off the small kernel stack (also called from btrfsck). */
+    static uint8_t databuf[2 * BTRFS_NODE_SIZE];
     uint32_t dcur = 0;
     int added = 0;
     int out_n = 0;
@@ -450,7 +464,7 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
         leaf_get(bdatabuf, i, &o, &t, &f, &dd, &ds);
         if (!added && key_cmp(o, t, f, obj, typ, off) == 0) {
             slots[out_n].obj = o; slots[out_n].typ = t; slots[out_n].off = f;
-            slots[out_n].size = size;
+            slots[out_n].dsz = size;
             placed[out_n] = dcur;
             memcpy(databuf + dcur, data, size);
             dcur += size;
@@ -460,7 +474,7 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
         }
         if (!added && key_cmp(obj, typ, off, o, t, f) < 0) {
             slots[out_n].obj = obj; slots[out_n].typ = typ; slots[out_n].off = off;
-            slots[out_n].size = size;
+            slots[out_n].dsz = size;
             placed[out_n] = dcur;
             memcpy(databuf + dcur, data, size);
             dcur += size;
@@ -468,7 +482,7 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
             added = 1;
         }
         slots[out_n].obj = o; slots[out_n].typ = t; slots[out_n].off = f;
-        slots[out_n].size = ds;
+        slots[out_n].dsz = ds;
         placed[out_n] = dcur;
         memcpy(databuf + dcur, bdatabuf + dd, ds);
         dcur += ds;
@@ -476,7 +490,7 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
     }
     if (!added) {
         slots[out_n].obj = obj; slots[out_n].typ = typ; slots[out_n].off = off;
-        slots[out_n].size = size;
+        slots[out_n].dsz = size;
         placed[out_n] = dcur;
         memcpy(databuf + dcur, data, size);
         dcur += size;
@@ -486,23 +500,30 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
     struct root_ptr up[2];
     int n_up = 0;
 
-    if (out_n <= MAX_LEAF_ITEMS && 36 + out_n * 24 + dcur <= BTRFS_BLK_PAYLOAD) {
+    if (leaf_room(out_n, slots)) {
         uint64_t nl = blk_alloc();
         if (!nl) return -1;
         if (leaf_build(bscratch, out_n, slots, placed, databuf) != 0) return -1;
-        if (blk_write(nl, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+        if (blk_write(nl, bscratch, BT_LEAF, BTRFS_ROOT_INO) != 0) return -1;
         up[0].obj = slots[0].obj; up[0].typ = slots[0].typ; up[0].off = slots[0].off;
         up[0].child_lba = nl;
         n_up = 1;
     } else {
         int mid = out_n / 2;
+        /* Variable-sized items need a byte-aware split, not just count/2. */
+        if (!leaf_room(mid, slots) || !leaf_room(out_n - mid, slots + mid)) {
+            for (mid = 1; mid < out_n; mid++)
+                if (leaf_room(mid, slots) && leaf_room(out_n - mid, slots + mid))
+                    break;
+            if (mid == out_n) return -1;
+        }
         uint64_t l1 = blk_alloc();
         uint64_t l2 = blk_alloc();
         if (!l1 || !l2) return -1;
         if (leaf_build(bscratch, mid, slots, placed, databuf) != 0) return -1;
-        if (blk_write(l1, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+        if (blk_write(l1, bscratch, BT_LEAF, BTRFS_ROOT_INO) != 0) return -1;
         if (leaf_build(bscratch, out_n - mid, slots + mid, placed + mid, databuf) != 0) return -1;
-        if (blk_write(l2, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+        if (blk_write(l2, bscratch, BT_LEAF, BTRFS_ROOT_INO) != 0) return -1;
         up[0].obj = slots[0].obj; up[0].typ = slots[0].typ; up[0].off = slots[0].off;
         up[0].child_lba = l1;
         up[1].obj = slots[mid].obj; up[1].typ = slots[mid].typ; up[1].off = slots[mid].off;
@@ -514,7 +535,7 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
         if (blk_read(path_lbas[lvl], bscratch) != 0) return -1;
         int np = root_nptrs(bscratch);
         int ci = path_ci[lvl];
-        struct root_ptr ptrs[MAX_NODE_PTRS + 2];
+        static struct root_ptr ptrs[MAX_NODE_PTRS + 2];
         int op = 0;
         for (int i = 0; i < np; i++) {
             uint64_t o, f, c; uint32_t t;
@@ -531,7 +552,7 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
             if (!nn) return -1;
             memset(bscratch, 0, BTRFS_NODE_SIZE);
             root_set_ptrs(bscratch, op, ptrs);
-            if (blk_write(nn, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+            if (blk_write(nn, bscratch, BT_ROOT, BTRFS_ROOT_INO) != 0) return -1;
             up[0] = ptrs[0]; up[0].child_lba = nn;
             n_up = 1;
         } else {
@@ -541,10 +562,10 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
             if (!n1 || !n2) return -1;
             memset(bscratch, 0, BTRFS_NODE_SIZE);
             root_set_ptrs(bscratch, mid, ptrs);
-            if (blk_write(n1, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+            if (blk_write(n1, bscratch, BT_ROOT, BTRFS_ROOT_INO) != 0) return -1;
             memset(bscratch, 0, BTRFS_NODE_SIZE);
             root_set_ptrs(bscratch, op - mid, ptrs + mid);
-            if (blk_write(n2, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+            if (blk_write(n2, bscratch, BT_ROOT, BTRFS_ROOT_INO) != 0) return -1;
             up[0] = ptrs[0]; up[0].child_lba = n1;
             up[1] = ptrs[mid]; up[1].child_lba = n2;
             n_up = 2;
@@ -558,13 +579,13 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
         if (!nr) return -1;
         memset(bscratch, 0, BTRFS_NODE_SIZE);
         root_set_ptrs(bscratch, 2, up);
-        if (blk_write(nr, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+        if (blk_write(nr, bscratch, BT_ROOT, BTRFS_ROOT_INO) != 0) return -1;
         *new_root = nr;
     }
     return 0;
 }
 
-static int tree_delete(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
+static int tree_remove(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
                        uint64_t *new_root) {
     if (!root_lba) return -1;
     uint64_t path_lbas[BTRFS_MAX_LEVELS];
@@ -575,10 +596,12 @@ static int tree_delete(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
     int idx = leaf_find(bdatabuf, obj, typ, off);
     if (idx < 0) return -1;
 
-    struct leaf_slot slots[MAX_LEAF_ITEMS];
-    uint32_t placed[MAX_LEAF_ITEMS];
+    static struct leaf_slot slots[MAX_LEAF_ITEMS];
+    static uint32_t placed[MAX_LEAF_ITEMS];
     int n = leaf_nslots(bdatabuf);
-    uint8_t databuf[4096];
+    /* Like bscratch/bdatabuf, staging is shared by the serialized FS path.
+     * Keep it off the small kernel stack (also called from btrfsck). */
+    static uint8_t databuf[2 * BTRFS_NODE_SIZE];
     uint32_t dcur = 0;
     int out_n = 0;
     for (int i = 0; i < n; i++) {
@@ -586,7 +609,7 @@ static int tree_delete(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
         uint64_t o; uint32_t t; uint32_t dd, ds; uint64_t f;
         leaf_get(bdatabuf, i, &o, &t, &f, &dd, &ds);
         slots[out_n].obj = o; slots[out_n].typ = t; slots[out_n].off = f;
-        slots[out_n].size = ds;
+        slots[out_n].dsz = ds;
         placed[out_n] = dcur;
         memcpy(databuf + dcur, bdatabuf + dd, ds);
         dcur += ds;
@@ -596,14 +619,14 @@ static int tree_delete(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
     uint64_t nl = blk_alloc();
     if (!nl) return -1;
     if (leaf_build(bscratch, out_n, slots, placed, databuf) != 0) return -1;
-    if (blk_write(nl, bscratch, BTRFS_BLK_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+    if (blk_write(nl, bscratch, BT_LEAF, BTRFS_ROOT_INO) != 0) return -1;
 
     uint64_t child_lba = nl;
     for (int lvl = depth - 1; lvl >= 0; lvl--) {
         if (blk_read(path_lbas[lvl], bscratch) != 0) return -1;
         int np = root_nptrs(bscratch);
         int ci = path_ci[lvl];
-        struct root_ptr ptrs[MAX_NODE_PTRS];
+        static struct root_ptr ptrs[MAX_NODE_PTRS];
         for (int i = 0; i < np; i++) {
             uint64_t o, f, c; uint32_t t;
             root_get(bscratch, i, &o, &t, &f, &c);
@@ -614,7 +637,7 @@ static int tree_delete(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
         if (!nn) return -1;
         memset(bscratch, 0, BTRFS_NODE_SIZE);
         root_set_ptrs(bscratch, np, ptrs);
-        if (blk_write(nn, bscratch, BTRFS_BLK_ROOT, BTRFS_ROOT_INO) != 0) return -1;
+        if (blk_write(nn, bscratch, BT_ROOT, BTRFS_ROOT_INO) != 0) return -1;
         child_lba = nn;
     }
     *new_root = child_lba;
@@ -628,7 +651,7 @@ static int tree_visit_node(uint64_t lba, uint64_t obj, uint32_t typ,
                            tree_visit_fn fn, void *ctx) {
     uint8_t blk[4096];
     if (blk_read(lba, blk) != 0) return 0;
-    if (blk_type_hdr(blk) == BTRFS_BLK_LEAF) {
+    if (blk_type_hdr(blk) == BT_LEAF) {
         int n = leaf_nslots(blk);
         for (int i = 0; i < n; i++) {
             uint64_t o; uint32_t t, dd, ds; uint64_t f;
@@ -660,7 +683,7 @@ static void tree_stats_node(uint64_t lba, int lvl, int *max_depth,
                             uint32_t *leaves, uint32_t *items) {
     uint8_t blk[4096];
     if (blk_read(lba, blk) != 0) return;
-    if (blk_type_hdr(blk) == BTRFS_BLK_LEAF) {
+    if (blk_type_hdr(blk) == BT_LEAF) {
         if (lvl > *max_depth) *max_depth = lvl;
         (*leaves)++;
         *items += (uint32_t)leaf_nslots(blk);
