@@ -2,6 +2,118 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [FSMODERN M4 — ext2 and fat32 get their missing pieces] 2026-11-24
+
+`FSMODERN_PLAN.md` M4. The phase asked for two things: an ext2 consistency
+check at mount, and fat32's remaining LFN/`fsync` gaps. Promoting the checker
+from a test fixture to a boot-time check is what found the real bug — and it
+was not in the checker. **The formatter was writing an impossible filesystem
+on any volume larger than one bitmap block, and the free-space counters were
+lying about it.**
+
+**The finding.** One bitmap block addresses `8 × block_size` blocks. The
+formatter set `blocks_per_group = total_blocks`. On a 64 MiB volume with 1 KiB
+blocks that is ONE group claiming 65536 blocks while its bitmap can reach
+8192 of them: `s_free_blocks_count` said 65468 free, and 8171 existed. Both
+walkers then read past their buffers — the allocator scans
+`i < blocks_per_group` over a 4096-byte `block_buf`, the checker popcounted
+65535 bits of a 1024-byte one. Measured with ASan against the shipped walker:
+`heap-buffer-overflow READ of size 1, 0 bytes after 1024-byte region`. No test
+met it because `test_ext2.sh` formats 4 MiB, which fits one group.
+
+**The fix (conformant multi-group, small volumes unchanged).**
+`kernel/fs/ext2.c`:
+
+- `blocks_per_group = min(8 × block_size, total_blocks)`, and as many groups
+  as the volume needs — per-group descriptors, block/inode bitmaps and inode
+  tables. A volume small enough for one group keeps its old layout byte for
+  byte (≤ 8 MiB at 1 KiB, ≤ 32 MiB at 4 KiB).
+- Every group starts with a **backup superblock and a backup GDT**:
+  `s_feature_compat` is clear (no `sparse_super`), which is exactly the layout
+  e2fsprogs insists on — before this, `fsck.ext2` refused the descriptors
+  outright (`Corrupt group descriptor: bad block for block bitmap`) because
+  the kernel's group metadata sat where the backups belong.
+- Bitmap padding is set the way e2fsprogs sets it; `s_feature_incompat` now
+  carries `FILETYPE` (the entries do carry `file_type`, so the bit that says
+  so has to be on — with it clear fsck offered to clear every entry); the
+  root inode starts at nlink 2, not 3 (3 made every `mkdir` produce
+  "Inode 2 ref count is 4, should be 3").
+- A volume whose superblock declares geometry its bitmaps cannot address is
+  **refused by name** instead of mounted unsafely:
+  `[ext2] refusing volume: superblock geometry is not addressable (blocks=65536 first_data=1 blocks_per_group=65536 inodes_per_group=128, one bitmap block holds 8192 bits)`.
+  That is what any 64 MiB volume formatted before this change now gets; it was
+  never safe to write to, and reformatting it is the honest answer.
+- The format itself prints a receipt, because a format nobody can grep is a
+  format nobody can audit: `[ext2] formatted: 65536 blocks of 1024 B in 8 group(s) of 8192 blocks, 1024 inodes, 65374 free blocks`.
+
+**The mount check.** `ext2_init` flushes the cache (`fscheck_ext2()` reads the
+raw device — without the flush a just-formatted volume reads back blank and
+the first boot reported `superblock magic 0x0`), then walks:
+
+```
+[fscheck] ext2: CLEAN (65536 blocks, 1024 inodes, 8 groups)
+[ext2] mount check: CLEAN (bitmaps + inode table agree)
+[ext2] durability: WEAK (no journal; a power cut can lose a write that returned success)
+```
+
+A finding is printed and the volume stays mounted (`N finding(s) -- see
+[fscheck] above`); an unreadable volume says so. Note the knob: the general
+boot walk is `DISABLED (build)` by default; the ext2 mount check calls the
+walker directly, which is deliberate — a mount-time check that a boot argument
+can switch off is not a check.
+
+**The checker got safer and more specific.** `kernel/fs/fscheck.c` clamps every
+popcount to `8 × block_size` (the reachable width) and names the geometry that
+made it necessary: `blocks_per_group 65536 exceeds one bitmap block (8192 bits)`.
+Two new cases in `tests/unit/test_fscheck.c` pin both halves; the second runs
+under ASan and is **red without the clamp**.
+
+**fat32.** `.fsync` is implemented as an ordering, not a flush: data clusters →
+every FAT copy → the directory entry, with a once-per-boot receipt
+`[fat32] fsync: ordered data -> FAT -> dirent (M4)`. `bc_flush_range(dev,
+first_block, nblocks)` was added to the buffer cache for it (0 = every
+in-range dirty buffer reached the device; a failed buffer stays dirty).
+**And rename was losing files:** the old order marked the source entry `0xE5`
+*before* creating the destination, so a power cut between the two steps left
+the clusters allocated with no entry pointing at them — the file was gone, not
+torn. The destination is now created first and the source removed after; if
+the removal fails the new entry is removed again, so a crash can leave the
+file under two names (which a checker names) but never under none.
+
+**Measured:**
+
+| case | result |
+|---|---|
+| fresh 64 MiB ext2, mount check | **CLEAN** (65536 blocks, 1024 inodes, 8 groups) |
+| `fsck.ext2 -fn` on that volume | **0 findings, exit 0** — before M4: free-block drift + corrupt descriptors + "has filetype set" on every entry |
+| 64 MiB volume formatted before M4 | refused by name (was: mounted, 65468 free blocks claimed, 8171 reachable) |
+| `/fat` write → `fsync` → SIGKILL | file present, whole, byte-correct (15/15, unchanged) |
+
+**Tests:** new `tests/integration/cases/test_ext2_multigroup.sh` (7 assertions,
+including the host-side `fsck.ext2 -fn` that 4 MiB cannot exercise);
+`test_fat32_full.sh` grew 12 → 16 (an LFN rename, a cross-directory move and
+an LFN unlink, with the content re-read after each step); `test_bcache_m2.c`
+gained section 8 (write ordering: data before FAT, empty range, refused write
+→ -1, retry). Green on this tree: `test_ext2` 14/14, `test_fscheck` 10/10,
+`test_fs_crash` 15/15, `test_fs_stress` 13/13, `test_fsbench` 13/13,
+`test_bc_writeback` 8/8, `test_bcache_m2` 10/10, `test_fat32_full` 16/16,
+`test_fat32_mkdir` 5/5, `test_ahci_matrix` 17/17, `test_perf_smoke` 52/44.
+
+**And a build target that had been quietly broken.** `make kernelrv` and
+`make kernela64` did not link: M2 made `bc_init()` ask the PMM how much memory
+the machine has (`pmm_get_usable_frames()`), and only the i386 port ever
+implemented it — `buffer_cache.c` is a shared row, so the RISC-V and AArch64
+kernels had been failing on that symbol since 2026-11-22 (before M4 they failed
+on `fscheck_ext2` first). Both ports now answer from their own frame count, so
+all four kernel targets build again.
+
+**Stated, not hidden:** allocation *beyond group 0* has no automated test. The
+largest in-guest write is `fsbench`'s 4 MiB (64 files × 64 KiB) and group 0
+alone holds ~8 MiB, so nothing in the suite forces a block out of the first
+group. The mapping is one formula for every group
+(`g*blocks_per_group + first_data_block + i`), and the per-group bitmaps the
+allocator reads are exactly what the mount check verifies.
+
 ## [FSMODERN M3 — the durability contract: fsync means something] 2026-11-22
 
 `FSMODERN_PLAN.md` M3. Before M3 "is my data safe?" had no answer a caller

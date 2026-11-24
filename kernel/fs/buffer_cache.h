@@ -93,6 +93,26 @@ int bc_sync(struct buffer *buf);
 /* Force write all dirty buffers in the cache to disk. */
 void bc_flush_all(void);
 
+/* FSMODERN M4: ordered durability -- flush ONLY the dirty buffers whose
+ * block number falls in [first_block, first_block + nblocks) on `dev`,
+ * lowest block first, with the same adjacency coalescing as
+ * bc_flush_all().  Everything outside the range stays dirty.
+ *
+ * Why it exists: bc_flush_all() writes the LOWEST dirty block first.  On a
+ * FAT32 volume that is the FAT, which sits below the data area, so an
+ * unordered whole-cache flush puts the index on the medium BEFORE the
+ * clusters it names.  A power cut in that window leaves a chain pointing
+ * at data the medium never received.  With this call a filesystem can
+ * order its own durability:
+ *
+ *     bc_flush_range(dev, data_first, data_n);  // 1. the file's bytes
+ *     bc_flush_range(dev, fat_first,  fat_n);   // 2. the chain that names them
+ *     bc_flush_range(dev, dirent_blk, 1);       // 3. the entry that names the file
+ *
+ * Returns 0 when every dirty block in the range reached the device, -1 if
+ * any command failed (failed buffers are left dirty for a retry). */
+int bc_flush_range(int dev, uint64_t first_block, uint64_t nblocks);
+
 /* RESIDUE2 T3 (writeback): the 1 Hz drain.  Flush up to 256 dirty
  * buffers per call (coldest first) and print the deferred/flushed
  * receipt when anything was written.  Hooked from the BSP seconds tick

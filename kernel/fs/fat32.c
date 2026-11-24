@@ -968,7 +968,7 @@ static int sfn_taken(uint32_t dir_cluster, const uint8_t name83[11]) {
  * mkdir.  `attr` is FAT_ATTR_ARCH or FAT_ATTR_DIR. */
 static int dir_create_entry(uint32_t dir_cluster, const char *name, uint8_t attr,
                             uint32_t first_cluster, uint32_t size,
-                            uint32_t *out_dirent_off) {
+                            uint32_t *out_dirent_off, int *out_lfn_span) {
     /* Pick a unique 8.3 alias. */
     uint8_t n83[11];
     int alias = 0;
@@ -1006,6 +1006,7 @@ static int dir_create_entry(uint32_t dir_cluster, const char *name, uint8_t attr
     if (dir_write_entry(dir_cluster, off + (uint32_t)lfn_count * 32, sfn_e) != 0) return -1;
 
     if (out_dirent_off) *out_dirent_off = off + (uint32_t)lfn_count * 32;
+    if (out_lfn_span)   *out_lfn_span = lfn_count;
     return 0;
 }
 
@@ -1401,7 +1402,7 @@ static struct vnode *fat32_create_impl(void *fs_data, const char *path) {
     }
     if (!base[0]) return NULL;
     uint32_t dirent_off;
-    if (dir_create_entry(parent, base, FAT_ATTR_ARCH, 0, 0, &dirent_off) != 0)
+    if (dir_create_entry(parent, base, FAT_ATTR_ARCH, 0, 0, &dirent_off, NULL) != 0)
         return NULL;
     return &vinfo_intern(path, parent, dirent_off, 0, 0, 0)->vnode;
 }
@@ -1432,7 +1433,7 @@ static int fat32_mkdir_op_impl(void *fs_data, const char *path) {
     memcpy(cluster_buf + 32, dotdot, 32);
     if (write_cluster(cl, cluster_buf) != 0) { free_chain(cl); return -1; }
     uint32_t off;
-    if (dir_create_entry(parent, base, FAT_ATTR_DIR, cl, 0, &off) != 0) {
+    if (dir_create_entry(parent, base, FAT_ATTR_DIR, cl, 0, &off, NULL) != 0) {
         free_chain(cl);
         return -1;
     }
@@ -1498,9 +1499,20 @@ static int fat32_rename_op_impl(void *fs_data, const char *from, const char *to)
     uint8_t attr = itf.attr;
     uint32_t fc = itf.first_cluster;
     uint32_t sz = itf.size;
-    if (dir_mark_deleted(pf, itf.entry_off, itf.lfn_span) != 0) return -1;
+    /* Create the new entry BEFORE deleting the old one (FSMODERN M4).
+     * The old order -- delete, then create -- lost the file outright when
+     * the machine died between the two steps: its only directory entry was
+     * already 0xE5 while its clusters stayed allocated, so neither name
+     * reached the data.  Creating first leaves the file reachable under
+     * both names after such a crash; the undo below removes the duplicate
+     * when the old entry cannot be deleted at all. */
+    int new_span = 0;
     uint32_t off;
-    if (dir_create_entry(pt, bt, attr, fc, sz, &off) != 0) return -1;
+    if (dir_create_entry(pt, bt, attr, fc, sz, &off, &new_span) != 0) return -1;
+    if (dir_mark_deleted(pf, itf.entry_off, itf.lfn_span) != 0) {
+        dir_mark_deleted(pt, off, new_span);
+        return -1;
+    }
     vinfo_evict_by_path(from);
     return 0;
 }
@@ -1655,6 +1667,81 @@ static int fat32_readdir_op(struct vnode *vn, struct vfs_dirent *out, int max) {
     return r;
 }
 
+/* FSMODERN M4: ordered durability for /fat.
+ *
+ * Before M4, fsync() fell through to the mount-wide `.sync`, which is
+ * bc_flush_all() -- and bc_flush_all() writes the LOWEST dirty block first.
+ * On a FAT32 volume the FAT sits below the data area, so a whole-cache
+ * flush put the chain on the medium BEFORE the clusters it names.  A power
+ * cut in that window leaves a chain pointing at data the medium never
+ * received: the cross-link class test_fs_crash.sh exists to rule out.
+ *
+ * The order here is the one a power cut can survive:
+ *   1. the file's data clusters (the bytes a reader will look at),
+ *   2. the FAT sectors (the chain that names those clusters),
+ *   3. the directory entry (the name that points at the chain).
+ * A crash between (1) and (2) loses the newest clusters but leaves the
+ * chain short and consistent; between (2) and (3) the file has data with
+ * no name, which the next fscheck names.  Both are recoverable.  The old
+ * order's cross-link is not.
+ *
+ * The receipt is printed once per boot, on the first ordered fsync, so an
+ * integration case can pin the path without the log growing with every
+ * fsync() the system makes. */
+static int fat32_fsync_receipt_done;
+
+static int fat32_fsync(struct vnode *vn, int mode) {
+    struct fat_vinfo *v = (struct fat_vinfo *)vn->fs_data;
+    if (!v || !fs.mounted) return -EINVAL;
+
+    const int dev = fs.bdev;
+    int rc = 0;
+
+    /* 1. The file's data clusters, in chain order. */
+    if (mode & SYNC_DATA) {
+        uint32_t cl = v->first_cluster;
+        uint32_t guard = 0;
+        while (cl >= 2 && cl < FAT_BAD && guard++ < fs.cluster_count + 2u) {
+            uint64_t lba  = cluster_to_lba(cl);
+            uint64_t blk  = lba / BC_SECTORS_PER_BLOCK;
+            uint64_t nblk = (fs.sect_per_clus + BC_SECTORS_PER_BLOCK - 1) /
+                            BC_SECTORS_PER_BLOCK;
+            if (bc_flush_range(dev, blk, nblk) != 0) rc = -EIO;
+            uint32_t next = fat_get(cl);
+            if (next < 2 || next >= FAT_BAD) break;
+            cl = next;
+        }
+    }
+
+    /* 2. The FAT itself -- every copy, because a mount may read either. */
+    uint64_t fat_sectors = (uint64_t)fs.num_fats * fs.fat_sectors;
+    uint64_t fat_blocks  = (fat_sectors + BC_SECTORS_PER_BLOCK - 1) /
+                           BC_SECTORS_PER_BLOCK;
+    if (bc_flush_range(dev, fs.fat_lba / BC_SECTORS_PER_BLOCK,
+                       fat_blocks) != 0)
+        rc = -EIO;
+
+    /* 3. The directory entry that names the file.  It lives in a data
+     *    cluster too, so it must reach the medium AFTER the FAT that
+     *    names its cluster chain. */
+    if (v->parent_cluster >= 2) {
+        uint32_t cl_idx = v->dirent_offset / fs.bytes_per_clus;
+        uint32_t cl     = chain_at(v->parent_cluster, cl_idx);
+        if (cl) {
+            uint64_t lba = cluster_to_lba(cl) +
+                           (v->dirent_offset % fs.bytes_per_clus) / 512u;
+            if (bc_flush_range(dev, lba / BC_SECTORS_PER_BLOCK, 1) != 0)
+                rc = -EIO;
+        }
+    }
+
+    if (!fat32_fsync_receipt_done) {
+        fat32_fsync_receipt_done = 1;
+        kprintf("[fat32] fsync: ordered data -> FAT -> dirent (M4)\n");
+    }
+    return rc;
+}
+
 const struct vfs_ops fat32_ops = {
     .lookup   = fat32_lookup,
     .create   = fat32_create,
@@ -1668,6 +1755,7 @@ const struct vfs_ops fat32_ops = {
     .stat     = fat32_stat_op,
     .truncate = fat32_truncate_op,
     .sync     = fs_cache_sync,      /* RESIDUE2 T3: flush dirty buffers */
+    .fsync    = fat32_fsync,        /* FSMODERN M4: data -> FAT -> dirent */
     /* FSMODERN M3: EXACT.  FAT32's in-memory state IS the cache: the FAT,
      * the directory entry and the data all live in the shared buffer cache
      * and .sync flushes it.  After a successful fsync() there is nothing

@@ -343,6 +343,32 @@ int main(void) {
     CHECK(n >= 1 && captured("free blocks gd=") && captured("!= bitmap"),
           "group free-block drift detected");
 
+    /* Geometry the bitmaps cannot address (FSMODERN M4).  The pre-M4
+     * formatter wrote blocks_per_group = total_blocks, so a 64 MiB volume
+     * declared 65536 blocks in ONE group while its 1 KiB bitmap reached
+     * 8192 of them, and the free counters claimed 65468 free blocks of
+     * which 8171 existed.  The walker must name that geometry and do its
+     * arithmetic against the width the bitmap actually has -- never
+     * popcount past the buffer (this test runs under ASan for exactly
+     * that reason: the pre-M4 walker read 56 KiB past a 1 KiB bitmap). */
+    make_ext2();
+    w32(1024 + 32, 65536);              /* s_blocks_per_group */
+    w32(1024 + 4,  65536);              /* s_blocks_count      */
+    w32(1024 + 12, 65468);              /* s_free_blocks_count */
+    {
+        /* the group descriptor's own free count, as the old formatter
+         * wrote it (one group, the whole volume, nothing reachable) */
+        uint64_t gdt_off = (uint64_t)2 * E_BLOCK_SIZE + 12;
+        disk[gdt_off]     = (uint8_t)(65468 & 0xFF);
+        disk[gdt_off + 1] = (uint8_t)(65468 >> 8);
+    }
+    capture_reset();
+    n = fscheck_ext2(dev, 0);
+    CHECK(n >= 1 && captured("exceeds one bitmap block"),
+          "unaddressable blocks_per_group named");
+    CHECK(captured("group 0 free blocks gd=65468 != bitmap 8179"),
+          "free-block arithmetic uses the reachable width");
+
     /* Root inode's bitmap bit cleared */
     make_ext2();
     disk[(uint64_t)4 * E_BLOCK_SIZE + 0] &= ~0x02;   /* inode 2 = bit 1 */

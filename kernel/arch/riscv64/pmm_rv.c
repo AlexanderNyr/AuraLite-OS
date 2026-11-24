@@ -118,6 +118,16 @@ uint64_t pmm_rv_free_frames(void)
     return free_count;
 }
 
+/* ---- FSMODERN M2/M4: the buffer cache sizes itself from RAM ----------- */
+/* buffer_cache.c is a KERNELRV_SHARED row, so this kernel links it too,
+ * but it links no x86 pmm.c.  M2 made bc_init() ask the PMM how much memory
+ * the machine has; without this the link fails on pmm_get_usable_frames
+ * (which is how `make kernelrv` stayed broken until M4 rebuilt it). */
+uint64_t pmm_get_usable_frames(void)
+{
+    return total_frames;
+}
+
 /* The [pmm] gate: N distinct page-aligned frames out, N back, the
  * free count restored -- pmm32.c's contract verbatim. */
 int pmm_rv_selftest(void)

@@ -1,6 +1,6 @@
 # AuraLite OS — Filesystem Modernization Plan (`FSMODERN_PLAN.md`)
 
-## Status: M0 ✅ DONE (the instrument and the first numbers) · M1 ✅ DONE (/data survives a power-off) · M2 ✅ DONE (4 KiB blocks: /fat read 7.4×) · M3–M7 ⬜
+## Status: M0 ✅ DONE (the instrument and the first numbers) · M1 ✅ DONE (/data survives a power-off) · M2 ✅ DONE (4 KiB blocks: /fat read 7.4×) · M3 ✅ DONE (fsync means something: /fat write+fsync survives SIGKILL) · M4 ✅ DONE (ext2 mount check CLEAN + conformant multi-group format; fat32 fsync ordered) · M5–M7 ⬜
 
 > **Baseline:** `bcc248f` + `patches/0001-HOME-H0-home-directory-and-the-user-database.patch`
 > (HOME_PLAN H0, 2026-11-22). Prerequisite plan: `HOME_PLAN.md` (H4 depends on
@@ -208,7 +208,7 @@ Acceptance, all measured by M0's harness:
 - cache footprint stated in the boot receipt (`[bc] 4 KiB × N blocks = X MiB`,
   and N derived from RAM size rather than a hard 1024).
 
-### M3 — The durability contract ⬜
+### M3 — The durability contract ✅ DONE
 
 - `fs_sync(vnode, mode)` added to `vfs_ops`; each filesystem either implements
   it honestly or declares `FS_DURABILITY_WEAK`.
@@ -220,7 +220,16 @@ Acceptance, all measured by M0's harness:
   declaration. fat32 must pass (a) for a single-sector write, which its
   FAT-update ordering already implies.
 
-### M4 — ext2 and fat32 get their missing pieces ⬜
+**Exit gate (met 2026-11-22, CHANGELOG `[FSMODERN M3]`):**
+`tests/integration/cases/test_fs_crash.sh` kills a random 0–1200 ms after an
+in-guest write+fsync and reboots twice — 15/15. Measured: a `/fat` write that
+returned success was LOST when the machine died ≤ 0.5 s later (the 1 Hz
+writeback was the only thing keeping it alive); with `fsync()` the file came
+back **whole and byte-correct after an immediate SIGKILL**. The classes are
+declared in each driver's ops table: `/fat`,`/disk` **EXACT**, `/data`,`/ext2`
+**WEAK** (both print it at mount), the rest **VOLATILE**.
+
+### M4 — ext2 and fat32 get their missing pieces ✅ DONE
 
 The two filesystems a real user actually touches, brought to the same bar as
 the fancy ones:
@@ -231,6 +240,22 @@ the fancy ones:
   documented answer to "what happens on a crash" (M3's declaration).
 - fat32: LFN write support gaps if any remain, plus `fsync` reaching the FAT
   sectors before the data sectors (ordering, not speed).
+
+**Exit gate (met 2026-11-24, CHANGELOG `[FSMODERN M4]`):** promoting the
+checker to a boot-time check is what found the real bug: the formatter wrote
+`blocks_per_group = total_blocks`, so any volume larger than one bitmap block
+(8 MiB at 1 KiB) got ONE group whose bitmap could reach 8192 blocks while the
+superblock claimed 65536 and the free counters claimed 65468 free of 8171
+reachable — and the allocator read past its bitmap buffer. Measured with ASan
+on the shipped walker: `heap-buffer-overflow READ of size 1, 0 bytes after
+1024-byte region`. The formatter now lays out `min(8*block_size, volume)`
+blocks per group with backup superblock+GDT copies in each; a fresh 64 MiB
+volume gives `[ext2] formatted: 65536 blocks of 1024 B in 8 group(s) of 8192
+blocks, 1024 inodes, 65374 free blocks` and `fsck.ext2 -fn` finds **nothing to
+fix**. The mount receipt is `[ext2] mount check: CLEAN (bitmaps + inode table
+agree)`. fat32 got `.fsync` (data → all FAT copies → dirent) and its rename
+order reversed: the destination is created before the source is removed, so a
+power cut leaves the file reachable under two names instead of under none.
 
 ### M5 — Directory scaling ⬜
 

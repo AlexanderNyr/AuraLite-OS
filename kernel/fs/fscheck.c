@@ -469,6 +469,22 @@ int fscheck_ext2(int dev, uint32_t base_lba) {
         kfree(blk);
         return -1;
     }
+    /* One bitmap block holds at most 8 * block_size bits.  A superblock
+     * that claims more per group cannot be addressed by its own bitmaps;
+     * popcounting the declared width would read past the bitmap buffer
+     * (which is exactly what the pre-M4 formatter produced on volumes over
+     * 8 MiB at 1 KiB).  Name the geometry, then do the arithmetic against
+     * the width that actually exists. */
+    uint32_t bm_capacity = 8u * block_size;
+    if (blocks_per_grp > bm_capacity)
+        ext2_finding("blocks_per_group %u exceeds one bitmap block (%u bits)",
+                     blocks_per_grp, bm_capacity, 0);
+    if (inodes_per_grp > bm_capacity)
+        ext2_finding("inodes_per_group %u exceeds one bitmap block (%u bits)",
+                     inodes_per_grp, bm_capacity, 0);
+    uint32_t bpg_eff = blocks_per_grp > bm_capacity ? bm_capacity : blocks_per_grp;
+    uint32_t ipg_eff = inodes_per_grp > bm_capacity ? bm_capacity : inodes_per_grp;
+
     uint32_t groups = (blocks_count - first_data_blk + blocks_per_grp - 1) /
                       blocks_per_grp;
     if (groups == 0 || groups > EXT2_MAX_GROUPS) {
@@ -504,7 +520,7 @@ int fscheck_ext2(int dev, uint32_t base_lba) {
     }
 
     uint32_t sum_free_blocks = 0, sum_free_inodes = 0;
-    uint32_t itable_blocks = (inodes_per_grp * EXT2_INODE_SIZE +
+    uint32_t itable_blocks = (ipg_eff * EXT2_INODE_SIZE +
                               block_size - 1) / block_size;
 
     uint8_t *bm = kmalloc(block_size);
@@ -535,10 +551,12 @@ int fscheck_ext2(int dev, uint32_t base_lba) {
             ext2_finding("group %u block bitmap unreadable", grp, 0, 0);
             continue;
         }
-        uint32_t valid_blocks = blocks_per_grp;
-        if (grp == groups - 1)
-            valid_blocks = blocks_count - first_data_blk -
+        uint32_t valid_blocks = bpg_eff;
+        if (grp == groups - 1) {
+            uint32_t rem = blocks_count - first_data_blk -
                            grp * blocks_per_grp;
+            if (rem < valid_blocks) valid_blocks = rem;
+        }
         uint32_t used = fc_popcount_bits(bm, valid_blocks);
         uint32_t freeb = valid_blocks > used ? valid_blocks - used : 0;
         if (freeb != fb)
@@ -552,9 +570,10 @@ int fscheck_ext2(int dev, uint32_t base_lba) {
             ext2_finding("group %u inode bitmap unreadable", grp, 0, 0);
             continue;
         }
-        uint32_t valid_inodes = inodes_per_grp;
+        uint32_t valid_inodes = ipg_eff;
         if (grp == groups - 1 && inodes_count > grp * inodes_per_grp)
             valid_inodes = inodes_count - grp * inodes_per_grp;
+        if (valid_inodes > ipg_eff) valid_inodes = ipg_eff;
         uint32_t iused = fc_popcount_bits(bm, valid_inodes);
         uint32_t freei = valid_inodes > iused ? valid_inodes - iused : 0;
         if (freei != fi)

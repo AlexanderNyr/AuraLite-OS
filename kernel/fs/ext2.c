@@ -29,6 +29,7 @@
 
 #include <stdint.h>
 #include "kernel/fs/ext2.h"
+#include "kernel/fs/fscheck.h"      /* FSMODERN M4: the mount-time check */
 #include "kernel/fs/blkdev.h"
 #include "kernel/fs/buffer_cache.h"   /* RESIDUE2 T3: cache-backed I/O */
 #include "kernel/lib/errno.h"
@@ -1316,28 +1317,45 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     if (bsize != 1024 && bsize != 2048 && bsize != 4096) bsize = 1024;
     if (total_blocks < 64) total_blocks = 64;
     uint32_t inodes_per_group = 128;
-    uint32_t blocks_per_group = total_blocks;
     uint32_t inode_table_blocks =
         (inodes_per_group * EXT2_GOOD_OLD_INODE_SIZE + bsize - 1) / bsize;
 
-    /* Block layout for single group (block size 1024):
-     *   block 0    : superblock (lives at byte 1024..2047 of FS; for 2048/4096
-     *                block sizes, sb shares block 0)
-     *   block 1    : GDT
-     *   block 2    : block bitmap
-     *   block 3    : inode bitmap
-     *   block 4..  : inode table
-     *   block 4+itb..: data blocks (root dir takes first one)
+    /* FSMODERN M4: one bitmap block addresses at most 8 * bsize blocks
+     * (one bit per block).  This used to be `total_blocks`, which is
+     * harmless while the volume fits a single bitmap block and a lie the
+     * moment it does not: on a 64 MiB volume with 1 KiB blocks the
+     * superblock declared 65536 blocks in one group while its bitmap could
+     * reach 8192 of them, and the counters claimed 65468 free blocks of
+     * which 8171 existed -- the allocator scanned past its own bitmap
+     * buffer looking for the rest.  A volume small enough to fit one group
+     * keeps its old layout byte for byte (<= 8 MiB at 1 KiB, <= 32 MiB at
+     * 4 KiB); a larger one gets the number of groups its bitmaps cover. */
+    uint32_t max_bpg = 8u * bsize;
+    uint32_t blocks_per_group = total_blocks < max_bpg ? total_blocks : max_bpg;
+
+    /* Block layout (block size 1024; 2048/4096 shift the superblock into
+     * block 0 and every group's metadata to the start of its own range):
+     *   block 0      : boot block (1024 only)
+     *   block 1      : superblock
+     *   block 2      : group descriptor table
+     *   then group 0 : block bitmap, inode bitmap, inode table, root dir
+     *   group g > 0  : same metadata at the head of its own block range,
+     *                  so bitmap bit i covers block first_data + g*bpg + i
      */
     es.block_size       = bsize;
     es.inodes_per_group = inodes_per_group;
     es.blocks_per_group = blocks_per_group;
     es.inode_size       = EXT2_GOOD_OLD_INODE_SIZE;
-    es.inodes_count     = inodes_per_group;
-    es.blocks_count     = total_blocks;
     es.first_data_block = (bsize == 1024) ? 1 : 0;
     es.first_ino        = EXT2_FIRST_USER_INO;
-    es.group_count      = 1;
+    es.blocks_count     = total_blocks;
+    es.group_count      = (total_blocks - es.first_data_block +
+                           blocks_per_group - 1) / blocks_per_group;
+    if (es.group_count == 0) es.group_count = 1;
+    /* Inode numbers are group-relative: group g owns inodes
+     * g*inodes_per_group+1 .. (g+1)*inodes_per_group. */
+    es.inodes_count     = inodes_per_group * es.group_count;
+
     if (!block_buf) block_buf = (uint8_t *)kmalloc(bsize > 4096 ? bsize : 4096);
     if (!block_buf) {
         kprintf("[ext2] cannot allocate block buffer, format aborted\n");
@@ -1345,19 +1363,72 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     }
 
     uint32_t gdt_blk    = gdt_start_block();
-    uint32_t bbm_blk    = gdt_blk + 1;
-    uint32_t ibm_blk    = bbm_blk + 1;
-    uint32_t itab_blk   = ibm_blk + 1;
-    uint32_t first_data = itab_blk + inode_table_blocks;
-    uint32_t root_blk   = first_data;   /* root dir gets first data block */
+    uint32_t gdt_bytes  = es.group_count * sizeof(struct ext2_group_desc);
+    uint32_t gdt_blocks = (gdt_bytes + bsize - 1) / bsize;
+    uint32_t bbm0       = gdt_blk + gdt_blocks;
+    uint32_t ibm0       = bbm0 + 1;
+    uint32_t itab0      = ibm0 + 1;
+    uint32_t root_blk   = itab0 + inode_table_blocks;
+
+    /* Group descriptors: where the metadata lives, and the free counts the
+     * bitmaps below are about to make true. */
+    if (es.gdt) kfree(es.gdt);
+    es.gdt = (struct ext2_group_desc *)kmalloc(gdt_blocks * bsize);
+    if (!es.gdt) return -1;
+    memset(es.gdt, 0, gdt_blocks * bsize);
+
+    uint32_t sum_free_blocks = 0, sum_free_inodes = 0;
+    for (uint32_t g = 0; g < es.group_count; g++) {
+        uint32_t bbm_g, ibm_g, itab_g;
+        uint32_t gbase = es.first_data_block + g * blocks_per_group;
+        if (g == 0) {
+            bbm_g  = bbm0;
+            ibm_g  = ibm0;
+            itab_g = itab0;
+        } else {
+            /* Every group starts with a superblock copy and a GDT copy
+             * (s_feature_compat is clear, so e2fsprogs expects them in
+             * every group), then the metadata proper. */
+            bbm_g  = gbase + 1 + gdt_blocks;
+            ibm_g  = bbm_g + 1;
+            itab_g = ibm_g + 1;
+        }
+        /* How many blocks this group's bitmap can reach. */
+        uint32_t valid = blocks_per_group;
+        if (g == es.group_count - 1) {
+            uint32_t rem = es.blocks_count - es.first_data_block -
+                           g * blocks_per_group;
+            if (rem < valid) valid = rem;
+        }
+        /* Every group carries its superblock + GDT copies; group 0 also
+         * carries the root directory. */
+        uint32_t used = 1u + gdt_blocks + 2u + inode_table_blocks +
+                        (g == 0 ? 1u : 0u);
+        if (used > valid) {
+            kprintf("[ext2] volume too small for its own metadata "
+                    "(group %u needs %u of %u blocks); format aborted\n",
+                    g, used, valid);
+            return -1;
+        }
+        es.gdt[g].bg_block_bitmap      = bbm_g;
+        es.gdt[g].bg_inode_bitmap      = ibm_g;
+        es.gdt[g].bg_inode_table       = itab_g;
+        es.gdt[g].bg_free_blocks_count = (uint16_t)(valid - used);
+        es.gdt[g].bg_free_inodes_count = (uint16_t)(g == 0 ?
+                                    inodes_per_group - (EXT2_FIRST_USER_INO - 1) :
+                                    inodes_per_group);
+        es.gdt[g].bg_used_dirs_count   = (g == 0) ? 1 : 0;   /* root */
+        sum_free_blocks += valid - used;
+        sum_free_inodes  += es.gdt[g].bg_free_inodes_count;
+    }
 
     /* Set superblock. */
     memset(&es.sb, 0, sizeof(es.sb));
     es.sb.s_inodes_count       = es.inodes_count;
     es.sb.s_blocks_count       = es.blocks_count;
     es.sb.s_r_blocks_count     = 0;
-    es.sb.s_free_blocks_count  = es.blocks_count - (first_data + 1);   /* minus root */
-    es.sb.s_free_inodes_count  = es.inodes_count - (EXT2_FIRST_USER_INO - 1);
+    es.sb.s_free_blocks_count  = sum_free_blocks;
+    es.sb.s_free_inodes_count  = sum_free_inodes;
     es.sb.s_first_data_block   = es.first_data_block;
     /* s_log_block_size: 0=1024, 1=2048, 2=4096 */
     es.sb.s_log_block_size     = (bsize == 1024) ? 0 : (bsize == 2048) ? 1 : 2;
@@ -1376,72 +1447,106 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     es.sb.s_first_ino          = EXT2_FIRST_USER_INO;
     es.sb.s_inode_size         = EXT2_GOOD_OLD_INODE_SIZE;
     es.sb.s_creator_os         = 0;     /* Linux */
+    /* Directory entries carry file_type, so the feature bit that says so
+     * has to be on: with it clear, e2fsprogs' fsck reports every entry as
+     * "has filetype set" and offers to clear them. */
+    es.sb.s_feature_incompat   = 0x0002u;   /* EXT2_FEATURE_INCOMPAT_FILETYPE */
     memcpy(es.sb.s_volume_name, "AURALITE", 8);
 
     if (write_super() != 0) return -1;
+    if (write_gdt() != 0) return -1;
 
-    /* Allocate + write GDT. */
-    if (es.gdt) kfree(es.gdt);
-    uint32_t gdt_bytes = sizeof(struct ext2_group_desc);
-    es.gdt = (struct ext2_group_desc *)kmalloc(es.block_size);
-    if (!es.gdt) return -1;
-    memset(es.gdt, 0, es.block_size);
-    es.gdt[0].bg_block_bitmap     = bbm_blk;
-    es.gdt[0].bg_inode_bitmap     = ibm_blk;
-    es.gdt[0].bg_inode_table      = itab_blk;
-    es.gdt[0].bg_free_blocks_count = (uint16_t)(es.blocks_count - (first_data + 1));
-    es.gdt[0].bg_free_inodes_count = (uint16_t)(es.inodes_count - (EXT2_FIRST_USER_INO - 1));
-    es.gdt[0].bg_used_dirs_count   = 1;   /* root */
-    (void)gdt_bytes;
-    write_gdt();
+    /* Per-group bitmaps and inode tables. */
+    for (uint32_t g = 0; g < es.group_count; g++) {
+        uint32_t bbm_g  = es.gdt[g].bg_block_bitmap;
+        uint32_t ibm_g  = es.gdt[g].bg_inode_bitmap;
+        uint32_t itab_g = es.gdt[g].bg_inode_table;
+        uint32_t gbase  = es.first_data_block + g * blocks_per_group;
+        uint32_t valid  = blocks_per_group;
+        if (g == es.group_count - 1) {
+            uint32_t rem = es.blocks_count - es.first_data_block -
+                           g * blocks_per_group;
+            if (rem < valid) valid = rem;
+        }
 
-    /* Zero block bitmap, then mark used blocks. */
-    memset(block_buf, 0, es.block_size);
-    /* Block bitmap covers blocks [first_data_block .. first_data_block+blocks_per_group)
-     * (i.e., bit 0 = first_data_block).  For block_size=1024, first_data_block=1, so
-     * bit 0 represents block #1.  We mark sb/gdt/bbm/ibm/itab/root_blk used. */
-    /* RESIDUE2 T3 (fscheck): bit 0 is the superblock block.  The old
-     * formatter left it clear, so the bitmap showed one block freer
-     * than s_free_blocks_count claimed — and a full-disk allocation
-     * sweep could hand the superblock block out as data.  The fscheck
-     * walker names the drift ("group 0 free blocks gd=N != bitmap N+1");
-     * the honest fix is to mark the block used here. */
-    bitmap_set(block_buf, 0);
-    uint32_t used_blks[] = { gdt_blk, bbm_blk, ibm_blk, root_blk };
-    for (unsigned k = 0; k < sizeof(used_blks)/sizeof(used_blks[0]); k++) {
-        uint32_t off = used_blks[k] - es.first_data_block;
-        if (off < es.blocks_per_group) bitmap_set(block_buf, off);
+        /* Backup superblock and GDT copies: group 0's are the primary
+         * copies already written by write_super()/write_gdt().  They are
+         * what e2fsprogs falls back to when the primary is damaged, and
+         * the layout it insists on while sparse_super is not set. */
+        if (g != 0) {
+            memset(block_buf, 0, bsize);
+            uint32_t sb_bytes = sizeof(es.sb) < 1024u ? (uint32_t)sizeof(es.sb) : 1024u;
+            if (sb_bytes > bsize) sb_bytes = bsize;
+            memcpy(block_buf, &es.sb, sb_bytes);
+            if (write_block(gbase, block_buf) != 0) return -1;
+            for (uint32_t i = 0; i < gdt_blocks; i++) {
+                memset(block_buf, 0, bsize);
+                memcpy(block_buf, (const uint8_t *)es.gdt + (size_t)i * bsize, bsize);
+                if (write_block(gbase + 1 + i, block_buf) != 0) return -1;
+            }
+        }
+
+        /* Block bitmap: bit i covers block gbase + i. */
+        memset(block_buf, 0, bsize);
+        /* RESIDUE2 T3 (fscheck): bit 0 is the superblock block.  The old
+         * formatter left it clear, so the bitmap showed one block freer
+         * than s_free_blocks_count claimed -- and a full-disk allocation
+         * sweep could hand the superblock block out as data.  The fscheck
+         * walker names the drift ("group 0 free blocks gd=N != bitmap
+         * N+1"); the honest fix is to mark it used. */
+        bitmap_set(block_buf, 0);
+        for (uint32_t b = gbase + 1; b < gbase + 1 + gdt_blocks; b++)
+            bitmap_set(block_buf, b - gbase);
+        bitmap_set(block_buf, bbm_g - gbase);
+        bitmap_set(block_buf, ibm_g - gbase);
+        for (uint32_t i = 0; i < inode_table_blocks; i++)
+            bitmap_set(block_buf, (itab_g + i) - gbase);
+        if (g == 0)
+            bitmap_set(block_buf, root_blk - gbase);
+        /* Bits past the end of the volume in the last group: marked used so
+         * no allocator can hand out a block that does not exist, and so the
+         * bitmap's padding is set the way e2fsprogs' own fsck expects it. */
+        if (g == es.group_count - 1)
+            for (uint32_t b = valid; b < max_bpg; b++)
+                bitmap_set(block_buf, b);
+        if (write_block(bbm_g, block_buf) != 0) return -1;
+
+        /* Inode bitmap: group 0 marks inodes 1..(EXT2_FIRST_USER_INO-1)
+         * used; the other groups start empty. */
+        memset(block_buf, 0, bsize);
+        if (g == 0) {
+            for (uint32_t i = 0; i < EXT2_FIRST_USER_INO - 1; i++)
+                bitmap_set(block_buf, i);
+        }
+        /* Padding at the end of the inode bitmap: bits past the group's
+         * inode range are not addressable, and e2fsprogs sets them in every
+         * group (an unset pad is reported as damage). */
+        for (uint32_t i = inodes_per_group; i < max_bpg; i++)
+            bitmap_set(block_buf, i);
+        if (write_block(ibm_g, block_buf) != 0) return -1;
+
+        /* Zero the inode table. */
+        memset(block_buf, 0, bsize);
+        for (uint32_t i = 0; i < inode_table_blocks; i++) {
+            if (write_block(itab_g + i, block_buf) != 0) return -1;
+        }
     }
-    /* Inode table blocks. */
-    for (uint32_t i = 0; i < inode_table_blocks; i++) {
-        uint32_t off = (itab_blk + i) - es.first_data_block;
-        if (off < es.blocks_per_group) bitmap_set(block_buf, off);
-    }
-    write_block(bbm_blk, block_buf);
 
-    /* Inode bitmap: mark inodes 1..(EXT2_FIRST_USER_INO-1) used. */
-    memset(block_buf, 0, es.block_size);
-    for (uint32_t i = 0; i < EXT2_FIRST_USER_INO - 1; i++) bitmap_set(block_buf, i);
-    write_block(ibm_blk, block_buf);
-
-    /* Zero inode table. */
-    memset(block_buf, 0, es.block_size);
-    for (uint32_t i = 0; i < inode_table_blocks; i++) {
-        write_block(itab_blk + i, block_buf);
-    }
-
-    /* Write root inode (inode #2). */
+    /* Write root inode (inode #2, in group 0). */
     struct ext2_inode root;
     memset(&root, 0, sizeof(root));
     root.i_mode  = EXT2_S_IFDIR | 0755;
     root.i_size  = es.block_size;
-    root.i_links_count = 3;   /* "." and parent "." (root) + the dir entry */
+    /* An empty root has exactly two links: its own "." and the ".." of
+     * itself.  3 here made every mkdir produce a link count fsck rejects
+     * ("Inode 2 ref count is 4, should be 3"). */
+    root.i_links_count = 2;
     root.i_atime = root.i_ctime = root.i_mtime = ext2_now();
     root.i_block[0] = root_blk;
     root.i_blocks = es.block_size / 512;
-    write_inode(EXT2_ROOT_INO, &root);
+    if (write_inode(EXT2_ROOT_INO, &root) != 0) return -1;
 
-    /* Root dir contents: "." and "..". */
+    /* Root dir contents: \".\" and \"..\". */
     memset(block_buf, 0, es.block_size);
     struct ext2_dir_entry *e1 = (struct ext2_dir_entry *)block_buf;
     e1->inode = EXT2_ROOT_INO;
@@ -1455,8 +1560,15 @@ static int format_default(uint32_t total_blocks, uint32_t bsize) {
     e2->name_len = 2;
     e2->file_type = EXT2_FT_DIR;
     e2->name[0] = '.'; e2->name[1] = '.';
-    write_block(root_blk, block_buf);
+    if (write_block(root_blk, block_buf) != 0) return -1;
 
+    /* The receipt the mount path prints for an existing volume does not run
+     * here, so say what was written: a format that cannot be grepped is a
+     * format nobody can audit after the fact. */
+    kprintf("[ext2] formatted: %u blocks of %u B in %u group(s) of %u blocks, "
+            "%u inodes, %u free blocks\n",
+            es.blocks_count, bsize, es.group_count, blocks_per_group,
+            es.inodes_count, sum_free_blocks);
     return 0;
 }
 
@@ -1479,6 +1591,24 @@ static int parse_or_format(void) {
         es.first_data_block = es.sb.s_first_data_block;
         es.first_ino        = (es.sb.s_rev_level == EXT2_DYNAMIC_REV &&
                                   es.sb.s_first_ino) ? es.sb.s_first_ino : EXT2_FIRST_USER_INO;
+        /* FSMODERN M4: the bitmaps are one block wide, so they can address
+         * at most 8 * block_size blocks/inodes per group.  A superblock
+         * claiming more (which is what the pre-M4 formatter wrote on any
+         * volume larger than 8 MiB at 1 KiB) makes every free count a
+         * guess and sends the allocator reading past its bitmap buffer.
+         * Such a volume is refused by name instead of mounted unsafely. */
+        uint32_t bm_capacity = 8u * es.block_size;
+        if (es.blocks_count <= es.first_data_block ||
+            es.blocks_per_group == 0 || es.blocks_per_group > bm_capacity ||
+            es.inodes_per_group == 0 || es.inodes_per_group > bm_capacity) {
+            kprintf("[ext2] refusing volume: superblock geometry is not "
+                    "addressable (blocks=%u first_data=%u "
+                    "blocks_per_group=%u inodes_per_group=%u, one bitmap "
+                    "block holds %u bits)\n",
+                    es.blocks_count, es.first_data_block,
+                    es.blocks_per_group, es.inodes_per_group, bm_capacity);
+            return -1;
+        }
         es.group_count      = (es.blocks_count - es.first_data_block +
                                 es.blocks_per_group - 1) / es.blocks_per_group;
         if (es.group_count == 0) return -1;
@@ -1570,6 +1700,43 @@ int ext2_init(int prefer_port) {
     }
     es.mounted = 1;
     kprintf("[ext2] blkdev %d mounted at /ext2\n", p);
+
+    /* FSMODERN M4: the mount-time consistency check.
+     *
+     * fscheck_ext2() was a unit-test fixture behind the opt-in
+     * `opt/auralite.fscheck` knob.  M4 promotes it to the mount path: every
+     * ext2 boot either prints CLEAN or names its findings, so a volume a
+     * crash left inconsistent is diagnosed at mount -- not discovered by a
+     * read that returns the wrong bytes three commands later.
+     *
+     * It runs BEFORE ext2_self_test() writes anything, so what it reports
+     * is the volume as the previous boot left it.  Findings do NOT refuse
+     * the mount: the walker is a checker (RESIDUE2 T3's "CHECKS first,
+     * repair second"), and a read-only refusal would take the volume away
+     * from a user who has no repair tool.  The receipt is the contract.
+     *
+     * The flush first is not optional: the walker reads through the raw
+     * blkdev seam on purpose (so it cannot agree with a cache bug it is
+     * checking for), which also means it cannot see a volume the formatter
+     * has just written through the cache.  Without this line a freshly
+     * formatted ext2 reported "superblock magic 0x0" -- the check was
+     * reading the medium, and the medium was still blank. */
+    bc_flush_all();
+    int findings = fscheck_ext2(p, es.fs_base_lba);
+    if (findings < 0)
+        kprintf("[ext2] mount check: UNREADABLE (volume left mounted)\n");
+    else if (findings == 0)
+        kprintf("[ext2] mount check: CLEAN (bitmaps + inode table agree)\n");
+    else
+        kprintf("[ext2] mount check: %d finding(s) -- see [fscheck] above\n",
+                findings);
+
+    /* FSMODERN M3/M4: the crash answer, said once at mount so nobody has
+     * to infer it from fsck.  WEAK means a write that returned success can
+     * still be lost if the power fails between the data blocks and the
+     * inode update; ext2 has no journal to close that window. */
+    kprintf("[ext2] durability: WEAK (no journal; a power cut can lose a "
+            "write that returned success)\n");
     return 0;
 }
 

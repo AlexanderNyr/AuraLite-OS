@@ -39,6 +39,13 @@ static int      dev_reads, dev_writes;
 static uint64_t last_read_lba, last_read_count;
 static uint64_t last_write_lba, last_write_count;
 static int      coalesced_writes;   /* writes with count > 1 */
+/* FSMODERN M4: the ORDER of device writes, not just their count.  A
+ * range flush is only useful if it can put the data area on the medium
+ * before the FAT, and a test that only counts commands cannot see that. */
+static uint64_t wlog_lba[256];
+static uint32_t wlog_count[256];
+static int      wlog_n;
+static int      fail_writes;        /* negative control: device refuses */
 
 static int ram_read(void *ctx, uint64_t lba, uint32_t count, void *buf) {
     (void)ctx;
@@ -51,11 +58,17 @@ static int ram_read(void *ctx, uint64_t lba, uint32_t count, void *buf) {
 
 static int ram_write(void *ctx, uint64_t lba, uint32_t count, const void *buf) {
     (void)ctx;
+    if (fail_writes) return -1;
     if (lba + count > DEV_SECTORS) return -1;
     memcpy(dev_mem + lba * 512, buf, (size_t)count * 512);
     dev_writes++;
     last_write_lba = lba; last_write_count = count;
     if (count > 1) coalesced_writes++;
+    if (wlog_n < (int)(sizeof(wlog_lba) / sizeof(wlog_lba[0]))) {
+        wlog_lba[wlog_n] = lba;
+        wlog_count[wlog_n] = count;
+        wlog_n++;
+    }
     return 0;
 }
 
@@ -104,6 +117,8 @@ static void reset_device(uint8_t fill) {
     coalesced_writes = 0;
     last_read_lba = last_read_count = 0;
     last_write_lba = last_write_count = 0;
+    wlog_n = 0;
+    fail_writes = 0;
 }
 
 int main(void) {
@@ -229,6 +244,50 @@ int main(void) {
     dev_reads = 0;
     CHECK(fs_read_block(0, 200, 32, batch) == 0, "read the same 16 KiB again");
     CHECK(dev_reads == 0, "a repeated read costs no device command at all");
+
+    /* ---- 8. FSMODERN M4: bc_flush_range() orders durability -------- *
+     *
+     * bc_flush_all() writes the LOWEST dirty block first.  On a FAT32
+     * volume the FAT lives below the data area, so an unordered flush puts
+     * the index on the medium BEFORE the clusters it names.  This section
+     * proves the range flush can invert that order, that it touches
+     * nothing outside its range, and that a failed write is reported and
+     * left for a retry instead of being dropped. */
+    bc_flush_all();              /* drop every block the cases above left */
+    reset_device(0x00);
+
+    memset(page, 0x11, sizeof(page));
+    CHECK(fs_write_block(0, 8, 8, page) == 0, "dirty block 1 (the FAT area, lba 8)");
+    memset(page, 0x5A, sizeof(page));
+    CHECK(fs_write_block(0, 400, 8, page) == 0, "dirty block 50 (the data area, lba 400)");
+    dev_writes = 0;
+    wlog_n = 0;
+
+    CHECK(bc_flush_range(0, 50, 1) == 0, "range flush of the data block");
+    CHECK(dev_writes == 1, "the data block reached the device");
+    CHECK(wlog_n == 1 && wlog_lba[0] == 400,
+          "and it was the DATA block (lba 400), not the FAT (lba 64)");
+
+    CHECK(bc_flush_range(0, 1, 1) == 0, "then range flush the FAT block");
+    CHECK(dev_writes == 2, "the FAT block reached the device second");
+    CHECK(wlog_n == 2 && wlog_lba[1] == 8,
+          "and it was the FAT block (lba 8), in order");
+
+    dev_writes = 0;
+    CHECK(bc_flush_range(0, 100, 4) == 0, "a range with no dirty blocks returns 0");
+    CHECK(dev_writes == 0, "and issues no device command");
+    CHECK(bc_flush_range(0, 5, 0) == 0, "a zero-length range is a no-op");
+
+    /* Negative control: the device refuses, the flush must say so and the
+     * buffer must stay dirty so a retry can reach it. */
+    memset(page, 0xC3, sizeof(page));
+    CHECK(fs_write_block(0, 408, 8, page) == 0, "queue block 51 for the failure case");
+    dev_writes = 0;
+    fail_writes = 1;
+    CHECK(bc_flush_range(0, 51, 1) == -1, "a refused write is reported as -1");
+    fail_writes = 0;
+    CHECK(bc_flush_range(0, 51, 1) == 0, "the buffer was still dirty: retry succeeds");
+    CHECK(dev_writes == 1, "and the retry is exactly one command");
 
     printf(failures ? "FAILURES: %d\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;

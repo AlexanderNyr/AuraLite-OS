@@ -522,6 +522,79 @@ void bc_flush_all(void) {
     spinlock_release(&bc_lock);
 }
 
+/* FSMODERN M4: ordered durability (see the header for the contract).
+ *
+ * Same walk as bc_flush_all() -- lowest dirty block first, grow the run
+ * upward, one device command per run -- but only over the dirty buffers
+ * that belong to `dev` AND fall inside [first_block, end_block).  The
+ * range filter is what lets a filesystem write its data before the index
+ * that names it, instead of leaving that order to the LRU.
+ *
+ * The loop bound is BC_MAX_BUFFERS, not `nblocks`: a range wider than the
+ * pool still terminates after at most one pass per resident dirty block,
+ * and a block that failed stays dirty, so a retry can reach it again. */
+int bc_flush_range(int dev, uint64_t first_block, uint64_t nblocks) {
+    if (nblocks == 0) return 0;
+    const uint32_t  udev      = (uint32_t)dev;
+    const uint64_t  end_block = first_block + nblocks;   /* exclusive */
+    int rc = 0;
+
+    spinlock_acquire(&bc_lock);
+    for (int pass = 0; pass < BC_MAX_BUFFERS; pass++) {
+        uint64_t base = BC_NO_BLOCK;
+        for (struct buffer *c = lru_head; c; c = c->next) {
+            if (c->dirty && c->lock_count == 0 &&
+                c->device_id == udev &&
+                c->block_num >= first_block && c->block_num < end_block &&
+                c->block_num < base) {
+                base = c->block_num;
+            }
+        }
+        if (base == BC_NO_BLOCK) break;
+
+        struct buffer *run[BC_COALESCE_MAX];
+        uint32_t nrun = 0;
+        struct buffer *c = bc_find_exact(udev, base);
+        while (c && nrun < BC_COALESCE_MAX && base + nrun < end_block) {
+            run[nrun++] = c;
+            c->dirty = false;                 /* owned by this flush */
+            c = bc_find_exact(udev, base + nrun);
+        }
+        uint64_t b = base;
+
+        if (nrun == 1) {
+            if (blkdev_write((int)udev, b * BC_SECTORS_PER_BLOCK,
+                             BC_SECTORS_PER_BLOCK, run[0]->data) != 0) {
+                run[0]->dirty = true;
+                kprintf("[bc] ERROR: range flush failed at block %llu\n",
+                        (unsigned long long)b);
+                rc = -1;
+            } else {
+                bc_flushed++;
+            }
+            continue;
+        }
+
+        for (uint32_t i = 0; i < nrun; i++)
+            memcpy(bc_bounce + (size_t)i * BC_BLOCK_SIZE, run[i]->data,
+                   BC_BLOCK_SIZE);
+
+        if (blkdev_write((int)udev, b * BC_SECTORS_PER_BLOCK,
+                         nrun * BC_SECTORS_PER_BLOCK, bc_bounce) != 0) {
+            for (uint32_t i = 0; i < nrun; i++) run[i]->dirty = true;
+            kprintf("[bc] ERROR: coalesced range flush of %u blocks at %llu failed\n",
+                    (unsigned)nrun, (unsigned long long)b);
+            rc = -1;
+        } else {
+            bc_flushed += nrun;
+            bc_merged  += (nrun - 1);
+        }
+    }
+
+    spinlock_release(&bc_lock);
+    return rc;
+}
+
 /* ============================================================================
  * F2 — shared cache-backed block I/O for the five filesystems (see the
  * header comment for the rationale).
