@@ -257,13 +257,35 @@ agree)`. fat32 got `.fsync` (data → all FAT copies → dirent) and its rename
 order reversed: the destination is created before the source is removed, so a
 power cut leaves the file reachable under two names instead of under none.
 
-### M5 — Directory scaling ⬜
+### M5 — Directory scaling ✅ DONE (validated 2026-11-24)
 
 Every filesystem here has a linear directory scan. At the sizes a user reaches
 (`/home` with a few hundred files, `/opt` with a package tree), that is fine;
 at 10 000 files it is quadratic. M5 adds hashed directories **to the flagship
 only** (M6's substrate), because that is where the claim will be made — and
 measures the crossover point rather than assuming one.
+
+**Exit evidence (2026-11-24, local continuation of `2ecdb6e`):**
+`test_dir_scale.sh`: 9/9 assertions, 64/256/1024 names, 2747.9/2948.4/2484.8
+stat operations/s under QEMU TCG (2 vCPUs, 512 MiB, 256 MiB AHCI data disk).
+16x the names costs 1.11x lookup time. These are metadata-only, empty-file
+lookups, not 512-byte payload throughput (the historical `--size 512` receipt
+is not evidence of writing payload in scale mode).
+
+The test exposed a real 16-bit hash collision at `f_594.dat`: insertion had
+silently replaced a different name. Directory keys now retain the legacy
+16-bit hash and use the upper bits for collision-chain slots; tombstones
+preserve reachability when a chain head is deleted. Host regression covers
+an actual collision and head deletion, 2500-key depth-3 root growth, CoW,
+and byte-exact lookup. Chain length is bounded at 4096; tombstones are not
+yet reclaimed. Existing non-colliding keys keep their original offsets.
+
+Regression gates: `tests/btrfs/test_m5_host.sh` PASS;
+`tests/btrfs/test_btrfs.sh` 19/19; `test_data_volume.sh` 9/9.
+Benchmark harness repairs: parse `--scale`, allow up to 4096 names in that
+mode, use the calibrated microsecond clock, avoid a per-name stack array,
+initialize integration helpers, attach disk 2, explicitly allow formatting
+of the fresh test images. Details and limits: `docs/filesystems_perf.md`.
 
 ### M6 — AuraFS: the flagship ⬜
 

@@ -233,3 +233,35 @@ the same workload — i.e. a 2× improvement, or M2 does not ship.
 | Mount time | the case times the shell to prompt elsewhere (`[perf] boot-to-shell`); per-filesystem mount time is not instrumented. | M2 |
 | Random 4 KiB read | the host lane measures it (`~130 000 ops/s` against a RAM device); in-guest it is dominated by the same TCG cost as sequential and adds no signal until the cache is bigger than the volume. | M2 |
 | Real SSD behaviour | no hardware in this environment. | named limitation |
+
+
+## M5 validation — 2026-11-24 (local continuation of `2ecdb6e`)
+
+Measured with `tests/integration/cases/test_dir_scale.sh`, QEMU 10.0.13 TCG,
+qemu64, 2 vCPUs, 512 MiB RAM, 256 MiB AHCI `/data` disk; fast boot selftests.
+These conditions differ from the M0 baseline: do not infer throughput gains
+from this lookup-only table.
+
+| Names in directory | stat lookups | Passes | Measured ops/s |
+|---|---:|---:|---:|
+| 64 | 320 | 5 | 2747.9 |
+| 256 | 768 | 3 | 2948.4 |
+| 1024 | 1024 | 1 | 2484.8 |
+
+Small/large lookup-time ratio: **1.11x for 16x names** (gate <3.0x).
+Final persisted geometry: depth 2, 85 leaves, 2698 items (includes directory
+records, inode records and tombstones). Gate: 9/9 assertions.
+
+Scope: `--scale` creates **empty files** and times stat, including path
+formatting and syscalls. `--size 512` is accepted but does not mean 512-byte
+payloads were written. This is a warm, single-run metadata measurement,
+not proof of asymptotic complexity, cold-cache speed, real SSD performance,
+or the M6 flagship throughput claim. No speedup against M0 is claimed here.
+
+Before collision handling, this same workload failed to stat
+`/data/s2/f_594.dat`: different names with the same 16-bit hash overwrote one
+another. The repaired format uses upper key bits as collision-chain indices;
+deletions leave tombstones. Host tests cover collision-head deletion and
+2500-key growth to depth >=3. The on-disk 28-byte item layout and checksum
+trailer stay unchanged. Previously lost entries cannot be recovered by the
+patch. Chain limit: 4096; tombstone/CoW block reclamation remains future work.

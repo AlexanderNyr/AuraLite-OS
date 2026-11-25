@@ -722,6 +722,57 @@ static uint64_t ino_new(void) {
     return ino;
 }
 
+/* Collision chain: low 16 bits retain the legacy hash, high bits select
+ * a chain slot. Empty records are tombstones, so deleting a predecessor
+ * never hides a later colliding name. Existing single-entry volumes work. */
+#define DIR_CHAIN_LIMIT 4096
+static int dir_slot(uint64_t root, uint64_t parent, const char *name,
+                    uint8_t *record, uint32_t *size, uint64_t *key, int *found) {
+    uint32_t len = (uint32_t)strlen(name);
+    uint64_t hash = name_hash((const uint8_t *)name, (int)len);
+    uint64_t vacant = (uint64_t)-1;
+    for (uint64_t i = 0; i < DIR_CHAIN_LIMIT; i++) {
+        uint64_t off = hash | (i << 16);
+        uint32_t n = 0;
+        if (tree_lookup(root, parent, BTRFS_ITYPE_DIR, off, record,
+                        BTRFS_MAX_PATH + 24, &n) != 0) {
+            *key = vacant == (uint64_t)-1 ? off : vacant;
+            *found = 0; *size = 0; return 0;
+        }
+        if (!n) { if (vacant == (uint64_t)-1) vacant = off; continue; }
+        if (n >= 16 && r32(record + 12) == len && n >= 16 + len &&
+            memcmp(record + 16, name, len) == 0) {
+            *key = off; *found = 1; *size = n; return 0;
+        }
+    }
+    if (vacant != (uint64_t)-1) {
+        *key = vacant; *found = 0; *size = 0; return 0;
+    }
+    return -1;
+}
+
+static int dir_insert(uint64_t root, uint64_t parent, const uint8_t *data,
+                      uint32_t size, uint64_t *new_root) {
+    char name[BTRFS_MAX_PATH];
+    if (size < 16) return -1;
+    uint32_t len = r32(data + 12);
+    if (len >= sizeof(name) || size < 16 + len) return -1;
+    memcpy(name, data + 16, len); name[len] = 0;
+    uint8_t record[BTRFS_MAX_PATH + 24];
+    uint32_t n; uint64_t key; int found;
+    if (dir_slot(root, parent, name, record, &n, &key, &found) != 0) return -1;
+    return tree_insert(root, parent, BTRFS_ITYPE_DIR, key, data, size, new_root);
+}
+
+static int dir_remove(uint64_t root, uint64_t parent, const char *name,
+                      uint64_t *new_root) {
+    uint8_t record[BTRFS_MAX_PATH + 24];
+    uint32_t n; uint64_t key; int found;
+    if (dir_slot(root, parent, name, record, &n, &key, &found) != 0 || !found)
+        return -1;
+    return tree_insert(root, parent, BTRFS_ITYPE_DIR, key, record, 0, new_root);
+}
+
 /* ============================================================================
  * SECTION 7: PATH RESOLUTION
  * ============================================================================ */
@@ -749,11 +800,10 @@ static int btrfs_path_resolve(const char *path, uint64_t *out_parent,
         while (*p && *p != '/' && n < (int)sizeof(comp) - 1) comp[n++] = *p++;
         comp[n] = 0;
         while (*p == '/') p++;
-        uint64_t h = name_hash((uint8_t*)comp, n);
+        uint64_t key; int hit;
         uint8_t di[BTRFS_MAX_PATH + 24];
         uint32_t sz = 0;
-        if (tree_lookup(bm.tree_root_lba, dir_ino, BTRFS_ITYPE_DIR, h,
-                        di, sizeof(di), &sz) == 0) {
+        if (dir_slot(bm.tree_root_lba, dir_ino, comp, di, &sz, &key, &hit) == 0 && hit) {
             uint32_t nl = r32(di + 12);
             if (nl == (uint32_t)n && memcmp(di + 16, comp, n) == 0) {
                 uint64_t child = r64(di + 0);
@@ -926,8 +976,7 @@ static struct vnode *btrfs_create(void *fs_data, const char *path) {
     w32(di + 8, BTRFS_FT_REG);
     w32(di + 12, (uint32_t)n);
     memcpy(di + 16, base, (size_t)n);
-    if (tree_insert(bm.tree_root_lba, parent, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)base, n), di, (uint32_t)(16 + n),
+    if (dir_insert(bm.tree_root_lba, parent, di, (uint32_t)(16 + n),
                     &bm.tree_root_lba) != 0) return NULL;
 
     kprintf("[btrfs] create: ino %llu path '%s' parent=%llu\n",
@@ -1060,6 +1109,7 @@ struct dir_enum { struct vfs_dirent *out; int max; int count; };
 static int dir_emit(uint64_t o, uint32_t t, uint64_t off, const uint8_t *d,
                     uint32_t s, void *c) {
     (void)o; (void)t; (void)off; (void)s;
+    if (s < 16) return 0; /* deleted collision-chain slot */
     struct dir_enum *e = (struct dir_enum*)c;
     if (e->count >= e->max) return 1;
     uint32_t nl = r32(d + 12);
@@ -1087,7 +1137,7 @@ static int dir_emit(uint64_t o, uint32_t t, uint64_t off, const uint8_t *d,
 static int count_dir_children(uint64_t o, uint32_t t, uint64_t off,
                               const uint8_t *d, uint32_t s, void *c) {
     (void)o; (void)t; (void)off; (void)d; (void)s;
-    (*(int*)c)++;
+    if (s >= 16) (*(int*)c)++;
     return 0;
 }
 
@@ -1120,8 +1170,7 @@ static int btrfs_mkdir(void *fs_data, const char *path) {
     uint8_t di[BTRFS_MAX_PATH + 24];
     w64(di + 0, new_ino); w32(di + 8, BTRFS_FT_DIR); w32(di + 12, (uint32_t)n);
     memcpy(di + 16, base, (size_t)n);
-    if (tree_insert(bm.tree_root_lba, parent, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)base, n), di, (uint32_t)(16 + n),
+    if (dir_insert(bm.tree_root_lba, parent, di, (uint32_t)(16 + n),
                     &bm.tree_root_lba) != 0) return -1;
     kprintf("[btrfs] mkdir: ino %llu path '%s' parent=%llu\n",
             (unsigned long long)new_ino, base, (unsigned long long)parent);
@@ -1140,8 +1189,7 @@ static int btrfs_unlink(void *fs_data, const char *path) {
     if (r64(rec + 0) & 0x4000) return -1;   /* don't unlink dirs */
 
     uint64_t nr;
-    if (tree_remove(bm.tree_root_lba, parent, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)base, (int)strlen(base)), &nr) != 0)
+    if (dir_remove(bm.tree_root_lba, parent, base, &nr) != 0)
         return -1;
     bm.tree_root_lba = nr;
     uint64_t links = r64(rec + 32);
@@ -1177,8 +1225,7 @@ static int btrfs_rmdir(void *fs_data, const char *path) {
     if (child_count > 0) return -1;
 
     uint64_t nr;
-    if (tree_remove(bm.tree_root_lba, parent, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)base, (int)strlen(base)), &nr) != 0)
+    if (dir_remove(bm.tree_root_lba, parent, base, &nr) != 0)
         return -1;
     bm.tree_root_lba = nr;
     w64(rec + 32, 0);
@@ -1208,12 +1255,10 @@ static int btrfs_rename(void *fs_data, const char *old_path, const char *new_pat
     w64(di + 0, ino); w32(di + 8, (uint32_t)dtype); w32(di + 12, (uint32_t)n);
     memcpy(di + 16, nbase, (size_t)n);
     uint64_t nr;
-    if (tree_insert(bm.tree_root_lba, np, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)nbase, n), di, (uint32_t)(16 + n), &nr) != 0)
+    if (dir_insert(bm.tree_root_lba, np, di, (uint32_t)(16 + n), &nr) != 0)
         return -1;
     bm.tree_root_lba = nr;
-    if (tree_remove(bm.tree_root_lba, op, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)obase, (int)strlen(obase)), &nr) != 0)
+    if (dir_remove(bm.tree_root_lba, op, obase, &nr) != 0)
         return -1;
     bm.tree_root_lba = nr;
     bv_evict(old_path);
@@ -1239,8 +1284,7 @@ static int btrfs_link(void *fs_data, const char *old_path, const char *new_path)
     w64(di + 0, ino); w32(di + 8, BTRFS_FT_REG); w32(di + 12, (uint32_t)n);
     memcpy(di + 16, nbase, (size_t)n);
     uint64_t nr;
-    if (tree_insert(bm.tree_root_lba, np, BTRFS_ITYPE_DIR,
-                    name_hash((uint8_t*)nbase, n), di, (uint32_t)(16 + n), &nr) != 0)
+    if (dir_insert(bm.tree_root_lba, np, di, (uint32_t)(16 + n), &nr) != 0)
         return -1;
     bm.tree_root_lba = nr;
     w64(rec + 32, r64(rec + 32) + 1);
@@ -1532,12 +1576,12 @@ int btrfs_self_test(void) {
     {
         struct vnode *mb = btrfs_create(NULL, "multi.bin");
         if (!mb) { kprintf("[btrfs] FAIL: create multi.bin\n"); return -6; }
-        uint8_t pat[8192];
+        static uint8_t pat[8192];
         for (int i = 0; i < 8192; i++) pat[i] = (uint8_t)(i * 7 + 3);
         if (btrfs_write(mb, 0, pat, sizeof(pat)) != (int64_t)sizeof(pat)) {
             kprintf("[btrfs] FAIL: multi-block write\n"); return -6;
         }
-        uint8_t got[8192];
+        static uint8_t got[8192];
         if (btrfs_read(mb, 0, got, sizeof(got)) != (int64_t)sizeof(got) ||
             memcmp(pat, got, sizeof(pat)) != 0) {
             kprintf("[btrfs] FAIL: multi-block readback\n"); return -6;

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # tests/integration/cases/test_dir_scale.sh — FSMODERN M5 directory scaling gate.
-set -euo pipefail
+set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # shellcheck source=../lib/lib.sh
 source "$ROOT_DIR/tests/integration/lib/lib.sh"
+il_init
+il_have qemu-system-x86_64
+IL_SELFTEST=fast
 
 LOG="$ROOT_DIR/build/integration-logs/dir_scale.log"
 mkdir -p "$(dirname "$LOG")"
@@ -12,9 +15,20 @@ DATA_IMG="$ROOT_DIR/build/integration-logs/dir_scale_data.img"
 rm -f "$DATA_IMG"
 truncate -s 256M "$DATA_IMG"
 
-DISKS=(-drive "file=$DATA_IMG,if=none,id=data0,format=raw" -device "ahci,id=ahci0" -device "ide-hd,drive=data0,bus=ahci0.0")
+# The default mount recipe reserves disks 0/1 for exchange FS; /data is disk 2.
+DISKS=(-device "ahci,id=ahci0" -fw_cfg "name=opt/auralite.fsformat,string=1")
+for i in 0 1; do
+    img="$IL_LOGDIR/dir_scale_exchange_$i.img"
+    rm -f "$img"; truncate -s 16M "$img"
+    DISKS+=(-drive "file=$img,if=none,id=exchange$i,format=raw"
+            -device "ide-hd,drive=exchange$i,bus=ahci0.$i")
+done
+DISKS+=(-drive "file=$DATA_IMG,if=none,id=data0,format=raw"
+        -device "ide-hd,drive=data0,bus=ahci0.2")
 
 il_send "fsbench --scale --dir /data --files 1024 --size 512"
+il_send_wait "[shell] '/bin/fsbench'" 170
+il_send "fsync /data"
 il_send "exit"
 il_run_qemu "$LOG" 180 "${DISKS[@]}"
 
@@ -31,10 +45,10 @@ il_assert_grep "$LOG" "\[fsbench\] scale: ratio small/large = [0-9]+\.[0-9]+x fo
 il_assert_grep "$LOG" "\[fsbench\] scale: PASS" \
     "the scale run completed"
 
-RATIO=$(grep -E "\[fsbench\] scale: ratio small/large =" "$LOG" | sed -E 's/.*= ([0-9]+\.[0-9]+)x.*/\1/' | tail -1)
+RATIO=$(grep -E "\[fsbench\] scale: ratio small/large =" "$LOG" | sed -E 's/.*= ([0-9]+\.[0-9]+)x.*/\1/' | tail -1) || RATIO=999
 if awk -v r="${RATIO:-999}" 'BEGIN { exit (r < 3.0) ? 0 : 1 }'; then
     IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
-    il_pass "16x the names cost ${RATIO}x the lookup (logarithmic, not linear)"
+    il_pass "16x the names cost ${RATIO}x the lookup (measured warm lookup ratio)"
 else
     IL_ASSERT_COUNT=$((IL_ASSERT_COUNT + 1))
     il_fail "16x the names cost ${RATIO:-?}x the lookup (expected < 3.0x)"

@@ -56,6 +56,7 @@
 #define DEFAULT_FILES 8
 #define DEFAULT_SIZE  4096
 #define MAX_FILES     64
+#define MAX_SCALE_FILES 4096
 
 /* WHERE THE FIRST VERSION OF THIS FILE WAS WRONG, AND HOW
  * ------------------------------------------------------
@@ -143,6 +144,8 @@ int main(int argc, char **argv) {
             nfiles = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--size") == 0 && i + 1 < argc) {
             fsize = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--scale") == 0) {
+            scale_mode = 1;
         } else if (strcmp(argv[i], "--crash-loop") == 0) {
             crash_loop = 1;
         } else if (strcmp(argv[i], "--help") == 0) {
@@ -154,8 +157,9 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
-    if (nfiles < 1 || nfiles > MAX_FILES) {
-        printf("fsbench: --files must be 1..%d\n", MAX_FILES);
+    int limit = scale_mode ? MAX_SCALE_FILES : MAX_FILES;
+    if (nfiles < 1 || nfiles > limit) {
+        printf("fsbench: --files must be 1..%d\n", limit);
         return 2;
     }
     if (fsize < 1 || fsize > (int)sizeof(payload)) {
@@ -175,7 +179,7 @@ int main(int argc, char **argv) {
     /* FSMODERN M3 crash loop.  See the header comment; the receipts are a
      * stable contract with tests/integration/cases/test_fs_crash.sh. */
     if (scale_mode) {
-        char path[MAX_FILES][128];
+        char path[128];
         int sizes[3] = { nfiles / 16, nfiles / 4, nfiles };
         if (sizes[0] < 1) sizes[0] = 1;
         if (sizes[1] < 1) sizes[1] = 1;
@@ -189,9 +193,9 @@ int main(int argc, char **argv) {
             snprintf(subdir, sizeof(subdir), "%s/s%d", dir, sidx);
             mkdir(subdir, 0755);
             for (int i = 0; i < n; i++) {
-                snprintf(path[i], sizeof(path[i]), "%s/f_%d.dat", subdir, i);
-                int fd = open(path[i], O_CREAT | O_WRONLY | O_TRUNC, 0644);
-                if (fd < 0) { printf("[fsbench] scale: FAIL create %s\n", path[i]); return 1; }
+                snprintf(path, sizeof(path), "%s/f_%d.dat", subdir, i);
+                int fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+                if (fd < 0) { printf("[fsbench] scale: FAIL create %s\n", path); return 1; }
                 close(fd);
             }
             fsync(0);
@@ -201,8 +205,9 @@ int main(int argc, char **argv) {
             struct stat st;
             while (passes < 5) {
                 for (int i = 0; i < n; i++) {
-                    if (stat(path[i], &st) != 0) {
-                        printf("[fsbench] scale: FAIL stat %s\n", path[i]);
+                    snprintf(path, sizeof(path), "%s/f_%d.dat", subdir, i);
+                    if (stat(path, &st) != 0) {
+                        printf("[fsbench] scale: FAIL stat %s\n", path);
                         return 1;
                     }
                     lookups++;
