@@ -444,26 +444,8 @@ static int64_t vfs_errno(int64_t ret, int fallback) {
     return -(int64_t)fallback;
 }
 
-/* Returns bytes written (>= 0) or a negative errno (-EFAULT / ...). */
-static int64_t syscall_vfs_write(int fd, const void *user_buf, uint64_t len) {
-    if (len == 0) return 0;
-    if (!validate_user_range(user_buf, len, 0)) return -EFAULT;
-
-    char tmp[SYSCALL_IO_CHUNK];
-    uint64_t done = 0;
-    while (done < len) {
-        uint64_t n = len - done;
-        if (n > sizeof(tmp)) n = sizeof(tmp);
-        if (copy_from_user(tmp, (const uint8_t *)user_buf + done, n) != 0) {
-            return -EFAULT;
-        }
-        int64_t wr = vfs_write(fd, tmp, n);
-        if (wr < 0) return (done > 0) ? (int64_t)done : wr;
-        done += (uint64_t)wr;
-        if ((uint64_t)wr < n) break;
-    }
-    return (int64_t)done;
-}
+/* M6f: shared implementation is also compiled by the host fault tests. */
+#include "kernel/proc/write_bounce.h"
 
 /* Returns bytes read (>= 0) or a negative errno (-EFAULT / ...). */
 /*

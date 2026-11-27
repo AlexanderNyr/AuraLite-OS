@@ -32,6 +32,10 @@ int ahci_read(uint32_t port, uint64_t lba, uint32_t count, void *buf);
  */
 int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf);
 
+/* Synchronous advertised ATA FLUSH CACHE[ EXT], zero-data command under
+ * the same per-port lock as I/O. -ENOTSUP when IDENTIFY gives no support. */
+int ahci_flush(uint32_t port);
+
 /* Get the number of detected AHCI ports with devices attached. */
 int ahci_get_port_count(void);
 

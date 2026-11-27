@@ -591,6 +591,16 @@ int bc_flush_range(int dev, uint64_t first_block, uint64_t nblocks) {
         }
     }
 
+    /* A pinned dirty block was skipped above. It is not durable: callers
+     * must retry rather than publish a checkpoint that depends on it. */
+    for (struct buffer *c = lru_head; c; c = c->next) {
+        if (c->dirty && c->device_id == udev &&
+            c->block_num >= first_block && c->block_num < end_block) {
+            rc = -1;
+            break;
+        }
+    }
+
     spinlock_release(&bc_lock);
     return rc;
 }

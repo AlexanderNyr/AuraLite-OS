@@ -157,6 +157,10 @@ void fwcfg_selftest_probe(void) {
 
 void fwcfg_fsformat_probe(void) {
     char val[16];
+    if (fwcfg_read_opt("opt/auralite.aurafs_dual", val, (int)sizeof(val) - 1)) {
+        if (strcmp(val, "1") == 0) fs_aurafs_dual_set(1);
+        else if (strcmp(val, "0") == 0) fs_aurafs_dual_set(0);
+    }
     if (!fwcfg_read_opt(FSFORMAT_FILE, val, (int)sizeof(val) - 1)) {
         return;
     }

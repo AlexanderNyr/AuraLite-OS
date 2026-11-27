@@ -31,10 +31,12 @@
  *   the copy returns -1 instead of panicking.
  *
  *   For large transfers (read/write/readv/writev syscalls), the kernel
- *   uses a bounce-buffer pattern: copy into a kernel-local SYSCALL_IO_CHUNK
- *   buffer first, then act on the kernel buffer.  This eliminates any
+ *   uses a bounce-buffer pattern: copy into a kernel-owned buffer first,
+ *   then act on that buffer. SYS_WRITE uses up to 4 KiB of per-call heap
+ *   storage for ordinary files, with a 256-byte stack/OOM fallback; other
+ *   paths retain SYSCALL_IO_CHUNK.  This eliminates any
  *   window where a user pointer could be dereferenced directly by VFS/net
- *   code.  See syscall_vfs_read/write/pread/pwrite in syscall.c.
+ *   code.  See write_bounce.h and syscall_vfs_read/pread/pwrite in syscall.c.
  *
  * HOSTILE-POINTER TEST BATTERY:
  *

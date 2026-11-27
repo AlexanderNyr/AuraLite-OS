@@ -265,3 +265,344 @@ deletions leave tombstones. Host tests cover collision-head deletion and
 2500-key growth to depth >=3. The on-disk 28-byte item layout and checksum
 trailer stay unchanged. Previously lost entries cannot be recovered by the
 patch. Chain limit: 4096; tombstone/CoW block reclamation remains future work.
+
+
+## M6a safety slice — 2026-11-24 (upstream base `fbab5ed`)
+
+No new performance number is published. M5 already had an append cursor;
+M6a adds cursor/superblock validation and ordered checkpoint error handling.
+Host RAM-device tests prove correctness and injected-failure handling, not
+MiB/s on a QEMU disk. The M5 table above remains historical evidence under
+its stated conditions. M6 still needs a fresh comparable in-guest run,
+allocation/reclamation analysis and an honestly bounded flagship receipt.
+
+
+## M6c — fresh QEMU measurements (2026-11-24)
+
+The new `tests/integration/cases/test_aurafs_bench.sh` generates a report only
+when the three payload-verifying guest runs and the gate pass. Run it after
+`make iso`; it writes `build/aurafs_m6_report.md`. The recorded output is
+[the generated M6c table](measurements/aurafs-m6c-2026-11-24.md), with workload,
+QEMU configuration, median and source-log SHA-256. The case is in the fs
+integration shard; no CI throughput floor is imposed on arbitrary hosts.
+
+Confirmed medians: 0.07 MiB/s write, 0.29 MiB/s read, 18.6 create+write ops/s,
+377.2 unlink ops/s, 50505 us whole-system sync. A preliminary three-run gate
+invocation had medians 0.03/0.29 MiB/s, 8.2/198.8 ops/s and 45819 us; the
+variability itself is a reason NOT to announce a speedup. These are consecutive
+small-workload runs, not independent cold boots. Historical M0/M1 values
+are not a same-host A/B baseline. AuraFS is not yet demonstrated to be fast;
+this is evidence for profiling the write and metadata path next.
+
+Fresh correctness receipts for M6a+b+c: ISO build and full unit target exit 0
+(with documented optional skips), QEMU btrfs 19/19, `/data` power-off test 9/9,
+new benchmark 6/6. Durability still WEAK; sync latency is not crash atomicity.
+
+
+## M6d — measured verification work, then same-host A/B (2026-11-24)
+
+[Full comparison and reproduction](measurements/aurafs-m6d-ab-2026-11-24.md).
+Both binaries share the corrected benchmark clock; only metadata verification
+memoization differs. Same guest workload: 5456 reads in either mode, but
+read-side SHA computations fall from 5456 to 1931 (64.6%). Write-side SHA
+computations are unchanged at 1663. Counters include probe/checkpoint work,
+not just timed payloads, and are not physical disk transfers.
+
+Median read 0.4880 -> 0.8161 MiB/s (1.67x observed); write 0.0310 -> 0.0582.
+Unlink 522.8 -> 293.1 ops/s regressed in this pair. These tiny warm workloads
+are noisy: do not generalize to real SSDs or announce a universal speedup.
+Every block is fetched through the block cache on every read. Only an exact
+4096-byte comparison against previously verified metadata avoids redundant
+SHA; changed metadata and all data/superblocks still require verification.
+
+The M6c tables above remain historical. M6d fixed unsigned nanosecond
+subtraction across a second boundary and a false `tsc` label on zero divisor;
+clock-corrected runs must not be compared as if they used that earlier clock.
+A failed exploratory 0.00-rounded receipt is excluded from the final A/B;
+throughput now prints four decimal places and the report retains precision.
+
+
+## M6e — bounded write-metadata batches (2026-11-24)
+
+[Same-host A/B and reproduction](measurements/aurafs-m6e-ab-2026-11-24.md).
+The baseline and optimized binaries both use M6d's fixed clock and 16-slot
+verification memoization. Batching reduces successful block seal attempts
+1663 -> 1049 (36.9%) on the three-run workload, not a physical-device I/O
+count. Median write 0.0259 -> 0.0704 MiB/s (2.72x in this noisy pair), read
+0.2103 -> 0.7558. See linked raw tables and hashes before generalizing.
+
+The optimization only combines updates when all keys fit an existing leaf;
+otherwise it falls back to ordinary split-capable CoW insertions. A driver
+write publishes its private root only after all metadata succeeds. New blocks
+from failed attempts remain allocated; no GC or crash atomicity is claimed.
+Snapshots, checksums, full unit target and QEMU btrfs/persistence gates pass.
+The next cost is above the FS: 256-byte syscall bounce chunks still force 16
+driver write/inode updates per 4096-byte user write. M6e intentionally leaves
+that ABI/uaccess path unchanged for a separately controlled follow-up.
+
+## M6f — bounded regular-file syscall writes (2026-11-24)
+
+[Controlled 256/4096 A/B, bounds and reproduction](measurements/aurafs-m6f-ab-2026-11-24.md).
+The SYS_WRITE bounce path, not the filesystem format, changes: ordinary files
+use a per-call heap buffer up to 4096 bytes with 256-byte stack/OOM fallback.
+The actual helper's host test proves 16 -> 1 VFS calls per 4096-byte write.
+Pipe/device/console transfer policy stays unchanged; read/pwrite/writev are
+not optimized here. Later regular-file copy faults report earlier progress;
+no new FD lifetime or syscall transaction guarantee.
+
+Same M6e metadata batches/cache16/fixed clock in both builds: cumulative
+write seals 1049 -> 239 (77.2% fewer), block reads 5149 -> 2449, read SHA
+1317 -> 507. These are driver work counters, not physical I/O. Observed median
+write 0.1528 -> 0.7072 MiB/s (4.63x in one noisy TCG pair), read 1.2828 ->
+1.9139; unlink regressed 319.5 -> 171.8 ops/s. Three runs cannot establish
+universal speedup; see the per-run tables and build/log hashes before reuse.
+
+Exact-helper fault/OOM/short-write/cleanup tests, ON sanitizers, full unit
+suite (existing optional skips), both ISO/bench gates, final QEMU uaccess,
+pipes, btrfs and power-off/remount pass. M6 remains open; safe reclaim with
+snapshot roots and /home integration are not solved by larger buffers.
+
+## M6g — registered snapshot roots, not reclamation (2026-11-24)
+
+[Contract, host evidence and collector prerequisites](measurements/aurafs-m6g-snapshot-registry-2026-11-24.md).
+The old untracked root tokens are now backed by a fixed 32-entry registry.
+IDs are never reused; reads/releases need an exact live registration.
+Value copies are aliases, not extra refs: release invalidates all copies.
+Mount attempts clear registrations. All-or-error enumeration makes active
+snapshot roots discoverable but does not acquire new references or enumerate
+live/durable checkpoint roots. Caller serialization remains mandatory.
+
+No allocator or disk-format changes, no speed measurement. Reclaim remains
+none; checksums, append ENOSPC and WEAK durability remain. Actual-driver host
+registry/snapshot tests, ASan/UBSan, M5, full unit, ISO and QEMU btrfs/data
+persistence regression gates pass (existing optional skips). M6 stays open;
+future reuse must first prove complete reachability and checkpoint safety.
+
+## M6h — reachability diagnostic, not free space (2026-11-24)
+
+[Contract, bounds and evidence](measurements/aurafs-m6h-reachability-2026-11-24.md).
+A read-only serialized kernel audit walks live, cache-visible checkpoint and
+registered snapshot trees, counting unique metadata/data and unreferenced
+append blocks. Iterative traversal validates checksums, self/type/owner,
+pointer/record bounds and key ordering, rejects cycles/depth limits, and
+uses bounded heap memory. No free list or reuse is exposed. "Unreferenced"
+is NOT "safe to free": cached checkpoint bytes are not a durable-device
+root proof, and open-file/checkpoint lifetime coverage is not complete.
+
+Host snapshot-pin/release and corruption/OOM/resource tests, ASan/UBSan,
+full unit, M5, ISO and QEMU btrfs/data regression gates pass (existing optional
+skips). No benchmark, performance claim, allocator or format change. Reads
+still affect caches/counters and can cause normal dirty-cache writeback.
+Reclaim remains none, durability WEAK, and M6 remains IN PROGRESS.
+
+## M6i — checkpoint candidates across failed sync (2026-11-24)
+
+[Contract and fault evidence](measurements/aurafs-m6i-checkpoint-roots-2026-11-24.md).
+The reachability diagnostic now includes bounded since-mount checkpoint
+history, not just the superblock currently visible through cache. The old
+mounted root and every submitted root/end pair remain candidates even after
+successful sync. At 32 distinct pairs, history overflow disables audit until
+mount reset, without failing normal writes/sync. Audit grows to at most 66
+root inputs with unchanged bounded step/heap limits.
+
+Injected checkpoint failure proves old physical/new cached root divergence;
+a history-only old data corruption is rejected. Actual-driver host, sanitizer,
+full unit, M5, ISO and QEMU btrfs/data gates pass (existing optional skips).
+No performance measurement, allocator or format change. History bookkeeping
+adds no device I/O; auditing the added candidates can perform extra reads.
+This is not a durable-root/FLUSH proof; reclaim stays none, durability WEAK,
+and M6 remains open for checkpoint lifetime and open-file safety work.
+
+## M6j — pinned vnode identity, not reclamation (2026-11-24)
+
+[Defect, negative control and evidence](measurements/aurafs-m6j-open-vnodes-2026-11-24.md).
+Fix vnode retargeting/reuse while referenced after unlink/recreate. Cache
+identity is now the inode, not a reusable pathname; hard-link aliases share
+visible size and append-lock identity. Even inactive-slot allocation requires
+zero VFS refs. Normal final-OFD release needs no new close callback.
+
+Host old/new payload, unlink/rename/link, all-pinned/pressure/reuse tests and
+pre-fix negative control pass. Same driver-level reference-pin helper runs in
+QEMU, btrfs 20/20; host/sanitizer/full unit/M5/ISO/data regression gates pass
+(existing optional skips). Not an end-to-end or concurrent FD lifecycle proof;
+borrowed zero-ref pointers and remounts with active OFDs are not protected.
+No performance measurement, allocator or disk-format change. Reclaim stays
+none, durability WEAK; full root lifetimes and checkpoint publication remain
+M6 blockers.
+
+## M6k — end-to-end userspace FD lifecycle (2026-11-24)
+
+[Guest evidence, negative control and bounds](measurements/aurafs-m6k-userspace-fd-2026-11-24.md).
+New ring-3 `/tests/aurafsfd` checks actual VFS open/dup/fork/close shared-offset
+and lifetime behavior on /data, including open-unlinked inode/data isolation,
+96 real open-close cycles, hardlinks and fsync. Registered fs-group QEMU gate
+12/12 verifies a completion marker after power-off/new boot with format off.
+Rebuilding with the pre-M6j driver makes the same userspace test fail as
+expected; fixed driver and ISO are restored. No runtime driver change here.
+
+Host/sanitizer/full unit/M5/ISO and QEMU btrfs 20/20, data power-off/remount
+9/9 pass (existing optional toolchain skips). No benchmark or speed claim.
+This is serialized FD lifecycle coverage, not a race/refcount leak proof or
+GC safety certificate. Durable checkpoint publication/retirement remains
+open, reclaim none, durability WEAK, M6 IN PROGRESS.
+
+## M6l — checkpoint readback adds verification, not speed (2026-11-24)
+
+[Implementation, fault evidence and limits](measurements/aurafs-m6l-checkpoint-readback-2026-11-24.md).
+Every sync reaching checkpoint readback adds one 4 KiB direct backend read,
+bypassing filesystem cache and AuraFS verify-profile counters. Full submitted
+superblock bytes must match before generation advancement/success. Host
+fault tests reject dropped/partial/different-valid-SHA writes and backend
+read errors even with a warm cache; retry retains/deduplicates candidates.
+Negative control fails without the check. This adds I/O/latency, not a speed
+optimization; no benchmark or comparison against old measurements is made.
+
+Host/sanitizer/full unit/M5/ISO and QEMU btrfs 21/21, userspace FD/remount
+12/12, data persistence 9/9 pass (existing optional skips). A read can still
+come from volatile device cache; only the superblock is read back. There is
+no device FLUSH, atomic publication or permission to retire roots/reclaim.
+Durability remains WEAK, reclaim none, M6 open for barrier/recovery protocol.
+
+## M6m — explicit device barriers, still no root retirement (2026-11-24)
+
+[Contract, ordering and evidence](measurements/aurafs-m6m-device-flush-2026-11-24.md).
+Optional blkdev FLUSH distinguishes unsupported from completed backend
+barriers. AHCI issues advertised ATA FLUSH CACHE[ EXT] as locked non-data
+commands. AuraFS orders appended writeback/barrier, checkpoint writeback/
+barrier, then M6l's exact readback. Supported errors propagate; unsupported
+backends keep an explicit weak path. Adds up to two device commands per sync,
+not a performance optimization; no benchmark against historical results.
+
+Host seam/policy/sync fault tests, negative control, ASan/UBSan, full unit/M5/
+ISO and QEMU btrfs 21/21 (requiring device-FLUSH receipt), userspace FD/remount
+12/12, data persistence 9/9 pass (existing optional skips). Normal QEMU AHCI
+completion is not hardware power-loss proof. Single in-place super still
+lacks torn-write recovery; all checkpoint candidates are retained. No format,
+allocator or GC change; reclaim none, durability WEAK, M6 IN PROGRESS.
+
+
+## M6n — opt-in dual checkpoint recovery, not a speed claim (2026-11-24)
+
+Explicit new-volume-only v2 format: two sealed 4 KiB slots in the reserved
+prefix, alternating publication with required device FLUSH and direct
+readback; newest valid generation selected read-only on mount. Legacy is not
+migrated. Creation requires generic format permission, independent default-OFF
+`opt/auralite.aurafs_dual=1`, successful barrier and entire-device zero scan.
+The scan adds O(device capacity) provisioning I/O, not existing-volume mount
+work. No speed, media atomicity or EXACT durability claim is made.
+
+Actual-driver accepted-write cut sweep (0/512/2048/3584) preserves OLD across
+cache-drop remount; successful new publication selects NEW. New QEMU recovery
+gate 12/12 verifies stored checkpoint SHA/generation, tears the newest header
+between boots, recovers OLD with both creation gates OFF, then runs actual
+userspace FD/pressure/fsync tests. This is a deterministic media-image fixture,
+NOT a hardware power cut. A failed sync can leave a complete NEW candidate.
+Both roots/history remain retained; no repair, retirement or reclaim.
+
+See `measurements/aurafs-m6n-dual-checkpoint-2026-11-24.md` for layout,
+compatibility warnings (old kernels must never format v2), assumptions,
+negative controls and reproduction. M6 stays IN PROGRESS / durability WEAK.
+
+
+## M6o — initial-format failure evidence only (2026-11-24)
+
+No runtime, format or performance change. A 17-case actual-driver host matrix
+covers each initial write rejection, accepted checkpoint prefix cuts at
+0/512/2048/3584 bytes, all four initial barrier failures and both readback
+failures. Cache-drop mount recovers existing valid copies without writes or
+refuses when none exists; recovered trees support write/sync/remount/read.
+Explicit retry refuses nonzero orphan metadata. Range flush can retry a
+one-shot write failure, so failed init may already have valid copies; this
+is not rollback. Focused sanitizer/M5/host and negative control PASS.
+See `measurements/aurafs-m6o-format-interruptions-2026-11-24.md` for scope.
+No new QEMU/ISO timing or hardware power-cut evidence; no reclaim; M6 open.
+
+
+## M6p — readback is not persistence (2026-11-24)
+
+New deterministic actual-driver host model distinguishes volatile device
+writes from stable media; readback sees volatile bytes, successful FLUSH
+persists dirty sectors, power loss discards the rest and filesystem cache.
+418 power-loss/failed-barrier cases PASS across initial format, both target
+slots, both ascending/descending sector orders and partial failed FLUSH.
+Byte-exact 9000-byte OLD/NEW recovery; successful sync requires NEW. Removing
+post-FLUSH in a negative control returns success/readback but loses NEW;
+removing pre-FLUSH permits a checkpoint before its data and fails file read.
+
+No throughput, hardware power-cut or universal fault-order proof. New POSIX
+host target is part of UNIT_TESTS; focused host/M5/sanitizer run, not a new
+full-unit/ISO/QEMU receipt. See
+`measurements/aurafs-m6p-volatile-cache-2026-11-24.md` for event counts,
+assumptions and limits. Runtime unchanged, WEAK durability, M6 open; no reclaim.
+
+
+## M6q — retry after degraded recovery, no speed claim (2026-11-24)
+
+Extend the volatile-cache target with 512 second-crash cases from four
+reachable one-copy seeds, in addition to M6p's 418. Both target orientations
+and both first/second sector orders; orphan metadata/data remains after the
+first failed publication. The next attempt uses a different pattern and is
+cut at all replay boundaries or failed FLUSH. Survivor remains byte-identical;
+complete OLD/NEW only, no ABORT leakage. Partial failed retry can complete old
+torn checkpoint bytes and recover NEW: failure still is not rollback.
+
+Focused host/sanitizer/M5 PASS; no production or performance change, no new
+QEMU/ISO/full-unit proof. See
+`measurements/aurafs-m6q-repeated-crash-2026-11-24.md`. No committed-root
+retirement/reuse, repair or migration; durability WEAK, M6 open.
+
+
+## M6r — one selected-root read before v2 mount (2026-11-24)
+
+V2 mount adds one direct 4096-byte backend read and one temporary heap buffer
+for root SHA/self/type and bounded local leaf/internal layout checks. No full
+tree scan or volume-size-dependent mount I/O; no throughput/latency claim.
+Read/OOM/corrupt root refuses mount, with no fallback to an older tree when
+the selected super itself is valid. No write/repair/migration/reclaim.
+
+Warm-cache actual-driver faults, both sanitizer suites including 930 modeled
+crashes, M5 and ISO PASS. Extended QEMU dual gate 18/18: both supers intact,
+newest root damaged, older root intact; mount refuses, no rollback, shell
+alive, entire faulted image hash unchanged. Legacy/full-unit results in
+`measurements/aurafs-m6r-selected-root-2026-11-24.md`.
+This is not recursive fsck: valid root + damaged child still mounts, then
+lookup can fail. Runtime durability WEAK, M6 open; no EXACT or reclaim claim.
+
+
+## M6s — mandatory selected-metadata walk, bounded cost (2026-11-24)
+
+User-selected fail-closed v2 policy replaces one-root read with direct backend
+reads of all selected reachable metadata. No file-data scan. Iterative DFS
+with about 293 KiB maximum heap; committed prefix <=1 GiB, depth <=8 edges,
+<=4194304 frame steps. I/O scales with metadata, can approach the prefix bound;
+local leaf overlap checking has a fixed slot cap. No latency/speed claim.
+
+Bounds are availability limits, not automatic evidence of corruption. Larger
+prefix refuses even if valid; no new allocation cap prevents live writes past
+that remount envelope. No bypass, repair or older-tree fallback. Legacy
+unchanged. Not full fsck/global namespace or data authenticity validation.
+
+Host structural/role/cycle/budget evidence plus QEMU dual 18/18 PASS: descendant
+fault with both roots/supers and older tree intact refuses mount; entire data
+image unchanged. Final regression receipts:
+`measurements/aurafs-m6s-mandatory-metadata-2026-11-24.md`. WEAK, no reclaim,
+M6 open; stricter mount validation alone does not prove safe retirement.
+
+
+## M6t — v2 sync now pays the mount metadata check (2026-11-24)
+
+V2 append allocator now caps at min(actual device size, 1 GiB), matching M6s
+mount prefix support; geometry remains actual size. Final block then ENOSPC,
+no GC/reuse/relocation. Legacy allocation and sync unchanged.
+
+Every v2 sync performs the same direct metadata/depth/work walk after append
+writeback/pre-FLUSH and before queuing its target checkpoint. Additional I/O,
+SHA work and temporary heap are real costs; no speed/latency measurement or
+performance improvement is claimed. Checker failure refuses new publication,
+not live-state rollback. No file-data scan, universal remount or EXACT proof.
+
+Full unit, ASan/UBSan including 930 crash cases, M5, ISO and QEMU dual 19/19
+PASS; legacy/final persistence receipts, sparse-capacity test limitations and
+negative control in
+`measurements/aurafs-m6t-publication-envelope-2026-11-24.md`. WEAK, M6 open,
+reclaim OFF; passing these checks is not permission to retire roots/reuse data.

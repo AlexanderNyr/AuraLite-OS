@@ -71,46 +71,26 @@ AHCI_DEV=( -device "ahci,id=ahci0" )
 
 # ---- Pass 1: kernel formats + full mutation surface (fsformat=1) ----
 LOG1="$IL_LOGDIR/btrfs_p1.log"
-il_send_delay 9
-il_send "mkdir /btrfs/sub"
-il_send_delay 1
-il_send "write /btrfs/sub/f1.txt hello-from-btrfs"
-il_send_delay 1
-il_send "cat /btrfs/sub/f1.txt"
-il_send_delay 1
-il_send "mv /btrfs/sub/f1.txt /btrfs/sub/f2.txt"
-il_send_delay 1
-il_send "stat /btrfs/sub/f2.txt"
-il_send_delay 1
-il_send "link /btrfs/sub/f2.txt /btrfs/sub/hard.txt"
-il_send_delay 1
-il_send "stat /btrfs/sub/hard.txt"
-il_send_delay 1
-il_send "settimes /btrfs/sub/f2.txt 111 222"
-il_send_delay 1
-il_send "stat /btrfs/sub/f2.txt"
-il_send_delay 1
-il_send "fsync /btrfs/sub/f2.txt"
-il_send_delay 1
-il_send "truncate /btrfs/sub/f2.txt 7"
-il_send_delay 1
-il_send "cat /btrfs/sub/f2.txt"
-il_send_delay 1
-il_send "btrfsck"
-il_send_delay 1
-il_send "rm /btrfs/sub/hard.txt"
-il_send_delay 1
-il_send "rm /btrfs/sub/f2.txt"
-il_send_delay 1
-il_send "rmdir /btrfs/sub"
-il_send_delay 1
-il_send "btrfsck"
-il_send_delay 1
-il_send "ls /btrfs"
-il_send_delay 1
-il_send "exit"
+il_send_prompt "mkdir /btrfs/sub"
+il_send_prompt "write /btrfs/sub/f1.txt hello-from-btrfs"
+il_send_prompt "cat /btrfs/sub/f1.txt"
+il_send_prompt "mv /btrfs/sub/f1.txt /btrfs/sub/f2.txt"
+il_send_prompt "stat /btrfs/sub/f2.txt"
+il_send_prompt "link /btrfs/sub/f2.txt /btrfs/sub/hard.txt"
+il_send_prompt "stat /btrfs/sub/hard.txt"
+il_send_prompt "settimes /btrfs/sub/f2.txt 111 222"
+il_send_prompt "stat /btrfs/sub/f2.txt"
+il_send_prompt "fsync /btrfs/sub/f2.txt"
+il_send_prompt "truncate /btrfs/sub/f2.txt 7"
+il_send_prompt "cat /btrfs/sub/f2.txt"
+il_send_prompt "btrfsck"
+il_send_prompt "rm /btrfs/sub/hard.txt"
+il_send_prompt "rm /btrfs/sub/f2.txt"
+il_send_prompt "rmdir /btrfs/sub"
+il_send_prompt "btrfsck"
+il_send_prompt "ls /btrfs"
 
-il_run_qemu "$LOG1" 50 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
+il_run_qemu_prompt "$LOG1" 120 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
     -fw_cfg "opt/auralite.fsformat,string=1"
 
 il_assert_grep "$LOG1" "\[btrfs\] format complete"       "kernel formatted blank btrfs volume"
@@ -138,16 +118,17 @@ il_assert_grep "$LOG1" "btrfsck: clean"                  "btrfsck clean (after d
 
 # ---- Pass 2: clean remount, no reformat, empty-root persistence ----
 LOG2="$IL_LOGDIR/btrfs_p2.log"
-il_send_delay 9
-il_send "ls /btrfs"
-il_send_delay 1
-il_send "exit"
+il_send_prompt "ls /btrfs"
 
-il_run_qemu "$LOG2" 40 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
+il_run_qemu_prompt "$LOG2" 120 "${AHCI_DEV[@]}" "${QEMU_DISKS[@]}" \
     -fw_cfg "opt/auralite.fsformat,string=0"
 
 il_assert_grep "$LOG2" "\[btrfs\] mounted CoW filesystem" "btrfs remounted without reformat"
 il_assert_grep "$LOG2" "SHA-256 checksums \(block trailer\) \+ CoW tree re-parenting enabled" \
                                                           "mount banner present (SHA-256 trailer)"
+
+il_assert_grep "$LOG1" '\[btrfs\] PASS: pinned vnode identity, unlink/recreate, rename/hard-link aliases' 'pinned vnode identity survives unlink/recreate and aliases'
+
+il_assert_grep "$LOG1" '\[aurafs\] checkpoint: backend readback verified; barriers=device-FLUSH durability=WEAK, history retained' 'checkpoint uses advertised AHCI device FLUSH and backend readback'
 
 il_summary

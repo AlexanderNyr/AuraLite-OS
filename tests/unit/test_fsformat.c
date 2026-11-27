@@ -22,6 +22,11 @@ static int failures = 0;
     } while (0)
 
 int main(void) {
+    CHECK(!fs_aurafs_dual_allowed(), "dual checkpoint formatting defaults OFF");
+    fs_aurafs_dual_set(1);
+    CHECK(fs_aurafs_dual_allowed(), "dual checkpoint opt-in explicit");
+    fs_aurafs_dual_set(0);
+    CHECK(!fs_aurafs_dual_allowed(), "dual checkpoint opt-in can be disabled");
     printf("[fsformat] build default is OFF (safe)\n");
     CHECK(fs_format_allowed() == 0, "default refuses auto-format");
     CHECK(strcmp(fs_format_source(), "build") == 0, "default source is 'build'");

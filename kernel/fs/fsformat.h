@@ -37,4 +37,9 @@ void fs_format_set(int allowed, const char *source);
 /* Where the current value came from: "build" or the override source. */
 const char *fs_format_source(void);
 
+/* Explicit fresh-zero-volume AuraFS v2 opt-in. Independent of the general
+ * format gate; default OFF, never requests migration of an existing volume. */
+int fs_aurafs_dual_allowed(void);
+void fs_aurafs_dual_set(int allowed);
+
 #endif /* KERNEL_FS_FSFORMAT_H */

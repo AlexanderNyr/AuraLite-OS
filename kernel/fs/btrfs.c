@@ -46,15 +46,20 @@
 #include "kernel/lib/sha256.h"
 #include "kernel/mm/kheap.h"
 #include "kernel/fs/blkdev.h"
+#include "kernel/lib/errno.h"
 
 /* ============================================================================
  * SECTION 1: ON-DISK FORMAT
  * ============================================================================ */
 
 #define BTRFS_MAGIC          "_BHRfS_M"
+#define AURAFS_DUAL_MAGIC    "_AURA2FS"
+#define AURAFS_MIRROR_OFFSET 61440
 #define BTRFS_BLK_MAGIC      0x42545246u   /* "BTRF" */
 
 #define BTRFS_NODE_SIZE      4096
+#define AURAFS_MOUNT_MAX_BLOCKS 262144U
+#define AURAFS_MOUNT_MAX_STEPS 4194304U
 #define BTRFS_HDR_SIZE       32            /* per-block header bytes */
 #define BTRFS_SUPER_OFFSET   65536         /* byte offset of superblock */
 #define BTRFS_FIRST_FREE     69632         /* 65536 + 4096 */
@@ -129,10 +134,41 @@ struct btrfs_mount {
     uint64_t  max_block;
     uint32_t  next_inode;
     int       mounted;
+    int       dual;
+    uint64_t  active_super;
     spinlock_t lock;
 };
 
 static struct btrfs_mount bm;
+/* Volatile snapshot tokens must not survive a mount attempt. */
+static uint64_t aurafs_mount_epoch;
+static uint64_t aurafs_snapshot_id; /* never wrap/reuse during kernel lifetime */
+static struct {
+    struct aurafs_snapshot token;
+    const struct aurafs_snapshot *owner; /* compared only, never dereferenced */
+} aurafs_snapshots[AURAFS_MAX_SNAPSHOTS];
+/* Conservative since-mount checkpoint candidates, not durable-root proof.
+ * Never evict on successful sync: no device FLUSH/dual-super protocol exists.
+ * Saturation disables audit, never ordinary writes or sync. */
+#define AURAFS_CHECKPOINT_HISTORY 32
+static struct {
+    uint64_t root_lba, allocation_end;
+} aurafs_checkpoint_history[AURAFS_CHECKPOINT_HISTORY];
+static unsigned aurafs_checkpoint_count;
+static int aurafs_checkpoint_overflow;
+
+static void aurafs_checkpoint_remember(uint64_t root, uint64_t end) {
+    for (unsigned i = 0; i < aurafs_checkpoint_count; i++)
+        if (aurafs_checkpoint_history[i].root_lba == root &&
+            aurafs_checkpoint_history[i].allocation_end == end) return;
+    if (aurafs_checkpoint_count == AURAFS_CHECKPOINT_HISTORY) {
+        aurafs_checkpoint_overflow = 1;
+        return;
+    }
+    aurafs_checkpoint_history[aurafs_checkpoint_count].root_lba = root;
+    aurafs_checkpoint_history[aurafs_checkpoint_count++].allocation_end = end;
+}
+
 static uint8_t *bscratch = NULL;   /* general scratch (tree ops) */
 static uint8_t *bdatabuf = NULL;   /* data block staging */
 
@@ -190,6 +226,35 @@ static int key_cmp(uint64_t aobj, uint32_t atyp, uint64_t aoff,
  * SECTION 4: BLOCK I/O + CHECKSUM
  * ============================================================================ */
 
+/* Memoize verification, NOT disk contents: every call still reads through
+ * fs_read_block and compares all 4096 bytes (header AND SHA trailer). Exact
+ * equality with a previously verified copy makes re-hashing redundant.
+ * Only metadata is eligible; data and superblocks always run SHA-256.
+ * Shared state follows the existing serialized-driver calling contract. */
+#ifndef AURAFS_VERIFY_CACHE_SLOTS
+#define AURAFS_VERIFY_CACHE_SLOTS 16
+#endif
+#if AURAFS_VERIFY_CACHE_SLOTS < 0 || AURAFS_VERIFY_CACHE_SLOTS > 256
+#error "AURAFS_VERIFY_CACHE_SLOTS must be between 0 and 256"
+#endif
+#if AURAFS_VERIFY_CACHE_SLOTS > 0
+static struct {
+    uint64_t lba;
+    int valid;
+    uint8_t bytes[BTRFS_NODE_SIZE];
+} aurafs_verified[AURAFS_VERIFY_CACHE_SLOTS];
+#endif
+static struct {
+    uint64_t reads, sha_reads, sha_writes, hits, batch_fast, batch_fallback;
+} aurafs_verify_stats;
+
+static void aurafs_verify_reset(void) {
+    memset(&aurafs_verify_stats, 0, sizeof(aurafs_verify_stats));
+#if AURAFS_VERIFY_CACHE_SLOTS > 0
+    memset(aurafs_verified, 0, sizeof(aurafs_verified));
+#endif
+}
+
 static int btrfs_read_block(uint64_t lba, void *buf) {
     return fs_read_block(bm.bdev, lba / 512, (uint32_t)(bm.nodesize / 512), buf);
 }
@@ -202,9 +267,20 @@ static int btrfs_read_super(uint64_t lba, void *buf) {
     return fs_read_block(bm.bdev, lba / 512, BTRFS_NODE_SIZE / 512, buf);
 }
 
+/* Keep the v2 writable prefix inside the mandatory remount envelope.
+ * Device geometry remains unchanged; this is not a partition or reuse map. */
+static uint64_t aurafs_append_ceiling(uint64_t bytes, int dual) {
+    uint64_t cap = AURAFS_MOUNT_MAX_BLOCKS * (1ull * BTRFS_NODE_SIZE);
+    return dual && bytes > cap ? cap : bytes;
+}
+
 static uint64_t blk_alloc(void) {
     uint64_t lba = bm.next_free_block;
-    if (lba + bm.nodesize > bm.max_block) {
+    uint64_t limit = aurafs_append_ceiling(bm.max_block, bm.dual);
+    /* Subtraction is deliberate: a corrupt cursor must not wrap UINT64_MAX. */
+    if (bm.nodesize != BTRFS_NODE_SIZE || lba < BTRFS_FIRST_FREE ||
+        lba % BTRFS_NODE_SIZE != 0 || lba > limit ||
+        bm.nodesize > limit - lba) {
         kprintf("[btrfs] ENOSPC: CoW block pool exhausted at LBA %llu (volume end %llu)\n",
                 (unsigned long long)lba, (unsigned long long)bm.max_block);
         return 0;
@@ -224,6 +300,7 @@ static int blk_write(uint64_t lba, uint8_t *blk, uint32_t type, uint64_t owner) 
     w32(blk + 12, type);
     w64(blk + 16, owner);
     w64(blk + 24, lba);
+    aurafs_verify_stats.sha_writes++;
     ksha256(blk, BTRFS_CSUM_OFFSET, blk + BTRFS_CSUM_OFFSET);
     return btrfs_write_block(lba, blk);
 }
@@ -233,9 +310,22 @@ static int blk_write(uint64_t lba, uint8_t *blk, uint32_t type, uint64_t owner) 
  * bit-rot on the media, or a pre-T3 legacy volume whose trailer bytes
  * are whatever the old CRC32C era left there (neither is served). */
 static int blk_read(uint64_t lba, uint8_t *blk) {
+    aurafs_verify_stats.reads++;
     if (btrfs_read_block(lba, blk) != 0) return -1;
     if (r32(blk + 4) != BTRFS_BLK_MAGIC) return -1;
+#if AURAFS_VERIFY_CACHE_SLOTS > 0
+    uint32_t type = r32(blk + 12);
+    unsigned slot = (unsigned)((lba / BTRFS_NODE_SIZE) % AURAFS_VERIFY_CACHE_SLOTS);
+    int metadata = type == BT_ROOT || type == BT_LEAF;
+    if (metadata && aurafs_verified[slot].valid &&
+        aurafs_verified[slot].lba == lba &&
+        memcmp(aurafs_verified[slot].bytes, blk, BTRFS_NODE_SIZE) == 0) {
+        aurafs_verify_stats.hits++;
+        return 0;
+    }
+#endif
     uint8_t digest[KSHA256_DIGEST_SIZE];
+    aurafs_verify_stats.sha_reads++;
     ksha256(blk, BTRFS_CSUM_OFFSET, digest);
     if (memcmp(digest, blk + BTRFS_CSUM_OFFSET, KSHA256_DIGEST_SIZE) != 0) {
         kprintf("[btrfs] SHA-256 FAIL on block %llu (digest mismatch: "
@@ -243,6 +333,13 @@ static int blk_read(uint64_t lba, uint8_t *blk) {
                 (unsigned long long)lba);
         return -1;
     }
+#if AURAFS_VERIFY_CACHE_SLOTS > 0
+    if (metadata) {
+        memcpy(aurafs_verified[slot].bytes, blk, BTRFS_NODE_SIZE);
+        aurafs_verified[slot].lba = lba;
+        aurafs_verified[slot].valid = 1;
+    }
+#endif
     return 0;
 }
 
@@ -585,6 +682,104 @@ static int tree_insert(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t o
     return 0;
 }
 
+/* Small metadata transactions. Fast path: all keys route to one leaf and
+ * the result fits; rebuild that leaf and its ancestry once. Otherwise use
+ * the existing split-capable inserter, keeping its new roots private. */
+#ifndef AURAFS_BATCH_WRITES
+#define AURAFS_BATCH_WRITES 1
+#endif
+#if AURAFS_BATCH_WRITES != 0 && AURAFS_BATCH_WRITES != 1
+#error "AURAFS_BATCH_WRITES must be 0 or 1"
+#endif
+#define AURAFS_EDIT_MAX 32
+struct tree_edit {
+    uint64_t obj, off;
+    uint32_t typ, size;
+    const uint8_t *data;
+};
+static int tree_insert_many(uint64_t root, const struct tree_edit *edits,
+                             int count, uint64_t *new_root) {
+    if (!root || !edits || !new_root || count < 1 || count > AURAFS_EDIT_MAX)
+        return -1;
+    for (int i = 0; i < count; i++)
+        if (edits[i].size > 64 || (edits[i].size && !edits[i].data)) return -1;
+    if (!AURAFS_BATCH_WRITES) goto sequential;
+
+    uint64_t path[BTRFS_MAX_LEVELS], other[BTRFS_MAX_LEVELS];
+    int ci[BTRFS_MAX_LEVELS], oi[BTRFS_MAX_LEVELS], depth, od;
+    if (tree_descend(root, edits[0].obj, edits[0].typ, edits[0].off,
+                      path, ci, &depth, bdatabuf) != 0) return -1;
+    for (int i = 1; i < count; i++) {
+        if (tree_descend(root, edits[i].obj, edits[i].typ, edits[i].off,
+                          other, oi, &od, bscratch) != 0) return -1;
+        if (depth != od) goto sequential;
+        for (int d = 0; d < depth; d++)
+            if (path[d] != other[d] || ci[d] != oi[d]) goto sequential;
+    }
+    static struct leaf_slot slots[MAX_LEAF_ITEMS + AURAFS_EDIT_MAX];
+    static uint32_t placed[MAX_LEAF_ITEMS + AURAFS_EDIT_MAX];
+    static uint8_t packed[2 * BTRFS_NODE_SIZE];
+    int n = leaf_nslots(bdatabuf);
+    if (n < 0 || n > MAX_LEAF_ITEMS) return -1;
+    uint32_t used = 0;
+    for (int i = 0; i < n; i++) {
+        uint32_t off, size;
+        leaf_get(bdatabuf, i, &slots[i].obj, &slots[i].typ, &slots[i].off,
+                  &off, &size);
+        if (off > BTRFS_CSUM_OFFSET || size > BTRFS_CSUM_OFFSET - off ||
+            size > sizeof(packed) - used) return -1;
+        slots[i].src = used; slots[i].dsz = size;
+        memcpy(packed + used, bdatabuf + off, size); used += size;
+    }
+    for (int e = 0; e < count; e++) {
+        int i = 0;
+        while (i < n && key_cmp(slots[i].obj, slots[i].typ, slots[i].off,
+                                edits[e].obj, edits[e].typ, edits[e].off) < 0) i++;
+        int replace = i < n && key_cmp(slots[i].obj, slots[i].typ, slots[i].off,
+                                       edits[e].obj, edits[e].typ, edits[e].off) == 0;
+        if (!replace) {
+            for (int j = n; j > i; j--) slots[j] = slots[j-1];
+            n++;
+        }
+        if (edits[e].size > sizeof(packed) - used) goto sequential;
+        slots[i].obj = edits[e].obj; slots[i].typ = edits[e].typ;
+        slots[i].off = edits[e].off; slots[i].dsz = edits[e].size;
+        slots[i].src = used;
+        if (edits[e].size) memcpy(packed + used, edits[e].data, edits[e].size);
+        used += edits[e].size;
+    }
+    if (!leaf_room(n, slots)) goto sequential;
+    for (int i = 0; i < n; i++) placed[i] = slots[i].src;
+    uint64_t child = blk_alloc();
+    if (!child || leaf_build(bscratch, n, slots, placed, packed) != 0 ||
+        blk_write(child, bscratch, BT_LEAF, BTRFS_ROOT_INO) != 0) return -1;
+    uint64_t obj = slots[0].obj, off = slots[0].off;
+    uint32_t typ = slots[0].typ;
+    for (int d = depth - 1; d >= 0; d--) {
+        if (blk_read(path[d], bscratch) != 0) return -1;
+        uint8_t *ptr = bscratch + 36 + ci[d] * 32;
+        w64(ptr, obj); w64(ptr + 8, off); w32(ptr + 16, typ);
+        w64(ptr + 24, child);
+        uint64_t unused;
+        root_get(bscratch, 0, &obj, &typ, &off, &unused);
+        child = blk_alloc();
+        if (!child || blk_write(child, bscratch, BT_ROOT, BTRFS_ROOT_INO) != 0)
+            return -1;
+    }
+    aurafs_verify_stats.batch_fast++;
+    *new_root = child;
+    return 0;
+
+sequential:;
+    uint64_t current = root;
+    for (int i = 0; i < count; i++)
+        if (tree_insert(current, edits[i].obj, edits[i].typ, edits[i].off,
+                         edits[i].data, edits[i].size, &current) != 0) return -1;
+    aurafs_verify_stats.batch_fallback++;
+    *new_root = current;
+    return 0;
+}
+
 static int tree_remove(uint64_t root_lba, uint64_t obj, uint32_t typ, uint64_t off,
                        uint64_t *new_root) {
     if (!root_lba) return -1;
@@ -780,7 +975,7 @@ static int dir_remove(uint64_t root, uint64_t parent, const char *name,
 /* Resolve a path.  Final component may not exist yet.  On success fills
  * *out_parent (dir that would contain the final component), *out_ino (its
  * ino if it exists, else 0), *found, and basename. */
-static int btrfs_path_resolve(const char *path, uint64_t *out_parent,
+static int btrfs_path_resolve_at(uint64_t root, const char *path, uint64_t *out_parent,
                               uint64_t *out_ino, int *found, char *base, int bsz) {
     *found = 0;
     if (!path) return -1;
@@ -803,7 +998,7 @@ static int btrfs_path_resolve(const char *path, uint64_t *out_parent,
         uint64_t key; int hit;
         uint8_t di[BTRFS_MAX_PATH + 24];
         uint32_t sz = 0;
-        if (dir_slot(bm.tree_root_lba, dir_ino, comp, di, &sz, &key, &hit) == 0 && hit) {
+        if (dir_slot(root, dir_ino, comp, di, &sz, &key, &hit) == 0 && hit) {
             uint32_t nl = r32(di + 12);
             if (nl == (uint32_t)n && memcmp(di + 16, comp, n) == 0) {
                 uint64_t child = r64(di + 0);
@@ -828,6 +1023,12 @@ static int btrfs_path_resolve(const char *path, uint64_t *out_parent,
         return -1;   /* intermediate component missing */
     }
     return -1;
+}
+
+static int btrfs_path_resolve(const char *path, uint64_t *out_parent,
+                              uint64_t *out_ino, int *found, char *base, int bsz) {
+    return btrfs_path_resolve_at(bm.tree_root_lba, path, out_parent, out_ino,
+                                  found, base, bsz);
 }
 
 /* Parent dir + basename of a path whose final component may not exist. */
@@ -873,8 +1074,9 @@ static int btrfs_path_parent(const char *path, uint64_t *out_parent,
 static struct btrfs_vinfo *bv_intern(const char *path, uint64_t objid, int is_dir,
                                      uint64_t size) {
     for (int i = 0; i < BTRFS_MAX_OPEN_VNODES; i++) {
-        if (bv4pool[i].in_use && strcmp(bv4pool[i].path, path) == 0) {
-            bv4pool[i].objectid = objid;
+        /* Cache identity is the inode, not a reusable pathname. Hard-link
+         * aliases share the vnode (and its append lock/visible size). */
+        if (bv4pool[i].in_use && bv4pool[i].objectid == objid) {
             bv4pool[i].is_dir = is_dir;
             bv4pool[i].size = size;
             bv4pool[i].vnode.size = size;
@@ -884,7 +1086,7 @@ static struct btrfs_vinfo *bv_intern(const char *path, uint64_t objid, int is_di
     static uint64_t bv_lru_seq = 0;
     int slot = -1;
     for (int i = 0; i < BTRFS_MAX_OPEN_VNODES; i++) {
-        if (!bv4pool[i].in_use) { slot = i; break; }
+        if (!bv4pool[i].in_use && bv4pool[i].vnode.vfs_refs == 0) { slot = i; break; }
     }
     if (slot < 0) {
         uint64_t best_seq = (uint64_t)-1;
@@ -926,8 +1128,13 @@ static struct btrfs_vinfo *bv_intern(const char *path, uint64_t objid, int is_di
 
 static void bv_evict(const char *path) {
     for (int i = 0; i < BTRFS_MAX_OPEN_VNODES; i++) {
-        if (bv4pool[i].in_use && strcmp(bv4pool[i].path, path) == 0)
-            bv4pool[i].in_use = 0;
+        if (bv4pool[i].in_use && strcmp(bv4pool[i].path, path) == 0) {
+            /* Unlink/rename invalidates the name, not an open OFD's inode.
+             * No VFS close callback is needed: LRU checks vfs_refs when the
+             * final OFD reference has gone. A raw lookup pointer is unpinned. */
+            if (bv4pool[i].vnode.vfs_refs) bv4pool[i].path[0] = 0;
+            else bv4pool[i].in_use = 0;
+        }
     }
 }
 
@@ -986,22 +1193,29 @@ static struct vnode *btrfs_create(void *fs_data, const char *path) {
 }
 
 /* Locate the data extent for (ino, off).  Returns disk LBA or 0 if absent. */
-static uint64_t extent_get(uint64_t ino, uint64_t off) {
+static uint64_t extent_get_at(uint64_t root, uint64_t ino, uint64_t off) {
     uint8_t rec[EXTENT_REC_SIZE];
-    if (tree_lookup(bm.tree_root_lba, ino, BTRFS_ITYPE_EXTENT, off,
+    if (tree_lookup(root, ino, BTRFS_ITYPE_EXTENT, off,
                     rec, EXTENT_REC_SIZE, NULL) != 0)
         return 0;
     return r64(rec + 0);
 }
 
-static int64_t btrfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
-    struct btrfs_vinfo *v = (struct btrfs_vinfo *)vn->fs_data;
-    if (!v || v->is_dir) return -1;
+static uint64_t extent_get(uint64_t ino, uint64_t off) {
+    return extent_get_at(bm.tree_root_lba, ino, off);
+}
+
+static int64_t btrfs_read_at(uint64_t root, uint64_t ino, uint64_t pos,
+                            void *buf, uint64_t count) {
     uint8_t rec[INODE_REC_SIZE];
-    if (inode_get(v->objectid, rec) != 0) return -1;
+    if (tree_lookup(root, ino, BTRFS_ITYPE_INODE, 0, rec, sizeof(rec), NULL) != 0)
+        return -1;
+    if (r64(rec) & 0x4000) return -1;
     uint64_t fsize = r64(rec + 24);
-    if (pos >= fsize) return 0;
-    if (pos + count > fsize) count = fsize - pos;
+    if (pos >= fsize || !count) return 0;
+    /* Avoid wrapping pos+count, including caller requests of UINT64_MAX. */
+    if (count > fsize - pos) count = fsize - pos;
+    if (!buf || count > INT64_MAX) return -1;
 
     uint8_t *out = (uint8_t*)buf;
     uint64_t done = 0;
@@ -1009,7 +1223,7 @@ static int64_t btrfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
         uint64_t abs = pos + done;
         uint64_t bstart = (abs / DATA_PAYLOAD) * DATA_PAYLOAD;
         uint32_t inblk = (uint32_t)(abs - bstart);
-        uint64_t lba = extent_get(v->objectid, bstart);
+        uint64_t lba = extent_get_at(root, ino, bstart);
         uint32_t chunk = DATA_PAYLOAD - inblk;
         if (chunk > count - done) chunk = (uint32_t)(count - done);
         if (lba) {
@@ -1023,15 +1237,102 @@ static int64_t btrfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t co
     return (int64_t)done;
 }
 
+static int64_t btrfs_read(struct vnode *vn, uint64_t pos, void *buf, uint64_t count) {
+    struct btrfs_vinfo *v = vn ? (struct btrfs_vinfo *)vn->fs_data : NULL;
+    if (!v || v->is_dir) return -1;
+    return btrfs_read_at(bm.tree_root_lba, v->objectid, pos, buf, count);
+}
+
+/* In-memory read-only snapshots. No root switch, checkpoint or data copy.
+ * All API calls share the driver's existing scratch buffers: the caller
+ * must serialize them with ordinary filesystem operations. */
+static int aurafs_snapshot_slot(const struct aurafs_snapshot *snapshot) {
+    if (!snapshot || !bm.mounted || !snapshot->registration_id) return -1;
+    for (unsigned i = 0; i < AURAFS_MAX_SNAPSHOTS; i++) {
+        const struct aurafs_snapshot *t = &aurafs_snapshots[i].token;
+        if (t->registration_id == snapshot->registration_id &&
+            t->mount_epoch == snapshot->mount_epoch &&
+            t->root_lba == snapshot->root_lba &&
+            t->allocation_end == snapshot->allocation_end) return (int)i;
+    }
+    return -1;
+}
+
+int aurafs_snapshot_create(struct aurafs_snapshot *snapshot) {
+    if (!snapshot || !bm.mounted || !aurafs_mount_epoch ||
+        aurafs_snapshot_id == UINT64_MAX) return -1;
+    int slot = -1;
+    for (unsigned i = 0; i < AURAFS_MAX_SNAPSHOTS; i++) {
+        if (aurafs_snapshots[i].owner == snapshot) return -1;
+        if (!aurafs_snapshots[i].token.registration_id && slot < 0) slot = (int)i;
+    }
+    if (slot < 0) return -1;
+    struct aurafs_snapshot token = {
+        .root_lba = bm.tree_root_lba,
+        .allocation_end = bm.next_free_block,
+        .mount_epoch = aurafs_mount_epoch,
+        .registration_id = ++aurafs_snapshot_id,
+    };
+    aurafs_snapshots[slot].token = token;
+    aurafs_snapshots[slot].owner = snapshot;
+    *snapshot = token;
+    return 0;
+}
+
+int aurafs_snapshot_roots(struct aurafs_snapshot *roots, uint32_t capacity) {
+    if (!bm.mounted) return -1;
+    unsigned count = 0;
+    for (unsigned i = 0; i < AURAFS_MAX_SNAPSHOTS; i++)
+        if (aurafs_snapshots[i].token.registration_id) count++;
+    if (!roots) return capacity ? -1 : (int)count;
+    if (capacity < count) return -1;
+    unsigned out = 0;
+    for (unsigned i = 0; i < AURAFS_MAX_SNAPSHOTS; i++)
+        if (aurafs_snapshots[i].token.registration_id)
+            roots[out++] = aurafs_snapshots[i].token;
+    return (int)count;
+}
+
+int64_t aurafs_snapshot_read(const struct aurafs_snapshot *snapshot,
+                             const char *path, uint64_t pos, void *buf,
+                             uint64_t count) {
+    if (aurafs_snapshot_slot(snapshot) < 0 || !path ||
+        snapshot->mount_epoch != aurafs_mount_epoch ||
+        !snapshot->mount_epoch || snapshot->root_lba < BTRFS_FIRST_FREE ||
+        snapshot->root_lba % BTRFS_NODE_SIZE ||
+        snapshot->allocation_end % BTRFS_NODE_SIZE ||
+        snapshot->root_lba >= snapshot->allocation_end ||
+        snapshot->allocation_end > bm.next_free_block)
+        return -1;
+    uint64_t parent, ino; int found;
+    if (btrfs_path_resolve_at(snapshot->root_lba, path, &parent, &ino,
+                              &found, NULL, 0) != 0 || !found)
+        return -1;
+    return btrfs_read_at(snapshot->root_lba, ino, pos, buf, count);
+}
+
+void aurafs_snapshot_release(struct aurafs_snapshot *snapshot) {
+    int slot = aurafs_snapshot_slot(snapshot);
+    if (slot >= 0) memset(&aurafs_snapshots[slot], 0, sizeof(aurafs_snapshots[slot]));
+    if (snapshot) memset(snapshot, 0, sizeof(*snapshot));
+}
+
 static int64_t btrfs_write(struct vnode *vn, uint64_t pos, const void *buf, uint64_t count) {
     struct btrfs_vinfo *v = (struct btrfs_vinfo *)vn->fs_data;
     if (!v || v->is_dir) return -1;
     if (count == 0) return 0;
+    if (!buf || count > INT64_MAX || pos > UINT64_MAX - count) return -1;
 
     uint8_t rec[INODE_REC_SIZE];
     if (inode_get(v->objectid, rec) != 0) return -1;
     uint64_t fsize = r64(rec + 24);
 
+    /* Keep metadata private until the entire write, including inode, works.
+     * These bounded staging arrays share the driver's non-reentrant contract. */
+    static struct tree_edit edits[AURAFS_EDIT_MAX];
+    static uint8_t records[AURAFS_EDIT_MAX][INODE_REC_SIZE];
+    uint64_t private_root = bm.tree_root_lba;
+    int pending = 0;
     const uint8_t *in = (const uint8_t*)buf;
     uint64_t done = 0;
     while (done < count) {
@@ -1051,15 +1352,21 @@ static int64_t btrfs_write(struct vnode *vn, uint64_t pos, const void *buf, uint
         }
         memcpy(blk + BTRFS_HDR_SIZE + inblk, in + done, chunk);
         uint64_t new_lba = blk_alloc();
+        if (!new_lba) return -1; /* ENOSPC must never become a write to block 0. */
         if (blk_write(new_lba, blk, BT_DATA, v->objectid) != 0) return -1;
 
-        /* update/replace the extent item (CoW tree) */
-        uint8_t er[EXTENT_REC_SIZE];
-        w64(er + 0, new_lba);
-        w64(er + 8, DATA_PAYLOAD);
-        if (tree_insert(bm.tree_root_lba, v->objectid, BTRFS_ITYPE_EXTENT,
-                        bstart, er, EXTENT_REC_SIZE, &bm.tree_root_lba) != 0)
-            return -1;
+        /* Stage the extent, reserving a final slot for the inode record. */
+        w64(records[pending], new_lba);
+        w64(records[pending] + 8, DATA_PAYLOAD);
+        edits[pending] = (struct tree_edit){v->objectid, bstart,
+                                            BTRFS_ITYPE_EXTENT, EXTENT_REC_SIZE,
+                                            records[pending]};
+        pending++;
+        if (pending == AURAFS_EDIT_MAX - 1 && done + chunk < count) {
+            if (tree_insert_many(private_root, edits, pending, &private_root) != 0)
+                return -1;
+            pending = 0;
+        }
         done += chunk;
     }
 
@@ -1067,7 +1374,12 @@ static int64_t btrfs_write(struct vnode *vn, uint64_t pos, const void *buf, uint
     if (new_size > fsize) fsize = new_size;
     w64(rec + 24, fsize);
     w64(rec + 48, 1337);   /* mtime */
-    if (inode_update(v->objectid, rec) != 0) return -1;
+    memcpy(records[pending], rec, INODE_REC_SIZE);
+    edits[pending] = (struct tree_edit){v->objectid, 0, BTRFS_ITYPE_INODE,
+                                        INODE_REC_SIZE, records[pending]};
+    if (tree_insert_many(private_root, edits, pending + 1, &private_root) != 0)
+        return -1;
+    bm.tree_root_lba = private_root;
     v->size = fsize;
     v->vnode.size = fsize;
     return (int64_t)done;
@@ -1328,24 +1640,81 @@ static int btrfs_stat(struct vnode *vn, struct vfs_stat *st) {
 
 /* fsync: persist generation, tree root and free-block pointer to the
  * superblock so a remount continues exactly here. */
+static int aurafs_checkpoint_tree_guard(const uint8_t *sb);
 static int btrfs_sync(void *fs_data) {
     (void)fs_data;
-    if (!bm.mounted) return -1;
-    fs_cache_sync(NULL);
+    if (!bm.mounted || bm.generation == UINT64_MAX) return -1;
+    if (bm.dual && (bm.nodesize != BTRFS_NODE_SIZE ||
+        bm.next_free_block < BTRFS_FIRST_FREE + BTRFS_NODE_SIZE ||
+        bm.next_free_block % BTRFS_NODE_SIZE ||
+        bm.next_free_block > aurafs_append_ceiling(bm.total_bytes, 1))) return -1;
+    uint64_t target = bm.dual ? (bm.active_super == BTRFS_SUPER_OFFSET ?
+                      AURAFS_MIRROR_OFFSET : BTRFS_SUPER_OFFSET) : BTRFS_SUPER_OFFSET;
+    /* Flush appended data/metadata before publishing the root. The generic
+     * fs_cache_sync() discards device errors; range flush reports them. */
+    uint64_t first = BTRFS_FIRST_FREE / BC_BLOCK_SIZE;
+    uint64_t end = bm.next_free_block / BC_BLOCK_SIZE;
+    if (end < first || bc_flush_range(bm.bdev, first, end - first) != 0)
+        return -1;
+    int pre_barrier = blkdev_flush(bm.bdev);
+    if ((pre_barrier != 0 && pre_barrier != -ENOTSUP) ||
+        (bm.dual && pre_barrier != 0)) return -1;
     uint8_t *sb = bscratch;
-    if (blk_read(BTRFS_SUPER_OFFSET, sb) != 0) return -1;
+    if (blk_read(bm.active_super, sb) != 0) return -1;
     w64(sb + 56, bm.generation);
     w64(sb + 64, bm.tree_root_lba);
     w64(sb + 72, bm.next_free_block);
     w64(sb + 136, bm.next_inode);
     w32(sb + 8, (uint32_t)bm.generation);
-    if (blk_write(BTRFS_SUPER_OFFSET, sb, BT_SUPER, 0) != 0) return -1;
+    /* Appended metadata is now at the backend and ordered by pre-FLUSH.
+     * Refuse publication if this candidate cannot pass the same mandatory
+     * metadata/depth/work check used by mount. No target is queued yet. */
+    if (bm.dual && aurafs_checkpoint_tree_guard(sb) != 0) {
+        kprintf("[aurafs] checkpoint metadata guard failed; publication refused, "
+                "active checkpoint unchanged\n");
+        return -1;
+    }
+    if (bm.dual) kprintf("[aurafs] checkpoint candidate metadata verified before publication\n");
+    aurafs_checkpoint_remember(bm.tree_root_lba, bm.next_free_block);
+    if (blk_write(target, sb, BT_SUPER, 0) != 0) return -1;
+    /* blk_write queues the checkpoint in cache; success is not persistence. */
+    if (bc_flush_range(bm.bdev, target / BC_BLOCK_SIZE, 1) != 0)
+        return -1;
+    int post_barrier = blkdev_flush(bm.bdev);
+    /* Do not degrade a real barrier failure to the unsupported weak path.
+     * Capability must be consistent within one serialized sync attempt. */
+    if (post_barrier != pre_barrier) return -1;
+    /* Read back through the backend, NOT fs_read_block/blk_read: those
+     * could just return our newly clean cached super even if the device
+     * acknowledged a dropped/partial write. Exact bytes also cover padding.
+     * This is read-after-write verification, NOT a device FLUSH barrier or
+     * permission to retire older checkpoint candidates. Shared scratch is
+     * safe only under the existing serialized-caller contract. */
+    if (blkdev_read(bm.bdev, target / BLKDEV_SECTOR_SIZE,
+                    BTRFS_NODE_SIZE / BLKDEV_SECTOR_SIZE, bdatabuf) != 0 ||
+        memcmp(sb, bdatabuf, BTRFS_NODE_SIZE) != 0) {
+        kprintf("[aurafs] checkpoint readback failed; history retained, durability=WEAK\n");
+        return -1;
+    }
+    bm.active_super = target;
     bm.generation++;
     int td = 0; uint32_t tl = 0, ti = 0;
     tree_stats(bm.tree_root_lba, &td, &tl, &ti);
+    kprintf("[aurafs] checkpoint: backend readback verified; barriers=%s durability=WEAK, history retained\n",
+            pre_barrier == 0 ? "device-FLUSH" : "unsupported");
     kprintf("[btrfs] fsync: persisted tree root LBA %llu gen %llu (depth=%d leaves=%u items=%u)\n",
             (unsigned long long)bm.tree_root_lba,
             (unsigned long long)bm.generation, td, tl, ti);
+    kprintf("[aurafs] verify: reads=%llu sha_reads=%llu sha_writes=%llu hits=%llu slots=%u\n",
+            (unsigned long long)aurafs_verify_stats.reads,
+            (unsigned long long)aurafs_verify_stats.sha_reads,
+            (unsigned long long)aurafs_verify_stats.sha_writes,
+            (unsigned long long)aurafs_verify_stats.hits,
+            (unsigned)AURAFS_VERIFY_CACHE_SLOTS);
+    kprintf("[aurafs] batch: fast=%llu fallback=%llu enabled=%u\n",
+            (unsigned long long)aurafs_verify_stats.batch_fast,
+            (unsigned long long)aurafs_verify_stats.batch_fallback,
+            (unsigned)AURAFS_BATCH_WRITES);
     return 0;
 }
 
@@ -1398,19 +1767,29 @@ static int format_btrfs(void) {
      * refused rather than guessed at -- a filesystem that invents its own
      * size is the same class of bug as a parser that invents a home. */
     uint64_t sectors = blkdev_sector_count(bm.bdev);
-    if (sectors == 0) {
+    if (sectors == 0 || sectors > UINT64_MAX / BLKDEV_SECTOR_SIZE) {
         kprintf("[btrfs] device %d does not report its capacity; refusing to "
                 "format (a filesystem must not invent its own size)\n",
                 bm.bdev);
         return -1;
     }
     bm.total_bytes = sectors * BLKDEV_SECTOR_SIZE;
+    if (bm.dual) {
+        /* Opt-in never overwrites a foreign/nonempty device, even if the
+         * generic legacy format permission was also supplied. */
+        if (bm.total_bytes < BTRFS_FIRST_FREE + 4 * BTRFS_NODE_SIZE ||
+            bm.total_bytes % BTRFS_NODE_SIZE || blkdev_flush(bm.bdev) != 0) return -1;
+        for (uint64_t pos = 0; pos < bm.total_bytes; pos += BTRFS_NODE_SIZE) {
+            if (blkdev_read(bm.bdev, pos / 512, BTRFS_NODE_SIZE / 512, bdatabuf) != 0) return -1;
+            for (unsigned i = 0; i < BTRFS_NODE_SIZE; i++) if (bdatabuf[i]) return -1;
+        }
+    }
     kprintf("[btrfs] device %d reports %llu sectors (%llu MiB)\n",
             bm.bdev, (unsigned long long)sectors,
             (unsigned long long)(bm.total_bytes / (1024 * 1024)));
     bm.generation = 1;
     bm.next_free_block = BTRFS_FIRST_FREE;
-    bm.max_block = bm.total_bytes;
+    bm.max_block = aurafs_append_ceiling(bm.total_bytes, bm.dual);
     bm.next_inode = 2;
 
     /* superblock */
@@ -1423,9 +1802,9 @@ static int format_btrfs(void) {
     w64(sb + 64, 0);                 /* tree_root, set below */
     w64(sb + 72, bm.next_free_block);
     memcpy(sb + 80, "btrfs", 5);
-    memcpy(sb + 128, BTRFS_MAGIC, 8);
+    memcpy(sb + 128, bm.dual ? AURAFS_DUAL_MAGIC : BTRFS_MAGIC, 8);
     w64(sb + 136, bm.next_inode);
-    if (blk_write(BTRFS_SUPER_OFFSET, sb, BT_SUPER, 0) != 0) return -1;
+    if (!bm.dual && blk_write(BTRFS_SUPER_OFFSET, sb, BT_SUPER, 0) != 0) return -1;
 
     /* root directory inode */
     uint8_t rec[INODE_REC_SIZE];
@@ -1457,18 +1836,341 @@ static int format_btrfs(void) {
 
     /* persist the final tree root + free pointer into the superblock */
     sb = bscratch;
-    if (btrfs_read_block(BTRFS_SUPER_OFFSET, sb) != 0) return -1;
+    if (bm.dual) {
+        memset(sb, 0, BTRFS_NODE_SIZE);
+        w64(sb + 32, bm.total_bytes); w64(sb + 40, bm.nodesize);
+        w64(sb + 48, bm.sectorsize); w64(sb + 56, bm.generation);
+        memcpy(sb + 80, "aurafs-v2", 9);
+        memcpy(sb + 128, AURAFS_DUAL_MAGIC, 8);
+        if (bc_flush_range(bm.bdev, BTRFS_FIRST_FREE / BC_BLOCK_SIZE,
+             (bm.next_free_block - BTRFS_FIRST_FREE) / BC_BLOCK_SIZE) != 0 ||
+             blkdev_flush(bm.bdev) != 0) return -1;
+    } else if (btrfs_read_block(BTRFS_SUPER_OFFSET, sb) != 0) return -1;
     w64(sb + 64, bm.tree_root_lba);
     w64(sb + 72, bm.next_free_block);
     w64(sb + 136, bm.next_inode);
     if (blk_write(BTRFS_SUPER_OFFSET, sb, BT_SUPER, 0) != 0) return -1;
+
+    if (bm.dual) {
+        if (bc_flush_range(bm.bdev, BTRFS_SUPER_OFFSET / BC_BLOCK_SIZE, 1) != 0 ||
+            blkdev_flush(bm.bdev) != 0 ||
+            blkdev_read(bm.bdev, BTRFS_SUPER_OFFSET / 512, 8, bdatabuf) != 0 ||
+            memcmp(sb, bdatabuf, BTRFS_NODE_SIZE)) return -1;
+        if (blk_write(AURAFS_MIRROR_OFFSET, sb, BT_SUPER, 0) != 0 ||
+            bc_flush_range(bm.bdev, AURAFS_MIRROR_OFFSET / BC_BLOCK_SIZE, 1) != 0 ||
+            blkdev_flush(bm.bdev) != 0 ||
+            blkdev_read(bm.bdev, AURAFS_MIRROR_OFFSET / 512, 8, bdatabuf) != 0 ||
+            memcmp(sb, bdatabuf, BTRFS_NODE_SIZE)) return -1;
+    }
 
     kprintf("[btrfs] format complete: %llu bytes, CoW enabled\n",
             (unsigned long long)bm.total_bytes);
     return 0;
 }
 
+/* Validate before trusting geometry, cursor or a root address from disk.
+ * Never auto-format a recognizable but damaged volume. */
+static int aurafs_validate_super(const uint8_t *sb, uint64_t device_bytes) {
+    uint8_t digest[KSHA256_DIGEST_SIZE];
+    ksha256(sb, BTRFS_CSUM_OFFSET, digest);
+    if (r32(sb + 4) != BTRFS_BLK_MAGIC || r32(sb + 12) != BT_SUPER ||
+        (memcmp(sb + 128, BTRFS_MAGIC, 8) != 0 &&
+         memcmp(sb + 128, AURAFS_DUAL_MAGIC, 8) != 0) ||
+        memcmp(digest, sb + BTRFS_CSUM_OFFSET, sizeof(digest)) != 0)
+        return -1;
+    if (!memcmp(sb + 128, AURAFS_DUAL_MAGIC, 8) &&
+        (!r64(sb + 56) || r64(sb + 56) == UINT64_MAX ||
+         r32(sb + 8) != (uint32_t)r64(sb + 56) ||
+         (r64(sb + 24) != BTRFS_SUPER_OFFSET && r64(sb + 24) != AURAFS_MIRROR_OFFSET))) return -1;
+    uint64_t total = r64(sb + 32), cursor = r64(sb + 72);
+    uint64_t root = r64(sb + 64), ino = r64(sb + 136);
+    if (r64(sb + 40) != BTRFS_NODE_SIZE || r64(sb + 48) != BTRFS_NODE_SIZE ||
+        total > device_bytes || total < BTRFS_FIRST_FREE + BTRFS_NODE_SIZE ||
+        cursor < BTRFS_FIRST_FREE + BTRFS_NODE_SIZE || cursor > total ||
+        cursor % BTRFS_NODE_SIZE || root < BTRFS_FIRST_FREE ||
+        root % BTRFS_NODE_SIZE || root >= cursor || ino < 2 || ino > UINT32_MAX)
+        return -1;
+    return 0;
+}
+
+/* 0 selected into bscratch, 1 absent/unrecognised, -1 damaged/ambiguous.
+ * Read-only: no automatic repair and no migration. */
+static int aurafs_load_checkpoint(uint64_t device_bytes) {
+    int ar = btrfs_read_super(BTRFS_SUPER_OFFSET, bscratch);
+    int br = btrfs_read_super(AURAFS_MIRROR_OFFSET, bdatabuf);
+    int av2 = !ar && !memcmp(bscratch + 128, AURAFS_DUAL_MAGIC, 8);
+    int bv2 = !br && !memcmp(bdatabuf + 128, AURAFS_DUAL_MAGIC, 8);
+    int al = !ar && !memcmp(bscratch + 128, BTRFS_MAGIC, 8);
+    int aok = av2 && aurafs_validate_super(bscratch, device_bytes) == 0 &&
+              r64(bscratch + 24) == BTRFS_SUPER_OFFSET;
+    int bok = bv2 && aurafs_validate_super(bdatabuf, device_bytes) == 0 &&
+              r64(bdatabuf + 24) == AURAFS_MIRROR_OFFSET;
+    int legacy = al && aurafs_validate_super(bscratch, device_bytes) == 0;
+    if (legacy && bok) return -1; /* mixed format, no implicit migration */
+    if (aok || bok) {
+        if (aok && bok && (r64(bscratch + 32) != r64(bdatabuf + 32) ||
+            (r64(bscratch + 56) == r64(bdatabuf + 56) &&
+             memcmp(bscratch + 32, bdatabuf + 32, BTRFS_CSUM_OFFSET - 32)))) return -1;
+        if (aok) aurafs_checkpoint_remember(r64(bscratch + 64), r64(bscratch + 72));
+        if (bok) aurafs_checkpoint_remember(r64(bdatabuf + 64), r64(bdatabuf + 72));
+        bm.dual = 1;
+        if (bok && (!aok || r64(bdatabuf + 56) > r64(bscratch + 56))) {
+            memcpy(bscratch, bdatabuf, BTRFS_NODE_SIZE);
+            bm.active_super = AURAFS_MIRROR_OFFSET;
+        } else bm.active_super = BTRFS_SUPER_OFFSET;
+        return 0;
+    }
+    if (legacy) { bm.active_super = BTRFS_SUPER_OFFSET; return 0; }
+    if (av2 || bv2 || al) return -1;
+    if (ar || br) return -1; /* unreadable is not evidence of a blank disk */
+    return 1;
+}
+
+/* Read-only diagnostic, NOT a free-space map or permission to reuse blocks.
+ * One byte/block for union roles plus one for each root's DFS state. */
+#define AURAFS_AUDIT_MAX_BLOCKS 262144U
+struct aurafs_audit_frame {
+    uint64_t lba;
+    uint32_t next, count, type;
+    uint8_t bytes[BTRFS_NODE_SIZE];
+};
+struct aurafs_audit_work {
+    struct aurafs_snapshot roots[AURAFS_MAX_SNAPSHOTS + AURAFS_CHECKPOINT_HISTORY + 2];
+    struct aurafs_audit_frame frames[BTRFS_MAX_LEVELS + 1];
+    uint8_t data[BTRFS_NODE_SIZE];
+};
+
+static int aurafs_audit_address(uint64_t lba, uint64_t end) {
+    return lba >= BTRFS_FIRST_FREE && !(lba % BTRFS_NODE_SIZE) &&
+           lba < end && end - lba >= BTRFS_NODE_SIZE;
+}
+
+static int aurafs_audit_leaf(const uint8_t *blk, uint32_t count) {
+    uint32_t table_end = 36 + count * 28;
+    uint64_t prev_obj = 0, prev_off = 0;
+    uint32_t prev_typ = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        uint64_t obj, off; uint32_t typ, dd, ds;
+        leaf_get(blk, i, &obj, &typ, &off, &dd, &ds);
+        if (i && key_cmp(prev_obj, prev_typ, prev_off, obj, typ, off) >= 0) return -1;
+        prev_obj = obj; prev_typ = typ; prev_off = off;
+        if (dd < table_end || dd > BTRFS_CSUM_OFFSET || ds > BTRFS_CSUM_OFFSET - dd)
+            return -1;
+        if (typ == BTRFS_ITYPE_DIR && !ds) continue; /* deleted hash slot */
+        if ((typ == BTRFS_ITYPE_INODE && ds != INODE_REC_SIZE) ||
+            (typ == BTRFS_ITYPE_EXTENT &&
+             (ds != EXTENT_REC_SIZE || off % DATA_PAYLOAD ||
+              r64(blk + dd + 8) != DATA_PAYLOAD)) ||
+            (typ == BTRFS_ITYPE_DIR &&
+             (ds < 16 || r32(blk + dd + 12) != ds - 16)) ||
+            (typ != BTRFS_ITYPE_INODE && typ != BTRFS_ITYPE_EXTENT && typ != BTRFS_ITYPE_DIR))
+            return -1;
+        for (uint32_t j = 0; j < i; j++) {
+            uint64_t jo, jf; uint32_t jt, jd, js;
+            leaf_get(blk, j, &jo, &jt, &jf, &jd, &js);
+            if (dd < jd + js && jd < dd + ds) return -1;
+        }
+    }
+    return 0;
+}
+
+int aurafs_reachability_audit(struct aurafs_reachability *report) {
+    if (!report || !bm.mounted || aurafs_checkpoint_overflow ||
+        !aurafs_checkpoint_count || bm.nodesize != BTRFS_NODE_SIZE ||
+        bm.next_free_block > bm.max_block ||
+        bm.next_free_block % BTRFS_NODE_SIZE || bm.next_free_block < BTRFS_FIRST_FREE)
+        return -1;
+    uint64_t blocks = bm.next_free_block / BTRFS_NODE_SIZE;
+    if (blocks > AURAFS_AUDIT_MAX_BLOCKS) return -1;
+    struct aurafs_audit_work *w = kmalloc(sizeof(*w) + blocks * 2);
+    if (!w) return -1;
+    uint8_t *roles = (uint8_t *)(w + 1), *state = roles + blocks;
+    memset(roles, 0, (size_t)blocks);
+    struct aurafs_reachability result = {0};
+    int rc = -1;
+    /* This is the checkpoint image observed THROUGH THE BLOCK CACHE. It is
+     * not proof of a durable device image or of an older super after torn I/O. */
+    if (btrfs_read_super(bm.active_super, w->data) != 0 ||
+        aurafs_validate_super(w->data, bm.total_bytes) != 0 ||
+        r64(w->data + 32) != bm.total_bytes ||
+        r64(w->data + 72) > bm.next_free_block) goto out;
+    w->roots[0] = (struct aurafs_snapshot){.root_lba = bm.tree_root_lba,
+                                        .allocation_end = bm.next_free_block};
+    w->roots[1] = (struct aurafs_snapshot){.root_lba = r64(w->data + 64),
+                                        .allocation_end = r64(w->data + 72)};
+    int snaps = aurafs_snapshot_roots(w->roots + 2, AURAFS_MAX_SNAPSHOTS);
+    if (snaps < 0) goto out;
+    result.roots = 2 + snaps;
+    for (unsigned i = 0; i < aurafs_checkpoint_count; i++) {
+        uint64_t root = aurafs_checkpoint_history[i].root_lba;
+        uint64_t end = aurafs_checkpoint_history[i].allocation_end;
+        unsigned j;
+        for (j = 0; j < result.roots; j++)
+            if (w->roots[j].root_lba == root && w->roots[j].allocation_end == end) break;
+        if (j != result.roots) continue;
+        w->roots[result.roots++] = (struct aurafs_snapshot){.root_lba = root,
+                                                         .allocation_end = end};
+    }
+    uint64_t steps = 0;
+    for (uint32_t root = 0; root < result.roots; root++) {
+        uint64_t end = w->roots[root].allocation_end;
+        if (end > bm.next_free_block || end % BTRFS_NODE_SIZE) goto out;
+        memset(state, 0, (size_t)blocks);
+        unsigned depth = 0;
+        w->frames[0].lba = w->roots[root].root_lba;
+        w->frames[0].next = UINT32_MAX;
+        for (;;) {
+            if (++steps > 4194304) goto out; /* bounded diagnostic CPU/I/O work */
+            struct aurafs_audit_frame *f = &w->frames[depth];
+            if (!aurafs_audit_address(f->lba, end)) goto out;
+            uint64_t index = f->lba / BTRFS_NODE_SIZE;
+            if (f->next == UINT32_MAX) {
+                if (state[index] == 1) goto out; /* ancestor cycle */
+                if (state[index] == 2) goto pop;
+                if (roles[index] == 2 || blk_read(f->lba, f->bytes) != 0 ||
+                    r64(f->bytes + 24) != f->lba) goto out;
+                f->type = r32(f->bytes + 12);
+                f->count = r32(f->bytes + 32);
+                if (f->type == BT_LEAF) {
+                    if (f->count > MAX_LEAF_ITEMS ||
+                        aurafs_audit_leaf(f->bytes, f->count) != 0) goto out;
+                } else if (f->type == BT_ROOT) {
+                    if (!f->count || f->count > MAX_NODE_PTRS) goto out;
+                    for (uint32_t i = 1; i < f->count; i++) {
+                        const uint8_t *p = f->bytes + 36 + (i - 1) * 32;
+                        const uint8_t *q = p + 32;
+                        if (key_cmp(r64(p), r32(p + 16), r64(p + 8),
+                                    r64(q), r32(q + 16), r64(q + 8)) >= 0) goto out;
+                    }
+                } else goto out;
+                if (!roles[index]) { roles[index] = 1; result.metadata_blocks++; }
+                state[index] = 1; f->next = 0;
+            }
+            if (f->next == f->count) {
+                state[index] = 2;
+                goto pop;
+            }
+            uint32_t item = f->next++;
+            if (f->type == BT_ROOT) {
+                if (depth == BTRFS_MAX_LEVELS) goto out;
+                uint64_t child = r64(f->bytes + 36 + item * 32 + 24);
+                depth++;
+                w->frames[depth].lba = child;
+                w->frames[depth].next = UINT32_MAX;
+            } else {
+                uint64_t obj, off; uint32_t typ, dd, ds;
+                leaf_get(f->bytes, item, &obj, &typ, &off, &dd, &ds);
+                if (typ != BTRFS_ITYPE_EXTENT) continue;
+                uint64_t lba = r64(f->bytes + dd);
+                if (!aurafs_audit_address(lba, end)) goto out;
+                uint64_t di = lba / BTRFS_NODE_SIZE;
+                if (roles[di] == 1 || blk_read(lba, w->data) != 0 ||
+                    r32(w->data + 12) != BT_DATA || r64(w->data + 24) != lba ||
+                    r64(w->data + 16) != obj) goto out;
+                if (!roles[di]) { roles[di] = 2; result.data_blocks++; }
+            }
+            continue;
+pop:
+            if (!depth) break;
+            depth--;
+        }
+    }
+    result.allocated_blocks = (bm.next_free_block - BTRFS_FIRST_FREE) / BTRFS_NODE_SIZE;
+    result.unreferenced_blocks = result.allocated_blocks - result.metadata_blocks - result.data_blocks;
+    *report = result; /* success-only publication; not a reusable-block list */
+    rc = 0;
+out:
+    kfree(w);
+    return rc;
+}
+
+/* Mandatory selected-tree verification for v2, before mounted publication.
+ * User-selected policy: fail closed on corruption/OOM/limits, never rollback.
+ * Prefix budget: 1 GiB, depth 8 edges, 4M frame steps. Metadata only: extent
+ * addresses/role conflicts checked, but file data blocks are NOT read. */
+struct aurafs_mount_work {
+    struct aurafs_audit_frame frames[BTRFS_MAX_LEVELS + 1];
+};
+static int aurafs_checkpoint_tree_guard_limited(const uint8_t *sb,
+                                               uint64_t max_blocks, uint64_t max_steps) {
+    uint64_t end = r64(sb + 72), blocks = end / BTRFS_NODE_SIZE;
+    if (!blocks || blocks > max_blocks || blocks > AURAFS_MOUNT_MAX_BLOCKS) return -1;
+    struct aurafs_mount_work *w = kmalloc(sizeof(*w) + blocks);
+    if (!w) return -1;
+    /* 0 unseen, 1 metadata active, 2 metadata done, 3 extent data address.
+     * Repeated metadata references/cycles are invalid inside a single tree.
+     * Shared DATA references are not rejected by this structural check. */
+    uint8_t *state = (uint8_t *)(w + 1);
+    memset(state, 0, (size_t)blocks);
+    unsigned depth = 0;
+    uint64_t steps = 0;
+    int rc = -1;
+    w->frames[0].lba = r64(sb + 64); w->frames[0].next = UINT32_MAX;
+    for (;;) {
+        if (++steps > max_steps || steps > AURAFS_MOUNT_MAX_STEPS) goto out;
+        struct aurafs_audit_frame *f = &w->frames[depth];
+        if (!aurafs_audit_address(f->lba, end)) goto out;
+        uint64_t index = f->lba / BTRFS_NODE_SIZE;
+        if (f->next == UINT32_MAX) {
+            if (state[index]) goto out;
+            if (blkdev_read(bm.bdev, f->lba / BLKDEV_SECTOR_SIZE,
+                           BTRFS_NODE_SIZE / BLKDEV_SECTOR_SIZE, f->bytes) != 0) goto out;
+            uint8_t digest[KSHA256_DIGEST_SIZE];
+            ksha256(f->bytes, BTRFS_CSUM_OFFSET, digest);
+            if (r32(f->bytes + 4) != BTRFS_BLK_MAGIC || r64(f->bytes + 24) != f->lba ||
+                memcmp(digest, f->bytes + BTRFS_CSUM_OFFSET, sizeof(digest))) goto out;
+            f->type = r32(f->bytes + 12); f->count = r32(f->bytes + 32);
+            if (f->type == BT_LEAF) {
+                if (f->count > MAX_LEAF_ITEMS || aurafs_audit_leaf(f->bytes, f->count)) goto out;
+            } else if (f->type == BT_ROOT) {
+                if (!f->count || f->count > MAX_NODE_PTRS) goto out;
+                for (uint32_t i = 1; i < f->count; i++) {
+                    const uint8_t *p = f->bytes + 36 + (i - 1) * 32, *q = p + 32;
+                    if (key_cmp(r64(p), r32(p + 16), r64(p + 8),
+                                r64(q), r32(q + 16), r64(q + 8)) >= 0) goto out;
+                }
+            } else goto out;
+            state[index] = 1; f->next = 0;
+        }
+        if (f->next == f->count) {
+            state[index] = 2;
+            if (!depth) break;
+            depth--; continue;
+        }
+        uint32_t item = f->next++;
+        if (f->type == BT_ROOT) {
+            if (depth == BTRFS_MAX_LEVELS) goto out;
+            uint64_t child = r64(f->bytes + 36 + item * 32 + 24);
+            depth++;
+            w->frames[depth].lba = child; w->frames[depth].next = UINT32_MAX;
+        } else {
+            uint64_t obj, off; uint32_t typ, dd, ds;
+            leaf_get(f->bytes, item, &obj, &typ, &off, &dd, &ds);
+            if (typ != BTRFS_ITYPE_EXTENT) continue;
+            uint64_t lba = r64(f->bytes + dd);
+            if (!aurafs_audit_address(lba, end)) goto out;
+            uint64_t data_index = lba / BTRFS_NODE_SIZE;
+            if (state[data_index] == 1 || state[data_index] == 2) goto out;
+            state[data_index] = 3;
+        }
+    }
+    rc = 0;
+out:
+    kfree(w);
+    return rc;
+}
+static int aurafs_checkpoint_tree_guard(const uint8_t *sb) {
+    return aurafs_checkpoint_tree_guard_limited(sb, AURAFS_MOUNT_MAX_BLOCKS,
+                                               AURAFS_MOUNT_MAX_STEPS);
+}
+
 int btrfs_init(int prefer_port) {
+    memset(aurafs_checkpoint_history, 0, sizeof(aurafs_checkpoint_history));
+    aurafs_checkpoint_count = 0;
+    aurafs_checkpoint_overflow = 0;
+    memset(aurafs_snapshots, 0, sizeof(aurafs_snapshots));
+    if (++aurafs_mount_epoch == 0) ++aurafs_mount_epoch;
+    aurafs_verify_reset();
     memset(&bm, 0, sizeof(bm));
     memset(bv4pool, 0, sizeof(bv4pool));
     bm.bdev = prefer_port;
@@ -1481,25 +2183,27 @@ int btrfs_init(int prefer_port) {
         return -1;
     }
 
-    if (btrfs_read_super(BTRFS_SUPER_OFFSET, bscratch) != 0) {
-        if (!fs_format_allowed()) {
-            kprintf("[btrfs] superblock unreadable; format disabled (FS_MOUNT_FORMAT=0)\n");
-            return -1;
-        }
-        kprintf("[btrfs] cannot read superblock, formatting...\n");
-        if (format_btrfs() != 0) return -1;
-        if (btrfs_read_super(BTRFS_SUPER_OFFSET, bscratch) != 0) return -1;
+    uint64_t sectors = blkdev_sector_count(bm.bdev);
+    if (!sectors || sectors > UINT64_MAX / BLKDEV_SECTOR_SIZE) return -1;
+    int selected = aurafs_load_checkpoint(sectors * BLKDEV_SECTOR_SIZE);
+    if (selected < 0) {
+        kprintf("[aurafs] refusing damaged or ambiguous checkpoint; volume NOT reformatted\n");
+        return -1;
+    }
+    if (selected > 0) {
+        if (!fs_format_allowed()) return -1;
+        bm.dual = fs_aurafs_dual_allowed();
+        if (format_btrfs() != 0 ||
+            aurafs_load_checkpoint(sectors * BLKDEV_SECTOR_SIZE) != 0) return -1;
     }
     uint8_t *sb = bscratch;
-    if (r32(sb + 4) != BTRFS_BLK_MAGIC || memcmp(sb + 128, BTRFS_MAGIC, 8) != 0) {
-        if (!fs_format_allowed()) {
-            kprintf("[btrfs] not btrfs; format disabled (FS_MOUNT_FORMAT=0)\n");
-            return -1;
-        }
-        kprintf("[btrfs] not btrfs magic, formatting...\n");
-        if (format_btrfs() != 0) return -1;
-        if (btrfs_read_super(BTRFS_SUPER_OFFSET, bscratch) != 0) return -1;
-        sb = bscratch;
+    if (bm.dual && aurafs_checkpoint_tree_guard(sb) != 0) {
+        memset(aurafs_checkpoint_history, 0, sizeof(aurafs_checkpoint_history));
+        aurafs_checkpoint_count = 0;
+        aurafs_checkpoint_overflow = 0;
+        kprintf("[aurafs] selected checkpoint metadata guard failed; mount refused, "
+                "no older-root rollback or repair\n");
+        return -1;
     }
 
     bm.nodesize = r64(sb + 40) ? r64(sb + 40) : BTRFS_NODE_SIZE;
@@ -1508,7 +2212,7 @@ int btrfs_init(int prefer_port) {
     bm.generation = r64(sb + 56) + 1;
     bm.tree_root_lba = r64(sb + 64);
     bm.next_free_block = r64(sb + 72) ? r64(sb + 72) : BTRFS_FIRST_FREE;
-    bm.max_block = bm.total_bytes;
+    bm.max_block = aurafs_append_ceiling(bm.total_bytes, bm.dual);
     bm.next_inode = (uint32_t)(r64(sb + 136) ? r64(sb + 136) : 2);
 
     kprintf("[btrfs] mounted CoW filesystem at /btrfs:\n");
@@ -1516,13 +2220,60 @@ int btrfs_init(int prefer_port) {
             (unsigned long long)bm.total_bytes, (unsigned long long)bm.nodesize,
             (unsigned long long)bm.tree_root_lba, (unsigned long long)bm.generation);
     kprintf("       SHA-256 checksums (block trailer) + CoW tree re-parenting enabled\n");
+    kprintf("[aurafs] append log: cursor=%llu free_blocks=%llu; CoW, SHA-256, "
+            "hashed dirs; reclaim=none durability=WEAK\n",
+            (unsigned long long)bm.next_free_block,
+            (unsigned long long)((bm.max_block - bm.next_free_block) / BTRFS_NODE_SIZE));
+    aurafs_checkpoint_remember(bm.tree_root_lba, bm.next_free_block);
     bm.mounted = 1;
+    kprintf("[aurafs] checkpoint format=%s active=%llu generation=%llu migration=none\n",
+            bm.dual ? "dual-v2" : "legacy",
+            (unsigned long long)bm.active_super,
+            (unsigned long long)(bm.generation - 1));
     return 0;
 }
 
 /* ============================================================================
  * SECTION 11: SELF-TEST
  * ============================================================================ */
+
+/* Exercise the driver's VFS-reference contract, not FD-table machinery.
+ * Test pins model active OFDs; every failure path drops only its own pins. */
+static int btrfs_test_open_identity(void) {
+    struct vnode *old = NULL, *fresh = NULL;
+    char bytes[8];
+    int rc = -1;
+    old = btrfs_create(NULL, "m6j-open");
+    if (!old) goto out;
+    old->vfs_refs++;
+    uint64_t old_ino = old->inode_id;
+    if (btrfs_write(old, 0, "OLD", 3) != 3 ||
+        btrfs_unlink(NULL, "m6j-open") != 0) goto out;
+    fresh = btrfs_create(NULL, "m6j-open");
+    if (!fresh) goto out;
+    fresh->vfs_refs++;
+    if (fresh == old || fresh->inode_id == old_ino ||
+        old->inode_id != old_ino ||
+        btrfs_write(fresh, 0, "NEW", 3) != 3 ||
+        btrfs_read(old, 0, bytes, sizeof(bytes)) != 3 || memcmp(bytes, "OLD", 3) ||
+        btrfs_write(old, 0, "GONE", 4) != 4 ||
+        btrfs_read(fresh, 0, bytes, sizeof(bytes)) != 3 || memcmp(bytes, "NEW", 3)) goto out;
+    struct vfs_stat st;
+    if (btrfs_stat(old, &st) != 0 || st.nlink != 0 ||
+        btrfs_rename(NULL, "m6j-open", "m6j-renamed") != 0 ||
+        btrfs_lookup(NULL, "m6j-renamed") != fresh ||
+        btrfs_link(NULL, "m6j-renamed", "m6j-hard") != 0 ||
+        btrfs_lookup(NULL, "m6j-hard") != fresh ||
+        btrfs_unlink(NULL, "m6j-renamed") != 0 ||
+        btrfs_read(fresh, 0, bytes, sizeof(bytes)) != 3 || memcmp(bytes, "NEW", 3) ||
+        btrfs_unlink(NULL, "m6j-hard") != 0 ||
+        btrfs_read(fresh, 0, bytes, sizeof(bytes)) != 3 || memcmp(bytes, "NEW", 3)) goto out;
+    rc = 0;
+out:
+    if (fresh) fresh->vfs_refs--;
+    if (old) old->vfs_refs--;
+    return rc;
+}
 
 int btrfs_self_test(void) {
     if (!bm.mounted) {
@@ -1664,6 +2415,12 @@ int btrfs_self_test(void) {
         }
         kprintf("[btrfs]   SHA-256 negative control: corrupted block refused, re-seal verified\n");
     }
+
+    if (btrfs_test_open_identity() != 0) {
+        kprintf("[btrfs] FAIL: pinned vnode identity after unlink/recreate\n");
+        return -13;
+    }
+    kprintf("[btrfs] PASS: pinned vnode identity, unlink/recreate, rename/hard-link aliases\n");
 
     kprintf("[btrfs] PASS: CoW tree, SHA-256, multi-block, rename, rmdir, truncate, link, settimes, fsync\n");
     kprintf("[btrfs] PASS: SHA-256 detects on-disk corruption (RESIDUE2 T3)\n");

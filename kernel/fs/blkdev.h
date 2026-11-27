@@ -41,6 +41,11 @@ struct blkdev_ops {
     int (*write)(void *ctx, uint64_t lba, uint32_t count, const void *buf);
     /* Optional (may be NULL): total sectors on the device. */
     uint64_t (*sector_count)(void *ctx);
+    /* Optional synchronous device write-cache barrier. 0 means the backend
+     * completed its persistence command for prior writes; -ENOTSUP means
+     * unavailable, NOT success. Other failures must propagate. This is not
+     * filesystem-cache writeback; caller orders that before the barrier. */
+    int (*flush)(void *ctx);
 };
 
 /* Register a device.  `sector_size` must be BLKDEV_SECTOR_SIZE (the
@@ -59,6 +64,11 @@ const char *blkdev_name(int dev);
  * error (invalid dev, NULL buf, zero count, or backend failure). */
 int blkdev_read(int dev, uint64_t lba, uint32_t count, void *buf);
 int blkdev_write(int dev, uint64_t lba, uint32_t count, const void *buf);
+
+/* Backend barrier only: -EINVAL invalid device, -ENOTSUP absent callback,
+ * -EIO generic/nonzero-positive failure, otherwise typed negative errno.
+ * Does not update sector traffic counters. No implicit read/write fallback. */
+int blkdev_flush(int dev);
 
 /* Single-sector convenience wrappers (the buffer cache's shape). */
 int blkdev_read_sector(int dev, uint64_t lba, void *buf512);

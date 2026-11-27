@@ -89,6 +89,15 @@ int blkdev_write(int dev, uint64_t lba, uint32_t count, const void *buf)
     return rc;
 }
 
+int blkdev_flush(int dev)
+{
+    const struct blkdev_slot *s = get(dev);
+    if (!s) return -EINVAL;
+    if (!s->ops->flush) return -ENOTSUP;
+    int rc = s->ops->flush(s->ctx);
+    return rc == -1 || rc > 0 ? -EIO : rc;
+}
+
 int blkdev_read_sector(int dev, uint64_t lba, void *buf512)
 {
     return blkdev_read(dev, lba, 1, buf512);

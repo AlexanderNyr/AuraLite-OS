@@ -289,6 +289,13 @@ int main(void) {
     CHECK(bc_flush_range(0, 51, 1) == 0, "the buffer was still dirty: retry succeeds");
     CHECK(dev_writes == 1, "and the retry is exactly one command");
 
+    CHECK(fs_write_block(0, 416, 8, page) == 0, "queue block 52 for pinned-buffer case");
+    struct buffer *pinned = bc_get(0, 52);
+    CHECK(pinned != NULL, "pin the dirty block");
+    CHECK(bc_flush_range(0, 52, 1) == -1, "pinned dirty data is not a successful flush");
+    bc_release(pinned);
+    CHECK(bc_flush_range(0, 52, 1) == 0, "retry after unpin persists the data");
+
     printf(failures ? "FAILURES: %d\n" : "ALL PASS\n", failures);
     return failures ? 1 : 0;
 }

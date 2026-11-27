@@ -23,6 +23,8 @@
 #include <string.h>
 
 #include "kernel/fs/blkdev.h"
+#include "kernel/lib/errno.h"
+#include "drivers/ahci/flush.h"
 
 static int failures;
 
@@ -67,8 +69,14 @@ static uint64_t ram_sectors(void *ctx)
     return RAM_SECTORS;
 }
 
+static int flush_result, flush_calls;
+static void *flush_context;
+static int ram_flush(void *ctx) {
+    flush_context = ctx; flush_calls++; return flush_result;
+}
+
 static const struct blkdev_ops ram_ops = {
-    .read = ram_read, .write = ram_write, .sector_count = ram_sectors,
+    .read = ram_read, .write = ram_write, .sector_count = ram_sectors, .flush = ram_flush,
 };
 static const struct blkdev_ops ram_ops_nocount = {
     .read = ram_read, .write = ram_write, .sector_count = 0,
@@ -100,6 +108,31 @@ int main(void)
           blkdev_register("noops", 0, &dev_a, 512) < 0,
           "NULL name or ops are refused");
     CHECK(blkdev_count() == 2, "refused registrations consume no slot");
+
+    CHECK(blkdev_flush(-1) == -EINVAL && blkdev_flush(7) == -EINVAL,
+          "flush invalid devices fail explicitly");
+    CHECK(blkdev_flush(b) == -ENOTSUP && flush_calls == 0,
+          "missing barrier is unsupported, not success");
+    uint64_t br, bw, ar, aw;
+    blkdev_get_stats(&br, &bw);
+    CHECK(blkdev_flush(a) == 0 && flush_calls == 1 && flush_context == &dev_a,
+          "flush dispatches synchronous callback/context");
+    flush_result = -1; CHECK(blkdev_flush(a) == -EIO, "generic flush failure becomes EIO");
+    flush_result = 1; CHECK(blkdev_flush(a) == -EIO, "positive flush result is not success");
+    flush_result = -ETIMEDOUT; CHECK(blkdev_flush(a) == -ETIMEDOUT, "typed flush error preserved");
+    flush_result = -ENOTSUP; CHECK(blkdev_flush(a) == -ENOTSUP, "callback can explicitly refuse unsupported barrier");
+    flush_result = 0;
+    blkdev_get_stats(&ar, &aw);
+    CHECK(br == ar && bw == aw, "barrier requests do not fabricate sector traffic");
+    CHECK(ahci_flush_opcode(0) == 0 && ahci_flush_opcode(0xffff) == 0 &&
+          ahci_flush_opcode(0x3000) == 0 && ahci_flush_opcode(0x4000) == 0,
+          "invalid or absent IDENTIFY flush support refused");
+    CHECK(ahci_flush_opcode(0x5000) == ATA_FLUSH_CACHE &&
+          ahci_flush_opcode(0x6000) == ATA_FLUSH_CACHE_EXT &&
+          ahci_flush_opcode(0x7000) == ATA_FLUSH_CACHE_EXT,
+          "valid advertised ATA flush selected, EXT preferred");
+    CHECK(ahci_is_flush(0xE7) && ahci_is_flush(0xEA) && !ahci_is_flush(0x25),
+          "only flush opcodes select non-data command path");
 
     /* -- 2. I/O through the seam --------------------------------------- */
     uint8_t wbuf[3 * BLKDEV_SECTOR_SIZE], rbuf[3 * BLKDEV_SECTOR_SIZE];

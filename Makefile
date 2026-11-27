@@ -1136,7 +1136,7 @@ USER_APPS := $(USER_BUILD)/calc.elf $(USER_BUILD)/sysinfo.elf \
                 $(USER_BUILD)/tlstest.elf $(USER_BUILD)/httpx6.elf \
                 $(USER_BUILD)/https6.elf \
                 $(USER_BUILD)/rustes.elf \
-                $(USER_BUILD)/usertest.elf \
+                $(USER_BUILD)/usertest.elf $(USER_BUILD)/aurafsfd.elf \
                 $(USER_BUILD)/smpstress.elf \
                 $(USER_BUILD)/irqapwake.elf \
                 $(USER_BUILD)/mmapshare.elf \
@@ -1560,6 +1560,11 @@ $(USER_BUILD)/mmapfile.o: userspace/tests/mmapfile/mmapfile.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
+# M6k: userspace AuraFS FD/OFD lifetime gate.
+$(USER_BUILD)/aurafsfd.o: userspace/tests/aurafsfd/aurafsfd.c $(USER_CFLAGS_INC)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
+
 # M3 (MATURITY_PLAN.md): fault-recovering uaccess negative test battery.
 $(USER_BUILD)/usertest.o: userspace/tests/usertest/usertest.c $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
@@ -1688,7 +1693,7 @@ $(USER_BUILD)/cryptotest.elf: $(USER_BUILD)/cryptotest.o $(USER_COMMON) \
 # against a RAM array, so every MiB/s it prints is RAM-to-RAM.  This binary
 # is the lane where the numbers are real: it runs in the guest, through the
 # VFS, on an emulated disk.
-$(USER_BUILD)/fsbench.o: tools/fsbench/fsbench.c $(USER_CFLAGS_INC)
+$(USER_BUILD)/fsbench.o: tools/fsbench/fsbench.c tools/fsbench/clock_math.h $(USER_CFLAGS_INC)
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(USER_CFLAGS) -c $< -o $@
 
@@ -2910,7 +2915,7 @@ INITRD_TESTS := selftest guiacl proctest fdtest p10test argv_echo execve_child \
                 gltest tcpserver elfperm udptest timestest fifolinktest \
                 stackguard stoptest insttest hostilearg ctortest errnotest rustes \
                 socktest tcpx5test tcpordtest fpustress siginfotest auxvtest fdsharetest conformtest cryptotest x509test tlstest httpx6 https6 \
-                usertest mmapshare mmapfile membench gpubench smpstress irqapwake execvetest
+                usertest aurafsfd mmapshare mmapfile membench gpubench smpstress irqapwake execvetest
 
 # WIN32_PLAN.md W32-3: a genuine PE32+ .exe for the kernel loader gate.
 # Built with nasm -f win64 + lld-link, both already in REQUIRED_TOOLS (they
@@ -4599,7 +4604,7 @@ UNIT_TESTS   := $(BUILD_DIR)/test_glmath $(BUILD_DIR)/test_glstate \
                 $(BUILD_DIR)/test_w32_a16_layout_icon \
                 $(BUILD_DIR)/test_shell_ns \
                 $(BUILD_DIR)/test_fsformat \
-                $(BUILD_DIR)/test_fsbench $(BUILD_DIR)/test_bcache_m2 \
+                $(BUILD_DIR)/test_fsbench $(BUILD_DIR)/test_bcache_m2 $(BUILD_DIR)/test_aurafs_m6 $(BUILD_DIR)/test_aurafs_power $(BUILD_DIR)/test_write_bounce \
                 $(BUILD_DIR)/test_fsync_m3 \
                 $(BUILD_DIR)/test_exfat_ntfs
 
@@ -5918,6 +5923,13 @@ $(BUILD_DIR)/test_select_stack: tests/unit/test_select_stack.c kernel/fs/select.
 # PARITY P1: the blkdev seam, compiled as-is (pure table code) with a
 # RAM-backed fake device and fault injection.  ASan+UBSan because the
 # seam is exactly where a size mix-up becomes silent corruption.
+$(BUILD_DIR)/kernel/fs/btrfs.o $(BUILD_DIR)/kernel/fs/fsformat.o $(BUILD_DIR)/kernel/arch/x86_64/fwcfg.o: kernel/fs/fsformat.h
+$(BUILD_DIR)/test_aurafs_m6: kernel/fs/fsformat.h
+# blkdev_ops grew an optional field: rebuild producers AND consumers across
+# all kernel lanes, even on incremental builds without compiler depfiles.
+$(filter $(BUILD_DIR)/%.o,$(KERNEL_OBJS) $(KERNEL32_OBJS) $(KERNELRV_OBJS) $(KERNELA64_OBJS)): kernel/fs/blkdev.h
+$(BUILD_DIR)/drivers/ahci/ahci.o: drivers/ahci/flush.h
+$(BUILD_DIR)/test_blkdev: drivers/ahci/flush.h
 $(BUILD_DIR)/test_blkdev: tests/unit/test_blkdev.c kernel/fs/blkdev.c \
                           kernel/fs/blkdev.h
 	@mkdir -p $(BUILD_DIR)
@@ -5976,6 +5988,37 @@ $(BUILD_DIR)/test_bcache_m2: tests/unit/test_bcache_m2.c kernel/fs/buffer_cache.
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g \
 	          -I . tests/unit/test_bcache_m2.c kernel/fs/buffer_cache.c \
 	          kernel/fs/blkdev.c -o $@
+
+# M6f: compile the exact SYS_WRITE bounce implementation with fault stubs.
+$(BUILD_DIR)/kernel/arch/x86_64/syscall.o: kernel/proc/write_bounce.h
+$(BUILD_DIR)/test_write_bounce: tests/unit/test_write_bounce.c kernel/proc/write_bounce.h \
+                               kernel/proc/usercopy.h kernel/fs/vfs.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 -g -I . \
+	          tests/unit/test_write_bounce.c -o $@
+
+# FSMODERN M6a: real tree + cache + blkdev, fault-injected append checkpoints.
+$(BUILD_DIR)/test_aurafs_m6: tests/unit/test_aurafs_m6.c kernel/fs/btrfs.c \
+                           kernel/fs/buffer_cache.c kernel/fs/blkdev.c \
+                           kernel/lib/sha256.c kernel/fs/btrfs.h tools/fsbench/clock_math.h \
+                           kernel/fs/buffer_cache.h kernel/fs/blkdev.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -O1 -g \
+	          -ffunction-sections -fdata-sections -I . tests/unit/test_aurafs_m6.c \
+	          kernel/fs/buffer_cache.c kernel/fs/blkdev.c kernel/lib/sha256.c \
+	          -Wl,--gc-sections -o $@
+
+# M6p: volatile backend cache + sector persistence + abrupt power-loss matrix.
+$(BUILD_DIR)/test_aurafs_power: tests/unit/test_aurafs_power.c tests/unit/test_aurafs_m6.c \
+                              kernel/fs/btrfs.c kernel/fs/btrfs.h kernel/fs/fsformat.h \
+                              kernel/fs/buffer_cache.c kernel/fs/buffer_cache.h \
+                              kernel/fs/blkdev.c kernel/fs/blkdev.h kernel/lib/sha256.c \
+                              tools/fsbench/clock_math.h
+	@mkdir -p $(BUILD_DIR)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -O1 -g \
+	          -ffunction-sections -fdata-sections -I . tests/unit/test_aurafs_power.c \
+	          kernel/fs/buffer_cache.c kernel/fs/blkdev.c kernel/lib/sha256.c \
+	          -Wl,--gc-sections -o $@
 
 # FSMODERN M3: the durability contract's ROUTING half.  This links the
 # shipped vfsmount.c (mount table, owner-by-ops-identity, the WEAK receipt)

@@ -23,3 +23,7 @@ void fs_format_set(int allowed, const char *source) {
     fs_format_allow = allowed ? 1 : 0;
     fs_format_src   = source ? source : "build";
 }
+
+static int aurafs_dual_allow;
+int fs_aurafs_dual_allowed(void) { return aurafs_dual_allow; }
+void fs_aurafs_dual_set(int allowed) { aurafs_dual_allow = allowed ? 1 : 0; }

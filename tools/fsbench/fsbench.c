@@ -47,6 +47,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include "clock_math.h"
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -107,11 +108,12 @@ static void calibrate(void) {
     nanosleep(&req, 0);
     uint64_t t1 = tsc_read();
     clock_gettime(CLOCK_MONOTONIC, &b);
-    uint64_t us = ((uint64_t)b.tv_sec - (uint64_t)a.tv_sec) * 1000000u
-                + ((uint64_t)b.tv_nsec - (uint64_t)a.tv_nsec) / 1000u;
+    /* nsec may decrease across a second boundary. Subtracting unsigned
+     * nsec before dividing can underflow and falsely label tick timing TSC. */
+    uint64_t us = fsbench_elapsed_us(a.tv_sec, a.tv_nsec, b.tv_sec, b.tv_nsec);
     if (us >= 1000 && t1 > t0) {
         g_tsc_per_us = (t1 - t0) / us;
-        g_using_tsc = 1;
+        g_using_tsc = g_tsc_per_us != 0;
     }
 }
 
@@ -362,8 +364,8 @@ int main(int argc, char **argv) {
      * read is not a measurement. */
     printf("[fsbench] dir=%s files=%d size=%d clock=%s\n", dir, nfiles, fsize,
            g_using_tsc ? "tsc" : "tick");
-    printf("[fsbench] seq_write=%.2f MiB/s\n", write_mibs);
-    printf("[fsbench] seq_read=%.2f MiB/s\n", read_mibs);
+    printf("[fsbench] seq_write=%.4f MiB/s\n", write_mibs);
+    printf("[fsbench] seq_read=%.4f MiB/s\n", read_mibs);
     printf("[fsbench] create=%.1f ops/s\n", create_ops);
     printf("[fsbench] unlink=%.1f ops/s\n", unlink_ops);
     printf("[fsbench] sync=%llu us\n", (unsigned long long)(s1 - s0));

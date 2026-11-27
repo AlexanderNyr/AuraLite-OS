@@ -10,6 +10,8 @@
 
 #include <stdint.h>
 #include "drivers/ahci/ahci.h"
+#include "drivers/ahci/flush.h"
+#include "kernel/lib/errno.h"
 #include "drivers/pci/pci.h"
 #include "kernel/arch/x86_64/paging.h"
 #include "kernel/arch/arch.h"
@@ -141,6 +143,7 @@ struct ahci_port {
      * a size it had invented; btrfs wrote 256 MiB onto a 64 MiB disk and
      * then treated that as the allocation ceiling. */
     uint64_t sector_count;
+    uint8_t flush_command;
 };
 
 /* Size of that buffer: the largest single transfer the driver will issue.
@@ -368,8 +371,11 @@ static void ahci_enumerate(uint32_t pi, uint32_t np, int *next_port) {
 /* ---- Command execution ---- */
 static int ahci_exec(int port, uint8_t cmd, int write, uint64_t lba,
                      uint16_t count, uint64_t buf_phys, uint32_t buf_len) {
-    if (!ports[port].present || count == 0) return -1;
-    if (buf_len == 0 || buf_len > 0x400000) return -1; /* one PRDT entry max */
+    if (port < 0 || port >= AHCI_MAX_PORTS || !ports[port].present) return -1;
+    int nondata = ahci_is_flush(cmd);
+    if (nondata) {
+        if (count || buf_len || buf_phys || write || lba) return -1;
+    } else if (!count || !buf_len || buf_len > 0x400000) return -1;
 
     /* Wait until the device is not busy and not requesting data. */
     int wait = 1000000;
@@ -401,15 +407,17 @@ static int ahci_exec(int port, uint8_t cmd, int write, uint64_t lba,
     fis->control   = 0;
 
     /* PRDT entry: byte count field is encoded as N-1. */
-    tbl->prdt[0].dba   = (uint32_t)buf_phys;
-    tbl->prdt[0].dbau  = (uint32_t)(buf_phys >> 32);
-    tbl->prdt[0].dbc_i = (buf_len - 1) & 0x003FFFFF;
+    if (!nondata) {
+        tbl->prdt[0].dba   = (uint32_t)buf_phys;
+        tbl->prdt[0].dbau  = (uint32_t)(buf_phys >> 32);
+        tbl->prdt[0].dbc_i = (buf_len - 1) & 0x003FFFFF;
+    }
 
     /* Command header DW0 layout is split across two uint16_t fields in our
      * struct: info = low 16 bits (CFL/W/etc.), reserved0 = high 16 bits
-     * (PRDTL). PRDTL must be 1 for the single PRDT entry below. */
+     * (PRDTL). Data commands use one PRDT; FLUSH is non-data, PRDTL=0. */
     ports[port].cmd_list[0].info  = 5 | (write ? (1u << 6) : 0);
-    ports[port].cmd_list[0].reserved0 = 1;  /* PRDTL */
+    ports[port].cmd_list[0].reserved0 = nondata ? 0 : 1;  /* PRDTL */
     ports[port].cmd_list[0].prdbc = 0;
 
     /* Clear stale status and issue slot 0. */
@@ -500,6 +508,7 @@ static uint64_t ahci_identify_capacity(int port) {
      * and this driver is portable.  uintptr_t is the sanctioned widening
      * type here (kernel/lib/paddr.h) and the arithmetic reads the same. */
     const uint16_t *w = (const uint16_t *)ports[port].dma_virt;
+    ports[port].flush_command = ahci_flush_opcode(w[83]);
     uint64_t sectors = 0;
     if (w[83] & (1u << 10)) {                    /* LBA48 supported */
         uintptr_t acc = 0;
@@ -625,6 +634,16 @@ int ahci_write(uint32_t port, uint64_t lba, uint32_t count, const void *buf) {
     if (rc == 0) sectors_written_total += count;
     spinlock_release_irqrestore(&ahci_port_locks[port], af);
     return rc;
+}
+
+int ahci_flush(uint32_t port) {
+    if (port >= AHCI_MAX_PORTS || !ports[port].present) return -EINVAL;
+    uint8_t command = ports[port].flush_command;
+    if (!command) return -ENOTSUP;
+    uint64_t af = spinlock_acquire_irqsave(&ahci_port_locks[port]);
+    int rc = ahci_exec(port, command, 0, 0, 0, 0, 0);
+    spinlock_release_irqrestore(&ahci_port_locks[port], af);
+    return rc == 0 ? 0 : -EIO;
 }
 
 void ahci_get_stats(uint64_t *out_sectors_read, uint64_t *out_sectors_written) {
@@ -804,9 +823,14 @@ static uint64_t ahci_bd_sector_count(void *ctx) {
     return ahci_get_sector_count((uint32_t)(uintptr_t)ctx);
 }
 
+static int ahci_bd_flush(void *ctx) {
+    return ahci_flush((uint32_t)(uintptr_t)ctx);
+}
+
 static const struct blkdev_ops ahci_bd_ops = {
     .read         = ahci_bd_read,
     .write        = ahci_bd_write,
+    .flush        = ahci_bd_flush,
     .sector_count = ahci_bd_sector_count,   /* FSMODERN M1: ATA IDENTIFY */
 };
 
