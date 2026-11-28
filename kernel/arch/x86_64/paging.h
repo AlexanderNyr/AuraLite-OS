@@ -8,28 +8,6 @@
  * this header rather than a second direct arch include. */
 #include "kernel/arch/x86_64/tlb_shootdown.h"
 
-/*
- * 4-level paging (PML4 -> PDPT -> PD -> PT) virtual memory manager for x86_64.
- *
- * Limine enters the kernel with paging already enabled: the kernel is mapped
- * higher-half, and a higher-half direct map (HHDM) of all physical memory is
- * available.  The VMM builds on top of that:
- *
- *   - It reads the current PML4 from CR3 (set up by Limine).
- *   - It walks / creates page tables in the CURRENT address space.
- *   - Page-table frames are reached through the HHDM (phys + HHDM offset),
- *     avoiding the chicken-and-egg of "map a table before you can manage it."
- *
- * Virtual address space layout (target):
- *
- *   0x0000000000000000 .. 0x00007FFFFFFFFFFF   user space (128 TiB)
- *   0xFFFF800000000000 .. 0xFFFFBFFFFFFFFFFF   HHDM direct map (Limine)
- *   0xFFFFFFFF80000000 .. 0xFFFFFFFFFFFFFFFF   kernel image + heap + stacks
- *
- * For now the kernel manages only the existing (Limine-provided) address space.
- * Per-process address spaces are created with paging_new_address_space().
- */
-
 /* ---- Page-table entry flags (Intel SDM Vol.3, 4.3) ---- */
 #define PAGE_FLAG_PRESENT  (1ULL << 0)   /* bit 0  */
 #define PAGE_FLAG_WRITABLE (1ULL << 1)   /* bit 1  */
@@ -87,6 +65,25 @@ void paging_init(void);
  */
 void paging_map(uint64_t virt, uint64_t phys, uint64_t flags);
 
+/*
+ * Atomically install a 4 KiB mapping only if the leaf PTE is currently absent.
+ *
+ * Return values:
+ *   1  - this call installed the mapping; ownership of the caller's PMM
+ *        reference transfers to the PTE;
+ *   0  - the address was already mapped; the caller still owns its PMM
+ *        reference and must drop it;
+ *  -1  - page-table allocation failed; the caller still owns its reference.
+ *
+ * Intended for demand-fault paths.  The caller must hold any higher-level
+ * mapping lock (normally vma_lock); this function takes the VMM lock inside
+ * that lock, preserving the vma_lock -> vm_lock ordering.
+ *
+ * NOTE: This is a declaration only.  The implementation belongs in paging.c,
+ * where vm_lock, walk_pte() and invlpg() are visible.
+ */
+int paging_map_if_absent(uint64_t virt, uint64_t phys, uint64_t flags);
+
 /* RESIDUE2 T1: map ONE 2 MiB page (a PDE with PS=1) for selected kernel
  * mappings — the large-page counterpart of paging_map().  Both addresses
  * must be 2 MiB aligned; a present leaf at this level is overwritten only
@@ -107,7 +104,7 @@ int paging_protect(uint64_t virt, uint64_t flags);
 /*
  * Translate a virtual address to its mapped physical address.
  * @returns the physical page base, or 0 if not present.
- * (0 is also the IVT frame, never mapped, so it doubles as "not present.")
+ * (0 is also the IVT frame, never mapped, so it doubles as "not present".)
  */
 uint64_t paging_get_phys(uint64_t virt);
 
@@ -125,7 +122,7 @@ uint64_t paging_get_flags(uint64_t virt);
  */
 uint64_t paging_new_address_space(void);
 
-/* Switch CR3 to a different address space (updates the VMM's active PML4). */
+/* Switch CR3 to a different address space (updates the active per-CPU PML4). */
 void paging_switch_to(uint64_t new_pml4_phys);
 
 /* Update only the VMM's pml4 pointer (after a manual CR3 write). */
@@ -135,15 +132,10 @@ void paging_update_pml4_ptr(uint64_t phys);
 uint64_t paging_get_kernel_pml4(void);
 
 /* Enable the per-CPU architectural features the kernel relies on (NXE,
- * SMEP, SMAP) on the CALLING cpu.  paging_init() runs it for the BSP;
- * smp.c's ap_entry() runs it on every AP -- EFER/CR4 are per-CPU registers
- * and reset to bare-metal defaults when an AP comes out of INIT. */
+ * SMEP, SMAP, OSFXSR and CR0 write protection) on the CALLING cpu. */
 void paging_cpu_features_init(void);
 
-/* HW_PLAN H3: remap the framebuffer's HHDM range write-combining
- * (PAT entry 4; PTEs get PAT=1 PCD=0 PWT=0, huge pages split as
- * needed).  Call after paging_init(); prints the probe line the
- * smokes pin, refuses loudly without a framebuffer or PAT. */
+/* HW_PLAN H3: remap the framebuffer's HHDM range write-combining. */
 void paging_fb_set_wc(void);
 
 /* Clone all user-space pages from the current address space into a new one.

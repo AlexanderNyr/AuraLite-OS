@@ -4,40 +4,35 @@
 #include <stdint.h>
 
 /*
- * shmem — Anonymous shared memory objects for MAP_SHARED|MAP_ANONYMOUS.
+ * shmem — anonymous shared-memory objects for MAP_SHARED|MAP_ANONYMOUS.
  *
- * MATURITY_PLAN.md phase M4.
+ * Object references and physical-frame references are separate:
+ *   - each handle/VMA/in-flight operation owns one object reference;
+ *   - the object owns one PMM reference for every cached frame entry;
+ *   - each installed PTE owns one additional PMM reference.
  *
- * A shmem object is a named (by shmid) collection of physical frames keyed
- * by page offset.  Multiple VMAs in different processes can reference the
- * same shmid; page faults resolve through shmem_get_or_alloc(), which
- * returns the SAME physical frame for the same (shmid, offset) pair.
- * PMM refcount tracks how many page tables reference each frame; the frame
- * is freed only when the last reference drops.
- *
- * The shmem table is process-global (kernel-wide), protected by a spinlock.
- * shmid is allocated sequentially; the creating process receives it via the
- * mmap return and can share it through fork/inheritance or a POSIX shm_*
- * API (future work).
+ * shmem_get_or_alloc() returns a PMM reference for the caller's mapping.
+ * The caller must drop that reference if it does not install a PTE, and
+ * unmapping/reaping a PTE must drop exactly one mapping reference.
  */
 
-/* Create a new anonymous shared memory object of @size bytes (page-rounded).
- * Returns shmid >= 0 on success, -1 on failure. */
+/* Create a page-rounded object. The caller owns one reference on success. */
 int      shmem_create(uint64_t size);
 
-/* Destroy a shared memory object.  Frames are freed via PMM refcount
- * (only released when no page table still references them). */
+/* Acquire/release an object reference. shmem_put() releases the object and
+ * its cached-frame references when the final object reference is dropped. */
+int      shmem_get(int shmid);
+void     shmem_put(int shmid);
+
+/* Compatibility spelling for dropping the creator/handle reference. */
 void     shmem_destroy(int shmid);
 
-/* Look up or allocate a physical frame for (shmid, offset).
- * Returns 0 on success with *phys_out set; -1 on failure.
- * The caller gets a PMM refcount increment on the frame. */
+/* Return the same physical frame for a given object/page offset. On success,
+ * returns one PMM reference owned by the caller (normally transferred to a
+ * user PTE). */
 int      shmem_get_or_alloc(int shmid, uint64_t offset, uint64_t *phys_out);
 
-/* Query whether a shmid is valid. */
 int      shmem_valid(int shmid);
-
-/* Query the size (in bytes, page-rounded) of a shmem object. */
 uint64_t shmem_size(int shmid);
 
 #endif /* AURALITE_MM_SHMEM_H */

@@ -70,6 +70,8 @@ struct exec_elfinfo {
 #define USER_STACK_SIZE        0x400000ULL  /* 4 MiB usable user stack */
 #define USER_STACK_GUARD_SIZE  0x1000ULL
 
+int sysvipc_fork_inherit(tcb_t *parent, tcb_t *child);
+
 /* Saved user-mode state from the syscall entry (set in syscall_entry.asm). */
 /* The user return frame is read through the syscall_saved_* per-CPU
  * accessor macros from kernel/arch/x86_64/syscall.h (already included
@@ -509,21 +511,17 @@ int64_t do_fork(void) {
     kprintf("[proc] fork: cloning address space (user RIP=0x%llx)\n",
             (unsigned long long)user_rip);
 
-    /* 1) Clone the current address space. */
+    /* 1) Clone the page tables. Shared VMAs stay shared; private writable
+     *    pages are converted to COW by paging_clone_user_space(). */
     uint64_t child_pml4 = paging_clone_user_space();
     if (child_pml4 == 0) {
         kprintf("[proc] fork: address space clone failed\n");
-        return -ENOMEM;   /* RESIDUE2 T1: native errno */
+        return -ENOMEM;
     }
     kprintf("[proc] fork: cloned to PML4 phys 0x%llx\n",
             (unsigned long long)child_pml4);
 
-    /* 2) Create the child thread UNSTARTED.  The old code relied on cli so
-     * "the scheduler can't pick up the half-initialised TCB (no pml4, no
-     * saved user frame, no FDs) between kthread_create() and the field
-     * assignments below" — but on SMP a remote cpu ignores the local IF.
-     * FIX_R3: the TCB is only published with kthread_start() once every
-     * field below is in place; cli still guards the create→start sequence. */
+    /* Do not publish a half-initialised TCB on another CPU. */
     tcb_t *parent = self;
     uint64_t rflags;
     __asm__ volatile ("pushfq; popq %0; cli" : "=r"(rflags));
@@ -533,89 +531,95 @@ int64_t do_fork(void) {
     if (child == NULL) {
         (void)paging_free_address_space(child_pml4);
         if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-        return -EAGAIN;   /* POSIX fork: resource shortage is EAGAIN */
+        return -EAGAIN;
     }
+
     child->pml4_phys = child_pml4;
-    aspace_get(child_pml4);   /* RESIDUE3 C2: the fork child is owner #1 */
-    child->parent    = parent;
-    /* Snapshot the user-mode return frame NOW (it lives in globals that the
-     * parent will clobber on its very next syscall, well before the child
-     * gets a chance to run). */
+    aspace_get(child_pml4);       /* child owns one address-space reference */
+    child->parent = parent;
+
+    /* Snapshot the user return frame before the parent can issue another
+     * syscall and overwrite the per-CPU syscall save slots. */
     child->fork_user_rip    = user_rip;
     child->fork_user_rflags = user_rflags;
     child->fork_user_rsp    = user_rsp;
-    /* Q12: snapshot the callee-saved user registers from the syscall-entry
-     * capture so the child resumes with the parent's live register values
-     * (see thread.h).  saved_user_* are valid here: do_fork runs inside
-     * syscall_dispatch, right after the capture. */
     child->fork_user_rbx    = parent ? parent->saved_user_rbx : 0;
     child->fork_user_rbp    = parent ? parent->saved_user_rbp : 0;
     child->fork_user_r12    = parent ? parent->saved_user_r12 : 0;
     child->fork_user_r13    = parent ? parent->saved_user_r13 : 0;
     child->fork_user_r14    = parent ? parent->saved_user_r14 : 0;
     child->fork_user_r15    = parent ? parent->saved_user_r15 : 0;
+
     if (parent) {
-        /* FIX_R3: fork(), like Linux, inherits the TLS base — the child
-         * starts life as a byte-copy of the parent's address space, so the
-         * parent's TLS block is equally valid there. */
         child->tls_base = parent->tls_base;
-        /* W32A-3: fork() clones the address space whole, so the user GS
-         * (TEB-lite) comes along like FS above. */
         child->user_gs_base = parent->user_gs_base;
-        /* Share the parent's open-file descriptions (shared seek offset/flags),
-         * incrementing each OFD refcount; copy the per-fd FD_CLOEXEC flags.
-         * FD-table fix: kthread_create_unstarted() already gave the child its
-         * own (empty) table; reuse it rather than leaking it behind a second
-         * allocation. */
+
+        /* Share open-file descriptions and copy descriptor flags. */
         if (!child->fdtab) child->fdtab = fdtab_alloc();
         vfs_fork_inherit(child->fdtab, parent->fdtab);
-        /* W32A-14: fork() creates a SEPARATE address space — the child gets
-         * the break VALUE (via the shared cell if the parent is a grouped
-         * thread) but never the shared object itself. */
+
+        /* A fork gets a separate break value, never the thread group's
+         * shared break cell. */
         child->brk = task_brk_get(parent);
         child->sh_brk = NULL;
-        child->persona = parent->persona;   /* LX_COMPAT L1: the number
-                                             * map is process identity */
+        child->persona = parent->persona;
         child->mmap_next = parent->mmap_next;
         child->vma_list = NULL;
 
-        /* Clone the VMA list from parent to child. */
+        /* Clone full VMA metadata, including shmid and backing references.
+         * vma_insert() is NOT sufficient here: it deliberately creates a new
+         * ordinary VMA and would erase VMA_SHMEM's object identity. */
         uint64_t vf = spinlock_acquire_irqsave(&parent->vma_lock);
         vma_t *vma = parent->vma_list;
+        int vma_rc = 0;
         while (vma) {
-            if (vma_insert(&child->vma_list, vma->va_start, vma->va_end,
-                           vma->flags, vma->file, vma->file_off) != 0) {
-                spinlock_release_irqrestore(&parent->vma_lock, vf);
-                vma_free_all(&child->vma_list);
-                child->vma_list = NULL;
-                if (child->pml4_phys) {
-                    /* RESIDUE3 C2: the child already holds a reference; drop
-                     * it before the direct free or the table keeps a ghost. */
-                    (void)aspace_put(child->pml4_phys);
-                    (void)paging_free_address_space(child->pml4_phys);
-                    child->pml4_phys = 0;
-                }
-                child->state = THREAD_DEAD;
-                child->waited = 1;
-                if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
-                return -ENOMEM;   /* RESIDUE2 T1: VMA-list clone OOM */
-            }
+            vma_rc = vma_clone_entry(&child->vma_list, vma);
+            if (vma_rc != 0) break;
             vma = vma->next;
         }
         spinlock_release_irqrestore(&parent->vma_lock, vf);
-        /* POSIX fork(): child inherits the signal dispositions and the blocked
-         * mask, but its pending-signal set is empty. */
+
+        if (vma_rc != 0) {
+            vma_free_all(&child->vma_list);
+            uint64_t dead_pml4 = child->pml4_phys;
+            child->pml4_phys = 0;
+            if (dead_pml4 && aspace_put(dead_pml4))
+                (void)paging_free_address_space(dead_pml4);
+            child->state = THREAD_DEAD;
+            child->waited = 1;
+            if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+            return -ENOMEM;
+        }
+
+        /* SysV SHM mappings were copied by the page-table clone, but the
+         * attachment bookkeeping is per TCB.  Duplicate each attachment and
+         * increment the segment's nattch count before the child is visible.
+         * The helper is transactional: on failure it leaves child->shm_-
+         * attachments empty and rolls back all increments. */
+        int shm_rc = sysvipc_fork_inherit(parent, child);
+        if (shm_rc != 0) {
+            vma_free_all(&child->vma_list);
+            uint64_t dead_pml4 = child->pml4_phys;
+            child->pml4_phys = 0;
+            if (dead_pml4 && aspace_put(dead_pml4))
+                (void)paging_free_address_space(dead_pml4);
+            child->state = THREAD_DEAD;
+            child->waited = 1;
+            if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
+            return shm_rc;
+        }
+
+        /* POSIX fork: inherit dispositions and mask; pending signals start
+         * empty. SEM_UNDO adjustments are intentionally not inherited. */
         for (int s = 0; s < NSIG; s++) child->sig_actions[s] = parent->sig_actions[s];
         child->sig_mask = parent->sig_mask;
         child->sig_pending = 0;
-        /* POSIX fork(): child inherits the parent's process group, session and
-         * controlling terminal; it is never a session/group leader by birth. */
+
         child->pgid = parent->pgid;
         child->sid  = parent->sid;
         child->ctty = parent->ctty;
         child->is_session_leader = 0;
 
-        /* P7: child inherits credentials and umask */
         child->uid  = parent->uid;
         child->euid = parent->euid;
         child->suid = parent->suid;
@@ -623,28 +627,23 @@ int64_t do_fork(void) {
         child->egid = parent->egid;
         child->sgid = parent->sgid;
         child->ngroups = parent->ngroups;
-        for (int i = 0; i < parent->ngroups; i++) {
+        for (int i = 0; i < parent->ngroups; i++)
             child->supplementary_gids[i] = parent->supplementary_gids[i];
-        }
         child->umask = parent->umask;
 
-        /* P10: child inherits the parent's current working directory. */
         for (int i = 0; i < VFS_PATH_MAX; i++) {
             child->cwd[i] = parent->cwd[i];
             if (parent->cwd[i] == '\0') break;
         }
 
-        /* RESIDUE2 T1: link the child into the parent/child process
-         * table (children_lock; also maintains n_children). */
         proc_children_link(parent, child);
     }
 
-    /* All fields are set: publish — the child may now run on any cpu. */
+    /* All fields are set: the scheduler may now publish this child. */
     kthread_start(child);
 
     if (rflags & 0x200ULL) __asm__ volatile ("sti" ::: "memory");
 
-    /* 3) The parent returns the child PID. */
     kprintf("[proc] fork: parent returns child PID %llu\n",
             (unsigned long long)child->id);
     return (int64_t)child->id;

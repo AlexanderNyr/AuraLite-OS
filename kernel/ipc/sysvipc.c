@@ -192,6 +192,66 @@ int64_t sysv_semget(int64_t key, int nsems, int semflg) {
     return id;
 }
 
+int sysvipc_fork_inherit(tcb_t *parent, tcb_t *child) {
+    if (!parent || !child) return -EINVAL;
+    if (child->shm_attachments != NULL) return -EINVAL;
+
+    uint64_t rf = spinlock_acquire_irqsave(&sysv_lock);
+    struct shm_attach *new_head = NULL;
+    struct shm_attach **tail = &new_head;
+    int error = 0;
+
+    for (struct shm_attach *src = parent->shm_attachments;
+         src != NULL; src = src->next) {
+        if (src->shmid < 0 || src->shmid >= SYSV_MAX_OBJS ||
+            !shms[src->shmid].in_use) {
+            error = -EINVAL;
+            break;
+        }
+
+        struct sysv_shm *m = &shms[src->shmid];
+        if (m->nattch == 0x7fffffff) {
+            error = -ENOMEM;
+            break;
+        }
+
+        struct shm_attach *copy = kmalloc(sizeof(*copy));
+        if (!copy) {
+            error = -ENOMEM;
+            break;
+        }
+
+        copy->shmid = src->shmid;
+        copy->va = src->va;
+        copy->next = NULL;
+        *tail = copy;
+        tail = &copy->next;
+        m->nattch++;
+    }
+
+    if (error != 0) {
+        /* Roll back only the records created by this invocation.  The child
+         * page tables are still private and will be reaped by do_fork(). */
+        struct shm_attach *a = new_head;
+        while (a) {
+            struct shm_attach *next = a->next;
+            if (a->shmid >= 0 && a->shmid < SYSV_MAX_OBJS &&
+                shms[a->shmid].in_use && shms[a->shmid].nattch > 0) {
+                shms[a->shmid].nattch--;
+            }
+            kfree(a);
+            a = next;
+        }
+        spinlock_release_irqrestore(&sysv_lock, rf);
+        return error;
+    }
+
+    child->shm_attachments = new_head;
+    spinlock_release_irqrestore(&sysv_lock, rf);
+    return 0;
+}
+
+
 static int sem_try_apply(struct sysv_sem *s, const struct sysv_sembuf *ops,
                          uint64_t nops, int allow_undo) {
     /* Check all ops are satisfiable without modifying anything. */
@@ -850,28 +910,41 @@ int64_t sysv_msgctl(int msqid, int cmd, uint64_t buf_user) {
  * records are left intact so exec preserves them). */
 static void sysvipc_shm_detach_list(tcb_t *t) {
     if (!t) return;
+
+    uint64_t rf = spinlock_acquire_irqsave(&sysv_lock);
     struct shm_attach *a = t->shm_attachments;
     t->shm_attachments = NULL;
+
     while (a) {
-        struct shm_attach *nx = a->next;
-        if (a->shmid >= 0 && a->shmid < SYSV_MAX_OBJS && shms[a->shmid].in_use) {
+        struct shm_attach *next = a->next;
+        if (a->shmid >= 0 && a->shmid < SYSV_MAX_OBJS &&
+            shms[a->shmid].in_use) {
             struct sysv_shm *m = &shms[a->shmid];
+
+            /* These mappings are eagerly installed by shmat().  The segment
+             * owns the base PMM references; detach removes PTEs but does not
+             * drop those base references directly. */
             for (int i = 0; i < m->npages; i++)
                 paging_unmap(a->va + (uint64_t)i * PAGE_SZ);
+
             uint64_t vf = spinlock_acquire_irqsave(&t->vma_lock);
             vma_remove_range(&t->vma_list, a->va, a->va + m->size);
             spinlock_release_irqrestore(&t->vma_lock, vf);
-            m->nattch--;
-            if (m->nattch < 0) m->nattch = 0;
+
+            if (m->nattch > 0) m->nattch--;
+            m->dtime = now_sec();
             if (m->destroy_pending && m->nattch == 0) {
                 shm_release_frames(m);
                 memset(m, 0, sizeof(*m));
             }
         }
         kfree(a);
-        a = nx;
+        a = next;
     }
+
+    spinlock_release_irqrestore(&sysv_lock, rf);
 }
+
 
 void sysvipc_shm_detach_all(tcb_t *t) {
     sysvipc_shm_detach_list(t);
