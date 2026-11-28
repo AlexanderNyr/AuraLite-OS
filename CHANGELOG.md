@@ -2,6 +2,16 @@
 
 All notable changes to AuraLite OS. Dates are ISO 8601 (Europe/Moscow local).
 
+## [Fixed — GUI migration prerequisites (G1a)] 2026-11-28
+
+- Fixed SHMEM backing preservation when cloning VMAs across `fork()`.
+- Added SHMEM object reference management for VMA insertion, removal, splitting and cleanup.
+- Fixed SHMEM lifetime handling during user page faults by retaining references while processing VMA snapshots.
+- Added safe page-table installation through `paging_map_if_absent()` to prevent duplicate mappings during concurrent page faults.
+- Updated `MAP_POPULATE` to reuse the regular VMA page-fault path.
+- Improved deferred SHMEM object destruction so cached frames remain alive while references or mappings still exist.
+- Fixed the host-side VMA unit-test configuration by separating VMA tests from the kernel SHMEM implementation and providing isolated SHMEM mocks.
+
 ## [FSMODERN M6t — v2 writable/publication remount envelope] 2026-11-24
 
 GitHub HEAD `fbab5ed` rechecked unchanged; incremental local patch on M6s,

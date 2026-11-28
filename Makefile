@@ -6055,7 +6055,7 @@ $(BUILD_DIR)/test_exfat_ntfs: tests/unit/test_exfat_ntfs.c kernel/fs/exfat.c \
 
 $(BUILD_DIR)/test_vma: tests/unit/test_vma.c
 	@mkdir -p $(BUILD_DIR)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -I . $< -o $@
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Wno-unused-function -O2 -I . $< -o $@
 
 $(BUILD_DIR)/test_page_cache: tests/unit/test_page_cache.c
 	@mkdir -p $(BUILD_DIR)

@@ -632,50 +632,29 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     tcb_t *cur = sched_current();
     if (!cur || len == 0) return (uint64_t)-EINVAL;
 
-    /* Validation of prot and flags (as before). */
     int anonymous = (flags & MAP_ANONYMOUS) ? 1 : 0;
-    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0) {
+    if ((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0)
         return (uint64_t)-EINVAL;
-    }
-    if (!(flags & (MAP_SHARED | MAP_PRIVATE))) return (uint64_t)-EINVAL;
-    /* A6: MAP_SHARED + file-backed is supported now.  It had been ENOSYS
-     * "pending page cache writeback from M9", but the page cache and the
-     * fault path were both already there -- the only thing missing was
-     * anything that set the dirty bit (see page_cache_mark_dirty()).
-     * MAP_SHARED + anonymous continues to go through shmem. */
+    if (!(flags & (MAP_SHARED | MAP_PRIVATE)))
+        return (uint64_t)-EINVAL;
+
     if (anonymous) {
-        /* Linux IGNORES fd for MAP_ANONYMOUS.  glibc passes its fd=-1
-         * through the syscall register WITHOUT sign extension (a 32-bit
-         * mov $-1, %edi zeroes the upper half), so the kernel actually
-         * receives 0x00000000FFFFFFFF here.  Demanding fd == -1 (the
-         * 64-bit form) made EVERY anonymous mmap fail -EINVAL — the
-         * loader's PROT_NONE reserve, the MAP_FIXED segment placement,
-         * and the minimal-malloc page — which cascaded into a NULL
-         * dereference in init_tls.  Accept any fd value, like Linux. */
+        /* Linux ignores fd for MAP_ANONYMOUS. */
         (void)fd;
     } else {
         if (fd == (uint64_t)-1 || (off & (PAGE_SIZE_BYTES - 1ULL)) ||
-            off > 0x7FFFFFFFFFFFFFFFULL) {
+            off > 0x7FFFFFFFFFFFFFFFULL)
             return (uint64_t)-EINVAL;
-        }
     }
 
     len = align_up_u64(len, PAGE_SIZE_BYTES);
-    if (len == 0 || len > (USER_MMAP_MAX - USER_MMAP_BASE)) {
+    if (len == 0 || len > (USER_MMAP_MAX - USER_MMAP_BASE))
         return (uint64_t)-EINVAL;
-    }
 
     if (flags & MAP_FIXED) {
         if (addr & (PAGE_SIZE_BYTES - 1ULL)) return (uint64_t)-EINVAL;
         if (!user_mmap_range_ok(addr, len)) return (uint64_t)-ENOMEM;
-        /* LX_COMPAT L4: Linux MAP_FIXED discards whatever is already mapped
-         * in the range.  ld.so reserves a PROT_NONE/PROT_READ stretch with a
-         * plain mmap(NULL,...) and then MAP_FIXEDs its real RX/R/RW segments
-         * on top of it; without removing the overlap the OLDER (reserve) VMA
-         * — which sorts first — wins the fault lookup and the loader would
-         * hand out zero pages instead of file bytes.  Unmap present frames as
-         * well so stale contents cannot leak into the new mapping (shared
-         * file-backed frames stay in the page cache, same rule as munmap). */
+
         int fixed_shared_file = 0;
         {
             uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
@@ -686,10 +665,10 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
             vma_remove_range(&cur->vma_list, addr, addr + len);
             spinlock_release_irqrestore(&cur->vma_lock, vf);
         }
-        for (uint64_t off = 0; off < len; off += PAGE_SIZE_BYTES) {
-            uint64_t phys = paging_get_phys(addr + off);
+        for (uint64_t pos = 0; pos < len; pos += PAGE_SIZE_BYTES) {
+            uint64_t phys = paging_get_phys(addr + pos);
             if (phys) {
-                paging_unmap(addr + off);
+                paging_unmap(addr + pos);
                 if (!fixed_shared_file) pmm_free_frame(phys);
             }
         }
@@ -712,7 +691,6 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
         cur->mmap_next = addr + len;
     }
 
-    /* Determine VMA flags. */
     uint32_t vflags = anonymous ? VMA_ANON : VMA_FILE;
     if (prot & PROT_READ)  vflags |= VMA_READ;
     if (prot & PROT_WRITE) vflags |= VMA_WRITE;
@@ -722,62 +700,57 @@ static uint64_t syscall_mmap(uint64_t addr, uint64_t len, uint64_t prot,
     struct ofd *file_ofd = NULL;
     if (!anonymous) {
         if (fd >= VFS_MAX_FDS || !cur->fdtab ||
-            cur->fdtab->slots[fd] == NULL) {
+            cur->fdtab->slots[fd] == NULL)
             return (uint64_t)-EBADF;
-        }
         file_ofd = cur->fdtab->slots[fd];
     }
 
-    /* Create the VMA descriptor. No physical allocation here (lazy fault). */
     {
         uint64_t vf = spinlock_acquire_irqsave(&cur->vma_lock);
         int vr;
         if (anonymous && (flags & MAP_SHARED)) {
-            /* M4: MAP_SHARED|MAP_ANONYMOUS — create a shmem object so
-             * multiple processes can share the same physical frames.
-             * The shmid is stored in the VMA; the fault handler resolves
-             * pages through shmem_get_or_alloc(). */
             int shmid = shmem_create(len);
             if (shmid < 0) {
                 spinlock_release_irqrestore(&cur->vma_lock, vf);
                 return (uint64_t)-ENOMEM;
             }
+
+            /* vma_insert_shmem() retains one reference for the VMA.  The
+             * initial reference returned by shmem_create() is temporary. */
             vr = vma_insert_shmem(&cur->vma_list, addr, addr + len,
                                   vflags, shmid);
+            (void)shmem_put(shmid);
         } else {
             vr = vma_insert(&cur->vma_list, addr, addr + len,
                             vflags, file_ofd, off);
         }
         spinlock_release_irqrestore(&cur->vma_lock, vf);
-        if (vr != 0) {
-            return (uint64_t)-ENOMEM;
-        }
+        if (vr != 0) return (uint64_t)-ENOMEM;
     }
 
-    /* MAP_POPULATE: eager allocation (optional). */
-    if (flags & 0x4000) { /* MAP_POPULATE */
-        uint64_t hhdm = boot_get_hhdm_offset();
-        uint64_t mapped = 0;
-        uint64_t pte_flags = PAGE_FLAG_PRESENT | PAGE_FLAG_USER;
-        if (prot & PROT_WRITE) pte_flags |= PAGE_FLAG_WRITABLE;
-        if (!(prot & PROT_EXEC)) pte_flags |= PAGE_FLAG_NO_EXEC;
+    /* MAP_POPULATE must use the VMA fault path.  Direct pmm_alloc_frame() here
+     * used to bypass shmem/page_cache and could give MAP_SHARED mappings
+     * private pages.  Choose a synthetic fault access allowed by this VMA:
+     * read first, then write-only, then execute-only.  PROT_NONE remains a
+     * lazy inaccessible reservation; population is best effort. */
+    if (flags & 0x4000) {
+        uint64_t fault_err = 0;
+        if (!(prot & PROT_READ)) {
+            if (prot & PROT_WRITE) fault_err = 0x02;
+            else if (prot & PROT_EXEC) fault_err = 0x10;
+            else return addr;
+        }
 
-        for (; mapped < len; mapped += PAGE_SIZE_BYTES) {
-            uint64_t phys = pmm_alloc_frame();
-            if (!phys) {
-                /* Partial populate: we just stop and return the addr. */
-                break;
-            }
-            memset((void *)(uintptr_t)(hhdm + phys), 0, PAGE_SIZE_BYTES);
-            if (!anonymous && file_ofd) {
-                vfs_read_at_phys(file_ofd, off + mapped, phys, PAGE_SIZE_BYTES);
-            }
-            paging_map(addr + mapped, phys, pte_flags);
+        for (uint64_t pos = 0; pos < len; pos += PAGE_SIZE_BYTES) {
+            if (paging_get_phys(addr + pos) != 0) continue;
+            if (handle_user_page_fault(addr + pos, fault_err) != 0)
+                break; /* MAP_POPULATE is best effort in this kernel. */
         }
     }
 
     return addr;
 }
+
 
 static uint64_t syscall_munmap(uint64_t addr, uint64_t len) {
     tcb_t *cur = sched_current();

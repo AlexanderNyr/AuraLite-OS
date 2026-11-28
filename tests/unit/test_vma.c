@@ -53,6 +53,18 @@ struct tcb *sched_current(void) { return NULL; }
  * Mirrors the stub in test_vma_m4.c. */
 int shmem_valid(int shmid) { return shmid > 0; }
 
+int shmem_get(int shmid) {
+    return shmem_valid(shmid) ? 0 : -1;
+}
+
+void shmem_put(int shmid) {
+    (void)shmid;
+}
+
+uint64_t shmem_size(int shmid) {
+    return shmem_valid(shmid) ? 0x100000 : 0;
+}
+
 #include "../../kernel/mm/vma.c"
 
 static void free_list(vma_t *v) {

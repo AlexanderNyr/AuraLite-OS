@@ -375,7 +375,29 @@ void paging_map(uint64_t virt, uint64_t phys, uint64_t flags) {
         pcid_local_gen_bump();
     }
     spinlock_release_irqrestore(&vm_lock, vf);
+} 
+
+int paging_map_if_absent(uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t vf = spinlock_acquire_irqsave(&vm_lock);
+    uint64_t *pte = walk_pte(virt, 1);
+    if (pte == NULL) {
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return -1;
+    }
+
+    if (*pte & PAGE_FLAG_PRESENT) {
+        /* Another fault or prefault installed the mapping first. */
+        invlpg(virt);
+        spinlock_release_irqrestore(&vm_lock, vf);
+        return 0;
+    }
+
+    *pte = (phys & PAGE_ADDR_MASK) | flags;
+    invlpg(virt);
+    spinlock_release_irqrestore(&vm_lock, vf);
+    return 1;
 }
+
 
 int paging_map_2m(uint64_t virt, uint64_t phys, uint64_t flags) {
     const uint64_t P2M = 0x200000ULL;
